@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Browser MCP</title>
+    <style>
+      body {
+        font-family: ui-sans-serif, system-ui, sans-serif;
+        margin: 12px;
+        width: 360px;
+        color: #15202b;
+        background: #f7f9fb;
+      }
+      label,
+      input,
+      button {
+        display: block;
+        width: 100%;
+      }
+      input,
+      button {
+        margin-top: 8px;
+        margin-bottom: 8px;
+        padding: 8px;
+        box-sizing: border-box;
+      }
+      .button-row {
+        display: flex;
+        gap: 8px;
+      }
+      .button-row button {
+        flex: 1 1 auto;
+      }
+      #status {
+        white-space: pre-wrap;
+        font-size: 12px;
+        line-height: 1.4;
+        background: white;
+        border: 1px solid #d7dee7;
+        border-radius: 8px;
+        padding: 10px;
+      }
+      #connected-tabs {
+        margin-top: 12px;
+      }
+      .section-title {
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: #52606d;
+      }
+      .tab-card {
+        border: 1px solid #d7dee7;
+        border-radius: 8px;
+        padding: 10px;
+        margin-top: 8px;
+        background: white;
+      }
+      .tab-card button {
+        width: auto;
+        margin-bottom: 0;
+      }
+      .tab-title {
+        font-weight: 600;
+      }
+      .tab-url,
+      .tab-meta {
+        font-size: 12px;
+        line-height: 1.4;
+        color: #52606d;
+        margin-top: 4px;
+        word-break: break-word;
+      }
+    </style>
+  </head>
+  <body>
+    <strong>Browser MCP</strong>
+    <label for="server-url">Server URL</label>
+    <input id="server-url" type="text" />
+    <div class="button-row">
+      <button id="save-url">Save URL</button>
+      <button id="refresh">Refresh</button>
+    </div>
+    <div class="button-row">
+      <button id="connect">Connect Active Tab</button>
+      <button id="disconnect">Disconnect Active Tab</button>
+    </div>
+    <div id="status"></div>
+    <div id="connected-tabs">
+      <div class="section-title">Connected Tabs</div>
+    </div>
+    <script src="popup.js"></script>
+  </body>
+  </html>
