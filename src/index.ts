@@ -6,6 +6,7 @@ import { program } from "commander";
 import { appConfig } from "@/config";
 import { Context } from "@/context";
 import { startDaemonRuntime } from "@/daemon/server";
+import { guideResources } from "@/resources/guides";
 import type { Resource } from "@/resources/resource";
 import { createServerWithTools } from "@/server";
 import * as session from "@/tools/session";
@@ -42,7 +43,7 @@ const tools: Tool[] = [
   session.findText,
 ];
 
-const resources: Resource[] = [];
+const resources: Resource[] = [...guideResources];
 
 async function createServer(): Promise<Server> {
   const context = await Context.createRemote();

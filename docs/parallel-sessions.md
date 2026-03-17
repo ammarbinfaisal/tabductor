@@ -14,6 +14,7 @@ This package now exposes a stateless session-oriented MCP API instead of a singl
 
 - `browser_sessions`
 - `browser_state`
+- `browser_session_overview`
 - `browser_snapshot`
 - `browser_navigate`
 - `browser_click`
@@ -37,6 +38,11 @@ The MCP internally manages:
 - snapshot versions
 - invalidation tracking
 - page-change summaries after actions
+
+The MCP also exposes guide resources for LLM clients:
+
+- `browsermcp://guides/llm-workflow`
+- `browsermcp://guides/stale-ref-recovery`
 
 ## Execution Model
 
