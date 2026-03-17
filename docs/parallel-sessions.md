@@ -38,6 +38,7 @@ The MCP internally manages:
 - snapshot versions
 - invalidation tracking
 - page-change summaries after actions
+- post-action discovery refreshes when the page version advances
 
 The MCP also exposes guide resources for LLM clients:
 
@@ -60,7 +61,7 @@ The current transport now supports structured/versioned snapshots internally, bu
 
 - refs are still derived from snapshots
 - same-session writes are still serialized
-- stale-ref handling still depends on extension-side version checks
+- stale-ref handling still depends on extension-side version checks, although the MCP now returns fresh discovery state inline on stale responses
 - partial invalidation quality depends on extension notifications
 - read tools currently rely on full current snapshots for correctness
 

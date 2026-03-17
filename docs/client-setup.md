@@ -33,10 +33,10 @@ Any MCP client should treat this server as:
 4. Call `browser_actionables` when you need DOM refs. It returns a grouped actionable ref inventory.
 5. Call `browser_describe_ref` when one specific ref needs deeper context.
 6. Call `browser_snapshot` only when you need broader page context than the grouped actionable view provides.
-7. Use action tools normally and let the MCP return change summaries from its cache.
+7. Use action tools normally. When the page version advances, the response already includes fresh discovery state for the next step.
 8. Call `browser_state` or `browser_snapshot` only when you need more detail than the action response already provides.
 
-`sessionId` is stable for a tab across reconnects, and read tools return the current full semantic snapshot rather than a transport delta.
+`sessionId` is stable for a tab across reconnects, and read tools expose `pageVersion` so agents can tell when their refs may need to be refreshed.
 
 ## MCP Resources
 

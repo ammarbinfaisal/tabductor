@@ -41,13 +41,15 @@ Use this order when driving a page through the MCP tools:
 4. Call \`browser_describe_ref\` only for the specific ref that needs deeper context.
 5. Call \`browser_snapshot\` only when grouped refs are not enough and you need a broader semantic tree.
 6. Use action tools with the same explicit \`sessionId\`.
-7. Read the action response or \`browser_state\` before forcing another snapshot.
+7. Prefer the action response first; when the page version advances, it already includes fresh discovery state for the next step.
+8. Read \`browser_state\` only when you need metadata or change summaries without another discovery read.
 
 Heuristics:
 
 - Prefer \`browser_session_overview\` over \`browser_snapshot\` for initial page orientation.
 - Prefer \`browser_actionables\` over \`browser_snapshot\` when you already know you need DOM refs.
 - Treat \`sessionId\` as stable for a tab across reconnects.
+- Treat \`pageVersion\` as the current interaction version for that page.
 - Use multiple sessions in parallel, but keep writes on the same session sequential.`,
 });
 
@@ -62,15 +64,15 @@ Browser MCP treats refs as snapshot-derived handles. If the page changes, a ref 
 
 When an action returns \`STALE_REF\`:
 
-1. Re-read \`browser_actionables\` for the same \`sessionId\`.
+1. Read the attached discovery state in the same error response.
 2. Pick the refreshed ref from the updated grouped inventory.
 3. Retry the action with the new ref.
 
 Guidance:
 
-- Pass \`snapshotVersion\` when you want strict stale-ref detection.
-- Omit \`snapshotVersion\` when you prefer best-effort execution against the latest page state.
-- Read the action response before requesting a fresh snapshot; many follow-up decisions can be made from the returned change summary.
+- Pass \`pageVersion\` when you want strict stale-ref detection.
+- Omit \`pageVersion\` when you prefer best-effort execution against the latest page state.
+- Read the action response before requesting a fresh snapshot; when the page version advances, Browser MCP already attaches the next discovery bundle.
 - Use \`browser_state\` when you only need current page metadata and the latest change summary.`,
 });
 

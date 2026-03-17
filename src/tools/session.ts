@@ -8,7 +8,9 @@ import {
   captureAriaSnapshot,
   captureSessionOverview,
   findTextInSnapshot,
+  getDiscoveryState,
   getSnapshotResponse,
+  renderDiscoveryState,
 } from "@/utils/aria-snapshot";
 
 import type { Context } from "@/context";
@@ -19,14 +21,14 @@ const sessionIdSchema = z
   .uuid()
   .describe("Session ID from browser_sessions.");
 
-const snapshotVersionSchema = z
+const pageVersionSchema = z
   .number()
   .int()
   .nonnegative()
   .optional()
   .describe(
-    "Snapshot version when this ref was captured (from browser_actionables or browser_snapshot). " +
-      "If provided and the page has changed since, the action fails with STALE_REF so you can re-fetch actionables.",
+    "Page version when this ref was captured (from browser_actionables, browser_session_overview, or browser_snapshot). " +
+      "If provided and the page has changed since, the response includes fresh discovery state for retrying with current refs.",
   );
 
 const browserSessionsArgs = z.object({});
@@ -58,7 +60,7 @@ const clickArgs = z.object({
     .string()
     .describe("Human-readable element description used for permission prompts."),
   ref: z.string().describe("Exact element reference from a prior snapshot."),
-  snapshotVersion: snapshotVersionSchema,
+  pageVersion: pageVersionSchema,
 });
 
 const hoverArgs = z.object({
@@ -67,7 +69,7 @@ const hoverArgs = z.object({
     .string()
     .describe("Human-readable element description used for permission prompts."),
   ref: z.string().describe("Exact element reference from a prior snapshot."),
-  snapshotVersion: snapshotVersionSchema,
+  pageVersion: pageVersionSchema,
 });
 
 const typeArgs = z.object({
@@ -78,7 +80,7 @@ const typeArgs = z.object({
   ref: z.string().describe("Exact editable element reference from a prior snapshot."),
   text: z.string().describe("Text to type."),
   submit: z.boolean().describe("Whether to press Enter after typing."),
-  snapshotVersion: snapshotVersionSchema,
+  pageVersion: pageVersionSchema,
 });
 
 const selectOptionArgs = z.object({
@@ -88,7 +90,7 @@ const selectOptionArgs = z.object({
     .describe("Human-readable element description used for permission prompts."),
   ref: z.string().describe("Exact select element reference from a prior snapshot."),
   values: z.array(z.string()).min(1).describe("Option values to select."),
-  snapshotVersion: snapshotVersionSchema,
+  pageVersion: pageVersionSchema,
 });
 
 const goBackArgs = z.object({
@@ -144,22 +146,39 @@ function isStaleRefError(e: unknown): boolean {
   return e instanceof Error && e.message.startsWith(mcpConfig.errors.staleRef);
 }
 
-function staleRefResult(ref: string, snapshotVersion: number | undefined): ToolResult {
+async function staleRefResult(
+  context: Context,
+  sessionId: string,
+  ref: string,
+  pageVersion: number | undefined,
+): Promise<ToolResult> {
+  const discovery = await getDiscoveryState(context, sessionId, {
+    preferCache: true,
+  });
   return {
     content: [
       {
         type: "text",
         text: [
           `Action failed: ref "${ref}" is stale.`,
-          snapshotVersion != null
-            ? `Page has changed since snapshot version ${snapshotVersion}.`
+          pageVersion != null
+            ? `Page has changed since page version ${pageVersion}.`
             : "Page has changed since this ref was captured.",
-          "Call browser_actionables to get fresh refs before retrying.",
+          `Fresh discovery state for page version ${discovery.pageVersion} is attached below.`,
+          ...renderDiscoveryState(discovery, {
+            headingLabel: "Retry With These Actionable Areas",
+            maxPerGroup: 4,
+          }),
         ].join("\n"),
       },
     ],
     isError: true,
-    structuredContent: { error: mcpConfig.errors.staleRef, ref, snapshotVersion },
+    structuredContent: {
+      error: mcpConfig.errors.staleRef,
+      ref,
+      pageVersion,
+      discovery,
+    },
   };
 }
 
@@ -210,6 +229,7 @@ async function actionResult(
     sessionId: string;
     successText: string;
     beforeRevision: number;
+    beforePageVersion: number | null;
     input?: Record<string, unknown>;
     waitTimeoutMs?: number;
   },
@@ -219,6 +239,7 @@ async function actionResult(
     sessionId,
     successText,
     beforeRevision,
+    beforePageVersion,
     input,
     waitTimeoutMs,
   } = options;
@@ -229,6 +250,27 @@ async function actionResult(
   );
   const sessionState = await context.getSessionState(sessionId);
   const lines = [successText, ...formatChangeLines(sessionState)];
+  let discovery: Awaited<ReturnType<typeof getDiscoveryState>> | null = null;
+  const pageVersionChanged = sessionState.pageVersion !== beforePageVersion;
+
+  if (pageVersionChanged && sessionState.pageVersion != null) {
+    discovery = await getDiscoveryState(context, sessionId, {
+      preferCache: true,
+    });
+    lines.push(
+      `Fresh discovery state attached for page version ${discovery.pageVersion}.`,
+    );
+    lines.push(
+      ...renderDiscoveryState(discovery, {
+        headingLabel: "Next Actionable Areas",
+        maxPerGroup: 4,
+      }),
+    );
+  } else {
+    lines.push(`Page Version: ${sessionState.pageVersion ?? "unknown"}`);
+    lines.push("Refs remain on the current page version; no refresh bundle was needed.");
+  }
+
   if (!changed) {
     lines.push("No observable page-state change was reported before the tool timeout.");
   }
@@ -238,6 +280,9 @@ async function actionResult(
       action,
       input,
       session: sessionState,
+      pageVersion: sessionState.pageVersion,
+      pageVersionChanged,
+      ...(discovery ? { discovery } : {}),
     },
   );
 }
@@ -246,7 +291,7 @@ export const listSessions: Tool = {
   schema: {
     name: "browser_sessions",
     description:
-      "List connected browser sessions and their latest known metadata, capabilities, page info, and snapshot version.",
+      "List connected browser sessions and their latest known metadata, capabilities, page info, and current page version.",
     inputSchema: zodToJsonSchema(browserSessionsArgs),
   },
   handle: async (context) => {
@@ -259,7 +304,7 @@ export const listSessions: Tool = {
       "Connected browser sessions:",
       ...sessionStates.map(
         (session) =>
-          `- ${session.sessionId} | ${session.status} | v${session.snapshotVersion ?? "?"} | ${session.page?.title ?? "unknown"} | ${session.page?.url ?? "unknown"}`,
+          `- ${session.sessionId} | ${session.status} | v${session.pageVersion ?? "?"} | ${session.page?.title ?? "unknown"} | ${session.page?.url ?? "unknown"}`,
       ),
     ].join("\n");
 
@@ -271,7 +316,7 @@ export const state: Tool = {
   schema: {
     name: "browser_state",
     description:
-      "Read the latest known server-side state for one browser session, including page metadata, snapshot version, capabilities, and last change summary.",
+      "Read the latest known server-side state for one browser session, including page metadata, page version, capabilities, and last change summary.",
     inputSchema: zodToJsonSchema(browserStateArgs),
   },
   handle: async (context, params) => {
@@ -280,7 +325,7 @@ export const state: Tool = {
     const text = [
       `Session: ${sessionState.sessionId}`,
       `Status: ${sessionState.status}`,
-      `Snapshot Version: ${sessionState.snapshotVersion ?? "unknown"}`,
+      `Page Version: ${sessionState.pageVersion ?? "unknown"}`,
       `Page URL: ${sessionState.page?.url ?? "unknown"}`,
       `Page Title: ${sessionState.page?.title ?? "unknown"}`,
       ...formatChangeLines(sessionState),
@@ -293,7 +338,7 @@ export const snapshot: Tool = {
   schema: {
     name: "browser_snapshot",
     description:
-      "Return a compact current snapshot summary for one browser session. Prefer browser_actionables for lightweight ref discovery and browser_describe_ref for deeper detail on a specific ref.",
+      "Return a compact current snapshot summary for one browser session. Prefer browser_session_overview for orientation and browser_actionables for grouped ref discovery.",
     inputSchema: zodToJsonSchema(snapshotArgs),
   },
   handle: async (context, params) => {
@@ -338,10 +383,12 @@ export const navigate: Tool = {
   handle: async (context, params) => {
     const { sessionId, url } = navigateArgs.parse(params ?? {});
     const beforeRevision = await context.getStateRevision(sessionId);
+    const beforePageVersion = (await context.getSessionState(sessionId)).pageVersion;
     await context.sendSocketMessage("browser_navigate", { url }, undefined, sessionId);
     return actionResult(context, {
       action: "navigate",
       beforeRevision,
+      beforePageVersion,
       input: { url },
       sessionId,
       successText: `Navigated session ${sessionId} to ${url}`,
@@ -354,29 +401,33 @@ export const click: Tool = {
   schema: {
     name: "browser_click",
     description:
-      "Click an element in one browser session. Pass the ref from browser_snapshot; the MCP manages version preconditions and cache updates internally.",
+      "Click an element in one browser session. Pass the ref from browser_actionables, browser_session_overview, or browser_snapshot; the MCP returns fresh discovery state when the page version advances.",
     inputSchema: zodToJsonSchema(clickArgs),
   },
   handle: async (context, params) => {
-    const { sessionId, snapshotVersion, ...clickParams } = clickArgs.parse(params ?? {});
+    const { sessionId, pageVersion, ...clickParams } = clickArgs.parse(params ?? {});
     const beforeRevision = await context.getStateRevision(sessionId);
+    const beforePageVersion = (await context.getSessionState(sessionId)).pageVersion;
     try {
       await context.sendSocketMessage(
         "browser_click",
         {
           ...clickParams,
-          ...(snapshotVersion !== undefined ? { expectedVersion: snapshotVersion } : {}),
+          ...(pageVersion !== undefined ? { expectedVersion: pageVersion } : {}),
         },
         undefined,
         sessionId,
       );
     } catch (e) {
-      if (isStaleRefError(e)) return staleRefResult(clickParams.ref, snapshotVersion);
+      if (isStaleRefError(e)) {
+        return await staleRefResult(context, sessionId, clickParams.ref, pageVersion);
+      }
       throw e;
     }
     return actionResult(context, {
       action: "click",
       beforeRevision,
+      beforePageVersion,
       input: clickParams,
       sessionId,
       successText: `Clicked "${clickParams.element}" in session ${sessionId}`,
@@ -388,29 +439,33 @@ export const hover: Tool = {
   schema: {
     name: "browser_hover",
     description:
-      "Hover an element in one browser session. Pass the ref from browser_snapshot; the MCP manages cache updates internally.",
+      "Hover an element in one browser session. Pass the ref from browser_actionables, browser_session_overview, or browser_snapshot; the MCP returns fresh discovery state when needed.",
     inputSchema: zodToJsonSchema(hoverArgs),
   },
   handle: async (context, params) => {
-    const { sessionId, snapshotVersion, ...hoverParams } = hoverArgs.parse(params ?? {});
+    const { sessionId, pageVersion, ...hoverParams } = hoverArgs.parse(params ?? {});
     const beforeRevision = await context.getStateRevision(sessionId);
+    const beforePageVersion = (await context.getSessionState(sessionId)).pageVersion;
     try {
       await context.sendSocketMessage(
         "browser_hover",
         {
           ...hoverParams,
-          ...(snapshotVersion !== undefined ? { expectedVersion: snapshotVersion } : {}),
+          ...(pageVersion !== undefined ? { expectedVersion: pageVersion } : {}),
         },
         undefined,
         sessionId,
       );
     } catch (e) {
-      if (isStaleRefError(e)) return staleRefResult(hoverParams.ref, snapshotVersion);
+      if (isStaleRefError(e)) {
+        return await staleRefResult(context, sessionId, hoverParams.ref, pageVersion);
+      }
       throw e;
     }
     return actionResult(context, {
       action: "hover",
       beforeRevision,
+      beforePageVersion,
       input: hoverParams,
       sessionId,
       successText: `Hovered over "${hoverParams.element}" in session ${sessionId}`,
@@ -422,29 +477,33 @@ export const type: Tool = {
   schema: {
     name: "browser_type",
     description:
-      "Type into an element in one browser session. Pass the ref from browser_snapshot; the MCP manages cache updates internally.",
+      "Type into an element in one browser session. Pass the ref from browser_actionables, browser_session_overview, or browser_snapshot; the MCP returns fresh discovery state when the page version advances.",
     inputSchema: zodToJsonSchema(typeArgs),
   },
   handle: async (context, params) => {
-    const { sessionId, snapshotVersion, ...typeParams } = typeArgs.parse(params ?? {});
+    const { sessionId, pageVersion, ...typeParams } = typeArgs.parse(params ?? {});
     const beforeRevision = await context.getStateRevision(sessionId);
+    const beforePageVersion = (await context.getSessionState(sessionId)).pageVersion;
     try {
       await context.sendSocketMessage(
         "browser_type",
         {
           ...typeParams,
-          ...(snapshotVersion !== undefined ? { expectedVersion: snapshotVersion } : {}),
+          ...(pageVersion !== undefined ? { expectedVersion: pageVersion } : {}),
         },
         undefined,
         sessionId,
       );
     } catch (e) {
-      if (isStaleRefError(e)) return staleRefResult(typeParams.ref, snapshotVersion);
+      if (isStaleRefError(e)) {
+        return await staleRefResult(context, sessionId, typeParams.ref, pageVersion);
+      }
       throw e;
     }
     return actionResult(context, {
       action: "type",
       beforeRevision,
+      beforePageVersion,
       input: typeParams,
       sessionId,
       successText: `Typed "${typeParams.text}" into "${typeParams.element}" in session ${sessionId}`,
@@ -456,31 +515,35 @@ export const selectOption: Tool = {
   schema: {
     name: "browser_select_option",
     description:
-      "Select one or more options in one browser session. Pass the ref from browser_snapshot; the MCP manages cache updates internally.",
+      "Select one or more options in one browser session. Pass the ref from browser_actionables, browser_session_overview, or browser_snapshot; the MCP returns fresh discovery state when the page version advances.",
     inputSchema: zodToJsonSchema(selectOptionArgs),
   },
   handle: async (context, params) => {
-    const { sessionId, snapshotVersion, ...selectParams } = selectOptionArgs.parse(
+    const { sessionId, pageVersion, ...selectParams } = selectOptionArgs.parse(
       params ?? {},
     );
     const beforeRevision = await context.getStateRevision(sessionId);
+    const beforePageVersion = (await context.getSessionState(sessionId)).pageVersion;
     try {
       await context.sendSocketMessage(
         "browser_select_option",
         {
           ...selectParams,
-          ...(snapshotVersion !== undefined ? { expectedVersion: snapshotVersion } : {}),
+          ...(pageVersion !== undefined ? { expectedVersion: pageVersion } : {}),
         },
         undefined,
         sessionId,
       );
     } catch (e) {
-      if (isStaleRefError(e)) return staleRefResult(selectParams.ref, snapshotVersion);
+      if (isStaleRefError(e)) {
+        return await staleRefResult(context, sessionId, selectParams.ref, pageVersion);
+      }
       throw e;
     }
     return actionResult(context, {
       action: "select_option",
       beforeRevision,
+      beforePageVersion,
       input: selectParams,
       sessionId,
       successText: `Selected option in "${selectParams.element}" in session ${sessionId}`,
@@ -497,10 +560,12 @@ export const goBack: Tool = {
   handle: async (context, params) => {
     const { sessionId } = goBackArgs.parse(params ?? {});
     const beforeRevision = await context.getStateRevision(sessionId);
+    const beforePageVersion = (await context.getSessionState(sessionId)).pageVersion;
     await context.sendSocketMessage("browser_go_back", {}, undefined, sessionId);
     return actionResult(context, {
       action: "go_back",
       beforeRevision,
+      beforePageVersion,
       sessionId,
       successText: `Navigated back in session ${sessionId}`,
       waitTimeoutMs: 5000,
@@ -517,10 +582,12 @@ export const goForward: Tool = {
   handle: async (context, params) => {
     const { sessionId } = goForwardArgs.parse(params ?? {});
     const beforeRevision = await context.getStateRevision(sessionId);
+    const beforePageVersion = (await context.getSessionState(sessionId)).pageVersion;
     await context.sendSocketMessage("browser_go_forward", {}, undefined, sessionId);
     return actionResult(context, {
       action: "go_forward",
       beforeRevision,
+      beforePageVersion,
       sessionId,
       successText: `Navigated forward in session ${sessionId}`,
       waitTimeoutMs: 5000,
@@ -537,6 +604,7 @@ export const pressKey: Tool = {
   handle: async (context, params) => {
     const { sessionId, key } = pressKeyArgs.parse(params ?? {});
     const beforeRevision = await context.getStateRevision(sessionId);
+    const beforePageVersion = (await context.getSessionState(sessionId)).pageVersion;
     await context.sendSocketMessage(
       "browser_press_key",
       { key },
@@ -546,6 +614,7 @@ export const pressKey: Tool = {
     return actionResult(context, {
       action: "press_key",
       beforeRevision,
+      beforePageVersion,
       input: { key },
       sessionId,
       successText: `Pressed key ${key} in session ${sessionId}`,
@@ -562,10 +631,12 @@ export const wait: Tool = {
   handle: async (context, params) => {
     const { sessionId, time } = waitArgs.parse(params ?? {});
     const beforeRevision = await context.getStateRevision(sessionId);
+    const beforePageVersion = (await context.getSessionState(sessionId)).pageVersion;
     await context.sendSocketMessage("browser_wait", { time }, undefined, sessionId);
     return actionResult(context, {
       action: "wait",
       beforeRevision,
+      beforePageVersion,
       input: { time },
       sessionId,
       successText: `Waited for ${time} seconds in session ${sessionId}`,
@@ -723,7 +794,7 @@ export const findText: Tool = {
     return textResult(lines.join("\n"), {
       sessionId,
       query,
-      snapshotVersion: snapshot.snapshot.version,
+      pageVersion: snapshot.snapshot.version,
       matches,
     });
   },

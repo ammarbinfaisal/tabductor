@@ -25,7 +25,7 @@ export type BrowserSessionState = {
   connectedAt: string;
   status: "connecting" | "ready" | "closed";
   page: BrowserPageState | null;
-  snapshotVersion: number | null;
+  pageVersion: number | null;
   lastInvalidation: BrowserInvalidationEvent | null;
   lastChange: SnapshotChangeSummary | null;
   capabilities: BrowserSessionCapabilities | null;
@@ -51,7 +51,7 @@ export class BrowserSession {
   private metadata: SessionMetadata = {
     status: "connecting",
     page: null,
-    snapshotVersion: null,
+    pageVersion: null,
     lastInvalidation: null,
     lastChange: null,
     capabilities: null,
@@ -199,7 +199,7 @@ export class BrowserSession {
       ...this.metadata,
       status: "ready",
       page: payload.page,
-      snapshotVersion: payload.snapshotVersion ?? this.metadata.snapshotVersion,
+      pageVersion: payload.snapshotVersion ?? this.metadata.pageVersion,
       capabilities: payload.capabilities,
       extensionVersion: payload.extensionVersion,
       browserName: payload.browserName,
@@ -215,7 +215,7 @@ export class BrowserSession {
       ...this.metadata,
       status: "ready",
       page: payload.page,
-      snapshotVersion: payload.snapshotVersion,
+      pageVersion: payload.snapshotVersion,
       lastInvalidation: payload.invalidation ?? this.metadata.lastInvalidation,
     };
     if (payload.invalidation) {
@@ -231,7 +231,7 @@ export class BrowserSession {
       this.metadata.page = page;
     }
     this.metadata.status = "ready";
-    this.metadata.snapshotVersion = payload.snapshot.version;
+    this.metadata.pageVersion = payload.snapshot.version;
     this.metadata.lastInvalidation =
       payload.snapshot.invalidation ?? this.metadata.lastInvalidation;
     if (page) {
@@ -267,7 +267,7 @@ export class BrowserSession {
         const snapshot = result as BrowserSnapshotResponse;
         this.metadata.status = "ready";
         this.metadata.page = snapshot.page;
-        this.metadata.snapshotVersion = snapshot.snapshot.version;
+        this.metadata.pageVersion = snapshot.snapshot.version;
         this.metadata.lastInvalidation =
           snapshot.snapshot.invalidation ?? this.metadata.lastInvalidation;
         this.snapshotCache.ingestSnapshot(snapshot);

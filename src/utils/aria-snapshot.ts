@@ -59,6 +59,24 @@ export type ContextAnchorPreview = {
   section?: string;
 };
 
+export type DiscoveryStats = {
+  actionableCount: number;
+  actionableGroups: number;
+  inViewportCount: number;
+  visibleGroups: number;
+  contextAnchors: number;
+  roleCounts: string;
+};
+
+export type PageDiscoveryState = {
+  pageVersion: number;
+  page: BrowserSnapshotResponse["page"];
+  actionables: ActionablePreview[];
+  groups: ActionableGroup[];
+  contextAnchors: ContextAnchorPreview[];
+  stats: DiscoveryStats;
+};
+
 function flattenNodes(nodes: BrowserSnapshotNode[]): BrowserSnapshotNode[] {
   const flattened: BrowserSnapshotNode[] = [];
   const visit = (node: BrowserSnapshotNode) => {
@@ -314,31 +332,97 @@ function formatGroupedActionables(
   return lines;
 }
 
-function renderSnapshot(snapshot: BrowserSnapshotResponse): string {
+function summarizeRoleCounts(actionables: ActionablePreview[]): string {
+  const counts = new Map<string, number>();
+  for (const actionable of actionables) {
+    const key = actionable.role ?? "unknown";
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([role, count]) => `${role}:${count}`)
+    .join(", ");
+}
+
+export function buildDiscoveryState(
+  snapshot: BrowserSnapshotResponse,
+): PageDiscoveryState {
   const actionables = extractActionablePreviews(snapshot);
   const groups = extractActionableGroups(snapshot);
   const contextAnchors = extractContextAnchorPreviews(snapshot);
   const inViewportCount = actionables.filter((actionable) => actionable.inViewport).length;
+  const visibleGroups = groups.filter((group) => group.inViewport).length;
+
+  return {
+    pageVersion: snapshot.snapshot.version,
+    page: snapshot.page,
+    actionables,
+    groups,
+    contextAnchors,
+    stats: {
+      actionableCount: actionables.length,
+      actionableGroups: groups.length,
+      inViewportCount,
+      visibleGroups,
+      contextAnchors: contextAnchors.length,
+      roleCounts: summarizeRoleCounts(actionables),
+    },
+  };
+}
+
+type DiscoveryRenderOptions = {
+  headingLabel?: string;
+  maxPerGroup?: number;
+  maxContextAnchors?: number;
+};
+
+export function renderDiscoveryState(
+  discovery: PageDiscoveryState,
+  options: DiscoveryRenderOptions = {},
+): string[] {
+  const {
+    headingLabel = "Interactive Areas",
+    maxPerGroup = 4,
+    maxContextAnchors = 8,
+  } = options;
 
   const lines = [
-    `- Snapshot Version: ${snapshot.snapshot.version}`,
-    `- Actionable Refs: ${actionables.length}`,
-    `- Actionable Groups: ${groups.length}`,
-    `- In-Viewport Refs: ${inViewportCount}`,
-    `- Context Anchors: ${contextAnchors.length}`,
+    `- Page Version: ${discovery.pageVersion}`,
+    `- Interactive Areas: ${discovery.stats.actionableGroups} (${discovery.stats.visibleGroups} in viewport)`,
+    `- Actionable Refs: ${discovery.stats.actionableCount} (${discovery.stats.inViewportCount} in viewport)`,
+    `- Role Counts: ${discovery.stats.roleCounts || "none"}`,
   ];
 
-  if (groups.length) {
-    lines.push("- Actionable Groups:");
-    lines.push(...formatGroupedActionables(groups, { maxPerGroup: 5 }));
+  if (discovery.groups.length) {
+    lines.push(`- ${headingLabel}:`);
+    lines.push(...formatGroupedActionables(discovery.groups, { maxPerGroup }));
+  } else {
+    lines.push("- No actionable refs found in the current snapshot.");
   }
 
-  if (contextAnchors.length) {
+  if (maxContextAnchors > 0 && discovery.contextAnchors.length) {
     lines.push("- Context Anchors:");
-    lines.push(...contextAnchors.map(formatContextNodeLine));
+    lines.push(
+      ...discovery.contextAnchors
+        .slice(0, maxContextAnchors)
+        .map(formatContextNodeLine),
+    );
+    if (discovery.contextAnchors.length > maxContextAnchors) {
+      lines.push(
+        `- +${discovery.contextAnchors.length - maxContextAnchors} more context anchors`,
+      );
+    }
   }
 
-  return lines.join("\n");
+  return lines;
+}
+
+function renderSnapshot(snapshot: BrowserSnapshotResponse): string {
+  return renderDiscoveryState(buildDiscoveryState(snapshot), {
+    headingLabel: "Actionable Groups",
+    maxPerGroup: 5,
+  }).join("\n");
 }
 
 export async function getSnapshotResponse(
@@ -371,6 +455,15 @@ export async function getSnapshotResponse(
   );
 }
 
+export async function getDiscoveryState(
+  context: Context,
+  sessionId: string,
+  options: { mode?: SnapshotMode; sinceVersion?: number; preferCache?: boolean } = {},
+): Promise<PageDiscoveryState> {
+  const snapshot = await getSnapshotResponse(context, sessionId, options);
+  return buildDiscoveryState(snapshot);
+}
+
 export async function captureAriaSnapshot(
   context: Context,
   sessionId: string,
@@ -378,6 +471,7 @@ export async function captureAriaSnapshot(
   options: { mode?: SnapshotMode; sinceVersion?: number; preferCache?: boolean } = {},
 ): Promise<ToolResult> {
   const snapshot = await getSnapshotResponse(context, sessionId, options);
+  const discovery = buildDiscoveryState(snapshot);
 
   return {
     content: [
@@ -386,14 +480,19 @@ export async function captureAriaSnapshot(
         text: `${status ? `${status}\n` : ""}- Session ID: ${sessionId}
 - Page URL: ${snapshot.page.url}
 - Page Title: ${snapshot.page.title}
-${renderSnapshot(snapshot)}
+${renderDiscoveryState(discovery, {
+  headingLabel: "Actionable Groups",
+  maxPerGroup: 5,
+}).join("\n")}
 `,
       },
     ],
     structuredContent: {
       sessionId,
+      pageVersion: discovery.pageVersion,
       page: snapshot.page,
       snapshot: snapshot.snapshot,
+      discovery,
     },
   };
 }
@@ -402,107 +501,57 @@ export async function captureActionables(
   context: Context,
   sessionId: string,
 ): Promise<ToolResult> {
-  const snapshot = await getSnapshotResponse(context, sessionId, {
+  const discovery = await getDiscoveryState(context, sessionId, {
     preferCache: true,
   });
-  const actionables = extractActionablePreviews(snapshot);
-  const groups = extractActionableGroups(snapshot);
-  const inViewportCount = actionables.filter((actionable) => actionable.inViewport).length;
 
   const lines = [
     `- Session ID: ${sessionId}`,
-    `- Page URL: ${snapshot.page.url}`,
-    `- Page Title: ${snapshot.page.title}`,
-    `- Snapshot Version: ${snapshot.snapshot.version}`,
-    `- Actionable Refs: ${actionables.length}`,
-    `- Actionable Groups: ${groups.length}`,
-    `- In-Viewport Refs: ${inViewportCount}`,
-    ...(groups.length
-      ? ["- Actionable Groups:", ...formatGroupedActionables(groups)]
-      : ["- No actionable refs found in the current snapshot."]),
+    `- Page URL: ${discovery.page.url}`,
+    `- Page Title: ${discovery.page.title}`,
+    ...renderDiscoveryState(discovery, {
+      headingLabel: "Actionable Groups",
+      maxPerGroup: Number.POSITIVE_INFINITY,
+      maxContextAnchors: 0,
+    }),
   ];
 
   return {
     content: [{ type: "text", text: lines.join("\n") }],
     structuredContent: {
       sessionId,
-      snapshotVersion: snapshot.snapshot.version,
-      page: snapshot.page,
-      actionables,
-      groups,
+      pageVersion: discovery.pageVersion,
+      page: discovery.page,
+      actionables: discovery.actionables,
+      groups: discovery.groups,
+      discovery,
     },
   };
-}
-
-function summarizeRoleCounts(actionables: ActionablePreview[]): string {
-  const counts = new Map<string, number>();
-  for (const actionable of actionables) {
-    const key = actionable.role ?? "unknown";
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-
-  return [...counts.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .map(([role, count]) => `${role}:${count}`)
-    .join(", ");
 }
 
 export async function captureSessionOverview(
   context: Context,
   sessionId: string,
 ): Promise<ToolResult> {
-  const snapshot = await getSnapshotResponse(context, sessionId, {
+  const discovery = await getDiscoveryState(context, sessionId, {
     preferCache: true,
   });
-  const actionables = extractActionablePreviews(snapshot);
-  const groups = extractActionableGroups(snapshot);
-  const contextAnchors = extractContextAnchorPreviews(snapshot);
-  const inViewportCount = actionables.filter((actionable) => actionable.inViewport).length;
-  const visibleGroups = groups.filter((group) => group.inViewport).length;
 
   const lines = [
     `- Session ID: ${sessionId}`,
-    `- Page URL: ${snapshot.page.url}`,
-    `- Page Title: ${snapshot.page.title}`,
-    `- Snapshot Version: ${snapshot.snapshot.version}`,
-    `- Interactive Areas: ${groups.length} (${visibleGroups} in viewport)`,
-    `- Actionable Refs: ${actionables.length} (${inViewportCount} in viewport)`,
-    `- Role Counts: ${summarizeRoleCounts(actionables) || "none"}`,
+    `- Page URL: ${discovery.page.url}`,
+    `- Page Title: ${discovery.page.title}`,
+    ...renderDiscoveryState(discovery),
   ];
-
-  if (groups.length) {
-    lines.push("- Interactive Areas:");
-    lines.push(...formatGroupedActionables(groups, { maxPerGroup: 4 }));
-  } else {
-    lines.push("- No actionable refs found in the current snapshot.");
-  }
-
-  if (contextAnchors.length) {
-    lines.push("- Context Anchors:");
-    lines.push(...contextAnchors.slice(0, 8).map(formatContextNodeLine));
-    if (contextAnchors.length > 8) {
-      lines.push(`- +${contextAnchors.length - 8} more context anchors`);
-    }
-  }
 
   return {
     content: [{ type: "text", text: lines.join("\n") }],
     structuredContent: {
       sessionId,
-      snapshotVersion: snapshot.snapshot.version,
-      page: snapshot.page,
-      overview: {
-        actionables,
-        groups,
-        contextAnchors,
-        stats: {
-          actionableCount: actionables.length,
-          actionableGroups: groups.length,
-          inViewportCount,
-          visibleGroups,
-          roleCounts: summarizeRoleCounts(actionables),
-        },
-      },
+      pageVersion: discovery.pageVersion,
+      page: discovery.page,
+      overview: discovery,
+      discovery,
     },
   };
 }
