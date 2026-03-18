@@ -25,6 +25,34 @@ Any MCP client should treat this server as:
 - a toolset where `browser_sessions` is the discovery entrypoint
 - a server that exposes guide resources for LLM workflow and stale-ref recovery
 
+## Logging Configuration
+
+Browser MCP reads logging configuration from environment variables so MCP clients can set it directly in their server config.
+
+- `BROWSERMCP_LOG_MODE=off|errors|normal|debug|full`
+- `BROWSERMCP_LOG_INCLUDE=category1,category2`
+- `BROWSERMCP_LOG_EXCLUDE=category1,category2`
+- `BROWSERMCP_LOG_DEST=auto|stderr|file`
+- `BROWSERMCP_LOG_FILE=/tmp/browsermcp.log`
+- `BROWSERMCP_LOG_FORMAT=text|json`
+- `BROWSERMCP_LOG_REDACT=1|0`
+- `BROWSERMCP_DEBUG=1`
+- `BROWSERMCP_DEBUG_FULL=1`
+
+Useful categories:
+
+- `mcp.calls`, `mcp.args`, `mcp.results`, `mcp.errors`
+- `daemon.lifecycle`, `daemon.requests`, `daemon.responses`, `daemon.errors`
+- `browser.requests`, `browser.responses`, `browser.notifications`, `browser.errors`
+
+Defaults:
+
+- `BROWSERMCP_LOG_MODE=errors`
+- `BROWSERMCP_LOG_DEST=auto`
+- `BROWSERMCP_LOG_REDACT=1`
+
+When `BROWSERMCP_LOG_DEST=auto`, the stdio MCP process logs to `stderr` and the detached daemon logs to `/tmp/browsermcp.log` by default.
+
 ## Recommended LLM Workflow
 
 1. Call `browser_sessions`.

@@ -16,6 +16,7 @@ import type {
   BrowserRequestType,
   BrowserSnapshotResponse,
 } from "@/protocol/messages";
+import { logException, logInfo } from "@/utils/log";
 import { wait } from "@/utils/async";
 import { isPortInUse } from "@/utils/port";
 
@@ -83,6 +84,10 @@ function spawnDaemonProcess() {
     throw new Error("Cannot determine how to launch the Browser MCP daemon");
   }
 
+  logInfo("daemon.lifecycle", "Spawning Browser MCP daemon", {
+    entrypoint,
+    runtime,
+  });
   const child = spawn(runtime, [entrypoint, "daemon"], {
     detached: true,
     stdio: "ignore",
@@ -93,7 +98,9 @@ function spawnDaemonProcess() {
 
 async function ensureDaemonAvailable() {
   try {
-    return await openClientSocket();
+    const socket = await openClientSocket();
+    logInfo("daemon.lifecycle", "Connected to existing Browser MCP daemon");
+    return socket;
   } catch (_error) {
     if (!(await isPortInUse(mcpConfig.defaultControlPort))) {
       spawnDaemonProcess();
@@ -101,7 +108,11 @@ async function ensureDaemonAvailable() {
 
     for (let attempt = 0; attempt < 40; attempt += 1) {
       try {
-        return await openClientSocket(500);
+        const socket = await openClientSocket(500);
+        logInfo("daemon.lifecycle", "Connected to Browser MCP daemon after retry", {
+          attempt: attempt + 1,
+        });
+        return socket;
       } catch (_retryError) {
         await wait(250);
       }
@@ -132,10 +143,18 @@ export class DaemonClient {
       this.pending.delete(message.id);
 
       if (message.ok) {
+        logInfo("daemon.responses", "Daemon response received", {
+          id: message.id,
+          result: message.result,
+        });
         pending.resolve(message.result);
         return;
       }
 
+      logInfo("daemon.errors", "Daemon response returned error", {
+        error: message.error,
+        id: message.id,
+      });
       pending.reject(new Error(`${message.error.code}: ${message.error.message}`));
     });
 
@@ -148,9 +167,11 @@ export class DaemonClient {
     };
 
     ws.on("close", () => {
+      logInfo("daemon.lifecycle", "Browser MCP daemon connection closed");
       failAll("Browser MCP daemon connection closed");
     });
     ws.on("error", (error) => {
+      logException("daemon.errors", "Browser MCP daemon connection error", error);
       failAll(`Browser MCP daemon connection error: ${error.message}`);
     });
   }
@@ -231,16 +252,32 @@ export class DaemonClient {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
+        logInfo("daemon.errors", "Timed out waiting for daemon response", {
+          id,
+          method,
+          timeoutMs,
+        });
         reject(new Error(`Timed out waiting for Browser MCP daemon method ${method}`));
       }, timeoutMs);
 
       this.pending.set(id, { resolve, reject, timeout });
+      logInfo("daemon.requests", "Sending daemon request", {
+        id,
+        method,
+        params,
+        timeoutMs,
+      });
       this.ws.send(JSON.stringify(message), (error) => {
         if (!error) {
           return;
         }
         clearTimeout(timeout);
         this.pending.delete(id);
+        logException("daemon.errors", "Failed to send daemon request", error, {
+          id,
+          method,
+          params,
+        });
         reject(error);
       });
     }) as Promise<DaemonRequestMap[T]["result"]>;

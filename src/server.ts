@@ -9,6 +9,7 @@ import {
 import { Context } from "@/context";
 import type { Resource } from "@/resources/resource";
 import type { Tool } from "@/tools/tool";
+import { logException, logInfo } from "@/utils/log";
 
 type Options = {
   name: string;
@@ -42,6 +43,9 @@ export async function createServerWithTools(options: Options): Promise<Server> {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const tool = tools.find((tool) => tool.schema.name === request.params.name);
     if (!tool) {
+      logInfo("mcp.calls", "MCP tool not found", {
+        tool: request.params.name,
+      });
       return {
         content: [
           { type: "text", text: `Tool "${request.params.name}" not found` },
@@ -50,10 +54,38 @@ export async function createServerWithTools(options: Options): Promise<Server> {
       };
     }
 
+    const startedAt = Date.now();
+    logInfo("mcp.calls", "MCP tool call started", {
+      tool: request.params.name,
+      argumentKeys: Object.keys(request.params.arguments ?? {}),
+    });
+    if (request.params.arguments) {
+      logInfo("mcp.args", "MCP tool arguments", {
+        tool: request.params.name,
+        arguments: request.params.arguments,
+      });
+    }
+
     try {
       const result = await tool.handle(context, request.params.arguments);
+      logInfo("mcp.calls", "MCP tool call completed", {
+        tool: request.params.name,
+        durationMs: Date.now() - startedAt,
+        isError: result.isError === true,
+        contentItems: result.content.length,
+        structuredContentKeys: Object.keys(result.structuredContent ?? {}),
+      });
+      logInfo("mcp.results", "MCP tool result", {
+        tool: request.params.name,
+        result,
+      });
       return result;
     } catch (error) {
+      logException("mcp.errors", "MCP tool call failed", error, {
+        tool: request.params.name,
+        durationMs: Date.now() - startedAt,
+        arguments: request.params.arguments ?? {},
+      });
       return {
         content: [{ type: "text", text: String(error) }],
         isError: true,

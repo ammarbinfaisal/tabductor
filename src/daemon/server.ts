@@ -7,6 +7,7 @@ import type {
   DaemonResponseEnvelope,
   DaemonRequestType,
 } from "@/daemon/protocol";
+import { logException, logInfo } from "@/utils/log";
 import { createWebSocketServer } from "@/ws";
 
 function parseRequest(raw: RawData): DaemonRequestEnvelope | null {
@@ -39,6 +40,11 @@ async function handleRequest(
   context: Context,
   request: DaemonRequestEnvelope,
 ): Promise<DaemonResponseEnvelope> {
+  logInfo("daemon.requests", "Handling daemon request", {
+    id: request.id,
+    method: request.method,
+    params: request.params,
+  });
   try {
     switch (request.method as DaemonRequestType) {
       case "list_sessions": {
@@ -128,6 +134,11 @@ async function handleRequest(
         throw new Error(`Unsupported daemon method: ${request.method}`);
     }
   } catch (error) {
+    logException("daemon.errors", "Daemon request failed", error, {
+      id: request.id,
+      method: request.method,
+      params: request.params,
+    });
     return {
       id: request.id,
       ok: false,
@@ -153,19 +164,35 @@ export async function startDaemonRuntime() {
     mcpConfig.defaultWsPort,
     mcpConfig.defaultHost,
   );
+  logInfo("daemon.lifecycle", "Browser MCP daemon browser websocket ready", {
+    host: mcpConfig.defaultHost,
+    port: mcpConfig.defaultWsPort,
+  });
   browserWss.on("connection", (websocket) => {
+    logInfo("daemon.lifecycle", "Browser extension connected to daemon");
     context.addSession(websocket);
   });
 
   const controlWss = await createControlServer();
+  logInfo("daemon.lifecycle", "Browser MCP daemon control websocket ready", {
+    host: mcpConfig.defaultHost,
+    port: mcpConfig.defaultControlPort,
+  });
   controlWss.on("connection", (ws) => {
+    logInfo("daemon.lifecycle", "Daemon control client connected");
     ws.on("message", async (raw) => {
       const request = parseRequest(raw);
       if (!request) {
+        logInfo("daemon.errors", "Ignoring invalid daemon request payload");
         return;
       }
 
       const response = await handleRequest(context, request);
+      logInfo("daemon.responses", "Daemon response ready", {
+        id: response.id,
+        ok: response.ok,
+        response,
+      });
       sendResponse(ws, response);
     });
   });
@@ -196,6 +223,7 @@ export async function startDaemonRuntime() {
 
   const shutdown = async () => {
     try {
+      logInfo("daemon.lifecycle", "Shutting down Browser MCP daemon");
       await close();
     } finally {
       process.exit(0);
