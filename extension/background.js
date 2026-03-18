@@ -241,7 +241,7 @@ async function ensureConnectableTab(tabId) {
   const tab = await chrome.tabs.get(tabId);
   const url = tab.url || "";
   if (!/^https?:/i.test(url)) {
-    throw new Error("Only http(s) tabs are supported by the reference extension");
+    throw new Error("Only http(s) tabs are supported by Tabductor");
   }
 }
 

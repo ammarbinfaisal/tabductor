@@ -105,8 +105,8 @@ The extension should send notifications in this shape:
 - Every snapshot includes `version`, `mode`, `generatedAt`, `format`, and `root`.
 - `root` is a structured node list with stable `nodeId` and optional user-actionable `ref`.
 - `mode` may be `full` or `delta`.
-- In the reference extension, `browser_snapshot` is intentionally compact and action-first: it should prioritize actionable refs, minimal context hints, and low token cost.
-- The current reference extension emits `format: "semantic-tree-v1"` and groups actionable refs under semantic sections such as search, form, dialog, or main content.
+- In Tabductor, `browser_snapshot` is intentionally compact and action-first: it should prioritize actionable refs, minimal context hints, and low token cost.
+- The current Tabductor implementation emits `format: "semantic-tree-v1"` and groups actionable refs under semantic sections such as search, form, dialog, or main content.
 - The current reference implementation returns full current snapshots to the MCP layer; delta delivery remains a future transport optimization, not an LLM-facing contract.
 - When the page changes without an immediate snapshot, the extension should still emit `browser.page.updated` with a version bump and invalidation metadata.
 

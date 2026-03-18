@@ -1,15 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "Browser MCP Reference Extension",
+  "name": "Tabductor",
   "version": "0.1.0",
-  "description": "Reference extension for the Browser MCP standalone protocol.",
+  "description": "Tab conductor for Browser MCP.",
   "permissions": ["activeTab", "scripting", "storage", "tabs"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Browser MCP",
+    "default_title": "Tabductor",
     "default_popup": "popup.html"
   },
   "content_scripts": [

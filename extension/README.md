@@ -1,6 +1,6 @@
-# Reference Extension
+# Tabductor
 
-This folder contains a loadable MV3 reference extension for the standalone Browser MCP protocol.
+This folder contains `Tabductor`, a loadable MV3 extension for the standalone Browser MCP protocol.
 
 ## What It Implements
 
