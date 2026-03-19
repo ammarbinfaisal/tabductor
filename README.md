@@ -106,12 +106,50 @@ The transport is local stdio. The browser bridge is local too. Nothing here requ
 - Keeps execution local
 - Gives agents direct page interaction tools without spinning up a separate automation browser
 
+## How Agents Use It
+
+Tabductor is session-oriented.
+
+Each connected browser tab is exposed as a session, and the agent operates against that session explicitly instead of relying on hidden client-side state.
+
+That gives agents a few useful properties:
+
+- They can work across multiple tabs in parallel by using separate sessions.
+- They can batch page-local work through the JavaScript execution tool instead of making many tiny round trips.
+- They can inspect a compact semantic snapshot of the page before acting, which is usually cheaper than treating the page like a raw DOM dump.
+
+In practice, that means an agent can:
+
+- read one session while clicking in another
+- keep long-running work isolated per tab
+- use snapshots and refs for most interaction
+- fall back to a JS REPL-style snippet when it needs page-local filtering, validation, or multi-step in-page logic
+
+## Snapshots And Sessions
+
+- A session is the stable handle for one connected tab.
+- Snapshots are compact, structured views of the page built for agent use, not full serialized DOM copies.
+- Actionable elements get refs, so the agent can read first and then act on the exact element it discovered.
+- Page versions and snapshot updates help the agent recover when the page changes underneath it.
+
+This model is what makes multi-step workflows practical without forcing the agent to rediscover the entire page after every action.
+
 ## Notes
 
 - The MCP server is a local stdio server.
 - The extension talks to the local daemon on `ws://127.0.0.1:8765`.
 - Multiple MCP clients can reuse the same local daemon.
 - If you reload the extension or change permissions, reconnect the active tab from the popup.
+
+## Room To Improve
+
+There is still room to make the agent experience better:
+
+- richer batching and streaming around the JS execution path
+- better cross-session orchestration and scheduling
+- smarter incremental snapshot updates on complex apps
+- broader browser and client setup coverage
+- clearer defaults for agents that want to mix fast snapshot reads with occasional JS-heavy page logic
 
 ## Logging
 
