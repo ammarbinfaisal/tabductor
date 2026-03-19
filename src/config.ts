@@ -1,5 +1,5 @@
 export const appConfig = {
-  name: "@browsermcp/mcp",
+  name: "@tabductor/mcp",
 } as const;
 
 export const mcpConfig = {

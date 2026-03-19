@@ -5,20 +5,20 @@ const refreshButton = document.getElementById("refresh");
 
 document.getElementById("save-url").addEventListener("click", async () => {
   await chrome.runtime.sendMessage({
-    type: "browsermcp:popup-set-server-url",
+    type: "tabductor:popup-set-server-url",
     serverUrl: serverUrlInput.value.trim(),
   });
   await refresh();
 });
 
 document.getElementById("connect").addEventListener("click", async () => {
-  await chrome.runtime.sendMessage({ type: "browsermcp:popup-connect-active-tab" });
+  await chrome.runtime.sendMessage({ type: "tabductor:popup-connect-active-tab" });
   await refresh();
 });
 
 document.getElementById("disconnect").addEventListener("click", async () => {
   await chrome.runtime.sendMessage({
-    type: "browsermcp:popup-disconnect-active-tab",
+    type: "tabductor:popup-disconnect-active-tab",
   });
   await refresh();
 });
@@ -29,7 +29,7 @@ refreshButton.addEventListener("click", async () => {
 
 async function refresh() {
   const status = await chrome.runtime.sendMessage({
-    type: "browsermcp:popup-status",
+    type: "tabductor:popup-status",
   });
 
   serverUrlInput.value = status.serverUrl || "";
@@ -81,7 +81,7 @@ async function refresh() {
     disconnect.textContent = "Disconnect";
     disconnect.addEventListener("click", async () => {
       await chrome.runtime.sendMessage({
-        type: "browsermcp:popup-disconnect-tab",
+        type: "tabductor:popup-disconnect-tab",
         tabId: tab.id,
       });
       await refresh();

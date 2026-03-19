@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Tabductor",
   "version": "0.1.0",
-  "description": "Tab conductor for Browser MCP.",
-  "permissions": ["activeTab", "scripting", "storage", "tabs"],
+  "description": "Tab conductor for Tabductor MCP.",
+  "permissions": ["activeTab", "debugger", "scripting", "storage", "tabs"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"

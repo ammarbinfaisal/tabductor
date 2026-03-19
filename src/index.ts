@@ -22,7 +22,7 @@ function setupExitWatchdog(server: Server) {
   });
 }
 
-const tools: Tool[] = [
+const baseTools: Tool[] = [
   session.listSessions,
   session.state,
   session.overview,
@@ -40,9 +40,30 @@ const tools: Tool[] = [
   session.getConsoleLogs,
   session.runJs,
   session.screenshot,
+  session.fetchImage,
   session.describeRef,
   session.findText,
 ];
+
+function aliasTool(tool: Tool): Tool[] {
+  if (!tool.schema.name.startsWith("browser_")) {
+    return [tool];
+  }
+
+  return [
+    tool,
+    {
+      ...tool,
+      schema: {
+        ...tool.schema,
+        name: tool.schema.name.replace(/^browser_/, "tabductor_"),
+        description: tool.schema.description.replaceAll("Browser MCP", "Tabductor"),
+      },
+    },
+  ];
+}
+
+const tools: Tool[] = baseTools.flatMap(aliasTool);
 
 const resources: Resource[] = [...guideResources];
 

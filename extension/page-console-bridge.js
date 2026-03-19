@@ -1,7 +1,8 @@
 (function () {
-  if (window.__browserMcpConsoleBridgeInstalled) {
+  if (window.__tabductorConsoleBridgeInstalled || window.__browserMcpConsoleBridgeInstalled) {
     return;
   }
+  window.__tabductorConsoleBridgeInstalled = true;
   window.__browserMcpConsoleBridgeInstalled = true;
 
   const methods = ["log", "info", "warn", "error"];
@@ -22,7 +23,7 @@
     console[method] = (...args) => {
       window.postMessage(
         {
-          source: "browsermcp-page-console",
+          source: "tabductor-page-console",
           entry: {
             level: method,
             args: args.map(serialize),

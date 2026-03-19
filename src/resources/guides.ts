@@ -59,6 +59,17 @@ Heuristics:
 - Use multiple sessions in parallel, but keep writes on the same session sequential.`,
 });
 
+export const llmWorkflowGuideAlias = createStaticResource({
+  uri: "tabductor://guides/llm-workflow",
+  name: "Tabductor LLM Workflow",
+  description:
+    "Recommended Tabductor workflow for LLM agents, including overview, actionable discovery, and follow-up reads.",
+  text: `# Tabductor LLM Workflow
+
+Use the same workflow as \`browsermcp://guides/llm-workflow\`.
+`,
+});
+
 export const staleRefGuide = createStaticResource({
   uri: "browsermcp://guides/stale-ref-recovery",
   name: "Browser MCP Stale Ref Recovery",
@@ -82,4 +93,20 @@ Guidance:
 - Use \`browser_state\` when you only need current page metadata and the latest change summary.`,
 });
 
-export const guideResources: Resource[] = [llmWorkflowGuide, staleRefGuide];
+export const staleRefGuideAlias = createStaticResource({
+  uri: "tabductor://guides/stale-ref-recovery",
+  name: "Tabductor Stale Ref Recovery",
+  description:
+    "How to recover from stale refs and use action responses without over-fetching snapshots.",
+  text: `# Tabductor Stale Ref Recovery
+
+Use the same recovery guidance as \`browsermcp://guides/stale-ref-recovery\`.
+`,
+});
+
+export const guideResources: Resource[] = [
+  llmWorkflowGuide,
+  llmWorkflowGuideAlias,
+  staleRefGuide,
+  staleRefGuideAlias,
+];

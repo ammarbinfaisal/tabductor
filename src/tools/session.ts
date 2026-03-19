@@ -202,6 +202,11 @@ const screenshotArgs = z.object({
   sessionId: sessionIdSchema,
 });
 
+const fetchImageArgs = z.object({
+  sessionId: sessionIdSchema,
+  url: z.string().describe("Absolute URL of the image to fetch (e.g. the src of an <img> element)."),
+});
+
 const describeRefArgs = z.object({
   sessionId: sessionIdSchema,
   ref: z.string().describe("Element ref from any prior Browser MCP discovery result."),
@@ -1255,10 +1260,66 @@ export const screenshot: Tool = {
           text: `Screenshot captured for session ${sessionId} (image/png).`,
         },
       ],
-      structuredContent: {
-        imageFormat: "png",
-        sessionId,
-      },
+    };
+  },
+};
+
+export const fetchImage: Tool = {
+  schema: {
+    name: "browser_fetch_image",
+    description:
+      "Fetch an image by URL using the browser session and return it as an inline image. " +
+      "Use this to retrieve images visible on the current page (e.g. from <img> src attributes) " +
+      "so you can inspect or save them. The URL must be accessible from the browser's context.",
+    inputSchema: zodToJsonSchema(fetchImageArgs),
+  },
+  handle: async (context, params) => {
+    const { sessionId, url } = fetchImageArgs.parse(params ?? {});
+
+    // Use browser_run_js to fetch the image as a base64 data URL
+    const code = `
+      const response = await fetch(${JSON.stringify(url)});
+      if (!response.ok) throw new Error(\`HTTP \${response.status} fetching image\`);
+      const contentType = response.headers.get('content-type') || 'image/png';
+      const buffer = await response.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+      return { data: btoa(binary), mimeType: contentType };
+    `;
+
+    const runResult = await context.sendSocketMessage(
+      "browser_run_js",
+      { code },
+      undefined,
+      sessionId,
+    );
+
+    if (!runResult.success || runResult.result == null) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Failed to fetch image: ${runResult.error?.message ?? "unknown error"}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const { data, mimeType } = runResult.result as { data: string; mimeType: string };
+    return {
+      content: [
+        {
+          type: "image",
+          data,
+          mimeType,
+        },
+        {
+          type: "text",
+          text: `Fetched image from ${url} (${mimeType}).`,
+        },
+      ],
     };
   },
 };

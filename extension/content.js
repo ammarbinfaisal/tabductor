@@ -1,7 +1,8 @@
 (function () {
-  if (globalThis.__browserMcpControllerInstalled) {
+  if (globalThis.__tabductorControllerInstalled || globalThis.__browserMcpControllerInstalled) {
     return;
   }
+  globalThis.__tabductorControllerInstalled = true;
   globalThis.__browserMcpControllerInstalled = true;
 
   const state = {
@@ -50,10 +51,10 @@
   });
 
   async function handleMessage(message) {
-    switch (message?.type) {
-      case "browsermcp:ping":
+    switch (normalizeControllerMessageType(message?.type)) {
+      case "tabductor:ping":
         return { ok: true };
-      case "browsermcp:status":
+      case "tabductor:status":
         return {
           connected: state.wsStatus === "open",
           desiredConnection: state.desiredConnection,
@@ -64,9 +65,9 @@
           snapshotVersion: state.snapshotVersion,
           tabInfo: state.tabInfo,
         };
-      case "browsermcp:connect":
+      case "tabductor:connect":
         return connectSocket(message.serverUrl, message.tabInfo || null);
-      case "browsermcp:disconnect":
+      case "tabductor:disconnect":
         disconnectSocket();
         return { ok: true };
       default:
@@ -289,7 +290,7 @@
         return state.consoleLogs.slice(-200);
       case "browser_screenshot": {
         const response = await chrome.runtime.sendMessage({
-          type: "browsermcp:capture-screenshot",
+          type: "tabductor:capture-screenshot",
         });
         if (!response?.ok) {
           throw new Error(response?.error?.message || "Failed to capture screenshot");
@@ -830,6 +831,11 @@
       ref = `r${state.nextRefId++}:${getNodeId(element)}`;
       state.elementRefs.set(element, ref);
       state.refVersions.set(ref, state.snapshotVersion);
+      try {
+        element.setAttribute("data-tabductor-ref", ref);
+      } catch (_error) {
+        // Ignore elements that reject attribute writes.
+      }
     }
     state.refs.set(ref, element);
     return ref;
@@ -1301,61 +1307,15 @@
 
   async function performRunJs(payload) {
     checkExpectedVersion(payload);
-    const startedAtMs = Date.now();
-    const startedAt = new Date(startedAtMs).toISOString();
-    const runId = typeof payload.runId === "string" ? payload.runId : undefined;
-    const logs = [];
-    const interactionSummary = {
-      clicks: 0,
-      types: 0,
-      selects: 0,
-      keypresses: 0,
-      scrolls: 0,
-      focuses: 0,
-    };
-    const consoleProxy = createRunJsConsole(logs, runId);
-    const browsermcp = createRunJsHelpers(interactionSummary);
-
-    try {
-      const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-      const runner = new AsyncFunction(
-        "args",
-        "browsermcp",
-        "console",
-        "window",
-        "document",
-        payload.code,
-      );
-      const rawResult = await withTimeout(
-        Promise.resolve(
-          runner(payload.args, browsermcp, consoleProxy, window, document),
-        ),
-        payload.timeoutMs ?? 30000,
-        "browser_run_js timed out",
-      );
-
-      scheduleRunJsInteractionSummary(interactionSummary);
-      return buildRunJsResponse({
-        finishedAt: new Date().toISOString(),
-        logs,
-        result: serializeForWire(rawResult),
-        runId,
-        startedAt,
-        startedAtMs,
-        success: true,
-      });
-    } catch (error) {
-      scheduleRunJsInteractionSummary(interactionSummary);
-      return buildRunJsResponse({
-        error: normalizeRunJsError(error),
-        finishedAt: new Date().toISOString(),
-        logs,
-        runId,
-        startedAt,
-        startedAtMs,
-        success: false,
-      });
+    const response = await chrome.runtime.sendMessage({
+      type: "tabductor:run-js",
+      payload,
+    });
+    if (!response?.ok) {
+      throw new Error(response?.error?.message || response?.error || "Failed to execute JavaScript");
     }
+    scheduleRunJsInteractionSummary(response.data?.interactionSummary || {});
+    return response.data;
   }
 
   function createRunJsConsole(logs, runId) {
@@ -1516,7 +1476,7 @@
       .filter(([, count]) => count > 0)
       .map(([action, count]) => `${count} ${action}`)
       .join(", ");
-    scheduleSnapshotUpdate("input", "subtree", `browser_run_js: ${summary}`);
+    scheduleSnapshotUpdate("input", "subtree", `tabductor_run_js: ${summary}`);
   }
 
   function buildRunJsResponse(options) {
@@ -1755,7 +1715,12 @@
         deactivateController();
         return;
       }
-      if (event.source !== window || event.data?.source !== "browsermcp-page-console") {
+      if (
+        event.source !== window ||
+        !["tabductor-page-console", "browsermcp-page-console"].includes(
+          event.data?.source,
+        )
+      ) {
         return;
       }
       recordConsoleEntry(
@@ -1803,6 +1768,16 @@
       state.domReadyListener = null;
     }
     disconnectSocket();
+  }
+
+  function normalizeControllerMessageType(type) {
+    if (typeof type !== "string") {
+      return type;
+    }
+    if (type.startsWith("browsermcp:")) {
+      return `tabductor:${type.slice("browsermcp:".length)}`;
+    }
+    return type;
   }
 
   function getExtensionVersion() {
