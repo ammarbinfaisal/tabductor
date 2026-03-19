@@ -2,6 +2,8 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { inspect } from "node:util";
 
+import { mcpConfig } from "@/config";
+
 const logCategories = [
   "mcp.calls",
   "mcp.args",
@@ -42,8 +44,6 @@ type LoggerConfig = {
   include: string[];
   exclude: string[];
 };
-
-const defaultLogFile = process.env.BROWSERMCP_LOG_FILE ?? "/tmp/browsermcp.log";
 
 const modeDefaults: Record<Exclude<LogMode, "off">, string[]> = {
   errors: [
@@ -168,17 +168,21 @@ function selectOutputTarget(config: LoggerConfig): "stderr" | "file" {
 }
 
 function resolveLoggerConfig(): LoggerConfig {
-  const debugEnabled = parseBoolean(process.env.BROWSERMCP_DEBUG, false);
-  const fullDebugEnabled = parseBoolean(process.env.BROWSERMCP_DEBUG_FULL, false);
+  const debugEnabled = mcpConfig.log.debug;
+  const fullDebugEnabled = mcpConfig.log.debugFull;
 
   return {
-    mode: fullDebugEnabled ? "full" : debugEnabled ? "debug" : parseLogMode(process.env.BROWSERMCP_LOG_MODE),
-    dest: parseLogDest(process.env.BROWSERMCP_LOG_DEST),
-    format: parseLogFormat(process.env.BROWSERMCP_LOG_FORMAT),
-    file: defaultLogFile,
-    redact: parseBoolean(process.env.BROWSERMCP_LOG_REDACT, true),
-    include: parseCsv(process.env.BROWSERMCP_LOG_INCLUDE),
-    exclude: parseCsv(process.env.BROWSERMCP_LOG_EXCLUDE),
+    mode: fullDebugEnabled
+      ? "full"
+      : debugEnabled
+        ? "debug"
+        : parseLogMode(mcpConfig.log.mode),
+    dest: parseLogDest(mcpConfig.log.dest),
+    format: parseLogFormat(mcpConfig.log.format),
+    file: mcpConfig.log.file,
+    redact: mcpConfig.log.redact,
+    include: mcpConfig.log.include,
+    exclude: mcpConfig.log.exclude,
   };
 }
 

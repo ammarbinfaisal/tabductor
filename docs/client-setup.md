@@ -25,19 +25,37 @@ Any MCP client should treat this server as:
 - a toolset where `browser_sessions` is the discovery entrypoint
 - a server that exposes guide resources for LLM workflow and stale-ref recovery
 
-## Logging Configuration
+## Configuration
 
-Browser MCP reads logging configuration from environment variables so MCP clients can set it directly in their server config.
+Tabductor can read settings from a config file and from environment variables.
 
-- `BROWSERMCP_LOG_MODE=off|errors|normal|debug|full`
-- `BROWSERMCP_LOG_INCLUDE=category1,category2`
-- `BROWSERMCP_LOG_EXCLUDE=category1,category2`
-- `BROWSERMCP_LOG_DEST=auto|stderr|file`
-- `BROWSERMCP_LOG_FILE=/tmp/browsermcp.log`
-- `BROWSERMCP_LOG_FORMAT=text|json`
-- `BROWSERMCP_LOG_REDACT=1|0`
-- `BROWSERMCP_DEBUG=1`
-- `BROWSERMCP_DEBUG_FULL=1`
+Default config file lookup:
+
+- `tabductor.config.json`
+- `.tabductor.json`
+- `browsermcp.config.json`
+- `.browsermcp.json`
+
+You can also point to a specific file with `TABDUCTOR_CONFIG`.
+
+Environment variables override config-file values.
+
+Preferred environment variables:
+
+- `TABDUCTOR_HOST`
+- `TABDUCTOR_WS_PORT`
+- `TABDUCTOR_CONTROL_PORT`
+- `TABDUCTOR_LOG_MODE=off|errors|normal|debug|full`
+- `TABDUCTOR_LOG_INCLUDE=category1,category2`
+- `TABDUCTOR_LOG_EXCLUDE=category1,category2`
+- `TABDUCTOR_LOG_DEST=auto|stderr|file`
+- `TABDUCTOR_LOG_FILE=/tmp/tabductor.log`
+- `TABDUCTOR_LOG_FORMAT=text|json`
+- `TABDUCTOR_LOG_REDACT=1|0`
+- `TABDUCTOR_DEBUG=1`
+- `TABDUCTOR_DEBUG_FULL=1`
+
+Legacy `BROWSERMCP_*` variables are still accepted.
 
 Useful categories:
 
@@ -47,11 +65,11 @@ Useful categories:
 
 Defaults:
 
-- `BROWSERMCP_LOG_MODE=errors`
-- `BROWSERMCP_LOG_DEST=auto`
-- `BROWSERMCP_LOG_REDACT=1`
+- `TABDUCTOR_LOG_MODE=errors`
+- `TABDUCTOR_LOG_DEST=auto`
+- `TABDUCTOR_LOG_REDACT=1`
 
-When `BROWSERMCP_LOG_DEST=auto`, the stdio MCP process logs to `stderr` and the detached daemon logs to `/tmp/browsermcp.log` by default.
+When `TABDUCTOR_LOG_DEST=auto`, the stdio MCP process logs to `stderr` and the detached daemon logs to `/tmp/tabductor.log` by default.
 
 ## Recommended LLM Workflow
 

@@ -93,7 +93,51 @@ claude mcp add -s user tabductor-local -- bun /absolute/path/to/browserctx/dist/
 gemini mcp add -s user -t stdio tabductor-local bun /absolute/path/to/browserctx/dist/index.js
 ```
 
-### 4. Use it
+### 4. Optional config file
+
+Tabductor can also read settings from a JSON config file.
+
+Default lookup order:
+
+1. `tabductor.config.json`
+2. `.tabductor.json`
+
+You can also point to a specific file with `TABDUCTOR_CONFIG`.
+
+Example:
+
+```json
+{
+  "host": "127.0.0.1",
+  "wsPort": 8765,
+  "controlPort": 8766,
+  "log": {
+    "mode": "errors",
+    "dest": "auto",
+    "file": "/tmp/tabductor.log",
+    "redact": true,
+    "include": ["daemon.lifecycle"],
+    "exclude": []
+  }
+}
+```
+
+Settings precedence is:
+
+1. built-in defaults
+2. config file
+3. environment variables
+
+Preferred environment variables use the `TABDUCTOR_` prefix, for example:
+
+- `TABDUCTOR_HOST`
+- `TABDUCTOR_WS_PORT`
+- `TABDUCTOR_CONTROL_PORT`
+- `TABDUCTOR_LOG_MODE`
+- `TABDUCTOR_LOG_DEST`
+- `TABDUCTOR_LOG_FILE`
+
+### 5. Use it
 
 Once the agent sees the MCP server and the extension is connected, it can operate on the current browser tab.
 
