@@ -3,8 +3,8 @@
   "version": "0.1.3",
   "description": "MCP server for browser automation using Tabductor",
   "author": "Tabductor",
-  "homepage": "https://github.com/ammarbinfaisal/browserctx",
-  "bugs": "https://github.com/ammarbinfaisal/browserctx/issues",
+  "homepage": "https://github.com/ammarbinfaisal/tabductor",
+  "bugs": "https://github.com/ammarbinfaisal/tabductor/issues",
   "type": "module",
   "bin": {
     "mcp-server-tabductor": "dist/index.js"

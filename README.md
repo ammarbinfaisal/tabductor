@@ -29,8 +29,8 @@ It is designed for agents that can launch local stdio MCP servers.
 ### 1. Clone and build
 
 ```bash
-git clone https://github.com/ammarbinfaisal/browserctx.git
-cd browserctx
+git clone https://github.com/ammarbinfaisal/tabductor.git
+cd tabductor
 bun install
 bun run build
 ```
@@ -38,7 +38,7 @@ bun run build
 After the build, the MCP entrypoint is:
 
 ```bash
-/absolute/path/to/browserctx/dist/index.js
+/absolute/path/to/tabductor/dist/index.js
 ```
 
 Keep that path. Your MCP client will run it over stdio.
@@ -67,7 +67,7 @@ If your agent supports local stdio MCP servers, the generic shape is:
   "mcpServers": {
     "tabductor": {
       "command": "bun",
-      "args": ["/absolute/path/to/browserctx/dist/index.js"]
+      "args": ["/absolute/path/to/tabductor/dist/index.js"]
     }
   }
 }
@@ -78,19 +78,19 @@ If your client has a CLI shortcut, point it at the same `dist/index.js` entrypoi
 #### Codex
 
 ```bash
-codex mcp add tabductor-local -- bun /absolute/path/to/browserctx/dist/index.js
+codex mcp add tabductor-local -- bun /absolute/path/to/tabductor/dist/index.js
 ```
 
 #### Claude Code
 
 ```bash
-claude mcp add -s user tabductor-local -- bun /absolute/path/to/browserctx/dist/index.js
+claude mcp add -s user tabductor-local -- bun /absolute/path/to/tabductor/dist/index.js
 ```
 
 #### Gemini CLI
 
 ```bash
-gemini mcp add -s user -t stdio tabductor-local bun /absolute/path/to/browserctx/dist/index.js
+gemini mcp add -s user -t stdio tabductor-local bun /absolute/path/to/tabductor/dist/index.js
 ```
 
 ### 4. Optional config file
