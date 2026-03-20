@@ -1,28 +1,7 @@
 const DEFAULT_SERVER_URL = "ws://127.0.0.1:8765";
 const CONNECTED_TABS_KEY = "tabductorConnectedTabs";
-const LEGACY_CONNECTED_TABS_KEY = "browsermcpConnectedTabs";
 const SERVER_URL_KEY = "tabductorServerUrl";
-const LEGACY_SERVER_URL_KEY = "browsermcpServerUrl";
 const DEBUGGER_PROTOCOL_VERSION = "1.3";
-
-chrome.runtime.onInstalled.addListener(async () => {
-  const current = await chrome.storage.local.get([
-    SERVER_URL_KEY,
-    CONNECTED_TABS_KEY,
-    LEGACY_SERVER_URL_KEY,
-    LEGACY_CONNECTED_TABS_KEY,
-  ]);
-  const next = {};
-  if (!current[SERVER_URL_KEY]) {
-    next[SERVER_URL_KEY] = current[LEGACY_SERVER_URL_KEY] || DEFAULT_SERVER_URL;
-  }
-  if (!current[CONNECTED_TABS_KEY]) {
-    next[CONNECTED_TABS_KEY] = current[LEGACY_CONNECTED_TABS_KEY] || {};
-  }
-  if (Object.keys(next).length > 0) {
-    await chrome.storage.local.set(next);
-  }
-});
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   await clearConnectedTab(tabId);
@@ -262,23 +241,13 @@ async function ensureConnectableTab(tabId) {
 }
 
 async function getServerUrl() {
-  const result = await chrome.storage.local.get([
-    SERVER_URL_KEY,
-    LEGACY_SERVER_URL_KEY,
-  ]);
-  return (
-    result[SERVER_URL_KEY] ||
-    result[LEGACY_SERVER_URL_KEY] ||
-    DEFAULT_SERVER_URL
-  );
+  const result = await chrome.storage.local.get([SERVER_URL_KEY]);
+  return result[SERVER_URL_KEY] || DEFAULT_SERVER_URL;
 }
 
 async function getConnectedTabs() {
-  const result = await chrome.storage.local.get([
-    CONNECTED_TABS_KEY,
-    LEGACY_CONNECTED_TABS_KEY,
-  ]);
-  return result[CONNECTED_TABS_KEY] || result[LEGACY_CONNECTED_TABS_KEY] || {};
+  const result = await chrome.storage.local.get([CONNECTED_TABS_KEY]);
+  return result[CONNECTED_TABS_KEY] || {};
 }
 
 async function setConnectedTab(tabId, serverUrl) {
@@ -304,9 +273,6 @@ function toTabInfo(tab) {
 function normalizeRuntimeMessageType(type) {
   if (typeof type !== "string") {
     return type;
-  }
-  if (type.startsWith("browsermcp:")) {
-    return `tabductor:${type.slice("browsermcp:".length)}`;
   }
   return type;
 }
@@ -452,15 +418,14 @@ function buildRunJsExpression(payload, startedAt, startedAtMs) {
     focuses: 0,
   };
   const consoleProxy = pageCreateRunJsConsole(logs);
-  const browsermcp = pageCreateRunJsHelpers(interactionSummary);
-  const tabductor = browsermcp;
+  const tabductor = pageCreateRunJsHelpers(interactionSummary);
 
   try {
     const rawResult = await pageWithTimeout(
       Promise.resolve(
-        (async function (args, browsermcp, console, window, document) {
+        (async function (args, tabductor, console, window, document) {
 ${payload.code}
-        })(payload.args, browsermcp, consoleProxy, window, document),
+        })(payload.args, tabductor, consoleProxy, window, document),
       ),
       payload.timeoutMs,
       "tabductor_run_js timed out",

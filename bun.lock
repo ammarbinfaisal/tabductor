@@ -2,7 +2,7 @@
   "lockfileVersion": 1,
   "workspaces": {
     "": {
-      "name": "@browsermcp/mcp",
+      "name": "@tabductor/mcp",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.8.0",
         "commander": "^13.1.0",

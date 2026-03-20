@@ -1,9 +1,8 @@
 (function () {
-  if (globalThis.__tabductorControllerInstalled || globalThis.__browserMcpControllerInstalled) {
+  if (globalThis.__tabductorControllerInstalled) {
     return;
   }
   globalThis.__tabductorControllerInstalled = true;
-  globalThis.__browserMcpControllerInstalled = true;
 
   const state = {
     nextNodeId: 1,
@@ -92,7 +91,7 @@
       state.ws.readyState === WebSocket.OPEN &&
       state.serverUrl === serverUrl
     ) {
-      sendSocketNotification("browser.session.hello", buildHello());
+      sendSocketNotification("tabductor.session.hello", buildHello());
       scheduleSnapshotUpdate("navigation", "full", "Connection reused");
       return { ok: true, reused: true };
     }
@@ -125,7 +124,7 @@
       state.lastConnectionError = null;
       state.reconnectDelayMs = 1000;
       clearReconnectTimer();
-      sendSocketNotification("browser.session.hello", buildHello());
+      sendSocketNotification("tabductor.session.hello", buildHello());
       scheduleSnapshotUpdate("navigation", "full", "Socket connected");
     });
 
@@ -133,7 +132,7 @@
       try {
         await handleServerMessage(event.data);
       } catch (error) {
-        console.error("Browser MCP content message error", error);
+        console.error("Tabductor content message error", error);
       }
     });
 
@@ -148,7 +147,7 @@
     ws.addEventListener("error", (error) => {
       state.lastConnectionError =
         error instanceof Event ? "WebSocket error" : String(error);
-      console.error("Browser MCP content websocket error", error);
+      console.error("Tabductor content websocket error", error);
     });
   }
 
@@ -256,39 +255,35 @@
   async function handleServerRequest(type, payload) {
     ensureControllerActive();
     switch (type) {
-      case "getUrl":
-        return location.href;
-      case "getTitle":
-        return document.title;
-      case "browser_snapshot":
+      case "tabductor_snapshot":
         return buildSnapshot(payload);
-      case "browser_navigate":
+      case "tabductor_navigate":
         location.href = payload.url;
         return { acknowledged: true };
-      case "browser_go_back":
+      case "tabductor_go_back":
         history.back();
         return { acknowledged: true };
-      case "browser_go_forward":
+      case "tabductor_go_forward":
         history.forward();
         return { acknowledged: true };
-      case "browser_click":
+      case "tabductor_click":
         return performClick(payload);
-      case "browser_hover":
+      case "tabductor_hover":
         return performHover(payload);
-      case "browser_type":
+      case "tabductor_type":
         return performType(payload);
-      case "browser_select_option":
+      case "tabductor_select_option":
         return performSelectOption(payload);
-      case "browser_press_key":
+      case "tabductor_press_key":
         return performPressKey(payload);
-      case "browser_run_js":
+      case "tabductor_run_js":
         return performRunJs(payload);
-      case "browser_wait":
+      case "tabductor_wait":
         await wait(Math.max(0, payload.time * 1000));
         return { acknowledged: true };
-      case "browser_get_console_logs":
+      case "tabductor_get_console_logs":
         return state.consoleLogs.slice(-200);
-      case "browser_screenshot": {
+      case "tabductor_screenshot": {
         const response = await chrome.runtime.sendMessage({
           type: "tabductor:capture-screenshot",
         });
@@ -297,7 +292,7 @@
         }
         return response.data;
       }
-      case "browser_describe_ref":
+      case "tabductor_describe_ref":
         return describeRef(payload.ref);
       default:
         throw new Error(`Unsupported request type: ${type}`);
@@ -1677,7 +1672,7 @@
       summary,
     };
 
-    sendSocketNotification("browser.page.updated", {
+    sendSocketNotification("tabductor.page.updated", {
       page: getPageState(),
       snapshotVersion: state.snapshotVersion,
       invalidation: state.lastInvalidation,
@@ -1692,7 +1687,7 @@
     schedulePageUpdate(reason, scope, summary);
     clearTimeout(state.snapshotTimer);
     state.snapshotTimer = setTimeout(() => {
-      sendSocketNotification("browser.snapshot.updated", buildSnapshot());
+      sendSocketNotification("tabductor.snapshot.updated", buildSnapshot());
     }, 120);
   }
 
@@ -1702,7 +1697,7 @@
       state.consoleLogs.splice(0, state.consoleLogs.length - 200);
     }
     if (runId) {
-      sendSocketNotification("browser.console.entry", {
+      sendSocketNotification("tabductor.console.entry", {
         entry,
         runId,
       });
@@ -1717,7 +1712,7 @@
       }
       if (
         event.source !== window ||
-        !["tabductor-page-console", "browsermcp-page-console"].includes(
+        !["tabductor-page-console"].includes(
           event.data?.source,
         )
       ) {
@@ -1773,9 +1768,6 @@
   function normalizeControllerMessageType(type) {
     if (typeof type !== "string") {
       return type;
-    }
-    if (type.startsWith("browsermcp:")) {
-      return `tabductor:${type.slice("browsermcp:".length)}`;
     }
     return type;
   }

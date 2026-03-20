@@ -46,7 +46,7 @@ export type DaemonRequestMap = {
       snapshot: BrowserSnapshotResponse | null;
     };
   };
-  send_browser_request: {
+  send_tabductor_request: {
     params: {
       sessionId: string;
       type: BrowserRequestType;
@@ -57,7 +57,7 @@ export type DaemonRequestMap = {
       result: BrowserRequestMap[BrowserRequestType]["result"];
     };
   };
-  subscribe_browser_notifications: {
+  subscribe_tabductor_notifications: {
     params: {
       sessionId: string;
     };
@@ -65,7 +65,7 @@ export type DaemonRequestMap = {
       acknowledged: true;
     };
   };
-  unsubscribe_browser_notifications: {
+  unsubscribe_tabductor_notifications: {
     params: {
       sessionId: string;
     };
@@ -84,7 +84,7 @@ export type DaemonRequestEnvelope<T extends DaemonRequestType = DaemonRequestTyp
 };
 
 export type DaemonNotificationMap = {
-  browser_notification: {
+  tabductor_notification: {
     params: {
       sessionId: string;
       event: BrowserNotificationType;

@@ -13,7 +13,7 @@ node dist/index.js
 You can also use the package bin:
 
 ```bash
-mcp-server-browsermcp
+mcp-server-tabductor
 ```
 
 ## Client Expectations
@@ -22,7 +22,7 @@ Any MCP client should treat this server as:
 
 - a stdio MCP server
 - a browser automation server with explicit `sessionId` routing
-- a toolset where `browser_sessions` is the discovery entrypoint
+- a toolset where `tabductor_sessions` is the discovery entrypoint
 - a server that exposes guide resources for LLM workflow and stale-ref recovery
 
 ## Configuration
@@ -33,8 +33,6 @@ Default config file lookup:
 
 - `tabductor.config.json`
 - `.tabductor.json`
-- `browsermcp.config.json`
-- `.browsermcp.json`
 
 You can also point to a specific file with `TABDUCTOR_CONFIG`.
 
@@ -55,13 +53,13 @@ Preferred environment variables:
 - `TABDUCTOR_DEBUG=1`
 - `TABDUCTOR_DEBUG_FULL=1`
 
-Legacy `BROWSERMCP_*` variables are still accepted.
+Only `TABDUCTOR_*` variables are supported.
 
 Useful categories:
 
 - `mcp.calls`, `mcp.args`, `mcp.results`, `mcp.errors`
 - `daemon.lifecycle`, `daemon.requests`, `daemon.responses`, `daemon.errors`
-- `browser.requests`, `browser.responses`, `browser.notifications`, `browser.errors`
+- `tabductor.requests`, `tabductor.responses`, `tabductor.notifications`, `tabductor.errors`
 
 Defaults:
 
@@ -73,19 +71,19 @@ When `TABDUCTOR_LOG_DEST=auto`, the stdio MCP process logs to `stderr` and the d
 
 ## Recommended LLM Workflow
 
-1. Call `browser_sessions`.
+1. Call `tabductor_sessions`.
 2. Choose one or more `sessionId` values.
-3. Call `browser_session_overview` first when you need a compact page summary.
-4. Call `browser_click_text` when the task is simply “click the thing named X”.
-5. Call `browser_type_text` when the task is simply “type into the field named X”.
-6. Call `browser_actionables` when you need DOM refs. It returns a bounded grouped actionable inventory and accepts filters for query, roles, viewport, and limits.
-7. Call `browser_find_text` when you want a recommended actionable ref for a text query without acting yet.
-8. Call `browser_run_js` when the model needs page-local batching across many targets or records, especially for discover/filter/check/dry-run/apply flows that would otherwise require many separate MCP calls. The snippet can return structured data and stream `console` output through progress notifications when the client supports them.
-9. Call `browser_describe_ref` when one specific ref needs deeper context.
-10. Call `browser_snapshot` only when you need broader page context than the grouped actionable view provides.
+3. Call `tabductor_session_overview` first when you need a compact page summary.
+4. Call `tabductor_click_text` when the task is simply “click the thing named X”.
+5. Call `tabductor_type_text` when the task is simply “type into the field named X”.
+6. Call `tabductor_actionables` when you need DOM refs. It returns a bounded grouped actionable inventory and accepts filters for query, roles, viewport, and limits.
+7. Call `tabductor_find_text` when you want a recommended actionable ref for a text query without acting yet.
+8. Call `tabductor_run_js` when the model needs page-local batching across many targets or records, especially for discover/filter/check/dry-run/apply flows that would otherwise require many separate MCP calls. The snippet can return structured data and stream `console` output through progress notifications when the client supports them.
+9. Call `tabductor_describe_ref` when one specific ref needs deeper context.
+10. Call `tabductor_snapshot` only when you need broader page context than the grouped actionable view provides.
 11. Use action tools normally. When the page version advances, the response already includes `nextDiscovery` and `nextRefs` for the next step.
-12. Use `browser_navigate` with `waitUntil` when you need explicit navigation observation semantics.
-13. Call `browser_state` or `browser_snapshot` only when you need more detail than the action response already provides.
+12. Use `tabductor_navigate` with `waitUntil` when you need explicit navigation observation semantics.
+13. Call `tabductor_state` or `tabductor_snapshot` only when you need more detail than the action response already provides.
 
 `sessionId` is stable for a tab across reconnects, `ref` is the primary action handle, and read tools expose `pageVersion` so agents can tell when their refs may need to be refreshed.
 
@@ -93,8 +91,8 @@ When `TABDUCTOR_LOG_DEST=auto`, the stdio MCP process logs to `stderr` and the d
 
 LLM clients can also read these built-in resources directly:
 
-- `browsermcp://guides/llm-workflow`
-- `browsermcp://guides/stale-ref-recovery`
+- `tabductor://guides/llm-workflow`
+- `tabductor://guides/stale-ref-recovery`
 
 ## Why This Shape Fits Codex and Claude
 

@@ -1,9 +1,8 @@
 (function () {
-  if (window.__tabductorConsoleBridgeInstalled || window.__browserMcpConsoleBridgeInstalled) {
+  if (window.__tabductorConsoleBridgeInstalled) {
     return;
   }
   window.__tabductorConsoleBridgeInstalled = true;
-  window.__browserMcpConsoleBridgeInstalled = true;
 
   const methods = ["log", "info", "warn", "error"];
 

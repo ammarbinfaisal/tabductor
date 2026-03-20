@@ -5,9 +5,9 @@ This folder contains `Tabductor`, a loadable MV3 extension for the standalone Ta
 ## What It Implements
 
 - one websocket connection per connected tab
-- `browser.session.hello` after connect
-- `browser.page.updated` notifications on navigation and mutations
-- `browser.snapshot.updated` notifications with structured snapshots
+- `tabductor.session.hello` after connect
+- `tabductor.page.updated` notifications on navigation and mutations
+- `tabductor.snapshot.updated` notifications with structured snapshots
 - routing of browser action requests from the MCP server to the page
 - popup controls for connect, disconnect, and server URL configuration
 - popup view of every connected tab with per-tab disconnect controls
@@ -34,5 +34,5 @@ You can change the URL from the popup.
 - This is a reference implementation, not a hardened production extension.
 - Screenshots use `chrome.tabs.captureVisibleTab`, which may briefly activate the target tab if it is not already visible.
 - The popup shows all connected tabs so users can disconnect stale sessions without switching tabs first.
-- Snapshots are intentionally compact and action-first; use `browser_describe_ref` from the MCP side when a single ref needs more detail.
-- `browser_run_js` and `tabductor_run_js` execute through the Tabductor background worker so page CSP does not block snippet execution.
+- Snapshots are intentionally compact and action-first; use `tabductor_describe_ref` from the MCP side when a single ref needs more detail.
+- `tabductor_run_js` and `tabductor_run_js` execute through the Tabductor background worker so page CSP does not block snippet execution.

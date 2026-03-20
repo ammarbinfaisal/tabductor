@@ -33,7 +33,7 @@ export class Context {
 
   addSession(ws: WebSocket): BrowserSession {
     if (!this.sessionManager) {
-      throw new Error("Remote Browser MCP context cannot accept browser sessions");
+      throw new Error("Remote Tabductor context cannot accept browser sessions");
     }
     return this.sessionManager.add(ws);
   }
@@ -129,7 +129,7 @@ export class Context {
         .sendSocketMessage(type, payload, options);
     }
 
-    return await this.daemonClient!.sendBrowserRequest(
+    return await this.daemonClient!.sendTabductorRequest(
       sessionId,
       type,
       payload,
@@ -137,7 +137,7 @@ export class Context {
     );
   }
 
-  async subscribeToBrowserNotifications(
+  async subscribeToTabductorNotifications(
     sessionId: string,
     listener: BrowserSessionNotificationListener,
   ): Promise<() => Promise<void>> {
@@ -150,7 +150,7 @@ export class Context {
       };
     }
 
-    return await this.daemonClient!.subscribeToBrowserNotifications(
+    return await this.daemonClient!.subscribeToTabductorNotifications(
       sessionId,
       listener,
     );

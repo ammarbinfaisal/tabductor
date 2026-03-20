@@ -13,10 +13,10 @@ const logCategories = [
   "daemon.requests",
   "daemon.responses",
   "daemon.errors",
-  "browser.requests",
-  "browser.responses",
-  "browser.notifications",
-  "browser.errors",
+  "tabductor.requests",
+  "tabductor.responses",
+  "tabductor.notifications",
+  "tabductor.errors",
 ] as const;
 
 export type LogCategory = (typeof logCategories)[number];
@@ -49,14 +49,14 @@ const modeDefaults: Record<Exclude<LogMode, "off">, string[]> = {
   errors: [
     "mcp.errors",
     "daemon.errors",
-    "browser.errors",
+    "tabductor.errors",
   ],
   normal: [
     "mcp.calls",
     "mcp.errors",
     "daemon.lifecycle",
     "daemon.errors",
-    "browser.errors",
+    "tabductor.errors",
   ],
   debug: [
     "mcp.calls",
@@ -66,9 +66,9 @@ const modeDefaults: Record<Exclude<LogMode, "off">, string[]> = {
     "daemon.requests",
     "daemon.responses",
     "daemon.errors",
-    "browser.requests",
-    "browser.responses",
-    "browser.errors",
+    "tabductor.requests",
+    "tabductor.responses",
+    "tabductor.errors",
   ],
   full: ["*"],
 };
@@ -292,10 +292,6 @@ export function logInfo(category: LogCategory, message: string, data?: unknown) 
   writeLog("info", category, message, data);
 }
 
-export function logError(category: LogCategory, message: string, data?: unknown) {
-  writeLog("error", category, message, data);
-}
-
 export function logException(
   category: LogCategory,
   message: string,
@@ -313,19 +309,3 @@ export function logException(
       : String(error),
   });
 }
-
-export function getLoggerConfig() {
-  return {
-    ...loggerConfig,
-    output: selectOutputTarget(loggerConfig),
-  };
-}
-
-/**
- * Logs a message to the console.
- *
- * `console.error` is used since standard input/output is used as transport for MCP.
- */
-export const debugLog: typeof console.error = (...args) => {
-  console.error(...args);
-};

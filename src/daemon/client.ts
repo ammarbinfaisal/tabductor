@@ -30,7 +30,7 @@ type PendingRequest = {
   timeout: NodeJS.Timeout;
 };
 
-type BrowserNotificationListener = (
+type TabductorNotificationListener = (
   event: BrowserNotificationType,
   payload: BrowserNotificationMap[BrowserNotificationType]["payload"],
 ) => void;
@@ -87,7 +87,7 @@ async function openClientSocket(timeoutMs = 1000): Promise<WebSocket> {
     const ws = new WebSocket(url);
     const timeout = setTimeout(() => {
       ws.terminate();
-      reject(new Error(`Timed out connecting to Browser MCP daemon at ${url}`));
+      reject(new Error(`Timed out connecting to Tabductor daemon at ${url}`));
     }, timeoutMs);
 
     ws.once("open", () => {
@@ -102,7 +102,7 @@ async function openClientSocket(timeoutMs = 1000): Promise<WebSocket> {
 
     ws.once("close", () => {
       clearTimeout(timeout);
-      reject(new Error(`Browser MCP daemon is not reachable at ${url}`));
+      reject(new Error(`Tabductor daemon is not reachable at ${url}`));
     });
   });
 }
@@ -112,10 +112,10 @@ function spawnDaemonProcess() {
   const entrypoint = process.argv[1];
 
   if (!runtime || !entrypoint) {
-    throw new Error("Cannot determine how to launch the Browser MCP daemon");
+    throw new Error("Cannot determine how to launch the Tabductor daemon");
   }
 
-  logInfo("daemon.lifecycle", "Spawning Browser MCP daemon", {
+  logInfo("daemon.lifecycle", "Spawning Tabductor daemon", {
     entrypoint,
     runtime,
   });
@@ -130,7 +130,7 @@ function spawnDaemonProcess() {
 async function ensureDaemonAvailable() {
   try {
     const socket = await openClientSocket();
-    logInfo("daemon.lifecycle", "Connected to existing Browser MCP daemon");
+    logInfo("daemon.lifecycle", "Connected to existing Tabductor daemon");
     return socket;
   } catch (_error) {
     if (!(await isPortInUse(mcpConfig.defaultControlPort))) {
@@ -140,7 +140,7 @@ async function ensureDaemonAvailable() {
     for (let attempt = 0; attempt < 40; attempt += 1) {
       try {
         const socket = await openClientSocket(500);
-        logInfo("daemon.lifecycle", "Connected to Browser MCP daemon after retry", {
+        logInfo("daemon.lifecycle", "Connected to Tabductor daemon after retry", {
           attempt: attempt + 1,
         });
         return socket;
@@ -150,16 +150,16 @@ async function ensureDaemonAvailable() {
     }
 
     throw new Error(
-      `Browser MCP daemon did not become ready on ws://${mcpConfig.defaultHost}:${mcpConfig.defaultControlPort}`,
+      `Tabductor daemon did not become ready on ws://${mcpConfig.defaultHost}:${mcpConfig.defaultControlPort}`,
     );
   }
 }
 
 export class DaemonClient {
   private readonly pending = new Map<string, PendingRequest>();
-  private readonly browserNotificationListeners = new Map<
+  private readonly tabductorNotificationListeners = new Map<
     string,
-    Set<BrowserNotificationListener>
+    Set<TabductorNotificationListener>
   >();
 
   private constructor(private readonly ws: WebSocket) {
@@ -209,12 +209,12 @@ export class DaemonClient {
     };
 
     ws.on("close", () => {
-      logInfo("daemon.lifecycle", "Browser MCP daemon connection closed");
-      failAll("Browser MCP daemon connection closed");
+      logInfo("daemon.lifecycle", "Tabductor daemon connection closed");
+      failAll("Tabductor daemon connection closed");
     });
     ws.on("error", (error) => {
-      logException("daemon.errors", "Browser MCP daemon connection error", error);
-      failAll(`Browser MCP daemon connection error: ${error.message}`);
+      logException("daemon.errors", "Tabductor daemon connection error", error);
+      failAll(`Tabductor daemon connection error: ${error.message}`);
     });
   }
 
@@ -264,13 +264,13 @@ export class DaemonClient {
     return result.snapshot;
   }
 
-  async sendBrowserRequest<T extends BrowserRequestType>(
+  async sendTabductorRequest<T extends BrowserRequestType>(
     sessionId: string,
     type: T,
     payload: BrowserRequestMap[T]["payload"],
     timeoutMs?: number,
   ): Promise<BrowserRequestMap[T]["result"]> {
-    const result = await this.send("send_browser_request", {
+    const result = await this.send("send_tabductor_request", {
       sessionId,
       timeoutMs,
       type,
@@ -279,23 +279,23 @@ export class DaemonClient {
     return result.result as BrowserRequestMap[T]["result"];
   }
 
-  async subscribeToBrowserNotifications(
+  async subscribeToTabductorNotifications(
     sessionId: string,
-    listener: BrowserNotificationListener,
+    listener: TabductorNotificationListener,
   ): Promise<() => Promise<void>> {
     const listeners =
-      this.browserNotificationListeners.get(sessionId) ??
-      new Set<BrowserNotificationListener>();
+      this.tabductorNotificationListeners.get(sessionId) ??
+      new Set<TabductorNotificationListener>();
     const firstListener = listeners.size === 0;
     listeners.add(listener);
-    this.browserNotificationListeners.set(sessionId, listeners);
+    this.tabductorNotificationListeners.set(sessionId, listeners);
 
     if (firstListener) {
-      await this.send("subscribe_browser_notifications", { sessionId });
+      await this.send("subscribe_tabductor_notifications", { sessionId });
     }
 
     return async () => {
-      const current = this.browserNotificationListeners.get(sessionId);
+      const current = this.tabductorNotificationListeners.get(sessionId);
       if (!current) {
         return;
       }
@@ -303,9 +303,9 @@ export class DaemonClient {
       if (current.size > 0) {
         return;
       }
-      this.browserNotificationListeners.delete(sessionId);
+      this.tabductorNotificationListeners.delete(sessionId);
       if (this.ws.readyState === WebSocket.OPEN) {
-        await this.send("unsubscribe_browser_notifications", {
+        await this.send("unsubscribe_tabductor_notifications", {
           sessionId,
         }).catch(() => undefined);
       }
@@ -332,7 +332,7 @@ export class DaemonClient {
           method,
           timeoutMs,
         });
-        reject(new Error(`Timed out waiting for Browser MCP daemon method ${method}`));
+        reject(new Error(`Timed out waiting for Tabductor daemon method ${method}`));
       }, timeoutMs);
 
       this.pending.set(id, { resolve, reject, timeout });
@@ -359,11 +359,11 @@ export class DaemonClient {
   }
 
   private handleNotification(message: DaemonNotificationEnvelope<DaemonNotificationType>) {
-    if (message.event !== "browser_notification") {
+    if (message.event !== "tabductor_notification") {
       return;
     }
 
-    const listeners = this.browserNotificationListeners.get(message.params.sessionId);
+    const listeners = this.tabductorNotificationListeners.get(message.params.sessionId);
     if (!listeners?.size) {
       return;
     }

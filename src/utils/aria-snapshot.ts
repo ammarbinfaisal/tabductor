@@ -25,17 +25,6 @@ export type ActionablePreview = {
   section?: string;
 };
 
-export type TextSearchMatch = {
-  nodeId: string;
-  ref?: string;
-  role?: string;
-  name?: string;
-  value?: string;
-  href?: string;
-  actions: string[];
-  matchContext: string;
-};
-
 export type ActionableGroup = {
   nodeId: string;
   role?: string;
@@ -781,7 +770,7 @@ export async function getSnapshotResponse(
   }
 
   const snapshot = await context.sendSocketMessage(
-    "browser_snapshot",
+    "tabductor_snapshot",
     {
       mode: options.mode ?? "full",
       sinceVersion: options.sinceVersion,
@@ -822,7 +811,7 @@ export async function captureAriaSnapshot(
 - Page URL: ${snapshot.page.url}
 - Page Title: ${snapshot.page.title}
 - Snapshot Shape: compact semantic tree; not a full DOM or full URL inventory
-- If a target or href is missing, use browser_actionables with filters, browser_find_text for a recommended ref, or browser_describe_ref for one ref
+- If a target or href is missing, use tabductor_actionables with filters, tabductor_find_text for a recommended ref, or tabductor_describe_ref for one ref
 ${renderDiscoveryState(discovery, {
   headingLabel: "Actionable Groups",
   maxPerGroup: 5,
@@ -840,9 +829,9 @@ ${renderDiscoveryState(discovery, {
         snapshotShape: "compact-semantic-tree",
         notFullDom: true,
         elaborationTools: [
-          "browser_actionables",
-          "browser_find_text",
-          "browser_describe_ref",
+          "tabductor_actionables",
+          "tabductor_find_text",
+          "tabductor_describe_ref",
         ],
       },
     },
@@ -946,53 +935,6 @@ export async function captureSessionOverview(
   };
 }
 
-export function findTextInSnapshot(
-  snapshot: BrowserSnapshotResponse,
-  query: string,
-): TextSearchMatch[] {
-  const lowerQuery = query.toLowerCase();
-  const flattened = flattenNodes(snapshot.snapshot.root);
-  const matches: TextSearchMatch[] = [];
-
-  for (const node of flattened) {
-    const properties = getProperties(node);
-    const name = node.name?.toLowerCase() ?? "";
-    const value = node.value?.toLowerCase() ?? "";
-    const href = getStringProperty(properties, "href").toLowerCase();
-
-    const nameMatch = name.includes(lowerQuery);
-    const valueMatch = value.includes(lowerQuery);
-    const hrefMatch = href.includes(lowerQuery);
-
-    if (!nameMatch && !valueMatch && !hrefMatch) {
-      continue;
-    }
-
-    const matchParts: string[] = [];
-    if (nameMatch) matchParts.push("name");
-    if (valueMatch) matchParts.push("value");
-    if (hrefMatch) matchParts.push("href");
-
-    // If this node isn't actionable, find the nearest actionable ancestor
-    let actionableRef = node.ref;
-    if (!actionableRef) {
-      actionableRef = findNearestActionableRef(flattened, node.nodeId, snapshot.snapshot.root);
-    }
-
-    matches.push({
-      nodeId: node.nodeId,
-      ref: actionableRef,
-      role: node.role,
-      name: node.name,
-      value: node.value,
-      href: getStringProperty(properties, "href") || undefined,
-      actions: getStringArrayProperty(properties, "actions"),
-      matchContext: `matched in: ${matchParts.join(", ")}`,
-    });
-  }
-
-  return matches;
-}
 
 function findNearestActionableRef(
   _flattened: BrowserSnapshotNode[],

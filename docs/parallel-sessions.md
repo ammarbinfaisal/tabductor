@@ -12,26 +12,26 @@ This package now exposes a stateless session-oriented MCP API instead of a singl
 
 ## Current API Surface
 
-- `browser_sessions`
-- `browser_state`
-- `browser_session_overview`
-- `browser_snapshot`
-- `browser_navigate`
-- `browser_click`
-- `browser_hover`
-- `browser_type`
-- `browser_select_option`
-- `browser_go_back`
-- `browser_go_forward`
-- `browser_press_key`
-- `browser_wait`
-- `browser_run_js`
-- `browser_console_logs`
-- `browser_screenshot`
+- `tabductor_sessions`
+- `tabductor_state`
+- `tabductor_session_overview`
+- `tabductor_snapshot`
+- `tabductor_navigate`
+- `tabductor_click`
+- `tabductor_hover`
+- `tabductor_type`
+- `tabductor_select_option`
+- `tabductor_go_back`
+- `tabductor_go_forward`
+- `tabductor_press_key`
+- `tabductor_wait`
+- `tabductor_run_js`
+- `tabductor_console_logs`
+- `tabductor_screenshot`
 
 Most tools require:
 
-- `sessionId`: Explicit target from `browser_sessions`.
+- `sessionId`: Explicit target from `tabductor_sessions`.
 
 The MCP internally manages:
 
@@ -43,8 +43,8 @@ The MCP internally manages:
 
 The MCP also exposes guide resources for LLM clients:
 
-- `browsermcp://guides/llm-workflow`
-- `browsermcp://guides/stale-ref-recovery`
+- `tabductor://guides/llm-workflow`
+- `tabductor://guides/stale-ref-recovery`
 
 ## Execution Model
 

@@ -145,16 +145,16 @@ export type BrowserSnapshotUpdate = {
 };
 
 export type BrowserNotificationMap = {
-  "browser.session.hello": {
+  "tabductor.session.hello": {
     payload: BrowserSessionHello;
   };
-  "browser.page.updated": {
+  "tabductor.page.updated": {
     payload: BrowserPageUpdate;
   };
-  "browser.snapshot.updated": {
+  "tabductor.snapshot.updated": {
     payload: BrowserSnapshotUpdate;
   };
-  "browser.console.entry": {
+  "tabductor.console.entry": {
     payload: BrowserConsoleEntryNotification;
   };
 };
@@ -162,22 +162,14 @@ export type BrowserNotificationMap = {
 export type BrowserNotificationType = keyof BrowserNotificationMap;
 
 export type BrowserRequestMap = {
-  getUrl: {
-    payload: undefined;
-    result: string;
-  };
-  getTitle: {
-    payload: undefined;
-    result: string;
-  };
-  browser_snapshot: {
+  tabductor_snapshot: {
     payload: {
       mode?: SnapshotMode;
       sinceVersion?: number;
     };
     result: BrowserSnapshotResponse;
   };
-  browser_navigate: {
+  tabductor_navigate: {
     payload: {
       url: string;
     };
@@ -185,31 +177,31 @@ export type BrowserRequestMap = {
       acknowledged: true;
     };
   };
-  browser_go_back: {
+  tabductor_go_back: {
     payload: {};
     result: {
       acknowledged: true;
     };
   };
-  browser_go_forward: {
+  tabductor_go_forward: {
     payload: {};
     result: {
       acknowledged: true;
     };
   };
-  browser_click: {
+  tabductor_click: {
     payload: BrowserActionRef;
     result: {
       acknowledged: true;
     };
   };
-  browser_hover: {
+  tabductor_hover: {
     payload: BrowserActionRef;
     result: {
       acknowledged: true;
     };
   };
-  browser_type: {
+  tabductor_type: {
     payload: BrowserActionRef & {
       text: string;
       submit: boolean;
@@ -218,7 +210,7 @@ export type BrowserRequestMap = {
       acknowledged: true;
     };
   };
-  browser_select_option: {
+  tabductor_select_option: {
     payload: BrowserActionRef & {
       values: string[];
     };
@@ -226,7 +218,7 @@ export type BrowserRequestMap = {
       acknowledged: true;
     };
   };
-  browser_press_key: {
+  tabductor_press_key: {
     payload: {
       key: string;
       expectedVersion?: number;
@@ -235,7 +227,7 @@ export type BrowserRequestMap = {
       acknowledged: true;
     };
   };
-  browser_wait: {
+  tabductor_wait: {
     payload: {
       time: number;
     };
@@ -243,21 +235,21 @@ export type BrowserRequestMap = {
       acknowledged: true;
     };
   };
-  browser_get_console_logs: {
+  tabductor_get_console_logs: {
     payload: {};
     result: BrowserConsoleEntry[];
   };
-  browser_screenshot: {
+  tabductor_screenshot: {
     payload: {};
     result: string;
   };
-  browser_describe_ref: {
+  tabductor_describe_ref: {
     payload: {
       ref: string;
     };
     result: BrowserRefDescription;
   };
-  browser_run_js: {
+  tabductor_run_js: {
     payload: BrowserRunJsPayload;
     result: BrowserRunJsResult;
   };

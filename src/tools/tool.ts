@@ -38,5 +38,3 @@ export type Tool = {
     extra?: ToolCallExtra,
   ) => Promise<ToolResult>;
 };
-
-export type ToolFactory = (snapshot: boolean) => Tool;

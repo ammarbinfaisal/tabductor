@@ -25,7 +25,7 @@ import type { Tool, ToolCallExtra, ToolResult } from "./tool";
 const sessionIdSchema = z
   .string()
   .uuid()
-  .describe("Session ID from browser_sessions.");
+  .describe("Session ID from tabductor_sessions.");
 
 const pageVersionSchema = z
   .number()
@@ -33,7 +33,7 @@ const pageVersionSchema = z
   .nonnegative()
   .optional()
   .describe(
-    "Page version when this ref was captured from a prior Browser MCP discovery result. " +
+    "Page version when this ref was captured from a prior Tabductor discovery result. " +
       "If provided and the page has changed since, the response includes fresh next-step refs for retrying.",
   );
 
@@ -101,7 +101,7 @@ const navigateArgs = z.object({
   waitUntil: z
     .enum(["none", "url-change", "page-change", "settle"])
     .optional()
-    .describe("How long Browser MCP should wait before returning. Default is url-change."),
+    .describe("How long Tabductor should wait before returning. Default is url-change."),
   timeoutMs: z
     .number()
     .int()
@@ -117,7 +117,7 @@ const clickArgs = z.object({
     .string()
     .optional()
     .describe("Human-readable element description used for permission prompts."),
-  ref: z.string().describe("Exact element reference from a prior Browser MCP discovery result."),
+  ref: z.string().describe("Exact element reference from a prior Tabductor discovery result."),
   pageVersion: pageVersionSchema,
 });
 
@@ -127,7 +127,7 @@ const hoverArgs = z.object({
     .string()
     .optional()
     .describe("Human-readable element description used for permission prompts."),
-  ref: z.string().describe("Exact element reference from a prior Browser MCP discovery result."),
+  ref: z.string().describe("Exact element reference from a prior Tabductor discovery result."),
   pageVersion: pageVersionSchema,
 });
 
@@ -137,7 +137,7 @@ const typeArgs = z.object({
     .string()
     .optional()
     .describe("Human-readable element description used for permission prompts."),
-  ref: z.string().describe("Exact editable element reference from a prior Browser MCP discovery result."),
+  ref: z.string().describe("Exact editable element reference from a prior Tabductor discovery result."),
   text: z.string().describe("Text to type."),
   submit: z.boolean().describe("Whether to press Enter after typing."),
   pageVersion: pageVersionSchema,
@@ -149,7 +149,7 @@ const selectOptionArgs = z.object({
     .string()
     .optional()
     .describe("Human-readable element description used for permission prompts."),
-  ref: z.string().describe("Exact select element reference from a prior Browser MCP discovery result."),
+  ref: z.string().describe("Exact select element reference from a prior Tabductor discovery result."),
   values: z.array(z.string()).min(1).describe("Option values to select."),
   pageVersion: pageVersionSchema,
 });
@@ -182,7 +182,7 @@ const runJsArgs = z.object({
     .string()
     .min(1)
     .describe(
-      "JavaScript function body to execute inside the page as an async snippet. Use this as a local batching primitive when the model needs custom in-page logic across many elements or records, such as discover/filter/validate/plan/apply flows that would otherwise require many separate MCP calls. The snippet can use `window`, `document`, `args`, `browsermcp` helper methods, and `console.log/info/warn/error`. `return` a JSON-serializable value.",
+      "JavaScript function body to execute inside the page as an async snippet. Use this as a local batching primitive when the model needs custom in-page logic across many elements or records, such as discover/filter/validate/plan/apply flows that would otherwise require many separate MCP calls. The snippet can use `window`, `document`, `args`, `tabductor` helper methods, and `console.log/info/warn/error`. `return` a JSON-serializable value.",
     ),
   args: z
     .unknown()
@@ -209,7 +209,7 @@ const fetchImageArgs = z.object({
 
 const describeRefArgs = z.object({
   sessionId: sessionIdSchema,
-  ref: z.string().describe("Element ref from any prior Browser MCP discovery result."),
+  ref: z.string().describe("Element ref from any prior Tabductor discovery result."),
 });
 
 const findTextArgs = z.object({
@@ -697,7 +697,7 @@ async function actionResult(
         }),
       );
     } catch {
-      lines.push("Page version changed, but Browser MCP could not capture the refreshed next-step refs.");
+      lines.push("Page version changed, but Tabductor could not capture the refreshed next-step refs.");
     }
   } else {
     lines.push(`Page Version: ${sessionState.pageVersion ?? "unknown"}`);
@@ -905,7 +905,7 @@ async function navigateResult(
 
 export const listSessions: Tool = {
   schema: {
-    name: "browser_sessions",
+    name: "tabductor_sessions",
     description:
       "List connected browser sessions and their latest known metadata, capabilities, page info, and current page version.",
     inputSchema: zodToJsonSchema(browserSessionsArgs),
@@ -932,7 +932,7 @@ export const listSessions: Tool = {
 
 export const state: Tool = {
   schema: {
-    name: "browser_state",
+    name: "tabductor_state",
     description:
       "Read the latest known server-side state for one browser session, including page metadata, page version, capabilities, and last change summary.",
     inputSchema: zodToJsonSchema(browserStateArgs),
@@ -954,9 +954,9 @@ export const state: Tool = {
 
 export const snapshot: Tool = {
   schema: {
-    name: "browser_snapshot",
+    name: "tabductor_snapshot",
     description:
-      "Return a compact semantic snapshot for one browser session. This is not a full DOM or full URL inventory; use browser_actionables, browser_find_text, or browser_describe_ref when you need targeted elaboration.",
+      "Return a compact semantic snapshot for one browser session. This is not a full DOM or full URL inventory; use tabductor_actionables, tabductor_find_text, or tabductor_describe_ref when you need targeted elaboration.",
     inputSchema: zodToJsonSchema(snapshotArgs),
   },
   handle: async (context, params) => {
@@ -967,7 +967,7 @@ export const snapshot: Tool = {
 
 export const actionables: Tool = {
   schema: {
-    name: "browser_actionables",
+    name: "tabductor_actionables",
     description:
       "Return the best actionable refs for one browser session, grouped and bounded by semantic area. Use filters to target the exact next clicks or form controls you need.",
     inputSchema: zodToJsonSchema(actionablesArgs),
@@ -980,7 +980,7 @@ export const actionables: Tool = {
 
 export const overview: Tool = {
   schema: {
-    name: "browser_session_overview",
+    name: "tabductor_session_overview",
     description:
       "Return a compact LLM-oriented overview for one browser session, summarizing interactive areas, grouped refs, and page context before deeper inspection.",
     inputSchema: zodToJsonSchema(overviewArgs),
@@ -993,7 +993,7 @@ export const overview: Tool = {
 
 export const navigate: Tool = {
   schema: {
-    name: "browser_navigate",
+    name: "tabductor_navigate",
     description:
       "Navigate one browser session to a URL and wait until a requested navigation condition is observed.",
     inputSchema: zodToJsonSchema(navigateArgs),
@@ -1008,7 +1008,7 @@ export const navigate: Tool = {
     const beforeState = await context.getSessionState(sessionId);
     const beforeRevision = await context.getStateRevision(sessionId);
     const beforePageVersion = beforeState.pageVersion;
-    await context.sendSocketMessage("browser_navigate", { url }, undefined, sessionId);
+    await context.sendSocketMessage("tabductor_navigate", { url }, undefined, sessionId);
     return navigateResult(context, {
       sessionId,
       url,
@@ -1023,9 +1023,9 @@ export const navigate: Tool = {
 
 export const click: Tool = {
   schema: {
-    name: "browser_click",
+    name: "tabductor_click",
     description:
-      "Click an element in one browser session. Pass a ref from prior Browser MCP discovery. `element` is optional metadata; `pageVersion` is optional strict stale-ref protection.",
+      "Click an element in one browser session. Pass a ref from prior Tabductor discovery. `element` is optional metadata; `pageVersion` is optional strict stale-ref protection.",
     inputSchema: zodToJsonSchema(clickArgs),
   },
   handle: async (context, params) => {
@@ -1034,7 +1034,7 @@ export const click: Tool = {
     const beforePageVersion = (await context.getSessionState(sessionId)).pageVersion;
     try {
       await context.sendSocketMessage(
-        "browser_click",
+        "tabductor_click",
         {
           ...clickParams,
           ...(pageVersion !== undefined ? { expectedVersion: pageVersion } : {}),
@@ -1061,7 +1061,7 @@ export const click: Tool = {
 
 export const clickText: Tool = {
   schema: {
-    name: "browser_click_text",
+    name: "tabductor_click_text",
     description:
       "Find the best current actionable match for a text query and click it in one step. Prefer this when the intent is 'click the button/link/tab named X' and you do not want to manage refs manually.",
     inputSchema: zodToJsonSchema(clickTextArgs),
@@ -1083,7 +1083,7 @@ export const clickText: Tool = {
     let target = resolved.target;
     try {
       await context.sendSocketMessage(
-        "browser_click",
+        "tabductor_click",
         { ref: target.ref },
         undefined,
         sessionId,
@@ -1103,7 +1103,7 @@ export const clickText: Tool = {
       }
       target = retry.target;
       await context.sendSocketMessage(
-        "browser_click",
+        "tabductor_click",
         { ref: target.ref },
         undefined,
         sessionId,
@@ -1126,9 +1126,9 @@ export const clickText: Tool = {
 
 export const hover: Tool = {
   schema: {
-    name: "browser_hover",
+    name: "tabductor_hover",
     description:
-      "Hover an element in one browser session. Pass a ref from prior Browser MCP discovery. `element` is optional metadata; `pageVersion` is optional strict stale-ref protection.",
+      "Hover an element in one browser session. Pass a ref from prior Tabductor discovery. `element` is optional metadata; `pageVersion` is optional strict stale-ref protection.",
     inputSchema: zodToJsonSchema(hoverArgs),
   },
   handle: async (context, params) => {
@@ -1137,7 +1137,7 @@ export const hover: Tool = {
     const beforePageVersion = (await context.getSessionState(sessionId)).pageVersion;
     try {
       await context.sendSocketMessage(
-        "browser_hover",
+        "tabductor_hover",
         {
           ...hoverParams,
           ...(pageVersion !== undefined ? { expectedVersion: pageVersion } : {}),
@@ -1164,9 +1164,9 @@ export const hover: Tool = {
 
 export const type: Tool = {
   schema: {
-    name: "browser_type",
+    name: "tabductor_type",
     description:
-      "Type into an element in one browser session. Pass a ref from prior Browser MCP discovery. `element` is optional metadata; `pageVersion` is optional strict stale-ref protection.",
+      "Type into an element in one browser session. Pass a ref from prior Tabductor discovery. `element` is optional metadata; `pageVersion` is optional strict stale-ref protection.",
     inputSchema: zodToJsonSchema(typeArgs),
   },
   handle: async (context, params) => {
@@ -1175,7 +1175,7 @@ export const type: Tool = {
     const beforePageVersion = (await context.getSessionState(sessionId)).pageVersion;
     try {
       await context.sendSocketMessage(
-        "browser_type",
+        "tabductor_type",
         {
           ...typeParams,
           ...(pageVersion !== undefined ? { expectedVersion: pageVersion } : {}),
@@ -1202,7 +1202,7 @@ export const type: Tool = {
 
 export const typeText: Tool = {
   schema: {
-    name: "browser_type_text",
+    name: "tabductor_type_text",
     description:
       "Find the best current field match for a text query and type into it in one step. Prefer this when the intent is 'type into the field labeled X' and you do not want to manage refs manually.",
     inputSchema: zodToJsonSchema(typeTextArgs),
@@ -1229,7 +1229,7 @@ export const typeText: Tool = {
     let target = resolved.target;
     try {
       await context.sendSocketMessage(
-        "browser_type",
+        "tabductor_type",
         { ref: target.ref, text, submit },
         undefined,
         sessionId,
@@ -1249,7 +1249,7 @@ export const typeText: Tool = {
       }
       target = retry.target;
       await context.sendSocketMessage(
-        "browser_type",
+        "tabductor_type",
         { ref: target.ref, text, submit },
         undefined,
         sessionId,
@@ -1274,9 +1274,9 @@ export const typeText: Tool = {
 
 export const selectOption: Tool = {
   schema: {
-    name: "browser_select_option",
+    name: "tabductor_select_option",
     description:
-      "Select one or more options in one browser session. Pass a ref from prior Browser MCP discovery. `element` is optional metadata; `pageVersion` is optional strict stale-ref protection.",
+      "Select one or more options in one browser session. Pass a ref from prior Tabductor discovery. `element` is optional metadata; `pageVersion` is optional strict stale-ref protection.",
     inputSchema: zodToJsonSchema(selectOptionArgs),
   },
   handle: async (context, params) => {
@@ -1287,7 +1287,7 @@ export const selectOption: Tool = {
     const beforePageVersion = (await context.getSessionState(sessionId)).pageVersion;
     try {
       await context.sendSocketMessage(
-        "browser_select_option",
+        "tabductor_select_option",
         {
           ...selectParams,
           ...(pageVersion !== undefined ? { expectedVersion: pageVersion } : {}),
@@ -1314,7 +1314,7 @@ export const selectOption: Tool = {
 
 export const goBack: Tool = {
   schema: {
-    name: "browser_go_back",
+    name: "tabductor_go_back",
     description: "Navigate back in one browser session.",
     inputSchema: zodToJsonSchema(goBackArgs),
   },
@@ -1322,7 +1322,7 @@ export const goBack: Tool = {
     const { sessionId } = goBackArgs.parse(params ?? {});
     const beforeRevision = await context.getStateRevision(sessionId);
     const beforePageVersion = (await context.getSessionState(sessionId)).pageVersion;
-    await context.sendSocketMessage("browser_go_back", {}, undefined, sessionId);
+    await context.sendSocketMessage("tabductor_go_back", {}, undefined, sessionId);
     return actionResult(context, {
       action: "go_back",
       beforeRevision,
@@ -1336,7 +1336,7 @@ export const goBack: Tool = {
 
 export const goForward: Tool = {
   schema: {
-    name: "browser_go_forward",
+    name: "tabductor_go_forward",
     description: "Navigate forward in one browser session.",
     inputSchema: zodToJsonSchema(goForwardArgs),
   },
@@ -1344,7 +1344,7 @@ export const goForward: Tool = {
     const { sessionId } = goForwardArgs.parse(params ?? {});
     const beforeRevision = await context.getStateRevision(sessionId);
     const beforePageVersion = (await context.getSessionState(sessionId)).pageVersion;
-    await context.sendSocketMessage("browser_go_forward", {}, undefined, sessionId);
+    await context.sendSocketMessage("tabductor_go_forward", {}, undefined, sessionId);
     return actionResult(context, {
       action: "go_forward",
       beforeRevision,
@@ -1358,7 +1358,7 @@ export const goForward: Tool = {
 
 export const pressKey: Tool = {
   schema: {
-    name: "browser_press_key",
+    name: "tabductor_press_key",
     description: "Press a key in one browser session.",
     inputSchema: zodToJsonSchema(pressKeyArgs),
   },
@@ -1367,7 +1367,7 @@ export const pressKey: Tool = {
     const beforeRevision = await context.getStateRevision(sessionId);
     const beforePageVersion = (await context.getSessionState(sessionId)).pageVersion;
     await context.sendSocketMessage(
-      "browser_press_key",
+      "tabductor_press_key",
       { key },
       undefined,
       sessionId,
@@ -1385,7 +1385,7 @@ export const pressKey: Tool = {
 
 export const wait: Tool = {
   schema: {
-    name: "browser_wait",
+    name: "tabductor_wait",
     description: "Wait for a number of seconds in one browser session.",
     inputSchema: zodToJsonSchema(waitArgs),
   },
@@ -1393,7 +1393,7 @@ export const wait: Tool = {
     const { sessionId, time } = waitArgs.parse(params ?? {});
     const beforeRevision = await context.getStateRevision(sessionId);
     const beforePageVersion = (await context.getSessionState(sessionId)).pageVersion;
-    await context.sendSocketMessage("browser_wait", { time }, undefined, sessionId);
+    await context.sendSocketMessage("tabductor_wait", { time }, undefined, sessionId);
     return actionResult(context, {
       action: "wait",
       beforeRevision,
@@ -1407,14 +1407,14 @@ export const wait: Tool = {
 
 export const getConsoleLogs: Tool = {
   schema: {
-    name: "browser_console_logs",
+    name: "tabductor_console_logs",
     description: "Read console logs from one browser session.",
     inputSchema: zodToJsonSchema(getConsoleLogsArgs),
   },
   handle: async (context, params) => {
     const { sessionId } = getConsoleLogsArgs.parse(params ?? {});
     const consoleLogs = await context.sendSocketMessage(
-      "browser_get_console_logs",
+      "tabductor_get_console_logs",
       {},
       undefined,
       sessionId,
@@ -1426,9 +1426,9 @@ export const getConsoleLogs: Tool = {
 
 export const runJs: Tool = {
   schema: {
-    name: "browser_run_js",
+    name: "tabductor_run_js",
     description:
-      "Run an async JavaScript snippet inside one browser session. Use this as a page-local batching primitive when the model needs its own selection, filtering, validation, dry-run, or apply logic over many DOM targets or data records, and many small MCP calls would be wasteful. The snippet can inspect the page, build a candidate set, perform checks, optionally execute actions, and return a structured summary in one or two calls. It can use `window`, `document`, `args`, `browsermcp` helpers, and `console.log/info/warn/error`; `return` a JSON-serializable value. Console output is streamed during execution when the client supports progress notifications and is always returned in the final result.",
+      "Run an async JavaScript snippet inside one browser session. Use this as a page-local batching primitive when the model needs its own selection, filtering, validation, dry-run, or apply logic over many DOM targets or data records, and many small MCP calls would be wasteful. The snippet can inspect the page, build a candidate set, perform checks, optionally execute actions, and return a structured summary in one or two calls. It can use `window`, `document`, `args`, `tabductor` helpers, and `console.log/info/warn/error`; `return` a JSON-serializable value. Console output is streamed during execution when the client supports progress notifications and is always returned in the final result.",
     inputSchema: zodToJsonSchema(runJsArgs),
   },
   handle: async (context, params, extra) => {
@@ -1448,13 +1448,13 @@ export const runJs: Tool = {
     await emitProgressMessage(
       extra,
       progressCount,
-      `browser_run_js started for session ${sessionId}`,
+      `tabductor_run_js started for session ${sessionId}`,
     );
 
-    const unsubscribe = await context.subscribeToBrowserNotifications(
+    const unsubscribe = await context.subscribeToTabductorNotifications(
       sessionId,
       (event, payload) => {
-        if (event !== "browser.console.entry") {
+        if (event !== "tabductor.console.entry") {
           return;
         }
         const consolePayload = payload as BrowserConsoleEntryNotification;
@@ -1466,7 +1466,7 @@ export const runJs: Tool = {
         void emitProgressMessage(
           extra,
           progressCount,
-          `browser_run_js console: ${formatConsoleEntry(consolePayload.entry)}`,
+          `tabductor_run_js console: ${formatConsoleEntry(consolePayload.entry)}`,
         );
       },
     );
@@ -1474,7 +1474,7 @@ export const runJs: Tool = {
     let runResult: BrowserRunJsResult;
     try {
       runResult = await context.sendSocketMessage(
-        "browser_run_js",
+        "tabductor_run_js",
         {
           code,
           args,
@@ -1528,8 +1528,8 @@ export const runJs: Tool = {
       extra,
       progressCount + 1,
       runResult.success
-        ? `browser_run_js completed for session ${sessionId}`
-        : `browser_run_js failed for session ${sessionId}: ${runResult.error?.message ?? "unknown error"}`,
+        ? `tabductor_run_js completed for session ${sessionId}`
+        : `tabductor_run_js failed for session ${sessionId}: ${runResult.error?.message ?? "unknown error"}`,
     );
 
     return {
@@ -1547,14 +1547,14 @@ export const runJs: Tool = {
 
 export const screenshot: Tool = {
   schema: {
-    name: "browser_screenshot",
+    name: "tabductor_screenshot",
     description: "Capture a screenshot from one browser session.",
     inputSchema: zodToJsonSchema(screenshotArgs),
   },
   handle: async (context, params) => {
     const { sessionId } = screenshotArgs.parse(params ?? {});
     const screenshotData = await context.sendSocketMessage(
-      "browser_screenshot",
+      "tabductor_screenshot",
       {},
       undefined,
       sessionId,
@@ -1589,7 +1589,7 @@ export const screenshot: Tool = {
 
 export const fetchImage: Tool = {
   schema: {
-    name: "browser_fetch_image",
+    name: "tabductor_fetch_image",
     description:
       "Fetch an image by URL using the browser session and return it as an inline image. " +
       "Use this to retrieve images visible on the current page (e.g. from <img> src attributes) " +
@@ -1599,7 +1599,7 @@ export const fetchImage: Tool = {
   handle: async (context, params) => {
     const { sessionId, url } = fetchImageArgs.parse(params ?? {});
 
-    // Use browser_run_js to fetch the image as a base64 data URL
+    // Use tabductor_run_js to fetch the image as a base64 data URL
     const code = `
       const response = await fetch(${JSON.stringify(url)});
       if (!response.ok) throw new Error(\`HTTP \${response.status} fetching image\`);
@@ -1612,7 +1612,7 @@ export const fetchImage: Tool = {
     `;
 
     const runResult = await context.sendSocketMessage(
-      "browser_run_js",
+      "tabductor_run_js",
       { code },
       undefined,
       sessionId,
@@ -1649,15 +1649,15 @@ export const fetchImage: Tool = {
 
 export const describeRef: Tool = {
   schema: {
-    name: "browser_describe_ref",
+    name: "tabductor_describe_ref",
     description:
-      "Return detailed context for one element ref from any prior Browser MCP discovery result.",
+      "Return detailed context for one element ref from any prior Tabductor discovery result.",
     inputSchema: zodToJsonSchema(describeRefArgs),
   },
   handle: async (context, params) => {
     const { sessionId, ref } = describeRefArgs.parse(params ?? {});
     const description = await context.sendSocketMessage(
-      "browser_describe_ref",
+      "tabductor_describe_ref",
       { ref },
       undefined,
       sessionId,
@@ -1693,7 +1693,7 @@ export const describeRef: Tool = {
 
 export const findText: Tool = {
   schema: {
-    name: "browser_find_text",
+    name: "tabductor_find_text",
     description:
       "Find the best actionable refs matching a text query on the current page and return a recommended ref for the next action.",
     inputSchema: zodToJsonSchema(findTextArgs),

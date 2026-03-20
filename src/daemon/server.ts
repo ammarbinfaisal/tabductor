@@ -120,7 +120,7 @@ async function handleRequest(
           },
         };
       }
-      case "send_browser_request": {
+      case "send_tabductor_request": {
         const params = request.params as {
           sessionId: string;
           type: string;
@@ -142,8 +142,8 @@ async function handleRequest(
           },
         };
       }
-      case "subscribe_browser_notifications":
-      case "unsubscribe_browser_notifications":
+      case "subscribe_tabductor_notifications":
+      case "unsubscribe_tabductor_notifications":
         return {
           id: request.id,
           ok: true,
@@ -192,7 +192,7 @@ export async function startDaemonRuntime() {
         continue;
       }
       sendNotification(client, {
-        event: "browser_notification",
+        event: "tabductor_notification",
         params: {
           sessionId,
           event,
@@ -206,7 +206,7 @@ export async function startDaemonRuntime() {
     mcpConfig.defaultWsPort,
     mcpConfig.defaultHost,
   );
-  logInfo("daemon.lifecycle", "Browser MCP daemon browser websocket ready", {
+  logInfo("daemon.lifecycle", "Tabductor daemon browser websocket ready", {
     host: mcpConfig.defaultHost,
     port: mcpConfig.defaultWsPort,
   });
@@ -219,7 +219,7 @@ export async function startDaemonRuntime() {
   });
 
   const controlWss = await createControlServer();
-  logInfo("daemon.lifecycle", "Browser MCP daemon control websocket ready", {
+  logInfo("daemon.lifecycle", "Tabductor daemon control websocket ready", {
     host: mcpConfig.defaultHost,
     port: mcpConfig.defaultControlPort,
   });
@@ -233,13 +233,13 @@ export async function startDaemonRuntime() {
         return;
       }
 
-      if (request.method === "subscribe_browser_notifications") {
+      if (request.method === "subscribe_tabductor_notifications") {
         controlClientSubscriptions.get(ws)?.add(
           (request.params as { sessionId: string }).sessionId,
         );
       }
 
-      if (request.method === "unsubscribe_browser_notifications") {
+      if (request.method === "unsubscribe_tabductor_notifications") {
         controlClientSubscriptions.get(ws)?.delete(
           (request.params as { sessionId: string }).sessionId,
         );
@@ -284,7 +284,7 @@ export async function startDaemonRuntime() {
 
   const shutdown = async () => {
     try {
-      logInfo("daemon.lifecycle", "Shutting down Browser MCP daemon");
+      logInfo("daemon.lifecycle", "Shutting down Tabductor daemon");
       await close();
     } finally {
       process.exit(0);

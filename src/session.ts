@@ -22,7 +22,7 @@ import { createRpcClient } from "@/protocol/ws-rpc";
 import { SnapshotCache, SnapshotChangeSummary } from "@/snapshot-cache";
 import { logException, logInfo } from "@/utils/log";
 
-export const noConnectionMessage = `No connection to browser extension. In order to proceed, you must first connect a tab by clicking the Browser MCP extension icon in the browser toolbar and clicking the 'Connect' button.`;
+export const noConnectionMessage = `No connection to browser extension. In order to proceed, you must first connect a tab by clicking the Tabductor extension icon in the browser toolbar and clicking the 'Connect' button.`;
 
 export type BrowserSessionState = {
   sessionId: string;
@@ -173,7 +173,7 @@ export class BrowserSession {
     }
 
     const startedAt = Date.now();
-    logInfo("browser.requests", "Sending browser request", {
+    logInfo("tabductor.requests", "Sending Tabductor request", {
       payload,
       sessionId: this.id,
       timeoutMs: options.timeoutMs ?? 30000,
@@ -182,7 +182,7 @@ export class BrowserSession {
     try {
       const result = await this.rpcClient.sendRequest(type, payload, options);
       this.absorbRequestResult(type, result);
-      logInfo("browser.responses", "Browser request completed", {
+      logInfo("tabductor.responses", "Tabductor request completed", {
         durationMs: Date.now() - startedAt,
         result,
         sessionId: this.id,
@@ -190,7 +190,7 @@ export class BrowserSession {
       });
       return result;
     } catch (e) {
-      logException("browser.errors", "Browser request failed", e, {
+      logException("tabductor.errors", "Tabductor request failed", e, {
         durationMs: Date.now() - startedAt,
         payload,
         sessionId: this.id,
@@ -225,7 +225,7 @@ export class BrowserSession {
     event: T,
     payload: unknown,
   ) {
-    logInfo("browser.notifications", "Browser notification received", {
+    logInfo("tabductor.notifications", "Tabductor notification received", {
       event,
       payload,
       sessionId: this.id,
@@ -234,16 +234,16 @@ export class BrowserSession {
       listener(event, payload as BrowserNotificationMap[T]["payload"]);
     }
     switch (event) {
-      case "browser.session.hello":
+      case "tabductor.session.hello":
         this.applyHello(payload as BrowserSessionHello);
         return;
-      case "browser.page.updated":
+      case "tabductor.page.updated":
         this.applyPageUpdate(payload as BrowserPageUpdate);
         return;
-      case "browser.snapshot.updated":
+      case "tabductor.snapshot.updated":
         this.applySnapshotUpdate(payload as BrowserSnapshotUpdate);
         return;
-      case "browser.console.entry":
+      case "tabductor.console.entry":
         this.applyConsoleEntry(payload as BrowserConsoleEntryNotification);
         return;
     }
@@ -262,7 +262,7 @@ export class BrowserSession {
     };
     this.closedAt = null;
     this.bumpStateRevision();
-    logInfo("browser.notifications", "Browser session is ready", {
+    logInfo("tabductor.notifications", "Tabductor session is ready", {
       page: payload.page,
       sessionId: this.id,
       snapshotVersion: payload.snapshotVersion,
@@ -285,7 +285,7 @@ export class BrowserSession {
       this.metadata.lastChange = this.snapshotCache.getLastChange();
     }
     this.bumpStateRevision();
-    logInfo("browser.notifications", "Browser page updated", {
+    logInfo("tabductor.notifications", "Tabductor page updated", {
       invalidation: payload.invalidation,
       page: payload.page,
       sessionId: this.id,
@@ -311,7 +311,7 @@ export class BrowserSession {
       this.metadata.lastChange = this.snapshotCache.getLastChange();
     }
     this.bumpStateRevision();
-    logInfo("browser.notifications", "Browser snapshot updated", {
+    logInfo("tabductor.notifications", "Tabductor snapshot updated", {
       page,
       sessionId: this.id,
       snapshotVersion: snapshot.version,
@@ -327,21 +327,7 @@ export class BrowserSession {
     result: BrowserRequestMap[T]["result"],
   ) {
     switch (type) {
-      case "getUrl":
-        this.metadata.page = {
-          ...(this.metadata.page ?? { url: "", title: "" }),
-          url: result as string,
-          title: this.metadata.page?.title ?? "",
-        };
-        return;
-      case "getTitle":
-        this.metadata.page = {
-          ...(this.metadata.page ?? { url: "", title: "" }),
-          url: this.metadata.page?.url ?? "",
-          title: result as string,
-        };
-        return;
-      case "browser_snapshot": {
+      case "tabductor_snapshot": {
         const snapshot = this.toLogicalSnapshotResponse(result as BrowserSnapshotResponse);
         this.metadata.status = "ready";
         this.metadata.page = snapshot.page;
@@ -534,7 +520,7 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) {
       throw new Error(
-        `Session "${sessionId}" not found. Use browser_sessions to inspect available sessions.`,
+        `Session "${sessionId}" not found. Use tabductor_sessions to inspect available sessions.`,
       );
     }
 

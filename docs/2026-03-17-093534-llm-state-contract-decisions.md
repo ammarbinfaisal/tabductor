@@ -18,7 +18,7 @@ Goal: reduce stale-ref friction and make the MCP layer easier for LLM agents to 
 ### 2026-03-17 09:35:34 IST
 
 - Standardized reads around a single discovery bundle shape: page metadata, `pageVersion`, grouped actionables, context anchors, and summary stats.
-- Reused that same bundle for `browser_session_overview`, `browser_actionables`, and action follow-up responses.
+- Reused that same bundle for `tabductor_session_overview`, `tabductor_actionables`, and action follow-up responses.
 - Rationale: one state shape is easier for agents to learn than separate read-specific response formats.
 
 ### 2026-03-17 09:35:34 IST

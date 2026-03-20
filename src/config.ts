@@ -91,13 +91,11 @@ function defaultConfigCandidates(): string[] {
   return [
     resolve(process.cwd(), "tabductor.config.json"),
     resolve(process.cwd(), ".tabductor.json"),
-    resolve(process.cwd(), "browsermcp.config.json"),
-    resolve(process.cwd(), ".browsermcp.json"),
   ];
 }
 
 function loadSettingsFile(): ResolvedSettingsFile {
-  const explicitPath = envValue("TABDUCTOR_CONFIG", "BROWSERMCP_CONFIG");
+  const explicitPath = envValue("TABDUCTOR_CONFIG");
   const candidates = explicitPath ? [resolve(explicitPath)] : defaultConfigCandidates();
 
   for (const path of candidates) {
@@ -125,16 +123,16 @@ const configFile = loadSettingsFile();
 const fileSettings = configFile.settings;
 const fileLogSettings = fileSettings.log ?? {};
 
-function envNumber(primaryName: string, legacyName: string): number | undefined {
-  return numberValue(envValue(primaryName, legacyName));
+function envNumber(name: string): number | undefined {
+  return numberValue(envValue(name));
 }
 
-function envBoolean(primaryName: string, legacyName: string): boolean | undefined {
-  return booleanValue(envValue(primaryName, legacyName));
+function envBoolean(name: string): boolean | undefined {
+  return booleanValue(envValue(name));
 }
 
-function envCsv(primaryName: string, legacyName: string): string[] | undefined {
-  return stringListValue(envValue(primaryName, legacyName));
+function envCsv(name: string): string[] | undefined {
+  return stringListValue(envValue(name));
 }
 
 export const appConfig = {
@@ -143,36 +141,36 @@ export const appConfig = {
 } as const;
 
 export const mcpConfig = {
-  defaultWsPort: envNumber("TABDUCTOR_WS_PORT", "BROWSERMCP_WS_PORT")
+  defaultWsPort: envNumber("TABDUCTOR_WS_PORT")
     ?? numberValue(fileSettings.wsPort)
     ?? 8765,
-  defaultControlPort: envNumber("TABDUCTOR_CONTROL_PORT", "BROWSERMCP_CONTROL_PORT")
+  defaultControlPort: envNumber("TABDUCTOR_CONTROL_PORT")
     ?? numberValue(fileSettings.controlPort)
     ?? 8766,
-  defaultHost: envValue("TABDUCTOR_HOST", "BROWSERMCP_HOST")
+  defaultHost: envValue("TABDUCTOR_HOST")
     ?? stringValue(fileSettings.host)
     ?? "127.0.0.1",
   log: {
-    mode: envValue("TABDUCTOR_LOG_MODE", "BROWSERMCP_LOG_MODE")
+    mode: envValue("TABDUCTOR_LOG_MODE")
       ?? stringValue(fileLogSettings.mode),
-    dest: envValue("TABDUCTOR_LOG_DEST", "BROWSERMCP_LOG_DEST")
+    dest: envValue("TABDUCTOR_LOG_DEST")
       ?? stringValue(fileLogSettings.dest),
-    format: envValue("TABDUCTOR_LOG_FORMAT", "BROWSERMCP_LOG_FORMAT")
+    format: envValue("TABDUCTOR_LOG_FORMAT")
       ?? stringValue(fileLogSettings.format),
-    file: envValue("TABDUCTOR_LOG_FILE", "BROWSERMCP_LOG_FILE")
+    file: envValue("TABDUCTOR_LOG_FILE")
       ?? stringValue(fileLogSettings.file)
       ?? "/tmp/tabductor.log",
-    redact: envBoolean("TABDUCTOR_LOG_REDACT", "BROWSERMCP_LOG_REDACT")
+    redact: envBoolean("TABDUCTOR_LOG_REDACT")
       ?? booleanValue(fileLogSettings.redact)
       ?? true,
-    include: envCsv("TABDUCTOR_LOG_INCLUDE", "BROWSERMCP_LOG_INCLUDE")
+    include: envCsv("TABDUCTOR_LOG_INCLUDE")
       ?? stringListValue(fileLogSettings.include)
       ?? [],
-    exclude: envCsv("TABDUCTOR_LOG_EXCLUDE", "BROWSERMCP_LOG_EXCLUDE")
+    exclude: envCsv("TABDUCTOR_LOG_EXCLUDE")
       ?? stringListValue(fileLogSettings.exclude)
       ?? [],
-    debug: envBoolean("TABDUCTOR_DEBUG", "BROWSERMCP_DEBUG") ?? false,
-    debugFull: envBoolean("TABDUCTOR_DEBUG_FULL", "BROWSERMCP_DEBUG_FULL") ?? false,
+    debug: envBoolean("TABDUCTOR_DEBUG") ?? false,
+    debugFull: envBoolean("TABDUCTOR_DEBUG_FULL") ?? false,
   },
   errors: {
     noConnectedTab: "NO_CONNECTED_TAB",

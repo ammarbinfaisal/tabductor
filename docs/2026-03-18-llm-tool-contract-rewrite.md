@@ -4,9 +4,9 @@ Date: 2026-03-18
 
 ## Context
 
-The previous Browser MCP contract had the right primitives, but it still made common LLM failure modes too easy:
+The previous Tabductor contract had the right primitives, but it still made common LLM failure modes too easy:
 
-- large pages could overflow tool outputs because `browser_actionables` returned the entire grouped inventory
+- large pages could overflow tool outputs because `tabductor_actionables` returned the entire grouped inventory
 - action calls required both `ref` and `element`, even though `ref` was the real handle
 - navigation responses did not clearly tell the model whether navigation had actually been observed
 - post-action discovery bundles existed, but the payload shape did not emphasize “use these next refs now”
@@ -17,13 +17,13 @@ This rewrite intentionally prioritizes ease of calling for LLM agents over backw
 
 ### 2026-03-18
 
-- Rewrote `browser_actionables` as a bounded, filterable discovery tool.
+- Rewrote `tabductor_actionables` as a bounded, filterable discovery tool.
 - Added query, exact matching, role filters, viewport filtering, group filtering, and explicit limits.
 - Rationale: large real-world pages should not force models into full-inventory reads.
 
 ### 2026-03-18
 
-- Repositioned `browser_find_text` as an actionable finder instead of a raw snapshot text search.
+- Repositioned `tabductor_find_text` as an actionable finder instead of a raw snapshot text search.
 - It now returns ranked actionable matches plus a `recommendedRef`.
 - Rationale: “find the thing matching this text and click it” is a primary LLM workflow and should be one call.
 
@@ -40,21 +40,21 @@ This rewrite intentionally prioritizes ease of calling for LLM agents over backw
 
 ### 2026-03-18
 
-- Added explicit navigation wait behavior to `browser_navigate` with `waitUntil` and `timeoutMs`.
+- Added explicit navigation wait behavior to `tabductor_navigate` with `waitUntil` and `timeoutMs`.
 - Added result fields such as `navigationObserved`, `currentUrl`, `currentTitle`, and `transportConnected`.
 - Rationale: LLMs need a direct signal for whether navigation was observed, especially across reconnects and delayed page updates.
 
 ## Discarded Behavior
 
 - Full unbounded actionable inventories as the default discovery response.
-- Treating `browser_find_text` as a broad low-level DOM text search.
+- Treating `tabductor_find_text` as a broad low-level DOM text search.
 - Requiring `element` for click, hover, type, and select actions.
 - Generic post-action discovery naming that did not clearly indicate “these are the next refs”.
 
 ## Resulting Workflow
 
-1. Use `browser_session_overview` to orient.
-2. Use `browser_actionables` with filters, or `browser_find_text` when you know the target text.
+1. Use `tabductor_session_overview` to orient.
+2. Use `tabductor_actionables` with filters, or `tabductor_find_text` when you know the target text.
 3. Use action tools with `ref` and optional `pageVersion`.
 4. Prefer the action response’s `nextDiscovery` and `nextRefs` before making another read call.
-5. Use `browser_snapshot` only when the compact discovery tools are insufficient.
+5. Use `tabductor_snapshot` only when the compact discovery tools are insufficient.

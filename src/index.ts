@@ -22,7 +22,7 @@ function setupExitWatchdog(server: Server) {
   });
 }
 
-const baseTools: Tool[] = [
+const tools: Tool[] = [
   session.listSessions,
   session.state,
   session.overview,
@@ -46,26 +46,6 @@ const baseTools: Tool[] = [
   session.describeRef,
   session.findText,
 ];
-
-function aliasTool(tool: Tool): Tool[] {
-  if (!tool.schema.name.startsWith("browser_")) {
-    return [tool];
-  }
-
-  return [
-    tool,
-    {
-      ...tool,
-      schema: {
-        ...tool.schema,
-        name: tool.schema.name.replace(/^browser_/, "tabductor_"),
-        description: tool.schema.description.replaceAll("Browser MCP", "Tabductor"),
-      },
-    },
-  ];
-}
-
-const tools: Tool[] = baseTools.flatMap(aliasTool);
 
 const resources: Resource[] = [...guideResources];
 
