@@ -78,19 +78,34 @@ If your client has a CLI shortcut, point it at the same `dist/index.js` entrypoi
 #### Codex
 
 ```bash
-codex mcp add tabductor-local -- bun /absolute/path/to/tabductor/dist/index.js
+codex mcp add tabductor -- bun /absolute/path/to/tabductor/dist/index.js
 ```
 
 #### Claude Code
 
 ```bash
-claude mcp add -s user tabductor-local -- bun /absolute/path/to/tabductor/dist/index.js
+claude mcp add -s user tabductor -- bun /absolute/path/to/tabductor/dist/index.js
 ```
 
 #### Gemini CLI
 
 ```bash
-gemini mcp add -s user -t stdio tabductor-local bun /absolute/path/to/tabductor/dist/index.js
+gemini mcp add -s user -t stdio tabductor bun /absolute/path/to/tabductor/dist/index.js
+```
+
+#### Anigravity
+
+Go to **Settings → MCP Servers** and add:
+
+```json
+{
+  "mcpServers": {
+    "tabductor": {
+      "command": "bun",
+      "args": ["/absolute/path/to/tabductor/dist/index.js"]
+    }
+  }
+}
 ```
 
 ### 4. Optional config file
