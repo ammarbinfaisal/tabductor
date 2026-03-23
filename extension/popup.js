@@ -2,6 +2,8 @@ const serverUrlInput = document.getElementById("server-url");
 const statusEl = document.getElementById("status");
 const connectedTabsEl = document.getElementById("connected-tabs");
 const refreshButton = document.getElementById("refresh");
+const connectBtn = document.getElementById("connect");
+const disconnectBtn = document.getElementById("disconnect");
 
 document.getElementById("save-url").addEventListener("click", async () => {
   await chrome.runtime.sendMessage({
@@ -33,6 +35,11 @@ async function refresh() {
   });
 
   serverUrlInput.value = status.serverUrl || "";
+
+  const isConnected = status.connected;
+  connectBtn.classList.toggle("hidden", isConnected);
+  disconnectBtn.classList.toggle("hidden", !isConnected);
+
   statusEl.textContent = [
     `Active Tab Connected: ${status.connected}`,
     `Active Tab Desired: ${status.desiredConnected}`,
