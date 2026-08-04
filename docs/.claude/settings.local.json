@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/ammar/Documents/codes/tabductor/**)",
+      "Bash(pnpm --version)",
+      "Bash(docker --version)"
+    ]
+  }
+}

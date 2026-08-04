@@ -1,0 +1,32 @@
+# Implementation Roadmap — Subphases
+
+Each subphase is implemented by an independent agent from a self-contained prompt file
+(`docs/subphases/SNN-*.md`), reviewed, then committed. Ordering is strict.
+
+Environment deviations from `impl-phases.md` (no Docker on this machine):
+- Postgres: local PostgreSQL 15 at `localhost:5432` (superuser `ammar`), template-clone DB per test.
+- Chromium: local Google Chrome launched headless with `--remote-debugging-port` on a throwaway
+  `--user-data-dir` — this is the BYO-CDP simulator.
+- Blob storage: local filesystem directory behind a `BlobStore` interface (S3 later).
+
+| # | Subphase | Design refs |
+|---|----------|-------------|
+| S0 | Monorepo scaffold + testkit (fixture sites, CDP launcher, test-DB helper) | impl §0, test infra |
+| S1 | DB migrations + outbox event bus + dedupe + lineage + PolicyGate/AllowAllGate | impl Phase 1, §14 |
+| S2a | Workflow engine core: run state machine, graph eval, packet validation, loop budget, StubExecutor | impl Phase 2 |
+| S2b | Scheduler (cron/tz, missed/overlap), retries, crash recovery watchdog | impl Phase 2, §7 |
+| S3a | Browser driver interface + Playwright CDP impl + navigation guard + trace recorder | impl Phase 3, §8 |
+| S3b | Endpoint pool/leases + per-endpoint queue + network observer + resource limits + ScriptedBrowserExecutor | impl Phase 3, §9 |
+| S4a | LLM adapter (live/record/replay) + perception builder | impl Phase 4 |
+| S4b | Agent loop + tool registry + structured emit + AgentExecutor + e2e milestone | impl Phase 4 |
+| S5 | MCP client + secrets vault/fill | impl Phase 5, §13, §16 |
+| S6a | Static runtime sandbox + script registry + lint gate | impl Phase 6, §12 |
+| S6b | Trace consistency checker + compiler agent | impl Phase 6, §11 |
+| S6c | CompiledExecutor + deopt handoff + promotion/demotion + flagship e2e | impl Phase 6 |
+| S7 | Real policy evaluator + redaction + approvals + regression sweep | impl Phase 7, §10 |
+
+Style rules binding for every subphase:
+- Composition over abstraction; no speculative interfaces beyond those the design docs name.
+- Prefer less code; a helper used once is inlined.
+- TypeScript strict; zod at boundaries; vitest for tests.
+- Traces and events are the assertion surface for system tests.
