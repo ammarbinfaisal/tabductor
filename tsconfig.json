@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@tabductor/core": ["packages/core/src/index.ts"],
+      "@tabductor/testkit": ["apps/testkit/src/index.ts"]
+    }
+  },
+  "include": [
+    "packages/*/src/**/*.ts",
+    "apps/*/src/**/*.ts",
+    "apps/*/sites/**/*.ts",
+    "tests/**/*.ts",
+    "vitest.config.ts"
+  ]
+}
