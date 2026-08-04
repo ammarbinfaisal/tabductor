@@ -40,17 +40,26 @@ export const workflowVersions = pgTable("workflow_versions", {
   createdAt: createdAt(),
 });
 
-export const tasks = pgTable("tasks", {
-  id: text("id").primaryKey(),
-  workflowVersionId: text("workflow_version_id")
-    .notNull()
-    .references(() => workflowVersions.id, { onDelete: "cascade" }),
-  name: text("name").notNull(),
-  prompt: text("prompt"),
-  mode: text("mode").notNull().default("stub"),
-  limitsJson: jsonb("limits_json").notNull().default({}),
-  createdAt: createdAt(),
-});
+/**
+ * `name` is the task's identity *across* workflow versions: every version gets fresh task
+ * rows, so routing an event emitted under v1 against the latest version (§5 versioning)
+ * needs a stable key, and the graph editor's node name is it.
+ */
+export const tasks = pgTable(
+  "tasks",
+  {
+    id: text("id").primaryKey(),
+    workflowVersionId: text("workflow_version_id")
+      .notNull()
+      .references(() => workflowVersions.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    prompt: text("prompt"),
+    mode: text("mode").notNull().default("stub"),
+    limitsJson: jsonb("limits_json").notNull().default({}),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex("tasks_version_name_key").on(t.workflowVersionId, t.name)],
+);
 
 export const edges = pgTable(
   "edges",
@@ -112,11 +121,17 @@ export const runs = pgTable(
     attempt: integer("attempt").notNull().default(0),
     heartbeatAt: ts("heartbeat_at"),
     startedAt: ts("started_at"),
+    /** Wall-clock kill time, set on `running` from `limits_json.run_timeout_ms`. The
+     * watchdog scans this column, so a timeout survives an engine restart (§15). */
+    deadlineAt: ts("deadline_at"),
     endedAt: ts("ended_at"),
     error: text("error"),
     createdAt: createdAt(),
   },
-  (t) => [index("runs_status_heartbeat_idx").on(t.status, t.heartbeatAt)],
+  (t) => [
+    index("runs_status_heartbeat_idx").on(t.status, t.heartbeatAt),
+    index("runs_deadline_idx").on(t.status, t.deadlineAt),
+  ],
 );
 
 /** Consumer-side dedupe (§6): one row per (task, event); the unique pk is the claim. */

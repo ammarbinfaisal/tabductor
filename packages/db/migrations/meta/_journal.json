@@ -15,6 +15,13 @@
       "when": 1785831799865,
       "tag": "0001_outbox_notify_trigger",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785832463611,
+      "tag": "0002_run_deadline_and_task_name_key",
+      "breakpoints": true
     }
   ]
 }
