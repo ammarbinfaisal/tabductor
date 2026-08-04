@@ -7,8 +7,8 @@ You are implementing subphase S2a. Read, in order:
 4. `docs/subphases/ROADMAP.md`.
 
 Existing code to reuse (read it first, match its style): `packages/core`, `packages/db`
-(migrations + kysely types), `packages/bus` (outbox publish/dispatcher/claim/chainDepth),
-`packages/policy`, `apps/testkit`. The scheduler, retries, and crash recovery are S2b —
+(Drizzle schema + migrations + inferred row types + `createMigratedTestDb`), `packages/bus`
+(outbox publish/dispatcher/claim/chainDepth), `packages/policy`, `apps/testkit`. The scheduler, retries, and crash recovery are S2b —
 NOT yours. Design so S2b can add them without reworking your code, but do not build them.
 
 ## Deliverables

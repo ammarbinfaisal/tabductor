@@ -68,9 +68,9 @@ do not duplicate. Look at existing code style and match it.
 
 ## Style constraints (binding)
 - Composition over abstraction. No EventEmitter inheritance, no generic "repository" layer —
-  kysely queries live where they're used.
+  drizzle queries live where they're used.
 - Prefer less code; if dispatcher + publisher fit in one file cleanly, do that.
-- New deps allowed: `kysely`, `pg`. Nothing else without justification.
+- New deps allowed: `drizzle-orm`, `drizzle-kit`, `pg`. Nothing else without justification.
 - Timestamps: `timestamptz`, DB-generated where possible. IDs via core `newId` except
   `event_id` which is a raw uuid (used for dedupe pk).
 

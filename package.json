@@ -9,10 +9,14 @@
     "test:system": "vitest run --project system"
   },
   "devDependencies": {
+    "@tabductor/bus": "workspace:*",
     "@tabductor/core": "workspace:*",
+    "@tabductor/db": "workspace:*",
+    "@tabductor/policy": "workspace:*",
     "@tabductor/testkit": "workspace:*",
     "@types/node": "^24.0.0",
     "@types/pg": "^8.11.0",
+    "drizzle-orm": "^0.44.0",
     "pg": "^8.13.0",
     "typescript": "^5.7.0",
     "vitest": "^3.2.0"
