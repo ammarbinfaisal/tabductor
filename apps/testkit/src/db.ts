@@ -1,10 +1,15 @@
 import { randomUUID } from "node:crypto";
-import os from "node:os";
 import pg from "pg";
 
+/**
+ * Defaults target the project's own Postgres container (`infra/postgres/README.md`) rather
+ * than the OS user on a system instance: ports and roles on a dev machine belong to whoever
+ * claimed them first, and the suite should not lose a race with an unrelated project.
+ */
 const HOST = process.env.PGHOST ?? "localhost";
-const PORT = Number(process.env.PGPORT ?? 5432);
-const USER = process.env.PGUSER ?? os.userInfo().username;
+const PORT = Number(process.env.PGPORT ?? 5434);
+const USER = process.env.PGUSER ?? "tabductor";
+const PASSWORD = process.env.PGPASSWORD ?? "tabductor";
 
 const DEFAULT_TEMPLATE = "tabductor_template";
 
@@ -23,11 +28,18 @@ const readyTemplates = new Set<string>();
 export type TestDb = { url: string; drop: () => Promise<void> };
 
 function dbUrl(name: string): string {
-  return `postgres://${encodeURIComponent(USER)}@${HOST}:${PORT}/${name}`;
+  const auth = `${encodeURIComponent(USER)}:${encodeURIComponent(PASSWORD)}`;
+  return `postgres://${auth}@${HOST}:${PORT}/${name}`;
 }
 
 async function withAdmin<T>(fn: (client: pg.Client) => Promise<T>): Promise<T> {
-  const client = new pg.Client({ host: HOST, port: PORT, user: USER, database: "postgres" });
+  const client = new pg.Client({
+    host: HOST,
+    port: PORT,
+    user: USER,
+    password: PASSWORD,
+    database: "postgres",
+  });
   await client.connect();
   try {
     return await fn(client);

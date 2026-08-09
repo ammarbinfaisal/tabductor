@@ -3,10 +3,13 @@
 Each subphase is implemented by an independent agent from a self-contained prompt file
 (`docs/subphases/SNN-*.md`), reviewed, then committed. Ordering is strict.
 
-Environment deviations from `impl-phases.md` (no Docker on this machine):
-- Postgres: local PostgreSQL 15 at `localhost:5432` (superuser `ammar`), template-clone DB per test.
+Environment deviations from `impl-phases.md`:
+- Postgres: project-owned container on `localhost:5434`, user/password `tabductor`, template-clone
+  DB per test — see `infra/postgres/README.md`. (Superseded the earlier "system PostgreSQL as the
+  OS user on 5432" setup, which broke the moment an unrelated project claimed 5432. Defaults are
+  compiled in, so a clean checkout needs no environment.)
 - Chromium: local Google Chrome launched headless with `--remote-debugging-port` on a throwaway
-  `--user-data-dir` — this is the BYO-CDP simulator.
+  `--user-data-dir` — this is the BYO-CDP simulator. Not containerised.
 - Blob storage: local filesystem directory behind a `BlobStore` interface (S3 later).
 
 ## Stack decisions (user-mandated, binding for all subphases)

@@ -4,7 +4,10 @@ import { z } from "zod";
 import { AppError } from "./errors.js";
 
 const envSchema = z.object({
-  DATABASE_URL: z.string().min(1).default("postgres://localhost:5432/tabductor"),
+  DATABASE_URL: z
+    .string()
+    .min(1)
+    .default("postgres://tabductor:tabductor@localhost:5434/tabductor"),
   BLOB_DIR: z.string().min(1).default(path.join(os.tmpdir(), "tabductor-blobs")),
   HARNESS_NAV_ALLOWLIST: z
     .string()

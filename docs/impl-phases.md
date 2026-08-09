@@ -25,13 +25,13 @@
 | S3a–S7, S5g, S8 | browser, agent, asset, store+decision, compiler, policy, graph compiler | not started |
 
 What exists as code: `packages/{core,db,bus,engine,policy}` + `apps/testkit` + `tests/system`
-— 53 tests in 16 files. The whole workspace typechecks clean (`tsc`). Verification caveat for
-CI and agent sessions: the testkit connects to Postgres as the OS user over TCP with no
-password (`apps/testkit/src/db.ts`), so a shell without `PGPASSWORD`/`~/.pgpass` fails all 25
-DB-backed system tests at SCRAM auth *before any test logic runs* — only the DB-free files
-(fixture sites, CDP launcher, policy gate) pass there. A red suite in such an environment is
-an auth problem, not a regression; export credentials (or add a pgpass entry) before reading
-anything into it.
+— 53 tests in 16 files. The whole workspace typechecks clean (`tsc`). The suite talks to a
+project-owned Postgres container on `localhost:5434` whose credentials are compiled in as
+defaults (`infra/postgres/README.md`), so a clean checkout needs no environment. If every
+DB-backed file fails at SCRAM auth *before any test logic runs*, that container is down or a
+stale `PG*` variable is set in the shell — an environment problem, not a regression. (This
+replaced an earlier setup that connected as the OS user to a system Postgres on 5432, which
+broke as soon as an unrelated project took that port.)
 
 Phase 1 and Phase 2 of this document are therefore complete except for the control-plane API
 (S2c). The `tasks.kind` column (§4) does not exist yet and is added in **S5a** below — it is a

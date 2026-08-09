@@ -1,10 +1,26 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-const CHROME_BIN =
-  process.env.CHROME_BIN ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+/** First existing candidate wins; `CHROME_BIN` overrides the search entirely. */
+function resolveChromeBin(): string {
+  if (process.env.CHROME_BIN) return process.env.CHROME_BIN;
+  const candidates = [
+    "/opt/google/chrome/chrome",
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  ];
+  const found = candidates.find((c) => existsSync(c));
+  if (!found) {
+    throw new Error(
+      `no Chrome binary found (tried ${candidates.join(", ")}); set CHROME_BIN`,
+    );
+  }
+  return found;
+}
 
 const START_TIMEOUT_MS = 30_000;
 
@@ -21,7 +37,7 @@ export type Chrome = { wsUrl: string; close: () => Promise<void> };
 export async function launchChrome(): Promise<Chrome> {
   const userDataDir = await mkdtemp(path.join(tmpdir(), "tabductor-chrome-"));
   const proc = spawn(
-    CHROME_BIN,
+    resolveChromeBin(),
     [
       "--headless=new",
       "--remote-debugging-port=0",
@@ -53,7 +69,9 @@ export async function launchChrome(): Promise<Chrome> {
         await exit;
       }
     }
-    await rm(userDataDir, { recursive: true, force: true });
+    // Chrome flushes its profile asynchronously after exit, so files can reappear under
+    // the walk and surface as ENOTEMPTY. `rm` retries exactly that error class.
+    await rm(userDataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   };
 
   // Poll until ready — cold starts can be slow.

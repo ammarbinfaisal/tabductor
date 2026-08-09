@@ -5,6 +5,7 @@ export default defineConfig({
   schema: "./src/schema.ts",
   out: "./migrations",
   dbCredentials: {
-    url: process.env.DATABASE_URL ?? "postgres://localhost:5432/tabductor",
+    url:
+      process.env.DATABASE_URL ?? "postgres://tabductor:tabductor@localhost:5434/tabductor",
   },
 });
