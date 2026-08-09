@@ -12,6 +12,7 @@
   "dependencies": {
     "@tabductor/core": "workspace:*",
     "@tabductor/db": "workspace:*",
+    "@tabductor/telemetry": "workspace:*",
     "drizzle-orm": "^0.44.0",
     "pg": "^8.13.0"
   },

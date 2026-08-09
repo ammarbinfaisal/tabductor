@@ -11,6 +11,7 @@ import {
   type TaskRow,
   type WorkflowRow,
 } from "@tabductor/db";
+import type { Metrics } from "@tabductor/telemetry";
 import { and, desc, eq } from "drizzle-orm";
 
 export const LOOP_BUDGET_EXCEEDED = "system.loop_budget_exceeded";
@@ -35,7 +36,7 @@ export type Dispatched = {
  * it was created under (`runs.workflow_version_id`), so a graph edit mid-flight changes
  * where *future* events go without disturbing runs already executing.
  */
-export async function dispatchEvent(db: Db, event: EventRow): Promise<Dispatched[]> {
+export async function dispatchEvent(db: Db, event: EventRow, metrics?: Metrics): Promise<Dispatched[]> {
   const source = await resolveSource(db, event);
   if (!source) return [];
 
@@ -53,7 +54,13 @@ export async function dispatchEvent(db: Db, event: EventRow): Promise<Dispatched
 
   const created: Dispatched[] = [];
   for (const { task } of subscribers) {
-    const run = await createRun(db, { task, event, workflow: source.workflow, versionId: source.versionId });
+    const run = await createRun(db, {
+      task,
+      event,
+      workflow: source.workflow,
+      versionId: source.versionId,
+      metrics,
+    });
     if (run) created.push(run);
   }
   return created;
@@ -68,10 +75,21 @@ export async function dispatchEvent(db: Db, event: EventRow): Promise<Dispatched
  * same way `resolveSource` does and then lands in the *same* `createRun` — one loop budget,
  * one dedupe claim, one run insert, for every way a run can come into existence.
  */
-export async function dispatchToTask(db: Db, taskId: string, event: EventRow): Promise<Dispatched | undefined> {
+export async function dispatchToTask(
+  db: Db,
+  taskId: string,
+  event: EventRow,
+  metrics?: Metrics,
+): Promise<Dispatched | undefined> {
   const target = await resolveTask(db, taskId);
   if (!target) return undefined;
-  return createRun(db, { task: target.task, event, workflow: target.workflow, versionId: target.versionId });
+  return createRun(db, {
+    task: target.task,
+    event,
+    workflow: target.workflow,
+    versionId: target.versionId,
+    metrics,
+  });
 }
 
 export const MANUAL_TRIGGER = "manual.trigger";
@@ -178,7 +196,13 @@ async function latestVersionId(db: Db, workflow: WorkflowRow): Promise<string> {
  */
 async function createRun(
   db: Db,
-  args: { task: TaskRow; event: EventRow; workflow: WorkflowRow; versionId: string },
+  args: {
+    task: TaskRow;
+    event: EventRow;
+    workflow: WorkflowRow;
+    versionId: string;
+    metrics?: Metrics;
+  },
 ): Promise<Dispatched | undefined> {
   const { task, event, workflow, versionId } = args;
 
@@ -199,7 +223,12 @@ async function createRun(
 
   const runId = newId("run");
   const created = await db.transaction(async (trx) => {
-    if ((await claim(trx, task.id, event.eventId)) === "duplicate") return false;
+    if ((await claim(trx, task.id, event.eventId)) === "duplicate") {
+      // Not an error: at-least-once delivery meeting the claim that makes it safe. Counted
+      // because a *rising* rate means the dispatcher is redelivering, and that is a symptom.
+      args.metrics?.eventsDedupeDropped.add();
+      return false;
+    }
     await trx.insert(runs).values({
       id: runId,
       taskId: task.id,

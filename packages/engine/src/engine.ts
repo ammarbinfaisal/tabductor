@@ -1,6 +1,7 @@
 import { publish, type Dispatcher } from "@tabductor/bus";
 import { createLogger, type Logger } from "@tabductor/core";
 import { events, runs, tasks, type Db, type EventRow, type RunRow, type TaskRow } from "@tabductor/db";
+import { context, inSpan, trace, type Metrics, type Tracer } from "@tabductor/telemetry";
 import { eq } from "drizzle-orm";
 import { dispatchEvent } from "./dispatch.js";
 import type { ExecutorRegistry, RunHandle, RunResult } from "./executor.js";
@@ -37,6 +38,12 @@ export type EngineDeps = {
   /** Cron scheduler; omitted means no scheduler at all. `now` fakes its clock. */
   scheduler?: { tickMs?: number; now?: () => number } | false;
   logger?: Logger;
+  /**
+   * Injected the same way `PolicyGate` is (§17.2 rule 1) — the engine never touches the OTel
+   * SDK, and a test that passes neither pays nothing for the instrumentation.
+   */
+  metrics?: Metrics;
+  tracer?: Tracer;
 };
 
 export type Engine = {
@@ -62,10 +69,18 @@ export function createEngine(deps: EngineDeps): Engine {
   const heartbeatIntervalMs = deps.heartbeatIntervalMs ?? 2_000;
   const staleHeartbeatMs = deps.staleHeartbeatMs ?? 30_000;
   const log = deps.logger ?? createLogger({ name: "engine" });
+  const metrics = deps.metrics;
+  const tracer = deps.tracer ?? trace.getTracer("@tabductor/engine");
   const scheduler =
     deps.scheduler === false
       ? undefined
-      : createScheduler({ db, logger: log, ...(deps.scheduler ?? {}) });
+      : createScheduler({
+          db,
+          logger: log,
+          ...(metrics ? { metrics } : {}),
+          tracer,
+          ...(deps.scheduler ?? {}),
+        });
 
   let unsubscribe: (() => void) | undefined;
   let watchdog: NodeJS.Timeout | undefined;
@@ -101,7 +116,7 @@ export function createEngine(deps: EngineDeps): Engine {
    * the run row, not on the event's delivery count.
    */
   const onEvent = async (event: EventRow): Promise<void> => {
-    for (const { runId } of await dispatchEvent(db, event)) launch(runId, event);
+    for (const { runId } of await dispatchEvent(db, event, metrics)) launch(runId, event);
   };
 
   /**
@@ -114,7 +129,18 @@ export function createEngine(deps: EngineDeps): Engine {
     for (const run of await dueQueuedRuns(db)) launch(run.id, null);
   };
 
+  /**
+   * One run, inside one span. Started synchronously so it picks up whichever consumer span
+   * the dispatcher is holding open — which is what makes a workflow read as one trace from
+   * the schedule fire down (§17.2 rule 3). Emits inside the run inherit it, so the event
+   * they publish carries this span as its `traceparent`.
+   */
   const executeRun = async (runId: string, delivered: EventRow | null): Promise<void> => {
+    const span = tracer.startSpan("engine.run", { attributes: { "run.id": runId } });
+    return inSpan(span, trace.setSpan(context.active(), span), () => runBody(runId, delivered));
+  };
+
+  const runBody = async (runId: string, delivered: EventRow | null): Promise<void> => {
     const [row] = await db
       .select({ run: runs, task: tasks })
       .from(runs)
@@ -163,13 +189,17 @@ export function createEngine(deps: EngineDeps): Engine {
     result: RunResult,
     causationId: string | null,
   ): Promise<void> => {
+    const status = result.ok ? "succeeded" : "failed";
     const finished = await finishRun(db, {
       runId: run.id,
       taskId: task.id,
-      status: result.ok ? "succeeded" : "failed",
+      status,
       error: result.ok ? undefined : result.error,
       causationId,
     });
+    // Only the writer that actually moved the run counts it — the watchdog may have reaped
+    // this run first, in which case it is `timed_out` and belongs to whoever reaped it.
+    if (finished) recordOutcome(finished, task, status);
     if (!finished || result.ok || result.permanent) return;
     await scheduleRetry(db, { run: finished, task, error: result.error });
   };
@@ -191,9 +221,27 @@ export function createEngine(deps: EngineDeps): Engine {
     }
   };
 
+  /**
+   * `kind` is constant `browser` until S5a adds the column (impl-phases §0.5) — passed
+   * through rather than invented, so the label starts reporting reality the day the column
+   * lands without the dashboards changing.
+   */
+  const recordOutcome = (run: RunRow, task: TaskRow, status: "succeeded" | "failed" | "timed_out"): void => {
+    const labels = { kind: "browser", mode: task.mode };
+    metrics?.runs.add({ ...labels, status });
+    if (run.startedAt) {
+      metrics?.runDuration.record((Date.now() - run.startedAt.getTime()) / 1000, labels);
+    }
+  };
+
   const sweepTimeouts = async (): Promise<RunRow[]> => {
     try {
-      return await reapTimedOutRuns(db);
+      const reaped = await reapTimedOutRuns(db);
+      for (const run of reaped) {
+        const [task] = await db.select().from(tasks).where(eq(tasks.id, run.taskId));
+        if (task) recordOutcome(run, task, "timed_out");
+      }
+      return reaped;
     } catch (err) {
       log.error("watchdog sweep failed", { error: String(err) });
       return [];
@@ -209,7 +257,9 @@ export function createEngine(deps: EngineDeps): Engine {
       // mistaken for one the *previous* process abandoned. Each recovered run goes through
       // the retry policy exactly like any other failure — re-run from the start, never
       // resume, so a half-finished browser run is simply retried.
-      for (const run of await recoverStaleRuns(db, staleHeartbeatMs)) {
+      const recovered = await recoverStaleRuns(db, staleHeartbeatMs);
+      if (recovered.length) metrics?.crashRecoveredRuns.add(recovered.length);
+      for (const run of recovered) {
         const [task] = await db.select().from(tasks).where(eq(tasks.id, run.taskId));
         if (task) await scheduleRetry(db, { run, task, error: run.error });
       }

@@ -14,6 +14,7 @@
     "@tabductor/db": "workspace:*",
     "@tabductor/engine": "workspace:*",
     "@tabductor/policy": "workspace:*",
+    "@tabductor/telemetry": "workspace:*",
     "tsx": "^4.19.0"
   },
   "devDependencies": {

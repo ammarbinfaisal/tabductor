@@ -20,24 +20,27 @@
 | S1 | Drizzle data layer, outbox bus, dedupe, lineage, PolicyGate/AllowAllGate | **done** — `7e2b7fd` |
 | S2a | Engine core: run state machine, graph dispatch, packet validation, loop budget, StubExecutor | **done** — `f2e2f23` |
 | S2b | Scheduler (cron/tz, missed/overlap, queue depth), retries, crash-recovery watchdog | **done** — `dc4de11` (scheduler/retries/crash-recovery + migrations `0003`/`0004`) |
-| S2c | Next.js + tRPC control-plane API | **next — the sole prerequisite for the first UI (U0)** |
-| SOb | `packages/telemetry`: OTel + pino + bus traceparent + engine instrumentation (§0.5) | not started — built alongside S2c |
+| S2c | Next.js + tRPC control-plane API | **done** |
+| SOb | `packages/telemetry`: OTel + pino + bus traceparent + engine instrumentation (§0.5) | **done** |
+| U0 | First UI: graph editor, schedules, stub scripting, runs table, event feed | **done** |
 | S3a–S7, S5g, S8 | browser, agent, asset, store+decision, compiler, policy, graph compiler | not started |
 
-What exists as code: `packages/{core,db,bus,engine,policy}` + `apps/testkit` + `tests/system`
-— 53 tests in 16 files. The whole workspace typechecks clean (`tsc`). The suite talks to a
-project-owned Postgres container on `localhost:5434` (`docker compose up -d`, see
-`infra/README.md`) whose credentials are compiled in as defaults, so a clean checkout needs
-no environment beyond starting the container. If every
-DB-backed file fails at SCRAM auth *before any test logic runs*, that container is down or a
+What exists as code: `packages/{core,db,bus,engine,policy,telemetry}` + `apps/{engine,web,testkit}`
++ `tests/system` — 70 tests in 19 files. The whole workspace typechecks clean (`tsc`) and lints
+clean (`pnpm lint`). `docker compose up -d` brings up Postgres, applies migrations, and runs both
+the engine and the control plane on :3000; `docker compose up -d postgres` is the tests-only
+subset. Credentials are compiled in as defaults, so a clean checkout needs no environment. If
+every DB-backed file fails at SCRAM auth *before any test logic runs*, that container is down or a
 stale `PG*` variable is set in the shell — an environment problem, not a regression. (This
 replaced an earlier setup that connected as the OS user to a system Postgres on 5432, which
 broke as soon as an unrelated project took that port.)
 
-Phase 1 and Phase 2 of this document are therefore complete except for the control-plane API
-(S2c). The `tasks.kind` column (§4) does not exist yet and is added in **S5a** below — it is a
-nullable-defaulted `text` column alongside the existing `mode`, so no backfill and no rewrite of
-S2a's executor registry, which already keys on a discriminant.
+Phases 1 and 2 are therefore complete, and the first UI slice is on screen. The `tasks.kind`
+column (§4) does not exist yet and is added in **S5a** below — it is a nullable-defaulted `text`
+column alongside the existing `mode`, so no backfill and no rewrite of S2a's executor registry,
+which already keys on a discriminant. Until then the node kind lives in the graph document only,
+which is enough for the two things that read it today: the editor palette and the
+"a schedule may not bind to an asset node" check at publish.
 
 ---
 

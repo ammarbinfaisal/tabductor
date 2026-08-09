@@ -36,6 +36,13 @@
       "when": 1785908521622,
       "tag": "0004_schedule_max_queue_depth",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1786274316226,
+      "tag": "0005_traceparent",
+      "breakpoints": true
     }
   ]
 }

@@ -1,7 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { createLogger, type Logger } from "@tabductor/core";
 import { events, outbox, type Db, type EventRow } from "@tabductor/db";
-import { and, asc, eq, lte, sql } from "drizzle-orm";
+import {
+  currentTraceparent,
+  inSpan,
+  startConsumerSpan,
+  trace,
+  type Metrics,
+  type Tracer,
+} from "@tabductor/telemetry";
+import { and, asc, count, eq, lte, sql } from "drizzle-orm";
 import type pg from "pg";
 
 /** Postgres NOTIFY channel the dispatcher latches onto. */
@@ -30,6 +38,11 @@ export type PublishInput = {
  * for writes that never go through this function.
  */
 export async function publish(trx: Db, input: PublishInput): Promise<EventRow> {
+  // The producer context is whatever span is active here — the run's span, the scheduler's
+  // fire span, the API request. Publishing does not open a span of its own: the emit belongs
+  // to the operation that decided to emit, not to a span named after the write (§17.2 rule 3).
+  const traceparent = currentTraceparent();
+
   const [row] = await trx
     .insert(events)
     .values({
@@ -39,11 +52,12 @@ export async function publish(trx: Db, input: PublishInput): Promise<EventRow> {
       sourceRunId: input.sourceRunId ?? null,
       causationId: input.causationId ?? null,
       packet: input.packet ?? {},
+      traceparent,
       ...(input.occurredAt ? { occurredAt: input.occurredAt } : {}),
     })
     .returning();
   const event = row!;
-  await trx.insert(outbox).values({ eventId: event.eventId });
+  await trx.insert(outbox).values({ eventId: event.eventId, traceparent });
   return event;
 }
 
@@ -59,6 +73,9 @@ export type DispatcherOptions = {
   backoffBaseMs?: number;
   backoffMaxMs?: number;
   logger?: Logger;
+  /** Injected like `PolicyGate` (§17.2 rule 1); absent means the API's no-op tracer. */
+  tracer?: Tracer;
+  metrics?: Metrics;
 };
 
 export type Dispatcher = {
@@ -86,6 +103,8 @@ export function createDispatcher(handle: { db: Db; pool: pg.Pool }, opts: Dispat
   const backoffBaseMs = opts.backoffBaseMs ?? 100;
   const backoffMaxMs = opts.backoffMaxMs ?? 30_000;
   const log = opts.logger ?? createLogger({ name: "bus" });
+  const tracer = opts.tracer ?? trace.getTracer("@tabductor/bus");
+  const metrics = opts.metrics;
 
   const subscribers = new Set<Subscriber>();
   let running = false;
@@ -118,7 +137,13 @@ export function createDispatcher(handle: { db: Db; pool: pg.Pool }, opts: Dispat
   const dispatchBatch = async (): Promise<number> => {
     return db.transaction(async (trx) => {
       const claimed = await trx
-        .select({ id: outbox.id, attempts: outbox.attempts, event: events })
+        .select({
+          id: outbox.id,
+          attempts: outbox.attempts,
+          createdAt: outbox.createdAt,
+          traceparent: outbox.traceparent,
+          event: events,
+        })
         .from(outbox)
         .innerJoin(events, eq(events.eventId, outbox.eventId))
         .where(and(eq(outbox.status, "pending"), lte(outbox.nextAttemptAt, sql`now()`)))
@@ -127,7 +152,8 @@ export function createDispatcher(handle: { db: Db; pool: pg.Pool }, opts: Dispat
         .for("update", { of: outbox, skipLocked: true });
 
       for (const row of claimed) {
-        const error = await deliver(row.event);
+        metrics?.outboxDispatchLag.record((Date.now() - row.createdAt.getTime()) / 1000);
+        const error = await deliverTraced(row);
         if (!error) {
           await trx
             .update(outbox)
@@ -143,6 +169,7 @@ export function createDispatcher(handle: { db: Db; pool: pg.Pool }, opts: Dispat
             .update(outbox)
             .set({ status: "dead_letter", attempts, lastError: message })
             .where(eq(outbox.id, row.id));
+          metrics?.outboxDeadLetters.add();
           log.warn("event dead-lettered", { eventId: row.event.eventId, type: row.event.type, error: message });
           // Publishing the notice through the same trx keeps it atomic with the status
           // change. Guarded: a failing dead-letter notice must not spawn another.
@@ -176,6 +203,34 @@ export function createDispatcher(handle: { db: Db; pool: pg.Pool }, opts: Dispat
     return results.find((r) => r.status === "rejected")?.reason;
   };
 
+  /**
+   * Delivery inside its consumer span, so everything a subscriber does — creating runs,
+   * executing them, emitting the next event — hangs off the span the producer opened
+   * (§17.2 rule 3). The span never rethrows: a failing subscriber is retry bookkeeping, and
+   * the row's fate is decided by the caller.
+   */
+  const deliverTraced = async (row: {
+    attempts: number;
+    traceparent: string | null;
+    event: EventRow;
+  }): Promise<unknown> => {
+    const { span, ctx } = startConsumerSpan(tracer, `bus.dispatch ${row.event.type}`, {
+      traceparent: row.traceparent,
+      redelivery: row.attempts > 0,
+      attributes: {
+        "event.type": row.event.type,
+        "event.id": row.event.eventId,
+        "outbox.attempts": row.attempts,
+      },
+    });
+    return inSpan(span, ctx, async () => {
+      const error = await deliver(row.event);
+      // Inside, not after: `inSpan` ends the span in its `finally`.
+      if (error) span.setStatus({ code: 2, message: String(error) });
+      return error;
+    });
+  };
+
   const drain = async (): Promise<number> => {
     let total = 0;
     for (;;) {
@@ -206,6 +261,15 @@ export function createDispatcher(handle: { db: Db; pool: pg.Pool }, opts: Dispat
     async start() {
       if (running) return;
       running = true;
+      // The backlog gauge is read on collection, not on a timer of ours — and with no
+      // exporter configured the callback is never invoked at all.
+      metrics?.observeOutboxDepth(async () => {
+        const [row] = await db
+          .select({ pending: count() })
+          .from(outbox)
+          .where(eq(outbox.status, "pending"));
+        return row?.pending ?? 0;
+      });
       listener = await pool.connect();
       listener.on("notification", notify);
       listener.on("error", (err) => log.warn("listen connection error", { error: String(err) }));

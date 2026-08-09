@@ -102,6 +102,9 @@ export const events = pgTable(
     causationId: uuid("causation_id"),
     packet: jsonb("packet").notNull().default({}),
     occurredAt: ts("occurred_at").notNull().defaultNow(),
+    /** W3C trace context of the span that published this (§17.2 rule 3). Null when telemetry
+     * was disabled, which is the normal case — a null reads as "start a root span". */
+    traceparent: text("traceparent"),
   },
   (t) => [index("events_causation_idx").on(t.causationId)],
 );
@@ -164,6 +167,9 @@ export const outbox = pgTable(
     nextAttemptAt: ts("next_attempt_at").notNull().defaultNow(),
     dispatchedAt: ts("dispatched_at"),
     createdAt: createdAt(),
+    /** Copied from the event so the dispatcher can parent its consumer span without a join
+     * on the hot path (§17.2 rule 3). */
+    traceparent: text("traceparent"),
   },
   (t) => [
     index("outbox_pending_idx")

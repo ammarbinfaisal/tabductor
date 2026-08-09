@@ -8,6 +8,8 @@
       "@tabductor/bus": ["packages/bus/src/index.ts"],
       "@tabductor/engine": ["packages/engine/src/index.ts"],
       "@tabductor/policy": ["packages/policy/src/index.ts"],
+      "@tabductor/telemetry": ["packages/telemetry/src/index.ts"],
+      "@tabductor/telemetry/init": ["packages/telemetry/src/init.ts"],
       "@tabductor/testkit": ["apps/testkit/src/index.ts"]
     }
   },

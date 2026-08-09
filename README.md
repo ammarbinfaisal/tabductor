@@ -21,6 +21,7 @@ is and how to run without containers.
 | `packages/bus` | transactional outbox, dispatcher, dedupe, lineage |
 | `packages/engine` | run state machine, graph dispatch, scheduler, retries, the graph document |
 | `packages/policy` | `PolicyGate` interface (real evaluator in Phase 7) |
+| `packages/telemetry` | OTel + pino, the §17.2 metric registry — inert unless an OTLP endpoint is set |
 | `apps/engine` | composition root: the process that executes runs |
 | `apps/web` | Next.js + tRPC control plane and UI |
 | `apps/testkit` | fixture sites, Chrome launcher, test-database helper |

@@ -13,6 +13,7 @@
     "@tabductor/bus": "workspace:*",
     "@tabductor/core": "workspace:*",
     "@tabductor/db": "workspace:*",
+    "@tabductor/telemetry": "workspace:*",
     "ajv": "^8.17.1",
     "croner": "^9.0.0",
     "drizzle-orm": "^0.44.0",

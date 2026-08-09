@@ -1,7 +1,8 @@
 import { createDispatcher } from "@tabductor/bus";
-import { createLogger, loadConfig } from "@tabductor/core";
+import { loadConfig } from "@tabductor/core";
 import { createDb } from "@tabductor/db";
 import { createEngine } from "@tabductor/engine";
+import { initTelemetry } from "@tabductor/telemetry/init";
 
 /**
  * The engine process: the composition root that wires the packages together and runs them
@@ -14,11 +15,25 @@ import { createEngine } from "@tabductor/engine";
  */
 
 const config = loadConfig();
-const log = createLogger({ name: "engine" });
+// One of the two places `initTelemetry` may be called (§17.2 rule 1). Everything below
+// receives what it needs by injection; no package here imports the OTel SDK. With no OTLP
+// endpoint configured this is inert — no exporters, no sockets, no timers.
+const telemetry = await initTelemetry({ service: "tabductor-engine" });
+const log = telemetry.logger;
 const handle = createDb(config.DATABASE_URL);
 
-const dispatcher = createDispatcher(handle, { logger: log });
-const engine = createEngine({ db: handle.db, dispatcher, logger: log });
+const dispatcher = createDispatcher(handle, {
+  logger: log,
+  tracer: telemetry.tracer,
+  metrics: telemetry.metrics,
+});
+const engine = createEngine({
+  db: handle.db,
+  dispatcher,
+  logger: log,
+  tracer: telemetry.tracer,
+  metrics: telemetry.metrics,
+});
 
 /**
  * Engine before dispatcher, deliberately. `engine.start()` runs crash recovery and then
@@ -28,7 +43,10 @@ const engine = createEngine({ db: handle.db, dispatcher, logger: log });
  */
 await engine.start();
 await dispatcher.start();
-log.info("engine started", { database: config.DATABASE_URL.replace(/\/\/[^@]*@/, "//") });
+log.info("engine started", {
+  database: config.DATABASE_URL.replace(/\/\/[^@]*@/, "//"),
+  telemetry: telemetry.enabled ? "exporting" : "disabled",
+});
 
 /**
  * Stop taking work, let in-flight runs finish within the engine's grace period, then close
@@ -47,6 +65,8 @@ const shutdown = async (signal: string): Promise<void> => {
     await dispatcher.stop();
     await engine.stop();
     await handle.close();
+    // Last, so spans and metrics from the shutdown itself are flushed with everything else.
+    await telemetry.shutdown();
   } catch (err) {
     log.error("shutdown failed", { error: String(err) });
     process.exitCode = 1;

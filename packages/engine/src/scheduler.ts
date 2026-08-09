@@ -1,6 +1,7 @@
 import { publish } from "@tabductor/bus";
 import { createLogger, type Logger } from "@tabductor/core";
 import { runs, schedules, type Db, type ScheduleRow } from "@tabductor/db";
+import { context, inSpan, trace, type Metrics, type Tracer } from "@tabductor/telemetry";
 import { Cron } from "croner";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { dispatchToTask } from "./dispatch.js";
@@ -24,6 +25,9 @@ const LIVE = ["queued", "running"] as const;
 
 export type SchedulerDeps = {
   db: Db;
+  /** Injected like `PolicyGate` (§17.2 rule 1); absent means no measurement, no cost. */
+  metrics?: Metrics;
+  tracer?: Tracer;
   /** How often the DB is re-read for due schedules. */
   tickMs?: number;
   /**
@@ -46,6 +50,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   const tickMs = deps.tickMs ?? 250;
   const now = deps.now ?? Date.now;
   const log = deps.logger ?? createLogger({ name: "scheduler" });
+  const metrics = deps.metrics;
+  const tracer = deps.tracer ?? trace.getTracer("@tabductor/engine");
 
   let timer: NodeJS.Timeout | undefined;
   let ticking = false;
@@ -90,7 +96,15 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
 
     if (!booted.has(row.id)) {
       booted.add(row.id);
-      if (missedACatchUpTick(cron, row, at)) return fire(row, at);
+      // Missed-fire policy (§7), evaluated once per schedule per process. "Missed" means a
+      // tick came due while nobody was running: the next occurrence after the last fire is
+      // already in the past. Only `fire_once_catchup` acts on it, and it fires exactly one
+      // event however many ticks went by — never replay a backlog against a live website.
+      const missed = row.lastFiredAt ? cron.nextRun(row.lastFiredAt) : null;
+      if (row.missedPolicy === "fire_once_catchup" && missed && missed.getTime() <= at) {
+        return fire(row, at, missed);
+      }
+      if (missed && missed.getTime() <= at) metrics?.schedulerFires.add("skipped_missed");
       // Otherwise start the schedule from *here*: a never-fired schedule has no history to
       // count from, and a `skip` policy has just decided to forget the one it had. Both
       // want the same thing — `last_fired_at` pinned to now, so the next occurrence is
@@ -102,7 +116,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
 
     const due = row.lastFiredAt && cron.nextRun(row.lastFiredAt);
     if (!due || due.getTime() > at) return false;
-    return fire(row, at);
+    return fire(row, at, due);
   };
 
   /**
@@ -113,7 +127,21 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
    * tick that overlapped a slow one) finds it already taken. A skipped fire still consumes
    * its tick — the point of `skip` is that the tick is dropped, not deferred.
    */
-  const fire = async (row: ScheduleRow, at: number): Promise<boolean> => {
+  const fire = async (row: ScheduleRow, at: number, due: Date | null): Promise<boolean> => {
+    // The fire span is the *root* of a workflow's operational trace: everything downstream —
+    // the outbox row, the dispatch, the run, the events it emits — is parented off this one
+    // by the `traceparent` `publish` captures below (§17.2 rule 3).
+    const span = tracer.startSpan("scheduler.fire", {
+      root: true,
+      attributes: { "schedule.id": row.id, "task.id": row.taskId, "schedule.cron": row.cron },
+    });
+    const ctx = trace.setSpan(context.active(), span);
+    return inSpan(span, ctx, () => fireInSpan(row, at, due));
+  };
+
+  const fireInSpan = async (row: ScheduleRow, at: number, due: Date | null): Promise<boolean> => {
+    if (due) metrics?.schedulerFireLag.record(Math.max(0, at - due.getTime()) / 1000);
+
     const claimed = await db
       .update(schedules)
       .set({ lastFiredAt: new Date(at) })
@@ -148,6 +176,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           },
         }),
       );
+      metrics?.schedulerFires.add("skipped_overlap");
       return false;
     }
 
@@ -159,7 +188,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
 
     // The event carries no edge, so it is dispatched *at* the task — same run creation,
     // same claim, same loop budget as any other trigger.
-    await dispatchToTask(db, row.taskId, event);
+    await dispatchToTask(db, row.taskId, event, metrics);
+    // `queued` when the overlap policy let this one line up behind a live run; `fired` when
+    // it starts alone. The distinction is the whole point of the `queue` policy.
+    metrics?.schedulerFires.add(live.length > 0 ? "queued" : "fired");
     return true;
   };
 
@@ -179,21 +211,6 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
 
     tick,
   };
-}
-
-/**
- * Missed-fire policy (§7), evaluated once per schedule per process against `last_fired_at`.
- *
- * "Missed" means a tick came due while nobody was running: the next occurrence after the
- * last fire is already in the past. Only `fire_once_catchup` acts on that, and it fires
- * exactly one event however many ticks went by — never replay a backlog against a live
- * website. `skip` (and a schedule that has never fired) has nothing to do here; the caller
- * rebases it on now instead.
- */
-function missedACatchUpTick(cron: Cron, row: ScheduleRow, at: number): boolean {
-  if (row.missedPolicy !== "fire_once_catchup" || !row.lastFiredAt) return false;
-  const due = cron.nextRun(row.lastFiredAt);
-  return due !== null && due.getTime() <= at;
 }
 
 /** `undefined` for an unparseable expression — a bad schedule is skipped, never fatal. */
