@@ -4,8 +4,11 @@ Each subphase is implemented by an independent agent from a self-contained promp
 (`docs/subphases/SNN-*.md`), reviewed, then committed. Ordering is strict.
 
 Environment deviations from `impl-phases.md`:
-- Backing services come from the root `docker-compose.yml` (`infra/README.md`), which stands in
-  for the plan's `docker-compose.test.yml` and serves dev and test alike.
+- The root `docker-compose.yml` (`infra/README.md`) stands in for the plan's
+  `docker-compose.test.yml` and serves dev, test and *running the app* alike: `docker compose
+  up -d` brings up Postgres, a one-shot migrator, the engine composition root and the Next.js
+  control plane on :3000. `docker compose up -d postgres` is the tests-only subset. One image
+  for all three app services — they are one workspace under three commands.
 - Postgres: project-owned container on `localhost:5434`, user/password `tabductor`, template-clone
   DB per test. (Superseded the earlier "system PostgreSQL as the OS user on 5432" setup, which
   broke the moment an unrelated project claimed 5432. Defaults are compiled in, so a clean

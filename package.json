@@ -9,7 +9,8 @@
     "dev:web": "pnpm -F web dev",
     "lint": "pnpm -F web lint",
     "test": "vitest run",
-    "test:system": "vitest run --project system"
+    "test:system": "vitest run --project system",
+    "dev:engine": "tsx watch apps/engine/src/main.ts"
   },
   "devDependencies": {
     "@tabductor/bus": "workspace:*",
@@ -24,6 +25,7 @@
     "ajv": "^8.17.1",
     "drizzle-orm": "^0.44.0",
     "pg": "^8.13.0",
+    "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vitest": "^3.2.0"
   }

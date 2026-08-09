@@ -1,0 +1,23 @@
+{
+  "name": "engine",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@tabductor/bus": "workspace:*",
+    "@tabductor/core": "workspace:*",
+    "@tabductor/db": "workspace:*",
+    "@tabductor/engine": "workspace:*",
+    "@tabductor/policy": "workspace:*",
+    "tsx": "^4.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.0"
+  }
+}

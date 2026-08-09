@@ -1,13 +1,33 @@
-# Backing services for development and the system suite.
+# The whole application, from a cold checkout:
 #
-# Scope is deliberately "things the app talks to", not the app itself: there is no
-# composition root to containerise yet (`apps/engine` is unbuilt), and the browser stays
-# out on purpose — the testkit launches local Chrome per test on a throwaway profile, which
-# IS the BYO-CDP simulator (docs/subphases/ROADMAP.md, environment deviations).
+#   docker compose up -d                        # Postgres + migrations + engine + web
+#   open http://localhost:3000
 #
-#   docker compose up -d                        # Postgres only
+#   docker compose up -d postgres               # just the database — what the test suite needs
 #   docker compose --profile telemetry up -d    # + Grafana LGTM, for OTLP export
+#
+# Chrome stays out on purpose: the testkit launches local Chrome per test on a throwaway
+# profile, and that locally-launched browser IS the BYO-CDP simulator, connected to exactly
+# the way production connects to a user's endpoint (docs/subphases/ROADMAP.md).
 name: tabductor
+
+# One image for all three app services. They are the same workspace under three commands;
+# building it three times would let the engine and the web app drift between rebuilds.
+x-app: &app
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: tabductor-app:local
+  environment: &app-env
+    DATABASE_URL: postgres://tabductor:tabductor@postgres:5432/tabductor
+    LOG_LEVEL: ${LOG_LEVEL:-info}
+    # Unset = telemetry is a no-op (techical_plan §17.2 rule 2). The telemetry profile
+    # below sets it for the containers that should export.
+    OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+  restart: unless-stopped
 
 services:
   postgres:
@@ -30,6 +50,47 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  # Migrations are their own one-shot service, not something the app does on boot: engine
+  # and web start together, and two processes racing the same migration is how a schema
+  # ends up half-applied. Both wait for this to exit 0.
+  migrate:
+    <<: *app
+    command: ["node", "--import", "tsx", "packages/db/src/migrate.ts"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # Execution: outbox dispatcher, run loop, cron scheduler, timeout watchdog, crash recovery.
+  #
+  # `node --import tsx` rather than `pnpm start`: SIGTERM has to reach the engine's own
+  # handler so in-flight runs get their grace period, and every wrapper between PID 1 and
+  # the process is somewhere that signal can be dropped. Verified — a compose stop logs
+  # "shutting down" and exits 0, it does not die by signal.
+  engine:
+    <<: *app
+    command: ["node", "--import", "tsx", "apps/engine/src/main.ts"]
+    volumes: ["blobs:/data/blobs"]
+
+  # Control plane: Next.js + tRPC. Reads and writes definitions and run rows; never executes.
+  # `next start` binds 0.0.0.0 and holds nothing that needs flushing, so it keeps the plain
+  # script entry point.
+  web:
+    <<: *app
+    command: ["pnpm", "-F", "web", "start"]
+    ports: ["127.0.0.1:3000:3000"]
+    init: true
+    volumes: ["blobs:/data/blobs"]
+    healthcheck:
+      # node rather than curl/wget — neither is in the slim base image, and adding one just
+      # to answer a health check is a package to keep patched for no reason.
+      test:
+        ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/status').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
   # Grafana LGTM all-in-one — Loki (logs), Tempo (traces), Mimir (metrics), Grafana.
   # Opt-in: telemetry is no-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set (techical_plan
   # §17.2 rule 2), so the suite and docker-less dev never need this running.
@@ -37,7 +98,7 @@ services:
     image: grafana/otel-lgtm:latest
     profiles: ["telemetry"]
     ports:
-      - "127.0.0.1:3001:3000" # Grafana UI — 3001 to leave 3000 to `next dev`
+      - "127.0.0.1:3001:3000" # Grafana UI — 3001 to leave 3000 to the web app
       - "127.0.0.1:4317:4317" # OTLP gRPC
       - "127.0.0.1:4318:4318" # OTLP HTTP
     volumes: ["lgtm:/data"]
@@ -45,4 +106,5 @@ services:
 
 volumes:
   pgdata:
+  blobs:
   lgtm:
