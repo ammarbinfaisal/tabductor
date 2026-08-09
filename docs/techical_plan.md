@@ -1,9 +1,13 @@
 # Agentic Browsing Platform — Technical Design Document
 
-**Version:** 0.2 (draft for review)
+**Version:** 0.4 (draft for review)
 **Status:** Incorporates decisions made so far: async event-driven model, per-task policies, two node kinds (**browser** and **asset**), cron + event triggers, BYO CDP, two-agent browser/compiler model with deopt fallback, headers blocked by default with tool-based escalation, external MCP support (**asset nodes only**), LaTeX-based document generation, opt-in/out storage.
 
 **Changes in 0.2:** the single-node-type model is split into two *kinds* (§4). MCP moves off the browser node entirely and onto the new **asset node** (§13), which consumes events, calls MCP tools, and produces documents/data files (§13.5). Secrets get a concrete encryption design (§16, Threat 4).
+
+**Delta 0.3 → see `graph-compilation-llm.md`:** adds a third kind (**decision**, read-only store + emit, schedule- and event-triggered), the **workflow data store** (Postgres schema + role pair per workflow, in the same database for outbox atomicity), and the **graph compiler** — the save-time LLM pass that turns one prompt into a checked, versioned graph (node prompts, kinds, proposed grants, packet + store schemas), keyed to the §11 script compiler via task content hashes. Threats 9–12 live there.
+
+**Changes in 0.4:** §17 is split into **product observability** (run traces + inspector, unchanged) and **platform observability** — operator-facing OTel traces/metrics/logs shipped to a Grafana stack, with binding content rules (no user content in telemetry), bus-hop trace propagation, a metrics catalogue, and day-one dashboards/alerts. Decision #15.
 
 ---
 
@@ -103,7 +107,7 @@ The two kinds exchange data only through **events with validated packet schemas*
 
 ## 5. Workflow Graph (React Flow)
 
-The node taxonomy is two **task nodes** — `browser` and `asset` (§4) — plus **trigger/schedule** sources. Both kinds share one `tasks` table, one edge model, one run state machine, and one trace format; `kind` is a discriminant column, not a separate entity. The graph is unchanged by the split: edges bind an emitted event type on one node to the trigger input of another, regardless of kind.
+The node taxonomy is two **task nodes** — `browser` and `asset` (§4; 0.3 adds a third, **decision** — `graph-compilation-llm.md` §2) — plus **trigger/schedule** sources. Both kinds share one `tasks` table, one edge model, one run state machine, and one trace format; `kind` is a discriminant column, not a separate entity. The graph is unchanged by the split: edges bind an emitted event type on one node to the trigger input of another, regardless of kind.
 
 Conditionals are expressed by *which event a task emits*: the task prompt tells the agent under what conditions to emit `tweet.relevant` versus emitting nothing (or `tweet.ignored`).
 
@@ -131,7 +135,7 @@ Graph-level rules the engine must enforce:
 - **Loop budget.** Event-driven graphs can cycle (A emits → triggers B → emits → triggers A). Cycles are a feature (polling loops, retries) but need a per-workflow *hop budget* and/or per-event-lineage depth counter (`causation_chain` length limit) to prevent runaway loops burning LLM tokens and the user's browser.
 - **Fan-out limits.** One event may trigger N tasks; N runs may each need a browser. Bounded by the concurrency model (§8).
 - **Versioning.** Editing a graph while runs are in flight: runs pin the graph version they started under; new events route against the latest version.
-- **Kind constraints.** A schedule may only bind to a `kind=browser` task (asset nodes are event-triggered only, §4). An edge may connect any kind to any kind. The editor must reject a schedule→asset binding at save time, not at dispatch time.
+- **Kind constraints.** A schedule may only bind to a `kind=browser` task (asset nodes are event-triggered only, §4) — 0.3: or to `kind=decision`, which is schedule- and event-triggered (`graph-compilation-llm.md` §2.1). An edge may connect any kind to any kind. The editor must reject a schedule→asset binding at save time, not at dispatch time.
 
 ## 6. Event Bus
 
@@ -414,7 +418,78 @@ The design:
 
 ## 17. Observability
 
-Structured trace per run (already the compiler's input) rendered in a run inspector UI: timeline of actions with screenshots, network entries with policy verdicts, LLM calls with token counts, deopt points, emitted events with lineage links to the runs they triggered. Metrics worth tracking from day one: deopt rate per task version (the health signal for compiled mode), policy-denial counts (misconfiguration signal), LLM cost per run in ai vs compiled mode (the product's core value claim — measure it so you can show it), and per-endpoint browser error rates.
+Two audiences, two systems, deliberately separate:
+
+- **Product observability (§17.1)** — what *users* see: the run trace and its inspector. This is product data: stored in Postgres/blob storage, governed by the user's storage opt-outs and TTLs, and doubling as the compiler's input (§2 principle 4).
+- **Platform observability (§17.2)** — what *we* see as operators: OTel traces, metrics, and structured logs shipped to a Grafana stack. This is operational exhaust: never user-facing, never an input to any product feature, stored outside the product database, with operator-set retention that has nothing to do with user trace TTLs.
+
+The two **link but never mix**. Every OTel span carries `run_id`/`task_id`/`workflow_id` as attributes, and every run records its OTel `trace_id` — so an operator jumps from a Grafana alert to the exact run in the inspector, and from a bug report's run to the platform trace around it. But no product feature reads telemetry, and no telemetry carries product content (the content rules below are what make the separation real).
+
+### 17.1 Product observability (run inspector)
+
+Structured trace per run (already the compiler's input) rendered in a run inspector UI: timeline of actions with screenshots, network entries with policy verdicts, LLM calls with token counts, deopt points, emitted events with lineage links to the runs they triggered. Metrics worth tracking from day one: deopt rate per task version (the health signal for compiled mode), policy-denial counts (misconfiguration signal), LLM cost per run in ai vs compiled mode (the product's core value claim — measure it so you can show it), and per-endpoint browser error rates. These same signals feed §17.2's dashboards — measured once, in the runtime, surfaced to both audiences.
+
+### 17.2 Platform observability: OTel + Grafana + logs
+
+**Stack.** OpenTelemetry SDK for Node (`@opentelemetry/sdk-node`) with selective auto-instrumentation (`pg`, `http`, `undici`) plus manual spans for domain operations; everything exported over OTLP to a collector; Grafana LGTM behind it — **Loki** for logs, **Tempo** for traces, **Mimir/Prometheus** for metrics, Grafana for dashboards and alerting. For dev and single-node deployments the all-in-one `grafana/otel-lgtm` container is sufficient. Logs are structured JSON via **pino** — one logger factory, child loggers bound with `run_id`/`task_id`/`trace_id`, bridged to OTLP so Loki lines correlate to Tempo traces by `trace_id`. No `console.log` anywhere (lint rule); a log line without a bound context is a bug.
+
+**Wiring rules — these are architecture, not deployment detail:**
+
+1. **One telemetry package, initialized only at the composition root** (`apps/engine`, `apps/web`, `apps/renderer`). Library packages never import the SDK; they receive a tracer/meter/logger the same way they receive a `PolicyGate`. This keeps every package testable without a collector.
+2. **No-op by default.** With no `OTEL_EXPORTER_OTLP_ENDPOINT` configured, init resolves to no-op providers and pino writes pretty-printed console output. The app never assumes a collector exists; CI and dev-without-Docker run exactly this mode. Telemetry must be *inert* when disabled — zero sockets, zero background work.
+3. **Trace propagation across the bus.** The outbox row (and thus the event) carries a W3C `traceparent`. Emit happens inside a producer span; dispatch starts a consumer span as its child, so a workflow's causal chain — schedule fire → dispatch → run → emit → next dispatch — reads as **one distributed trace**, rooted at the schedule fire or external trigger. Redeliveries and retries start fresh spans with a **span link** back to the original producer context (at-least-once delivery means the same producer span can have several consumer descendants; links keep that honest). This is the operational mirror of `causation_id` lineage — same shape, different audience.
+4. **We instrument our system, not the user's traffic.** The network observer's view of page requests is product data and goes to the run trace only. OTel spans cover *our* operations: engine dispatch, DB queries, LLM API calls, MCP calls, render jobs, CDP command round-trips. The user's page traffic never becomes platform telemetry.
+
+**Content and cardinality rules — security rules, not tuning advice:**
+
+- Telemetry carries **identifiers, shapes, sizes, durations, and outcomes — never content**. No page content, no packet bodies, no prompts or completions, no MCP results, no LLM-authored SQL text, no asset contents. Content lives in the run trace under the user's opt-outs (§4); an operator log line containing a tweet body is a bug of the same class as a secret in a trace, because it would bypass those opt-outs.
+- Secrets and CDP `wss://` URLs never appear in any signal — restating Threat 4/5 obligations for the telemetry path, where they are easiest to violate by accident.
+- Navigation targets appear in telemetry at **domain granularity only** (`nav.domain="x.com"`); full URLs are product data.
+- **High-cardinality identifiers (`run_id`, `event_id`) are span/log attributes, never metric labels.** Metric labels come from the bounded sets: `kind`, `mode`, `status`, `model`, `check`, `reason`, endpoint id, workflow id. Histograms use exemplars to link to Tempo traces, which is how you get from "p99 spiked" to one concrete run without run-id labels.
+
+**Metrics catalogue (initial; names are binding the way tool registries are — rename via doc change, not drive-by):**
+
+| Metric | Type | Labels |
+|---|---|---|
+| `outbox_dispatch_lag_seconds` | histogram | — |
+| `outbox_undispatched_rows` | gauge | — |
+| `outbox_dead_letters_total` | counter | — |
+| `events_dedupe_dropped_total` | counter | — |
+| `scheduler_fire_lag_seconds` | histogram | — |
+| `scheduler_fires_total` | counter | `result=fired\|skipped_overlap\|skipped_missed\|queued` |
+| `runs_total` | counter | `kind`, `mode`, `status` |
+| `run_duration_seconds` | histogram | `kind`, `mode` |
+| `crash_recovered_runs_total` | counter | — |
+| `llm_tokens_total` | counter | `model`, `direction=in\|out` |
+| `llm_cost_usd_total` | counter | `model`, `kind`, `mode` |
+| `browser_endpoint_healthy` | gauge | `endpoint_id` |
+| `browser_disconnects_total` | counter | `endpoint_id` |
+| `browser_queue_wait_seconds` | histogram | `endpoint_id` |
+| `resource_limit_aborts_total` | counter | `limit` |
+| `policy_verdicts_total` | counter | `decision=allow\|deny`, `check` |
+| `secret_fills_total` | counter | `outcome=filled\|denied_origin\|denied_target\|rate_limited` |
+| `deopts_total` | counter | `trigger` |
+| `compile_runs_total` / `promotions_total` / `demotions_total` | counter | — |
+| `mcp_calls_total` / `mcp_call_duration_seconds` | counter / histogram | `server`, `outcome` |
+| `render_duration_seconds` | histogram | `outcome` |
+| `render_sandbox_kills_total` | counter | `reason` |
+| `store_query_duration_seconds` | histogram | — |
+| `store_sql_rejected_total` | counter | `reason` |
+
+`llm_cost_usd_total{mode}` divided by `runs_total{mode}` is the ai-vs-compiled cost-per-run curve — the product's core claim, straight off the board.
+
+**Dashboards and alerts, from day one** (Grafana dashboards are provisioned as JSON in the repo, versioned like code):
+
+1. **Engine health** — outbox lag/depth/dead letters, run outcomes by kind/mode, scheduler fire lag, crash recoveries.
+2. **Cost** — tokens and spend by model, cost-per-run ai vs compiled, deopt rate per task version.
+3. **Browser fleet** — endpoint health and queue wait, disconnects, resource-limit aborts.
+4. **Security signals** — policy denials by rule, secret-fill denials and rate-limit hits, `store_sql_rejected_total`, renderer/isolate sandbox kills, dead letters. This board is the "misconfiguration or attack?" surface; several of its series should sit at a flat zero, which is exactly what makes a deviation loud.
+
+Alert baseline: any dead letter; outbox lag p95 over 30s; scheduler fire lag over one tick; endpoint unhealthy over 5 minutes; deopt-rate spike per task; any sandbox kill; crash recovery on boot; LLM spend rate above a configured budget.
+
+**Sampling and retention.** v1 samples nothing (volume is low; completeness is worth more than the savings); the head-sampling knob exists via standard OTel env vars for later. Telemetry retention is an operator setting (14–30 days) and is unrelated to user-facing trace TTLs — deleting a user's traces does not touch platform telemetry, which contains no user content precisely so this independence is safe.
+
+**Testing posture.** Telemetry is inert in CI (rule 2) and is **not** an assertion surface — traces and events remain the system-test ground truth (testing doctrine, `impl-phases.md`). One smoke test asserts that disabled-mode init performs no I/O; beyond that, dashboards are verified by looking at them, which is what they are for.
 
 ## 18. Decisions
 
@@ -434,6 +509,7 @@ Resolved:
 12. **`docx` deferred** (§13.5) — **accepted.** The only LaTeX→docx path is pandoc and it is lossy in the ways that matter. Revisit with a purpose-built source format if users need editable Word files.
 13. **Secrets use envelope encryption + KMS, not client-side E2E** (§16) — **accepted.** E2E is incompatible with unattended runs. Tier 2 (user-wrapped, attended-only) provides the stronger guarantee where it is genuinely wanted.
 14. **Asset namespace is per-user; reads open, writes grant-scoped** (§13.5) — **accepted.** Cross-workflow reports are a core use case; write grants bound the blast radius.
+15. **Platform observability is OTel + Grafana (LGTM) + structured logs, separate from run traces** (§17.2) — **accepted.** Telemetry carries identifiers and measurements, never user content; spans and runs cross-reference by id; instrumentation is baked in from the current subphase onward (SOb in `impl-phases.md`), not retrofitted in hardening.
 
 Still open:
 
@@ -453,7 +529,7 @@ Still open:
 
 **Phase 4 — compiler:** trace consistency checker, compiler agent, static runtime on `isolated-vm`, guard/deopt loop, demotion budget, script diff UI. Browser tasks only.
 
-**Phase 5 — hardening:** multiple CDP endpoints with pooling/queueing, retries/backpressure, retention/TTL, asset quotas, metrics dashboards, loop budgets and lineage limits.
+**Phase 5 — hardening:** multiple CDP endpoints with pooling/queueing, retries/backpressure, retention/TTL, asset quotas, loop budgets and lineage limits. (Metrics dashboards are *not* deferred to here — telemetry and the day-one dashboards ship with SOb, §17.2; this phase only tunes alert thresholds and retention.)
 
 ## 20. Stack Notes
 
@@ -464,4 +540,5 @@ Still open:
 - **LaTeX:** `tectonic` — single binary, no TeX Live install, deterministic package fetching (pre-warm the cache into the image so the render container needs no network at runtime).
 - **MCP:** `@modelcontextprotocol/sdk`, one client per configured server, wired only into the asset node's tool registry.
 - **Crypto:** libsodium (`sodium-native`) for XChaCha20-Poly1305 + Argon2id; KMS/Vault Transit for KEK wrapping. Do not hand-roll envelope encryption.
+- **Telemetry:** `@opentelemetry/sdk-node` + OTLP → Grafana LGTM (Loki logs, Tempo traces, Mimir/Prometheus metrics); `pino` for structured JSON logs bridged to OTLP; the all-in-one `grafana/otel-lgtm` container for dev/single-node. No-op providers when no endpoint is configured (§17.2 rule 2) — the app never requires a collector.
 - **UI:** React Flow (decided) + a run-inspector; the inspector is not optional polish — it is the debugging surface for a probabilistic system and should exist from Phase 1.

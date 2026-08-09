@@ -22,14 +22,21 @@ Environment deviations from `impl-phases.md` (no Docker on this machine):
   wrapping `useEffect(() => {...}, [])`. No useState/useMemo/useCallback/custom hooks;
   client state lives in external stores or server components; data flows via server
   components / vanilla tRPC client, not React Query hooks.
+- **Platform observability** (techical_plan §17.2): OTel SDK + pino → Grafana LGTM; init at
+  composition roots only, injection elsewhere (like PolicyGate); **no-op when no OTLP endpoint
+  is configured** — which is the mode on this docker-less machine and in CI. From SOb onward,
+  every subphase instruments what it builds using the §17.2 binding metric names; telemetry
+  carries ids/durations/outcomes, never content. Telemetry is not a test assertion surface.
 
 | # | Subphase | Design refs | State |
 |---|----------|-------------|-------|
 | S0 | Monorepo scaffold + testkit (fixture sites, CDP launcher, test-DB helper) | impl §0, test infra | **done** `15914a0` |
 | S1 | DB migrations + outbox event bus + dedupe + lineage + PolicyGate/AllowAllGate | impl Phase 1, §14 | **done** `7e2b7fd` |
 | S2a | Workflow engine core: run state machine, graph eval, packet validation, loop budget, StubExecutor | impl Phase 2 | **done** `f2e2f23` |
-| S2b | Scheduler (cron/tz, missed/overlap), retries, crash recovery watchdog | impl Phase 2, §7 | **built, uncommitted** |
-| S2c | Next.js + tRPC control-plane API (workflows/tasks/edges/runs/events, zod end-to-end) | techical_plan §3, Phase 8 API | next |
+| S2b | Scheduler (cron/tz, missed/overlap), retries, crash recovery watchdog | impl Phase 2, §7 | **done** `dc4de11` |
+| S2c | Next.js + tRPC control-plane API (workflows/tasks/edges/runs/events, zod end-to-end) | techical_plan §3, UI track U0 | next — gates first UI (U0) |
+| SOb | Telemetry package: OTel init + pino bridge, outbox/events `traceparent`, engine+scheduler instrumentation, in-repo Grafana dashboards | techical_plan §17.2, impl §0.5 | alongside S2c |
+| U0 | First UI: React Flow graph editor, schedules editor, runs table, event feed, StubExecutor panel — over the S2c API only | impl UI track U0 | right after S2c |
 | S3a | Browser driver interface + Playwright CDP impl + navigation guard + trace recorder | impl Phase 3, §8 | |
 | S3b | Endpoint pool/leases + per-endpoint queue + network observer + resource limits + ScriptedBrowserExecutor | impl Phase 3, §9 | |
 | S4a | LLM adapter (live/record/replay) + perception builder | impl Phase 4 | prompt written |
@@ -40,15 +47,21 @@ Environment deviations from `impl-phases.md` (no Docker on this machine):
 | S5d | Asset store: paths, versions, write grants, asset refs in packets | impl Phase 5, §13.5 | |
 | S5e | LaTeX renderer worker (sandboxed container, tectonic, beamer decks) | impl Phase 5, §13.5, §16 T7 | |
 | S5f | Two-kind e2e: browser → asset (MCP + LaTeX) → browser upload | impl Phase 5 | |
+| S5g | Workflow store (`wfdata` schema + role pair, `store.*` tools, fenced SQL) + `kind=decision` + plan/act/record e2e | graph-compilation-llm §2–3, §10 | |
 | S6a | Static runtime sandbox + script registry + lint gate | impl Phase 6, §12 | |
 | S6b | Trace consistency checker + compiler agent | impl Phase 6, §11 | |
 | S6c | CompiledExecutor + deopt handoff + promotion/demotion + flagship e2e | impl Phase 6 | |
 | S7 | Real policy evaluator + redaction + approvals + MCP/asset/secret grants + regression sweep | impl Phase 7, §10 | |
+| S8 | Graph compiler: passes P1–P5, deterministic gate, compile reports, proposed-grants flow, task content hashes | graph-compilation-llm §4–6, §10 | after S7 |
 
-**Node kinds (§4), binding for all subphases from S5a on:** `kind=browser` gets `page.*`, `network.*`,
-`secrets.fill`, `emit`. `kind=asset` gets `mcp.*`, `assets.*`, `emit`. The registries are **disjoint by
-design** — this is the §4 security boundary, not a layering preference. Do not add `mcp.*` to a browser
-task or `page.*` to an asset task without a design-doc change.
+**Node kinds (§4 + graph-compilation-llm §2.1), binding for all subphases from S5a on:**
+`kind=browser` gets `page.*`, `network.*`, `secrets.fill`, `emit` — no store tools.
+`kind=asset` gets `mcp.*`, `assets.*`, `emit`, and (from S5g) `store.query/insert/upsert`.
+`kind=decision` (S5g) gets `store.query` + `emit` only — the smallest registry in the system.
+The registries are **disjoint by design** where it matters — this is the §4 security boundary, not
+a layering preference. Do not add `mcp.*` to a browser task, `page.*` to an asset task, or anything
+beyond `store.query`+`emit` to a decision task without a design-doc change. Schedules bind to
+`browser` and `decision` only; `asset` stays event-triggered only.
 
 Style rules binding for every subphase:
 - Composition over abstraction; no speculative interfaces beyond those the design docs name.

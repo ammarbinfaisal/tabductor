@@ -8,9 +8,10 @@ You are implementing subphase S2c. Read, in order:
    `packages/engine` (seed/dispatch APIs), `packages/bus`.
 
 ## Scope
-The control-plane API layer as a Next.js app. UI beyond a minimal smoke page is Phase 8 —
-do NOT build the React Flow editor or run inspector now. The deliverable is the typed API
-that the future UI and the system tests share.
+The control-plane API layer as a Next.js app. UI beyond a minimal smoke page is **U0**
+(the first UI-track slice, `docs/impl-phases.md`, which follows immediately after this
+subphase) — do NOT build the React Flow editor or run inspector now. The deliverable is
+the typed API that U0 and the system tests share.
 
 ## Deliverables
 

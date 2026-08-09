@@ -1,23 +1,37 @@
 # Agentic Browsing Platform — Incremental Implementation Plan (Backend-First)
 
-**Version:** 0.2
-**Companion to:** `techical_plan.md` (the design doc). Section references (§) below point there. Resolved §18 decisions are folded in below and in the design doc itself.
-**Ordering constraints (decided):** backend only until the tooling + event architecture is stable; UI afterwards; policy/permissions engine at the end. Testing is backend system testing throughout — no UI tests.
+**Version:** 0.4
+**Companion to:** `techical_plan.md` (the design doc) and `graph-compilation-llm.md` (decision kind, workflow store, graph compiler). Section references (§) below point to the design doc. Resolved §18 decisions are folded in below and in the design doc itself.
+**Ordering constraints (updated in 0.3):** "backend only" held until the tooling + event architecture stabilized — **that gate is passed** (Phases 1–2 done and committed). From S2c onward the UI ships incrementally per the **UI track** at the end of this document: each slice lands as soon as its backend prerequisite exists, starting with U0 which needs only S2c. The policy/permissions engine stays last. Testing remains backend system testing throughout — no UI tests.
 
 **Changes in 0.2:** two node kinds (§4) — `browser` and `asset`. MCP moves off the browser node onto the asset node, joined by the asset store and LaTeX document generation. What was Phase 5 (MCP + secrets) is now **Phase 5 (asset node)**; the compiler and policy phases shift by one and gain kind-awareness.
 
+**Changes in 0.3 (2026-08-09):** status verified against the repo — S2b is committed (`dc4de11`), not pending. "Phase 8 — UI at the end" is replaced by the **UI track** (slices U0–U6), each gated only on its backend prerequisite; the first visible UI is one subphase away. The **decision** node kind, the **workflow data store** (per-workflow Postgres schema + role pair), and the **graph compiler** (one prompt → checked graph) are specified in `graph-compilation-llm.md` and slot in as **S5g** and **S8** (see its §10); their UI lands as slices U3.5 and U6.
+
+**Changes in 0.4 (2026-08-09):** platform observability (design-doc §17.2 — OTel + Grafana LGTM + pino logs) becomes a cross-phase concern: §0.5 below adds the telemetry package as subphase **SOb** (alongside S2c) and binds every later subphase to instrument what it builds. The design doc's Phase 5 "metrics dashboards" item is superseded — dashboards ship with SOb.
+
 ---
 
-## Status — as of 2026-08-08
+## Status — as of 2026-08-09 (verified against the working tree)
 
 | Subphase | Scope | State |
 |---|---|---|
 | S0 | Monorepo scaffold, core, testkit (fixture sites, CDP launcher, test DBs) | **done** — `15914a0` |
 | S1 | Drizzle data layer, outbox bus, dedupe, lineage, PolicyGate/AllowAllGate | **done** — `7e2b7fd` |
 | S2a | Engine core: run state machine, graph dispatch, packet validation, loop budget, StubExecutor | **done** — `f2e2f23` |
-| S2b | Scheduler (cron/tz, missed/overlap, queue depth), retries, crash-recovery watchdog | **built, uncommitted** — `scheduler.ts`, `retry.ts`, migrations `0003`/`0004`, 3 system tests green |
-| S2c | Next.js + tRPC control-plane API | not started |
-| S3a–S7 | browser, agent, asset, compiler, policy | not started |
+| S2b | Scheduler (cron/tz, missed/overlap, queue depth), retries, crash-recovery watchdog | **done** — `dc4de11` (scheduler/retries/crash-recovery + migrations `0003`/`0004`) |
+| S2c | Next.js + tRPC control-plane API | **next — the sole prerequisite for the first UI (U0)** |
+| SOb | `packages/telemetry`: OTel + pino + bus traceparent + engine instrumentation (§0.5) | not started — built alongside S2c |
+| S3a–S7, S5g, S8 | browser, agent, asset, store+decision, compiler, policy, graph compiler | not started |
+
+What exists as code: `packages/{core,db,bus,engine,policy}` + `apps/testkit` + `tests/system`
+— 53 tests in 16 files. The whole workspace typechecks clean (`tsc`). Verification caveat for
+CI and agent sessions: the testkit connects to Postgres as the OS user over TCP with no
+password (`apps/testkit/src/db.ts`), so a shell without `PGPASSWORD`/`~/.pgpass` fails all 25
+DB-backed system tests at SCRAM auth *before any test logic runs* — only the DB-free files
+(fixture sites, CDP launcher, policy gate) pass there. A red suite in such an environment is
+an auth problem, not a regression; export credentials (or add a pgpass entry) before reading
+anything into it.
 
 Phase 1 and Phase 2 of this document are therefore complete except for the control-plane API
 (S2c). The `tasks.kind` column (§4) does not exist yet and is added in **S5a** below — it is a
@@ -54,6 +68,45 @@ Two small carve-outs I'd keep even in the "no policy yet" phases, stated directl
 
 ---
 
+## 0.5 Cross-phase platform observability (SOb — design doc §17.2)
+
+Same shape as §0: a thin interface built now so nothing needs retrofitting. Platform observability
+(operator-facing OTel traces/metrics/logs → Grafana LGTM) is specified in design-doc §17.2; this
+section is its build placement.
+
+**SOb — `packages/telemetry`, built alongside S2c** (it instruments the engine that already exists
+and the API being built; every subphase after it arrives instrumented):
+
+- Init module used **only by composition roots** (`apps/engine`, `apps/web`, `apps/renderer`);
+  packages receive tracer/meter/logger by injection, exactly like `PolicyGate`. **No-op when
+  `OTEL_EXPORTER_OTLP_ENDPOINT` is unset** — zero sockets, zero background work; this is the CI
+  and docker-less-dev mode (this machine runs without Docker; the `grafana/otel-lgtm` container
+  runs wherever Docker exists).
+- pino logger factory (JSON, child loggers bound with `run_id`/`task_id`/`trace_id`, OTLP bridge);
+  lint rule banning `console.log`.
+- **Bus propagation:** `traceparent` column on `outbox`/`events` (one additive migration); emit =
+  producer span, dispatch = child consumer span, redeliveries/retries = span links (§17.2 rule 3).
+- Instrumentation of what already exists: outbox lag/depth/dead-letters, dedupe drops, scheduler
+  fire lag and fire results, run outcomes/durations, crash recoveries — the §17.2 metrics
+  catalogue rows that have backing code today, under their **binding names**.
+- Grafana dashboard JSON provisioned in-repo (engine-health + security-signals boards first;
+  cost and fleet boards gain panels as their metrics appear).
+
+**Standing rule for every subsequent subphase:** instrument what you build, using the §17.2
+catalogue names — S3a/S3b: endpoint health, queue wait, disconnects, resource-limit aborts;
+S4a/S4b: LLM tokens/cost, step budgets; S5b: `secret_fills_total`; S5c: MCP call metrics;
+S5e: render duration + sandbox kills; S5g: store query duration + `store_sql_rejected_total`;
+S6a–c: deopts, promotions/demotions; S7: `policy_verdicts_total` gains real rule labels.
+A subphase whose metrics are missing is incomplete the same way one without tests is.
+
+**Content rules are binding here too:** telemetry carries identifiers, durations, sizes, and
+outcomes — never page content, packets, prompts, SQL text, secrets, or CDP URLs; navigation
+appears at domain granularity only (§17.2). Telemetry is **not** an assertion surface — traces
+and events remain the system-test ground truth; the one telemetry test is the disabled-mode
+no-I/O smoke test.
+
+---
+
 ## Repository & runtime layout
 
 TypeScript monorepo (pnpm workspaces). One deployable process in early phases (`engine`), splitting later only if needed.
@@ -61,10 +114,12 @@ TypeScript monorepo (pnpm workspaces). One deployable process in early phases (`
 ```
 /packages
   /core        — shared types, ids, errors, config loader, zod schemas
-  /db          — migrations (node-pg-migrate), query layer (kysely), outbox helpers
+  /db          — Drizzle schema (drizzle-orm/pg-core), drizzle-kit migrations, outbox helpers
   /bus         — event bus: publish (outbox), dispatcher, dedupe, lineage
   /engine      — workflow engine: graph eval, run state machine, scheduler
   /policy      — PolicyGate interface + AllowAllGate (real evaluator in Phase 7)
+  /telemetry   — OTel init (composition roots only), pino logger factory,
+                 metric registry with the §17.2 binding names (SOb, §0.5)
   /browser     — CDP driver interface, playwright-cdp impl, pool, queues,
                  network observer, trace recorder, action API
   /agent       — browser agent: perception builder, tool registry, agent loop,
@@ -117,7 +172,7 @@ TypeScript monorepo (pnpm workspaces). One deployable process in early phases (`
 
 **Exit:** bus semantics are boringly reliable; every later phase publishes through it.
 
-## Phase 2 — Workflow engine + scheduler (stub executors) ✅ **DONE** (S2a committed, S2b uncommitted; S2c API outstanding)
+## Phase 2 — Workflow engine + scheduler (stub executors) ✅ **DONE** (S2a `f2e2f23`, S2b `dc4de11`; S2c API outstanding)
 
 **Goal:** the full trigger→dispatch→run→emit loop working *without a browser*. Tasks are executed by a **StubExecutor** that reads a scripted behavior from the task definition (`emit these events with these packets after this delay / fail / hang`). This is deliberate: the engine's correctness must be testable independently of browsers and LLMs, and the StubExecutor remains permanently useful for testing graphs.
 
@@ -144,7 +199,7 @@ TypeScript monorepo (pnpm workspaces). One deployable process in early phases (`
 - Scheduler: fake clock injection; cron fires; overlap `skip` verified with a long-running stub; missed-fire `skip` vs `fire_once_catchup` after simulated downtime.
 - Graph versioning: edit graph mid-run → in-flight run completes under old version; its emitted event routes per new version.
 
-**Exit:** the events architecture is done and system-tested. (Per your ordering, this is the "basic tooling + events ready" gate — UI work *could* start in parallel from here, consuming the same DB/APIs, but nothing in later phases depends on it.)
+**Exit:** the events architecture is done and system-tested. This was the "basic tooling + events ready" gate, and it is passed — per the 0.3 ordering, the **UI track** starts the moment S2c lands: U0 renders exactly the tables and events this phase produces.
 
 ## Phase 3 — Browser runtime + CDP layer (no AI yet)
 
@@ -302,11 +357,38 @@ Asserts: the PDF exists and is valid; the browser node received bytes matching t
 - Approval flow: purchase-class action on `fake-gram` with `requires_approval` → run parks, event emitted, test approves via API → run resumes and completes; expiry path → run fails `approval_expired`.
 - **Regression sweep:** the *entire* Phase 2–6 system-test suite re-runs under a permissive-grants profile — proving the gate swap changed nothing when grants allow everything. This is the payoff of §0; if this sweep fails, the interface leaked somewhere.
 
-## Phase 8 — UI (out of backend scope, listed for sequence)
+## The UI track — incremental, gated only on prerequisites (replaces "Phase 8 — UI")
 
-React Flow editor over `workflows/edges/event_defs` — with **two node types in the palette** (browser, asset — §4) rendering different config panels and different validation (no schedule on an asset node) — including **cycle detection with an in-editor warning** (cycles are legal, bounded by the loop budget, but the user must see them) — run inspector over `trace_entries` (the inspector first — you'll want it while hardening), grants editor, approvals inbox.
+The 0.2 ordering ("UI after everything") is retired. Its actual rationale was "don't build UI
+on an unstable event architecture," and that architecture is now stable and system-tested
+(Phases 1–2 done). From here, **the UI ships in thin slices, each landing as soon as — and no
+later than — its backend prerequisite**. You see a working UI one subphase from today: U0's
+only prerequisite is S2c.
 
-**Asset-specific UI:** an asset browser (paths, versions, download, quota usage), inline PDF preview for rendered deliverables, an MCP server catalog with per-task tool selection, and the secrets manager (add/rotate, origin binding, Tier-1 vs Tier-2 choice with the trade-off stated plainly — Tier 2 means scheduled runs park for approval). **Packet schema authoring**: the node editor takes a free-text field description, compiled to JSON Schema by an LLM at save time (server-side, in the control-plane API); the engine only ever sees the resulting JSON Schema — no engine change. Both the emitting node and consuming nodes render/inject the declared fields. The backend API for all of it already exists as the same service endpoints the system tests exercise; keep it that way (system tests as living API contract).
+Two standing rules, which are what make the slices cheap:
+
+1. **Every slice consumes the same tRPC procedures the system tests exercise.** No UI-only
+   endpoints, no business logic in `apps/web` beyond composition (the S2c stack rules:
+   thin Next.js, zod end-to-end, no hooks beyond `useMountHook`). If a slice needs data no
+   endpoint serves, that is an S2c-family backend change with a system test — the UI never
+   fills the gap itself. System tests stay the living API contract.
+2. **Still no UI tests** (doctrine unchanged). A slice is verified by the backend tests of
+   the endpoints it renders, plus eyes.
+
+| Slice | Lands with | What you see on screen | Prerequisite |
+|---|---|---|---|
+| **U0 — first UI** | **S2c** | Workflow list; React Flow graph editor over `workflows/tasks/edges/event_defs` (browser + asset in the palette, kind/schedule constraints validated at save, **cycle detection with in-editor warning** — cycles are legal, bounded by the loop budget, but must be visible); schedules editor (cron/tz/missed/overlap); runs table with live status; event feed with lineage links; a StubExecutor scripting panel. Author a graph, cron- or hand-trigger it, and watch runs and events flow — before any browser exists. | S2c only |
+| **U1 — run inspector** | S3a–S3b | The debugging surface, deliberately *before* the agent exists (you'll want it while hardening Phase 3): per-run timeline of navigations, actions, and network entries with policy verdicts, screenshots via `blob_ref`, resource-limit and disconnect failure detail; endpoint health panel for `cdp_endpoints`. | S3a (traces), S3b (observer/pool) |
+| **U2 — agent visibility** | S4a–S4b | Inspector gains LLM calls (prompts, token counts, tool-call sequences) and emitted-packet views. **Packet-schema authoring** in the node editor: free-text field description → JSON Schema compiled server-side at save (§18.2); the engine only ever sees the resulting schema — no engine change. Emitting and consuming nodes both render the declared fields. | S4b |
+| **U3 — asset surfaces** | S5a–S5f | Asset browser (paths, versions, download, quota usage), inline PDF preview for rendered deliverables, MCP server catalog with per-task tool selection, secrets manager (add/rotate, origin binding, Tier-1 vs Tier-2 with the trade-off stated plainly — Tier 2 parks scheduled runs for approval). Asset node's config panel becomes real. | S5b–S5e as each ships |
+| **U3.5 — decision + store** | S5g | Palette gains the **decision** node; workflow store browser (tables, row counts, schema per version) and a read-only query console running the *same fenced read path* as `store.query`; store-schema migration diffs (additive/destructive) shown at publish. | S5g (`graph-compilation-llm.md` §10) |
+| **U4 — compiler** | S6a–S6c | Compiled-script viewer with version diff (users must be able to inspect what will run against their browser, §11), deopt timeline in the inspector, promotion/demotion state on nodes, and **LLM-cost-per-run, ai vs compiled** — the product's core claim, on screen from the day it's measurable. | S6c |
+| **U5 — policy** | S7 | Grants editor per task, account-baseline editor, approvals inbox (park / approve / expiry countdown), redaction settings, storage opt-outs. | S7 |
+| **U6 — one-prompt authoring** | S8 | Intent prompt → draft graph rendered in the editor; compile-report panel (per-check pass/warn/fail); **proposed-grants review checklist** with diffs on recompile — the approval flow that turns proposals into `task_grants`. | S8 (`graph-compilation-llm.md` §4–5) |
+
+Sequencing note: slices are ordered by prerequisite, not priority — U1 (inspector) is the one
+worth pulling as early as its data exists, since it is the debugging surface for everything
+after it.
 
 ---
 
