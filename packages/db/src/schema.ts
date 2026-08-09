@@ -1,5 +1,6 @@
 import {
   bigserial,
+  boolean,
   index,
   integer,
   jsonb,
@@ -119,6 +120,9 @@ export const runs = pgTable(
     status: text("status").notNull().default("queued"),
     modeUsed: text("mode_used").notNull(),
     attempt: integer("attempt").notNull().default(0),
+    /** Retry backoff gate (§15): a `queued` run is invisible to the engine's pickup poll
+     * until now() passes this. Null means "runnable immediately". */
+    notBefore: ts("not_before"),
     heartbeatAt: ts("heartbeat_at"),
     startedAt: ts("started_at"),
     /** Wall-clock kill time, set on `running` from `limits_json.run_timeout_ms`. The
@@ -131,6 +135,7 @@ export const runs = pgTable(
   (t) => [
     index("runs_status_heartbeat_idx").on(t.status, t.heartbeatAt),
     index("runs_deadline_idx").on(t.status, t.deadlineAt),
+    index("runs_queued_idx").on(t.status, t.notBefore),
   ],
 );
 
@@ -167,6 +172,10 @@ export const outbox = pgTable(
   ],
 );
 
+/**
+ * Cron schedules (§7). The row is the source of truth — the scheduler holds no state a
+ * restart could lose, and `last_fired_at` is what the missed-fire policy reads on boot.
+ */
 export const schedules = pgTable("schedules", {
   id: text("id").primaryKey(),
   taskId: text("task_id")
@@ -176,7 +185,10 @@ export const schedules = pgTable("schedules", {
   tz: text("tz").notNull().default("UTC"),
   missedPolicy: text("missed_policy").notNull().default("skip"),
   overlapPolicy: text("overlap_policy").notNull().default("skip"),
+  /** How many fires may wait behind the live run under `queue` (§7); user-configurable. */
+  maxQueueDepth: integer("max_queue_depth").notNull().default(1),
   lastFiredAt: ts("last_fired_at"),
+  enabled: boolean("enabled").notNull().default(true),
 });
 
 /** `ctx.state` (§12) — per-task key/value, used by emitIfNew and compiled scripts. */

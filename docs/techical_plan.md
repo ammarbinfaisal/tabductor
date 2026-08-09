@@ -1,7 +1,9 @@
 # Agentic Browsing Platform — Technical Design Document
 
-**Version:** 0.1 (draft for review)
-**Status:** Incorporates decisions made so far: async event-driven model, per-task policies, single node type (task prompt + emitted data packets), cron + event triggers, BYO CDP, two-agent browser/compiler model with deopt fallback, headers blocked by default with tool-based escalation, external MCP support, opt-in/out storage.
+**Version:** 0.2 (draft for review)
+**Status:** Incorporates decisions made so far: async event-driven model, per-task policies, two node kinds (**browser** and **asset**), cron + event triggers, BYO CDP, two-agent browser/compiler model with deopt fallback, headers blocked by default with tool-based escalation, external MCP support (**asset nodes only**), LaTeX-based document generation, opt-in/out storage.
+
+**Changes in 0.2:** the single-node-type model is split into two *kinds* (§4). MCP moves off the browser node entirely and onto the new **asset node** (§13), which consumes events, calls MCP tools, and produces documents/data files (§13.5). Secrets get a concrete encryption design (§16, Threat 4).
 
 ---
 
@@ -36,25 +38,30 @@ Out of scope for v1: multi-tenant organizations, marketplace of workflows, hoste
 └─────────────┘            │   task dispatch)    │               └───────────┘
                            └──────────┬──────────┘
                                       │ dispatch(task, packet)
-                           ┌──────────▼──────────┐
-                           │    Task Executor    │
-                           │ fast path? ──yes──► Static Runtime (sandboxed JS)
-                           │      │no                     │ deopt
-                           │      ▼                       ▼
-                           │  Browser Agent  ◄────────────┘
-                           └──────────┬──────────┘
-                                      │ actions (click, read, navigate…)
-                           ┌──────────▼──────────┐
-                           │   Policy Engine     │  ← single choke point
-                           └──────────┬──────────┘
-                                      │ permitted actions
-                           ┌──────────▼──────────┐        ┌──────────────┐
-                           │   Browser Runtime   │───────►│ User's CDP   │
-                           │ (CDP client, network│  wss   │ (Chrome etc.)│
-                           │  observer, tracer)  │        └──────────────┘
-                           └──────────┬──────────┘
-                                      │ traces
-                     ┌────────────────┼────────────────┐
+                     ┌────────────────┴────────────────┐
+                     │ kind=browser              kind=asset
+          ┌──────────▼──────────┐          ┌──────────▼──────────┐
+          │   Task Executor     │          │   Asset Executor    │
+          │ fast path? ─yes─► Static RT    │  (always ai mode)   │
+          │      │no             │ deopt   │  MCP · assets · emit│
+          │      ▼               ▼         └──────────┬──────────┘
+          │  Browser Agent ◄─────┘                    │
+          └──────────┬──────────┘                     │
+                     │ actions                        │ mcp calls · writes
+          ┌──────────▼─────────────────────────────────▼──────────┐
+          │                   Policy Engine                        │ ← single choke point
+          └──────────┬─────────────────────────────────┬──────────┘
+                     │ permitted actions               │
+          ┌──────────▼──────────┐   ┌──────────────┐   │   ┌──────────────┐
+          │   Browser Runtime   │──►│ User's CDP   │   ├──►│  MCP Servers │
+          │ (CDP client, network│wss│ (Chrome etc.)│   │   └──────────────┘
+          │  observer, tracer)  │   └──────────────┘   │   ┌──────────────┐
+          └──────────┬──────────┘                      └──►│ Asset Store  │
+                     │                                     │ + LaTeX      │
+                     │                                     │ renderer     │
+                     │                                     │ (sandboxed)  │
+                     │ traces                              └──────────────┘
+                     ├────────────────┬────────────────┐
                      ▼                ▼                ▼
               ┌────────────┐  ┌──────────────┐  ┌────────────┐
               │ Event Bus  │  │  State Store │  │  Compiler  │
@@ -65,11 +72,24 @@ Out of scope for v1: multi-tenant organizations, marketplace of workflows, hoste
                                               Script Registry
 ```
 
-Components communicate only through the event bus and the state store. The Policy Engine sits between anything that wants to act on a browser and the CDP connection — including generated JS.
+Components communicate only through the event bus and the state store. The Policy Engine sits between anything that wants to act — on a browser, an MCP server, or the asset store — and the resource it acts on, including generated JS. The two executor branches share the engine, the bus, the trace format, and the policy choke point; they differ only in which tools exist above the line.
 
 ## 4. Core Concepts
 
-**Task.** A unit of work defined by a prompt, a policy grant set, resource limits, and a set of declared *emitted events* (each with a data-packet schema). A task has exactly one execution mode at a time: `ai` (browser agent) or `compiled` (static JS with deopt fallback).
+**Task.** A unit of work defined by a prompt, a policy grant set, resource limits, and a set of declared *emitted events* (each with a data-packet schema).
+
+Tasks have two orthogonal discriminants:
+
+- **`kind`** — what the task can *do*: `browser` or `asset`. This selects the tool registry and the executor. It is fixed at authoring time and is what the graph editor calls a "node type."
+- **`mode`** — *how* it executes: `ai` (LLM-driven) or `compiled` (static JS with deopt fallback). Only `browser` tasks are compilable; `asset` tasks are permanently `ai`.
+
+**Browser node (`kind=browser`).** The original task node. Drives a page over CDP. Tools: `page.*`, `network.*`, `secrets.fill`, `emit`. Triggered by schedules or events. Compilable (§11).
+
+**Asset node (`kind=asset`).** Consumes events, calls MCP tools, and produces files. Tools: `mcp.*`, `assets.*`, `emit`. **No browser, no CDP endpoint, no `page.*`, no `network.*`.** Event-triggered only — no schedules, because a node with nothing to consume has nothing to generate. Never compiled: MCP results and LLM prose have no stable structure for guards to assert on, so the compiler skips `kind=asset` entirely (§11).
+
+**Why the kinds are separated — this is a security control, not an ergonomic one.** Browser agent + MCP in one tool registry is the canonical exfiltration chain: injected page content steers the agent, which calls an MCP tool that has network egress (HTTP, email, Slack), and page data leaves the system. Splitting the registries severs that chain *at the tool boundary* rather than with prompt instructions, which is the only kind of mitigation §2 principle 2 accepts. The reverse holds too: an injected MCP result cannot navigate anywhere, because `page.*` is not in the asset node's tool list.
+
+The two kinds exchange data only through **events with validated packet schemas** — a narrow, typed, audited channel. Binary payloads never travel in packets; a packet carries an **asset reference** (`{asset_id, path, mime, sha256}`) and the consuming node resolves it (§13.5).
 
 **Run.** One execution of a task, triggered by a schedule or an event. Runs have a timeout (task-level setting), a status machine (`queued → running → succeeded | failed | timed_out | cancelled | awaiting_approval`), and a trace.
 
@@ -83,11 +103,25 @@ Components communicate only through the event bus and the state store. The Polic
 
 ## 5. Workflow Graph (React Flow)
 
-You've collapsed the node taxonomy to a single **task node** plus **trigger/schedule** sources. Conditionals are expressed by *which event a task emits*: the task prompt tells the agent under what conditions to emit `tweet.relevant` versus emitting nothing (or `tweet.ignored`). Edges connect an emitted event type on one node to the trigger input of another.
+The node taxonomy is two **task nodes** — `browser` and `asset` (§4) — plus **trigger/schedule** sources. Both kinds share one `tasks` table, one edge model, one run state machine, and one trace format; `kind` is a discriminant column, not a separate entity. The graph is unchanged by the split: edges bind an emitted event type on one node to the trigger input of another, regardless of kind.
 
-This is coherent, but be aware of the trade-off you're making, because it's a real one:
+Conditionals are expressed by *which event a task emits*: the task prompt tells the agent under what conditions to emit `tweet.relevant` versus emitting nothing (or `tweet.ignored`).
 
-- **What you gain:** one node type, a simpler mental model, and conditions that can be arbitrarily semantic ("emit only if the tweet is about AI") since the LLM evaluates them.
+The canonical example (§1) spans both kinds:
+
+```
+[browser: read tweets] --tweet.detected--> [asset: generate image via MCP]
+                                                 |
+                                            image.ready {asset_ref}
+                                                 v
+                                        [browser: post to Instagram]
+```
+
+The third node uploads the image via `page.upload(anchor, assetRef)` — which is why assets must outlive the run that created them (§13.5).
+
+Conditionals-as-emissions is coherent, but be aware of the trade-off you're making, because it's a real one:
+
+- **What you gain:** no dedicated conditional node, a simpler mental model, and conditions that can be arbitrarily semantic ("emit only if the tweet is about AI") since the LLM evaluates them.
 - **What you give up:** deterministic, free, auditable branching. Every conditional now costs an LLM call and is probabilistic. "Retry if status ≥ 500" or "route by language code" shouldn't need a model.
 
 **Recommended middle ground that preserves your single-node model:** keep the node taxonomy as-is, but allow an optional *edge predicate* — a small JSONPath/JMESPath expression evaluated against the packet (`$.tweet.lang == "en"`). No new node type, no prompt, evaluated by the engine for free. Semantic filtering stays in the task prompt; mechanical filtering moves to edges. If you skip this in v1, design the edge model so it can be added without migration (edges already carry an event-type binding; a predicate is just one more nullable field).
@@ -97,6 +131,7 @@ Graph-level rules the engine must enforce:
 - **Loop budget.** Event-driven graphs can cycle (A emits → triggers B → emits → triggers A). Cycles are a feature (polling loops, retries) but need a per-workflow *hop budget* and/or per-event-lineage depth counter (`causation_chain` length limit) to prevent runaway loops burning LLM tokens and the user's browser.
 - **Fan-out limits.** One event may trigger N tasks; N runs may each need a browser. Bounded by the concurrency model (§8).
 - **Versioning.** Editing a graph while runs are in flight: runs pin the graph version they started under; new events route against the latest version.
+- **Kind constraints.** A schedule may only bind to a `kind=browser` task (asset nodes are event-triggered only, §4). An edge may connect any kind to any kind. The editor must reject a schedule→asset binding at save time, not at dispatch time.
 
 ## 6. Event Bus
 
@@ -106,7 +141,7 @@ Delivery semantics: **at-least-once**, with consumer-side deduplication by `even
 - Task executor records `(task_id, event_id)` before starting; a redelivered event that matches an existing record is dropped.
 - Side-effectful tasks (posting to Instagram) should additionally use an application-level idempotency key derived from the packet (e.g. tweet ID) so that a *retried run* — not just a redelivered event — doesn't double-post. This must be surfaced to the task author as a field: "dedupe key (optional, from packet)".
 
-System events (emitted by the platform, subscribable like user events): `run.completed`, `run.failed`, `run.timed_out`, `deopt.occurred`, `compile.succeeded`, `policy.denied`, `approval.requested`, `approval.granted`. This lets users build error-handling and notification flows with the same single node type instead of you shipping dedicated error-handler nodes.
+System events (emitted by the platform, subscribable like user events): `run.completed`, `run.failed`, `run.timed_out`, `deopt.occurred`, `compile.succeeded`, `policy.denied`, `approval.requested`, `approval.granted`. This lets users build error-handling and notification flows out of ordinary task nodes instead of you shipping dedicated error-handler nodes. Note that asset nodes make this materially more useful: a `run.failed` event can trigger an asset node that renders a failure report or calls a Slack MCP tool, with no browser involved.
 
 Implementation: for a single-node deployment, Postgres (`LISTEN/NOTIFY` or an outbox table polled by the engine) is enough and keeps events transactional with state writes. Redis Streams or NATS if/when you distribute. Do **not** start with Kafka.
 
@@ -115,7 +150,7 @@ Implementation: for a single-node deployment, Postgres (`LISTEN/NOTIFY` or an ou
 Cron expressions with timezone per schedule. Decisions to encode now:
 
 - **Missed fires** (system was down): policy per schedule — `skip` (default) or `fire_once_catchup`. Never replay every missed tick against a live website.
-- **Overlap**: if the previous scheduled run is still going, default `skip`, optional `queue` with max queue depth 1. Overlapping browser runs against the same CDP session are a correctness hazard (§8).
+- **Overlap**: if the previous scheduled run is still going, default `skip`, optional `queue` with a user-configurable max queue depth (default 1). Overlapping browser runs against the same CDP session are a correctness hazard (§8).
 - Schedules are just another event source: a fire produces a synthetic event with an empty packet, entering the same dispatch path.
 
 ## 8. Browser Runtime and BYO CDP
@@ -162,6 +197,8 @@ Grants are **per task** (your decision). The enforcement architecture:
 ## 11. Compiler Agent and Deopt Model
 
 The JIT analogy is the right shape; here is the concrete contract.
+
+**Scope: `kind=browser` tasks only.** Asset tasks (§4) are never compiled. Their work is MCP calls and LLM-authored prose — neither has a stable structure for guards to assert on, and a "compiled" script whose output varies every run is a compiler that only pretends to be one. The compiler's task selector filters on `kind='browser'`; asset tasks stay in `ai` mode permanently and are exempt from the promotion/demotion counters below.
 
 **Input:** one or more successful AI-mode traces for a task, including resolved selectors, waits observed, network requests correlated with actions, extracted data locations, and the emitted packets.
 
@@ -214,6 +251,7 @@ Generated JS never touches puppeteer or the CDP socket directly. It executes ins
 - `ctx.emit(type, packet)`, `ctx.emitIfNew(type, packet, {dedupeKey})`
 - `ctx.deopt(prompt, evidence)`
 - `ctx.state`: small per-task KV (last-seen tweet id, cursors)
+- `ctx.page.upload(anchor, assetRef)`: resolve an asset ref from the trigger packet and upload it (§13.5). Read-only against the asset store — **compiled scripts cannot write assets and have no `ctx.mcp`**, matching the browser node's tool registry exactly (§4). The compiled path never gains authority the AI path lacks.
 
 Every `ctx` call crosses the isolate boundary into the host, where the **policy engine check happens** — this is how principle 3 in §2 is realized. No timers/network/fs inside the isolate; wall-clock and memory limits per execution.
 
@@ -221,7 +259,68 @@ Every `ctx` call crosses the isolate boundary into the host, where the **policy 
 
 ## 13. MCP Integration
 
-External MCP servers are configured per user; each task's grant set names which MCP tools it may call. Calls flow: agent (or `ctx.mcp.call` if you later expose MCP to compiled code — I'd hold off) → policy check → MCP client → server. Tool results enter LLM context and are therefore **injection surfaces** (§16): wrap results in delimiting structure and instruct-and-enforce that they are data. MCP calls, arguments, and results go in the trace (bodies subject to storage opt-out). Timeouts and per-run call budgets apply.
+**MCP is available to `kind=asset` tasks only.** Browser tasks have no `mcp.*` tools in their registry, and compiled scripts have no `ctx.mcp` — see §4 for why this separation is a security boundary rather than a convenience.
+
+External MCP servers are configured per user; each asset task's grant set names which MCP tools it may call. Calls flow: asset agent → `PolicyGate.checkMcpCall` → MCP client → server. MCP calls, arguments, and results go in the trace (bodies subject to storage opt-out). Timeouts and per-run call budgets apply.
+
+**MCP results are untrusted data.** They enter LLM context and are therefore injection surfaces of the same class as page content (§16). Two enforced rules, not prompt suggestions:
+
+1. Results are wrapped in delimiting structure and labelled as data.
+2. **A result cannot confer authority.** Concretely: a URL returned by an MCP tool is not navigable (there is no navigation tool on this node at all), and a file path returned by an MCP tool is resolved against the asset namespace, never against the host filesystem.
+
+**Secrets for MCP servers.** Servers needing API keys use the same broker as browser secret fill (§16, Threat 4), with a different injection point: `secrets.inject_into_mcp_arg(name)` resolves host-side inside the MCP client, so the value never enters LLM context or the trace. There is no tool that returns a secret value to the model on either node kind.
+
+## 13.5 Asset Store and Document Generation
+
+Asset nodes produce **user deliverables** — reports, decks, datasets, images. These are a different class of object from traces and artifacts: traces are debugging exhaust with a TTL (§18), assets are the product of the workflow and persist until the user deletes them or hits quota.
+
+**Namespace.** Per-user, path-addressed (`/reports/2026-q1.pdf`). Reads are open across the user's workflows — a report that aggregates three workflows is a core use case and per-workflow scoping would break it. **Writes are scoped by a per-task path grant**, so blast radius from one bad task definition is bounded without crippling reads. Every write is versioned; overwrites never destroy the prior blob.
+
+**Tools on the asset node:**
+
+| Tool | Purpose |
+|---|---|
+| `assets.write(path, content, mime)` | text formats: md, tex, json, csv, txt, html |
+| `assets.append(path, content)` | accumulate across runs (running logs, datasets) |
+| `assets.read(path, range?)` | read back, paginated for large files |
+| `assets.list(glob)` | discovery |
+| `assets.render(srcPath, format, opts)` | compile a source document → binary deliverable |
+
+`assets.write` handles **data saving** — deterministic, no renderer, no sandbox needed beyond path validation. `assets.render` handles **document generation** and is where the work is.
+
+### Document generation: LaTeX
+
+The LLM authors **LaTeX source** via `assets.write`, and `assets.render` compiles it deterministically. LaTeX is the authoring format because models write it well, it is text (so it diffs, versions, and replays in tests like any other artifact), and its output quality is unmatched for documents.
+
+| Format | Path | Fidelity |
+|---|---|---|
+| `pdf` | `.tex` → `tectonic` | excellent — the primary deliverable |
+| `pptx`-class deck | `.tex` (beamer) → `tectonic` → PDF | excellent as a **PDF deck**; not an editable `.pptx` |
+| `docx` | **deferred** — see below | — |
+
+**Be precise about what "LaTeX-based decks" means:** beamer produces a PDF, not a PowerPoint file. Users get a polished, presentable deck they cannot edit in PowerPoint. That is the right trade for v1 — the deliverable is final-form, and no text-based source compiles to a genuinely faithful `.pptx`. If demand for editable Office files materialises, it gets its own narrow path (a structural source format → `.pptx`), not a LaTeX conversion.
+
+**`docx` is deferred.** The only LaTeX→docx path is pandoc, and it is lossy in exactly the ways that matter (custom macros, TikZ, floats, precise layout degrade or vanish). Shipping it would mean shipping a format whose output does not resemble its input. Revisit with a purpose-built source format if users ask for editable Word documents.
+
+### LaTeX is untrusted code
+
+LLM-authored `.tex` is code from an untrusted author, and TeX is Turing-complete with file I/O and shell escape. `\write18` and `\input{/etc/passwd}` are live threats, not theoretical ones. The renderer therefore runs **out-of-process, in a container**, with the same posture §12 applies to compiled JS — different sandbox, identical principle:
+
+- `tectonic` (or `pdflatex -no-shell-escape`); shell escape disabled unconditionally
+- no network namespace
+- read-only filesystem except a per-render scratch directory
+- `openin_any=p`, `openout_any=p` — no reads or writes outside the scratch dir
+- package allowlist; wall-clock and memory caps; non-zero exit → render fails with the TeX log surfaced to the agent as a tool error (it may correct and retry within budget)
+- images resolved from the asset store into the scratch dir by the host *before* compilation — the `.tex` never names a host path
+
+Out-of-process matters independently of security: TeX distributions are large, compilation is slow, and a stuck render must not take the engine with it.
+
+### Assets and the browser node
+
+Browser tasks cannot write assets, but they participate at both ends:
+
+- `page.upload(anchor, assetRef)` — resolves an asset ref from the trigger packet and uploads it. Requires the `upload` capability grant (§10).
+- Downloads initiated by a browser task land in the asset store as new assets, under the `download` grant.
 
 ## 14. Data Model (Postgres)
 
@@ -231,7 +330,8 @@ Single Postgres instance for v1; object storage (S3-compatible) for blobs.
 users, cdp_endpoints(user_id, ws_url_encrypted, label, health)
 workflows(id, user_id, current_version)
 workflow_versions(id, workflow_id, graph_json, created_at)
-tasks(id, workflow_version_id, prompt, mode[ai|compiled], limits_json)
+tasks(id, workflow_version_id, name, prompt,
+      kind[browser|asset], mode[ai|compiled], limits_json)   -- §4 two discriminants
 task_grants(task_id, grant_key, grant_value)          -- policy
 account_baseline_rules(user_id, rule_json)            -- §10 recommendation
 event_defs(task_id, event_type, packet_schema_json)
@@ -245,7 +345,20 @@ artifacts(id, run_id, kind, blob_ref, meta)                -- screenshots, files
 compiled_scripts(id, task_id, version, source, guards_meta, from_runs[], status)
 task_state(task_id, key, value)                            -- ctx.state
 approvals(id, run_id, action_json, status, expires_at)
-secrets(user_id, name, ciphertext, kms_key_ref)
+
+-- §13.5 assets (user deliverables — NOT trace exhaust, no TTL)
+assets(id, user_id, path, mime, size, sha256, blob_ref,
+       current_version, created_at, updated_at)             -- unique(user_id, path)
+asset_versions(asset_id, version, blob_ref, sha256, size, run_id, created_at)
+asset_write_grants(task_id, path_glob)                      -- writes scoped, reads open
+
+-- §16 Threat 4 envelope encryption
+secrets(id, user_id, name, description, tier[server|user_wrapped],
+        ciphertext, nonce, dek_wrapped, kek_ref,
+        allowed_origins[], created_at, rotated_at)          -- unique(user_id, name)
+secret_grants(task_id, secret_name)                         -- which task may use which
+secret_access_log(run_id, secret_name, action, anchor, ts)  -- never the value
+mcp_servers(id, user_id, label, transport, config_json, secret_name)
 ```
 
 Storage opt-outs are evaluated at write time (don't store then delete). Trace and artifact tables get TTL/retention settings per user. If semantic search over past runs is wanted later, add `pgvector` — no separate vector DB.
@@ -265,7 +378,35 @@ Storage opt-outs are evaluated at write time (don't store then delete). Trace an
 
 **Threat 3 — Compiled-code escape.** Covered by §12: isolates, no ambient authority, `ctx`-only API, policy checks host-side, linted output, no arbitrary `evaluate`.
 
-**Threat 4 — Secrets.** Secrets (Instagram credentials, API keys) are stored encrypted (KMS/libsodium sealed box), decrypted only inside the host runtime, and injected directly into browser fields or MCP call parameters *without transiting LLM context*: the agent requests `secrets.fill('instagram_password', selector)`; the harness performs the typing. The LLM sees the secret's *name*, never its value. Same for compiled code: `ctx.page.fillSecret(name, selector)`.
+**Threat 4 — Secrets.** Secrets (Instagram credentials, MCP API keys) never enter LLM context, traces, or transcripts. The LLM sees a secret's *name and description*; the harness performs the fill.
+
+**Encryption model: envelope encryption with KMS.** Stated plainly, because the obvious-sounding alternative is wrong:
+
+- **Client-side end-to-end encryption is incompatible with this product.** A cron-triggered run at 3am must type a password into a browser with no user present. If only the user's device can decrypt, unattended runs are impossible. E2E and unattended automation are mutually exclusive; any vendor claiming both decrypts server-side. We will not make that claim.
+- **A public/private keypair alone solves nothing.** It secures writes (anyone can seal to the public key), but the private key must still live somewhere the server reaches — it relocates the problem rather than solving it.
+
+The design:
+
+1. Each secret gets a random 32-byte **DEK**; the value is encrypted with XChaCha20-Poly1305 (libsodium `secretbox`).
+2. The DEK is **wrapped by a KEK held in KMS** (AWS/GCP KMS or Vault Transit). The server never stores a plaintext KEK, so a database compromise alone yields nothing.
+3. Decryption happens **only inside the secret broker**, a deliberately narrow module. Its interface is `fill(runId, secretName, anchor)` and `inject_into_mcp_arg(runId, secretName)`. **There is no `get(name) -> string` anywhere in the codebase.** That absence is the primary control; everything else is defence in depth. Plaintext lives in a buffer for one `Input.insertText` and is zeroed.
+4. The tool-result serializer for `secrets.*` returns `{ok: true}` and nothing else — never a value-shaped return type — so a serialization bug cannot leak a value into context.
+
+**Two tiers, honestly labelled:**
+
+- **Tier 1 — server-decryptable (default).** Enables scheduled and event-triggered runs. Protected by KMS, the broker, origin binding, and audit log.
+- **Tier 2 — user-wrapped (high-value).** The DEK is *additionally* wrapped by a key derived from the user's passphrase (Argon2id, derived client-side, never transmitted). The server cannot decrypt alone. Usable only in **attended** runs: the unwrapping key is held in the session for a bounded window while the user is present. A scheduled run needing a Tier-2 secret parks in `awaiting_approval` — reusing the approval machinery (§10) unchanged. This supports a real, defensible claim ("our servers cannot decrypt this without you present") instead of a fake E2E one.
+
+**The residual threat encryption cannot address.** The credential is typed into *the user's own browser* over their CDP endpoint. Encryption protects it at rest and from LLM context; it does not stop a prompt-injected agent from calling `secrets.fill('bank_password', anchor)` against an attacker-chosen field. The controls that actually bite:
+
+1. **`secret_grants`** — a task may only fill secrets explicitly granted to it.
+2. **Origin binding on the secret itself** (`allowed_origins`) — `instagram_password` fills only on `instagram.com`. The broker checks the *page's current origin at fill time*, not the task's nav allowlist. This is the strongest control here and it is cheap.
+3. **Target validation** — fill only into `input[type=password|email|text]` on a same-origin frame; refuse hidden fields, `contenteditable`, and cross-origin iframes.
+4. **Rate limiting per run** — a loop of fills is character-probing exfiltration, not a login.
+
+**Threat 7 — LaTeX rendering as code execution.** LLM-authored `.tex` is untrusted code in a Turing-complete language with shell escape and file I/O (`\write18`, `\input{/etc/passwd}`). The renderer is a containerised, network-less, shell-escape-disabled, read-only-FS process with `openin_any=p`/`openout_any=p` and resource caps (§13.5). Treated with exactly the seriousness of §12's isolate, because it is the same class of problem.
+
+**Threat 8 — Asset store path traversal.** Asset paths come from LLM output. Paths are normalized and validated against the user's namespace root; `..`, absolute paths, and symlinks are rejected. Writes additionally check the task's `asset_write_grants` glob. Renderer scratch dirs are per-render and never shared.
 
 **Threat 5 — CDP endpoint as attack surface.** A `wss://` endpoint string is a credential (anyone holding it controls the browser). Encrypt at rest, never log it, never place it in LLM context, and validate on registration that it speaks CDP before storing.
 
@@ -275,30 +416,52 @@ Storage opt-outs are evaluated at write time (don't store then delete). Trace an
 
 Structured trace per run (already the compiler's input) rendered in a run inspector UI: timeline of actions with screenshots, network entries with policy verdicts, LLM calls with token counts, deopt points, emitted events with lineage links to the runs they triggered. Metrics worth tracking from day one: deopt rate per task version (the health signal for compiled mode), policy-denial counts (misconfiguration signal), LLM cost per run in ai vs compiled mode (the product's core value claim — measure it so you can show it), and per-endpoint browser error rates.
 
-## 18. Decisions Still Open (need your answers)
+## 18. Decisions
+
+Resolved:
+
+1. **Account-level baseline deny rules** (§10) — **accepted.** Account-level baseline rules that per-task grants cannot override.
+2. **Packet schema authoring** — **free-text description compiled to JSON Schema by an LLM at save time.** Both sides of an edge are schema-aware: the emitting node's agent knows what fields to produce, and every consuming node has the declared fields injected into its prompt context.
+3. **Overlap policy for event-triggered runs** — **per-task parallelism setting: `parallel` or `queue`.** Rationale: a task may emit events faster than a downstream consumer processes them; the user decides whether the consumer runs concurrently or serializes. (Per-endpoint browser serialization, §8, still applies underneath.)
+4. **Scheduled-run overlap queue depth** (§7) — **user-configurable max queue depth** per schedule (default 1).
+5. **Recompilation trigger** — **automatic** after successful deopt-recovery.
+6. **Cycles** (§5) — cycles remain legal (bounded by loop budget), but the **UI must detect and warn** about them in the graph editor.
+7. **Two node kinds** (§4) — **accepted.** `kind = browser | asset` as a discriminant on `tasks`, sharing one table, one edge model, one run state machine. Not two tables.
+8. **MCP is asset-node-only** (§13) — **accepted.** Browser tasks have no `mcp.*` tools; compiled scripts have no `ctx.mcp`. This severs the page-injection→MCP-egress exfiltration chain at the tool boundary.
+9. **Asset nodes are event-triggered only** (§4) — **accepted.** No schedules bind to `kind=asset`.
+10. **Asset nodes are never compiled** (§11) — **accepted.** MCP output has nothing stable to guard on.
+11. **Document generation is LaTeX-based** (§13.5) — **accepted.** `pdf` via tectonic; decks via beamer→PDF (a PDF deck, *not* an editable `.pptx`); rendered out-of-process in a network-less container with shell escape disabled.
+12. **`docx` deferred** (§13.5) — **accepted.** The only LaTeX→docx path is pandoc and it is lossy in the ways that matter. Revisit with a purpose-built source format if users need editable Word files.
+13. **Secrets use envelope encryption + KMS, not client-side E2E** (§16) — **accepted.** E2E is incompatible with unattended runs. Tier 2 (user-wrapped, attended-only) provides the stronger guarantee where it is genuinely wanted.
+14. **Asset namespace is per-user; reads open, writes grant-scoped** (§13.5) — **accepted.** Cross-workflow reports are a core use case; write grants bound the blast radius.
+
+Still open:
 
 1. **Edge predicates in v1** (§5) — or event-emission-as-branching only?
-2. **Account-level baseline deny rules** (§10) — will you take this, or strictly per-task?
-3. **Captcha/login-wall handling** — deopt to agent is not enough (agents can't solve captchas, and shouldn't try): park for human takeover via the approval mechanism, with the user completing the step in their own browser (BYO CDP makes this natural — it's their browser)? Recommend yes; needs UI.
-4. **Packet schema authoring** — free-text description compiled to JSON Schema by an LLM at save time, or a structured field editor in the node? (Former is friendlier, latter is deterministic.)
-5. **Overlap policy default** for event-triggered (not scheduled) runs on the same endpoint: queue depth?
-6. **Recompilation trigger** — automatic after every successful deopt-recovery, or user-approved (they review the diff of the generated script)? Given the script drives their browser, I'd default to auto-compile + notify, with an opt-in "require my review" per task.
-7. **Trace retention defaults** and blob storage budget per user.
+2. **Captcha/login-wall handling** — deopt to agent is not enough (agents can't solve captchas, and shouldn't try): park for human takeover via the approval mechanism, with the user completing the step in their own browser (BYO CDP makes this natural — it's their browser)? Recommend yes; needs UI.
+3. **Trace retention defaults** and blob storage budget per user. Note assets are *not* covered by trace TTL (§13.5) — they need their own quota policy.
+4. **Tier-2 secrets in v1, or Tier-1 only?** Tier 2 is the stronger marketing and security story but adds a client-side crypto surface and blocks unattended use of those secrets.
+5. **Editable `.pptx`/`.docx`** — if demand appears, a structural source format compiled directly to Office XML, kept separate from the LaTeX path.
 
 ## 19. Phased Build Plan
 
 **Phase 1 — spine (no compiler, no policy UI):** Postgres + outbox event bus, workflow engine with single-node graphs, cron scheduler, browser agent on one CDP endpoint, hardcoded permissive policy, traces stored, run inspector (read-only). Exit criterion: the tweet→image→Instagram flow works end-to-end in `ai` mode.
 
-**Phase 2 — policy + network layer:** grant sets per task, enforcement at all three points (§10), network batching + `network.read` with header gating, secrets vault + `fillSecret`, approvals, account baseline (if accepted).
+**Phase 2 — asset nodes:** `kind` discriminant, MCP client, asset store, LaTeX renderer, secrets broker. Exit criterion: tweet → asset node generates a PDF/deck via MCP + LaTeX → browser node uploads it.
 
-**Phase 3 — compiler:** trace consistency checker, compiler agent, static runtime on `isolated-vm`, guard/deopt loop, demotion budget, script diff UI.
+**Phase 3 — policy + network layer:** grant sets per task, enforcement at all three points (§10), network batching + `network.read` with header gating, approvals, account baseline, secret origin binding, asset write grants.
 
-**Phase 4 — hardening:** multiple CDP endpoints with pooling/queueing, retries/backpressure, retention/TTL, metrics dashboards, MCP grants, loop budgets and lineage limits.
+**Phase 4 — compiler:** trace consistency checker, compiler agent, static runtime on `isolated-vm`, guard/deopt loop, demotion budget, script diff UI. Browser tasks only.
+
+**Phase 5 — hardening:** multiple CDP endpoints with pooling/queueing, retries/backpressure, retention/TTL, asset quotas, metrics dashboards, loop budgets and lineage limits.
 
 ## 20. Stack Notes
 
 - **Runtime:** Node/TypeScript throughout (shared types between engine, runtime, and generated code target).
 - **CDP client:** consider **Playwright's `connectOverCDP`** over Puppeteer — better multi-context handling, auto-waiting semantics that reduce compiler-emitted `wait` noise, and its trace format is a useful reference for yours. Puppeteer is fine if you prefer it; the runtime API in §12 insulates the rest of the system from this choice either way — make it a driver interface.
 - **Workflow engine:** build the thin engine described here rather than adopting Temporal in v1. Temporal buys durability you can get from Postgres checkpointing at this scale, and its worker/activity model fights the "one browser endpoint = one serialized queue" constraint. Revisit if you outgrow single-node.
-- **Sandbox:** `isolated-vm`. **Policy:** in-process evaluator over the grants tables; OPA is overkill until policies are shared/hierarchical.
+- **Sandbox:** `isolated-vm` for compiled JS; a container (network-less, read-only FS) for LaTeX. **Policy:** in-process evaluator over the grants tables; OPA is overkill until policies are shared/hierarchical.
+- **LaTeX:** `tectonic` — single binary, no TeX Live install, deterministic package fetching (pre-warm the cache into the image so the render container needs no network at runtime).
+- **MCP:** `@modelcontextprotocol/sdk`, one client per configured server, wired only into the asset node's tool registry.
+- **Crypto:** libsodium (`sodium-native`) for XChaCha20-Poly1305 + Argon2id; KMS/Vault Transit for KEK wrapping. Do not hand-roll envelope encryption.
 - **UI:** React Flow (decided) + a run-inspector; the inspector is not optional polish — it is the debugging surface for a probabilistic system and should exist from Phase 1.

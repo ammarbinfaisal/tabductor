@@ -9,7 +9,12 @@ export interface TaskExecutor {
   execute(run: RunHandle): Promise<RunResult>;
 }
 
-export type RunResult = { ok: true } | { ok: false; error: string };
+/**
+ * `permanent` means "do not retry this" (§15): a packet that fails validation will fail
+ * validation again, and a policy denial (Phase 7) is a decision, not a fault. Absent or
+ * false, the task's retry policy applies.
+ */
+export type RunResult = { ok: true } | { ok: false; error: string; permanent?: boolean };
 
 /** Everything an executor is allowed to see, plus the one thing it may do to the world. */
 export type RunHandle = {

@@ -1,0 +1,1 @@
+ALTER TABLE "schedules" ADD COLUMN "max_queue_depth" integer DEFAULT 1 NOT NULL;

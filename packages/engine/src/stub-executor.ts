@@ -24,6 +24,14 @@ const stubSchema = z.object({
     .optional(),
   /** Fail the run with this message, after any emits above have run. */
   fail: z.string().optional(),
+  /**
+   * Fail the first N attempts and succeed on the next — the retry policy's fixture. It
+   * reads `runs.attempt` rather than counting in memory, so the behavior is a function of
+   * the run row and survives the process restart the crash-recovery tests perform.
+   */
+  fail_times: z.number().int().nonnegative().optional(),
+  /** Fail without ever retrying, whatever the task's retry policy says. */
+  permanent_fail: z.string().optional(),
   /** Block for this long — used to drive the timeout watchdog. */
   hang_ms: z.number().nonnegative().optional(),
 });
@@ -43,6 +51,14 @@ export const StubExecutor: TaskExecutor = {
   async execute(handle: RunHandle): Promise<RunResult> {
     const stub = parseStub(handle.task.limitsJson);
     if (!stub) return { ok: true };
+
+    // `fail_times` is checked *before* the emits, not after `fail` is: an attempt that is
+    // scripted to fail should look like a task that died before doing its work, so the
+    // retry test can assert the downstream event fired exactly once across three attempts.
+    if (stub.fail_times !== undefined && handle.run.attempt < stub.fail_times) {
+      return { ok: false, error: `stub failing attempt ${handle.run.attempt}` };
+    }
+    if (stub.permanent_fail) return { ok: false, error: stub.permanent_fail, permanent: true };
 
     for (const emit of stub.emits ?? []) {
       if (emit.delay_ms) await sleep(emit.delay_ms);

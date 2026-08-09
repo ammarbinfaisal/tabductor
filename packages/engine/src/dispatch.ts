@@ -60,6 +60,21 @@ export async function dispatchEvent(db: Db, event: EventRow): Promise<Dispatched
 }
 
 /**
+ * Dispatch straight *to* a task instead of along an edge — the scheduler's case (§7).
+ *
+ * A schedule fire is an event with no edge behind it: the schedule names its task, so
+ * there is nothing to resolve subscribers from. Rather than let the scheduler create runs
+ * itself, it comes through here, which routes the task forward to the latest version the
+ * same way `resolveSource` does and then lands in the *same* `createRun` — one loop budget,
+ * one dedupe claim, one run insert, for every way a run can come into existence.
+ */
+export async function dispatchToTask(db: Db, taskId: string, event: EventRow): Promise<Dispatched | undefined> {
+  const target = await resolveTask(db, taskId);
+  if (!target) return undefined;
+  return createRun(db, { task: target.task, event, workflow: target.workflow, versionId: target.versionId });
+}
+
+/**
  * Which graph does this event belong to, and which version routes it?
  *
  * An event's `source_task_id` points at the task row that emitted it — which belongs to
@@ -72,30 +87,41 @@ async function resolveSource(
   event: EventRow,
 ): Promise<{ workflow: WorkflowRow; versionId: string; taskId: string } | undefined> {
   if (!event.sourceTaskId) return undefined;
+  const resolved = await resolveTask(db, event.sourceTaskId);
+  return resolved && { workflow: resolved.workflow, versionId: resolved.versionId, taskId: resolved.task.id };
+}
 
+/**
+ * A task id from *some* version → the row for the same node in the latest version, with
+ * the workflow it belongs to. `undefined` when the node was deleted in a newer version.
+ */
+async function resolveTask(
+  db: Db,
+  taskId: string,
+): Promise<{ workflow: WorkflowRow; versionId: string; task: TaskRow } | undefined> {
   const [origin] = await db
     .select({ task: tasks, workflow: workflows })
     .from(tasks)
     .innerJoin(workflowVersions, eq(workflowVersions.id, tasks.workflowVersionId))
     .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId))
-    .where(eq(tasks.id, event.sourceTaskId));
+    .where(eq(tasks.id, taskId));
   if (!origin) return undefined;
 
   const versionId = await latestVersionId(db, origin.workflow);
 
-  // Same version: the emitting row is already the routing row.
+  // Same version: the row we have is already the routing row.
   if (versionId === origin.task.workflowVersionId) {
-    return { workflow: origin.workflow, versionId, taskId: origin.task.id };
+    return { workflow: origin.workflow, versionId, task: origin.task };
   }
 
   const [current] = await db
-    .select({ id: tasks.id })
+    .select()
     .from(tasks)
     .where(and(eq(tasks.workflowVersionId, versionId), eq(tasks.name, origin.task.name)));
 
   // The node was deleted in the newer version: its events no longer route anywhere.
   if (!current) return undefined;
-  return { workflow: origin.workflow, versionId, taskId: current.id };
+  return { workflow: origin.workflow, versionId, task: current };
 }
 
 /**

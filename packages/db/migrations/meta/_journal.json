@@ -22,6 +22,20 @@
       "when": 1785832463611,
       "tag": "0002_run_deadline_and_task_name_key",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1785834187747,
+      "tag": "0003_run_not_before_and_schedule_enabled",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1785908521622,
+      "tag": "0004_schedule_max_queue_depth",
+      "breakpoints": true
     }
   ]
 }

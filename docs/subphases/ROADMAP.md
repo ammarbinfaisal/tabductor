@@ -23,22 +23,32 @@ Environment deviations from `impl-phases.md` (no Docker on this machine):
   client state lives in external stores or server components; data flows via server
   components / vanilla tRPC client, not React Query hooks.
 
-| # | Subphase | Design refs |
-|---|----------|-------------|
-| S0 | Monorepo scaffold + testkit (fixture sites, CDP launcher, test-DB helper) | impl §0, test infra |
-| S1 | DB migrations + outbox event bus + dedupe + lineage + PolicyGate/AllowAllGate | impl Phase 1, §14 |
-| S2a | Workflow engine core: run state machine, graph eval, packet validation, loop budget, StubExecutor | impl Phase 2 |
-| S2b | Scheduler (cron/tz, missed/overlap), retries, crash recovery watchdog | impl Phase 2, §7 |
-| S2c | Next.js + tRPC control-plane API (workflows/tasks/edges/runs/events, zod end-to-end) | techical_plan §3, Phase 8 API |
-| S3a | Browser driver interface + Playwright CDP impl + navigation guard + trace recorder | impl Phase 3, §8 |
-| S3b | Endpoint pool/leases + per-endpoint queue + network observer + resource limits + ScriptedBrowserExecutor | impl Phase 3, §9 |
-| S4a | LLM adapter (live/record/replay) + perception builder | impl Phase 4 |
-| S4b | Agent loop + tool registry + structured emit + AgentExecutor + e2e milestone | impl Phase 4 |
-| S5 | MCP client + secrets vault/fill | impl Phase 5, §13, §16 |
-| S6a | Static runtime sandbox + script registry + lint gate | impl Phase 6, §12 |
-| S6b | Trace consistency checker + compiler agent | impl Phase 6, §11 |
-| S6c | CompiledExecutor + deopt handoff + promotion/demotion + flagship e2e | impl Phase 6 |
-| S7 | Real policy evaluator + redaction + approvals + regression sweep | impl Phase 7, §10 |
+| # | Subphase | Design refs | State |
+|---|----------|-------------|-------|
+| S0 | Monorepo scaffold + testkit (fixture sites, CDP launcher, test-DB helper) | impl §0, test infra | **done** `15914a0` |
+| S1 | DB migrations + outbox event bus + dedupe + lineage + PolicyGate/AllowAllGate | impl Phase 1, §14 | **done** `7e2b7fd` |
+| S2a | Workflow engine core: run state machine, graph eval, packet validation, loop budget, StubExecutor | impl Phase 2 | **done** `f2e2f23` |
+| S2b | Scheduler (cron/tz, missed/overlap), retries, crash recovery watchdog | impl Phase 2, §7 | **built, uncommitted** |
+| S2c | Next.js + tRPC control-plane API (workflows/tasks/edges/runs/events, zod end-to-end) | techical_plan §3, Phase 8 API | next |
+| S3a | Browser driver interface + Playwright CDP impl + navigation guard + trace recorder | impl Phase 3, §8 | |
+| S3b | Endpoint pool/leases + per-endpoint queue + network observer + resource limits + ScriptedBrowserExecutor | impl Phase 3, §9 | |
+| S4a | LLM adapter (live/record/replay) + perception builder | impl Phase 4 | prompt written |
+| S4b | Agent loop + tool registry + structured emit + AgentExecutor + e2e milestone | impl Phase 4 | |
+| S5a | `tasks.kind` discriminant + AssetExecutor skeleton + kind constraints | impl Phase 5, §4 | |
+| S5b | Secrets broker: envelope encryption, KMS wrapping, fill/inject, origin binding | impl Phase 5, §16 T4 | |
+| S5c | MCP client (asset node only) + registry isolation test | impl Phase 5, §13 | |
+| S5d | Asset store: paths, versions, write grants, asset refs in packets | impl Phase 5, §13.5 | |
+| S5e | LaTeX renderer worker (sandboxed container, tectonic, beamer decks) | impl Phase 5, §13.5, §16 T7 | |
+| S5f | Two-kind e2e: browser → asset (MCP + LaTeX) → browser upload | impl Phase 5 | |
+| S6a | Static runtime sandbox + script registry + lint gate | impl Phase 6, §12 | |
+| S6b | Trace consistency checker + compiler agent | impl Phase 6, §11 | |
+| S6c | CompiledExecutor + deopt handoff + promotion/demotion + flagship e2e | impl Phase 6 | |
+| S7 | Real policy evaluator + redaction + approvals + MCP/asset/secret grants + regression sweep | impl Phase 7, §10 | |
+
+**Node kinds (§4), binding for all subphases from S5a on:** `kind=browser` gets `page.*`, `network.*`,
+`secrets.fill`, `emit`. `kind=asset` gets `mcp.*`, `assets.*`, `emit`. The registries are **disjoint by
+design** — this is the §4 security boundary, not a layering preference. Do not add `mcp.*` to a browser
+task or `page.*` to an asset task without a design-doc change.
 
 Style rules binding for every subphase:
 - Composition over abstraction; no speculative interfaces beyond those the design docs name.

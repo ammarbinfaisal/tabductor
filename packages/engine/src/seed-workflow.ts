@@ -2,10 +2,12 @@ import { newId } from "@tabductor/core";
 import {
   edges,
   eventDefs,
+  schedules,
   tasks,
   workflowVersions,
   workflows,
   type Db,
+  type ScheduleRow,
 } from "@tabductor/db";
 import { eq } from "drizzle-orm";
 
@@ -30,6 +32,8 @@ export type SeedTask = {
   /** Scripted StubExecutor behavior; lands in `limits_json.stub`. */
   stub?: unknown;
   runTimeoutMs?: number;
+  /** Retry policy; lands in `limits_json.retry`. */
+  retry?: { max: number; backoff_ms?: number };
   /** Declared emitted events. A bare type gets a permissive schema. */
   emits?: Record<string, unknown> | string[];
 };
@@ -86,6 +90,7 @@ export async function seedWorkflow(db: Db, spec: SeedSpec): Promise<SeededWorkfl
         limitsJson: {
           ...(task.stub === undefined ? {} : { stub: task.stub }),
           ...(task.runTimeoutMs === undefined ? {} : { run_timeout_ms: task.runTimeoutMs }),
+          ...(task.retry === undefined ? {} : { retry: task.retry }),
         },
       });
 
@@ -117,6 +122,35 @@ export async function seedWorkflow(db: Db, spec: SeedSpec): Promise<SeededWorkfl
 
     return { workflowId, versionId, taskIds };
   });
+}
+
+/** Attaches a cron schedule to a task. The row is the scheduler's whole input (§7). */
+export async function seedSchedule(
+  db: Db,
+  spec: {
+    taskId: string;
+    cron: string;
+    tz?: string;
+    missedPolicy?: "skip" | "fire_once_catchup";
+    overlapPolicy?: "skip" | "queue";
+    lastFiredAt?: Date;
+    enabled?: boolean;
+  },
+): Promise<ScheduleRow> {
+  const [row] = await db
+    .insert(schedules)
+    .values({
+      id: newId("sched"),
+      taskId: spec.taskId,
+      cron: spec.cron,
+      ...(spec.tz === undefined ? {} : { tz: spec.tz }),
+      ...(spec.missedPolicy === undefined ? {} : { missedPolicy: spec.missedPolicy }),
+      ...(spec.overlapPolicy === undefined ? {} : { overlapPolicy: spec.overlapPolicy }),
+      ...(spec.lastFiredAt === undefined ? {} : { lastFiredAt: spec.lastFiredAt }),
+      ...(spec.enabled === undefined ? {} : { enabled: spec.enabled }),
+    })
+    .returning();
+  return row!;
 }
 
 /**

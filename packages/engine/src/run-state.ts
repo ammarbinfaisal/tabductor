@@ -1,6 +1,6 @@
 import { publish } from "@tabductor/bus";
-import { runs, type Db, type RunRow } from "@tabductor/db";
-import { and, eq, isNotNull, lte, sql } from "drizzle-orm";
+import { runs, schedules, type Db, type RunRow } from "@tabductor/db";
+import { and, asc, eq, isNotNull, lte, sql } from "drizzle-orm";
 
 /**
  * Run status machine (§4). Status is `text`, not a pg enum, so `awaiting_approval`
@@ -24,6 +24,10 @@ export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "timed_o
 /**
  * `queued → running`. Stamps the deadline the watchdog scans, computed in the database so
  * it is on Postgres's clock rather than this process's.
+ *
+ * `not_before` is part of the guard, not a separate check: a retry still inside its backoff
+ * loses the CAS, so two engines racing to pick it up early both fail rather than one
+ * winning. Returns `undefined` for both "already taken" and "not yet due".
  */
 export async function startRun(db: Db, runId: string, timeoutMs: number | undefined): Promise<RunRow | undefined> {
   const [row] = await db
@@ -34,9 +38,46 @@ export async function startRun(db: Db, runId: string, timeoutMs: number | undefi
       heartbeatAt: sql`now()`,
       deadlineAt: timeoutMs === undefined ? null : sql`now() + ${`${timeoutMs} milliseconds`}::interval`,
     })
-    .where(and(eq(runs.id, runId), eq(runs.status, "queued")))
+    .where(
+      and(
+        eq(runs.id, runId),
+        eq(runs.status, "queued"),
+        sql`(${runs.notBefore} is null or ${runs.notBefore} <= now())`,
+      ),
+    )
     .returning();
   return row;
+}
+
+/**
+ * Runs waiting to execute and due to: `queued`, past `not_before`. This is how a retry that
+ * was queued with a backoff, or a run inserted by a process that has since died, ever gets
+ * picked up — the queue lives in the table, so nothing is lost with the process that
+ * created it.
+ *
+ * Scheduled tasks are held back while one of their runs is still going. A schedule's
+ * overlap policy (§7) is a statement that this task's runs must not overlap — `queue` lets
+ * a fire *wait* behind the live run, not run alongside it, and overlapping browser runs
+ * against one CDP session are the hazard the policy exists to prevent. Tasks with no
+ * schedule are unaffected: fan-out concurrency stays exactly as it was.
+ */
+export async function dueQueuedRuns(db: Db, limit = 100): Promise<RunRow[]> {
+  return db
+    .select()
+    .from(runs)
+    .where(
+      and(
+        eq(runs.status, "queued"),
+        sql`(${runs.notBefore} is null or ${runs.notBefore} <= now())`,
+        sql`not exists (
+          select 1 from ${schedules} s
+          join ${runs} live on live.task_id = s.task_id and live.status = 'running'
+          where s.task_id = ${runs.taskId}
+        )`,
+      ),
+    )
+    .orderBy(asc(runs.createdAt))
+    .limit(limit);
 }
 
 export type FinishInput = {
@@ -81,6 +122,53 @@ export async function finishRun(db: Db, input: FinishInput): Promise<RunRow | un
     }
     return row;
   });
+}
+
+/**
+ * Liveness ping (§15). Best-effort and guarded on `running`, so a heartbeat that lands
+ * after the watchdog already reaped the run cannot un-stale a terminal row.
+ */
+export async function heartbeat(db: Db, runId: string): Promise<void> {
+  await db
+    .update(runs)
+    .set({ heartbeatAt: sql`now()` })
+    .where(and(eq(runs.id, runId), eq(runs.status, "running")));
+}
+
+/**
+ * Crash recovery (§15), run once on engine start: a run left `running` by a process that
+ * died has a heartbeat that stopped ticking, so anything older than `staleMs` is fabricated
+ * back into `failed(engine_restart)`. Returns the runs it recovered, for the caller to put
+ * through the retry policy — the design says re-run from the start, never resume mid-page.
+ *
+ * `heartbeat_at` is nullable for runs that never got their first ping; `started_at` is the
+ * fallback, and a run with neither is too young to judge.
+ */
+export const ENGINE_RESTART = "engine_restart";
+
+export async function recoverStaleRuns(db: Db, staleMs: number): Promise<RunRow[]> {
+  const stale = await db
+    .select()
+    .from(runs)
+    .where(
+      and(
+        eq(runs.status, "running"),
+        lte(sql`coalesce(${runs.heartbeatAt}, ${runs.startedAt})`, sql`now() - ${`${staleMs} milliseconds`}::interval`),
+      ),
+    );
+
+  const recovered: RunRow[] = [];
+  for (const run of stale) {
+    const row = await finishRun(db, {
+      runId: run.id,
+      taskId: run.taskId,
+      status: "failed",
+      error: ENGINE_RESTART,
+      causationId: run.triggerEventId,
+    });
+    if (row) recovered.push(row);
+  }
+  return recovered;
 }
 
 /**
