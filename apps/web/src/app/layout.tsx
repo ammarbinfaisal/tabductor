@@ -13,6 +13,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             tabductor
           </Link>
           <nav>
+            <Link href="/workflows">workflows</Link>
             <Link href="/status">status</Link>
           </nav>
         </header>

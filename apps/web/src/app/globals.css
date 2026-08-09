@@ -176,3 +176,137 @@ textarea {
   border-color: var(--bad);
   color: var(--bad);
 }
+
+/* --- graph editor ------------------------------------------------------- */
+
+.tabs {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+}
+
+.editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 420px;
+  gap: 14px;
+  height: calc(100vh - 210px);
+  min-height: 460px;
+}
+
+.canvas {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--panel);
+}
+
+.palette {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 5;
+  display: flex;
+  gap: 6px;
+}
+
+.side {
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.inspector h2 {
+  margin: 0;
+}
+.inspector h3 {
+  font-size: 13px;
+  margin: 16px 0 6px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.field {
+  display: block;
+  margin: 8px 0;
+}
+.field > span {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 3px;
+}
+.field input,
+.field select {
+  width: 100%;
+}
+
+.emit {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 8px;
+}
+
+.node strong {
+  display: block;
+  font-size: 13px;
+}
+.node-meta {
+  font-size: 10px;
+  opacity: 0.7;
+  margin-top: 2px;
+}
+
+/* React Flow paints light by default; these are the only overrides worth having. */
+.react-flow__node-default {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 12px;
+  width: 190px;
+}
+.react-flow__node-default.selected {
+  border-color: var(--accent);
+}
+.react-flow__edge-text {
+  fill: var(--muted);
+  font-size: 10px;
+}
+.react-flow__edge-textbg {
+  fill: var(--bg);
+}
+.react-flow__controls-button {
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--line);
+  fill: var(--text);
+}
+
+/* --- runs + events ------------------------------------------------------ */
+
+.packet {
+  max-width: 380px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crumb {
+  padding: 1px 8px;
+  font-size: 12px;
+  border-radius: 10px;
+}
+
+pre.mono {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px;
+  overflow-x: auto;
+  max-height: 220px;
+}

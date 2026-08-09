@@ -45,7 +45,7 @@ Environment deviations from `impl-phases.md`:
 | S2b | Scheduler (cron/tz, missed/overlap), retries, crash recovery watchdog | impl Phase 2, §7 | **done** `dc4de11` |
 | S2c | Next.js + tRPC control-plane API (workflows/tasks/edges/runs/events, zod end-to-end) | techical_plan §3, UI track U0 | **done** |
 | SOb | Telemetry package: OTel init + pino bridge, outbox/events `traceparent`, engine+scheduler instrumentation, in-repo Grafana dashboards | techical_plan §17.2, impl §0.5 | alongside S2c |
-| U0 | First UI: React Flow graph editor, schedules editor, runs table, event feed, StubExecutor panel — over the S2c API only | impl UI track U0 | right after S2c |
+| U0 | First UI: React Flow graph editor, schedules editor, runs table, event feed, StubExecutor panel — over the S2c API only | impl UI track U0 | **done** |
 | S3a | Browser driver interface + Playwright CDP impl + navigation guard + trace recorder | impl Phase 3, §8 | |
 | S3b | Endpoint pool/leases + per-endpoint queue + network observer + resource limits + ScriptedBrowserExecutor | impl Phase 3, §9 | |
 | S4a | LLM adapter (live/record/replay) + perception builder | impl Phase 4 | prompt written |
