@@ -4,7 +4,10 @@
   "type": "module",
   "packageManager": "pnpm@9.12.3",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && pnpm -F web typecheck",
+    "build:web": "pnpm -F web build",
+    "dev:web": "pnpm -F web dev",
+    "lint": "pnpm -F web lint",
     "test": "vitest run",
     "test:system": "vitest run --project system"
   },
@@ -15,6 +18,7 @@
     "@tabductor/engine": "workspace:*",
     "@tabductor/policy": "workspace:*",
     "@tabductor/testkit": "workspace:*",
+    "@trpc/server": "^11.0.0",
     "@types/node": "^24.0.0",
     "@types/pg": "^8.11.0",
     "ajv": "^8.17.1",

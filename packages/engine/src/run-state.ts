@@ -1,6 +1,6 @@
 import { publish } from "@tabductor/bus";
 import { runs, schedules, type Db, type RunRow } from "@tabductor/db";
-import { and, asc, eq, isNotNull, lte, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, lte, sql } from "drizzle-orm";
 
 /**
  * Run status machine (§4). Status is `text`, not a pg enum, so `awaiting_approval`
@@ -122,6 +122,27 @@ export async function finishRun(db: Db, input: FinishInput): Promise<RunRow | un
     }
     return row;
   });
+}
+
+/**
+ * User-initiated cancel (§4), the one transition the control plane drives.
+ *
+ * Legal from `queued` *and* `running`, unlike every other transition here — cancelling a run
+ * that has not started yet is the common case, and `finishRun`'s `running`-only guard would
+ * reject exactly that. A run already terminal returns `undefined`, which the API reports as
+ * a conflict rather than pretending it cancelled something.
+ *
+ * A `running` run is not interrupted mid-executor: the status flips, the executor finishes
+ * whatever it is inside, and its own terminal write then loses the CAS. Real interruption
+ * needs a per-executor abort path and arrives with the browser runtime (Phase 3).
+ */
+export async function cancelRun(db: Db, runId: string): Promise<RunRow | undefined> {
+  const [row] = await db
+    .update(runs)
+    .set({ status: "cancelled", endedAt: sql`now()`, error: "cancelled by user" })
+    .where(and(eq(runs.id, runId), inArray(runs.status, ["queued", "running"])))
+    .returning();
+  return row;
 }
 
 /**

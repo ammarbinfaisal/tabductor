@@ -4,12 +4,18 @@ Each subphase is implemented by an independent agent from a self-contained promp
 (`docs/subphases/SNN-*.md`), reviewed, then committed. Ordering is strict.
 
 Environment deviations from `impl-phases.md`:
+- Backing services come from the root `docker-compose.yml` (`infra/README.md`), which stands in
+  for the plan's `docker-compose.test.yml` and serves dev and test alike.
 - Postgres: project-owned container on `localhost:5434`, user/password `tabductor`, template-clone
-  DB per test — see `infra/postgres/README.md`. (Superseded the earlier "system PostgreSQL as the
-  OS user on 5432" setup, which broke the moment an unrelated project claimed 5432. Defaults are
-  compiled in, so a clean checkout needs no environment.)
-- Chromium: local Google Chrome launched headless with `--remote-debugging-port` on a throwaway
-  `--user-data-dir` — this is the BYO-CDP simulator. Not containerised.
+  DB per test. (Superseded the earlier "system PostgreSQL as the OS user on 5432" setup, which
+  broke the moment an unrelated project claimed 5432. Defaults are compiled in, so a clean
+  checkout needs no environment.)
+- Grafana LGTM is a compose profile (`--profile telemetry`), never required: telemetry is no-op
+  with no OTLP endpoint configured.
+- Chromium: **not containerised.** The testkit launches local Google Chrome headless with
+  `--remote-debugging-port` on a throwaway `--user-data-dir` — that browser is the BYO-CDP
+  simulator, and running it in-process keeps the connect path identical to production's.
+- Fixture sites: served in-process by the testkit, not as a compose service.
 - Blob storage: local filesystem directory behind a `BlobStore` interface (S3 later).
 
 ## Stack decisions (user-mandated, binding for all subphases)
@@ -37,7 +43,7 @@ Environment deviations from `impl-phases.md`:
 | S1 | DB migrations + outbox event bus + dedupe + lineage + PolicyGate/AllowAllGate | impl Phase 1, §14 | **done** `7e2b7fd` |
 | S2a | Workflow engine core: run state machine, graph eval, packet validation, loop budget, StubExecutor | impl Phase 2 | **done** `f2e2f23` |
 | S2b | Scheduler (cron/tz, missed/overlap), retries, crash recovery watchdog | impl Phase 2, §7 | **done** `dc4de11` |
-| S2c | Next.js + tRPC control-plane API (workflows/tasks/edges/runs/events, zod end-to-end) | techical_plan §3, UI track U0 | next — gates first UI (U0) |
+| S2c | Next.js + tRPC control-plane API (workflows/tasks/edges/runs/events, zod end-to-end) | techical_plan §3, UI track U0 | **done** |
 | SOb | Telemetry package: OTel init + pino bridge, outbox/events `traceparent`, engine+scheduler instrumentation, in-repo Grafana dashboards | techical_plan §17.2, impl §0.5 | alongside S2c |
 | U0 | First UI: React Flow graph editor, schedules editor, runs table, event feed, StubExecutor panel — over the S2c API only | impl UI track U0 | right after S2c |
 | S3a | Browser driver interface + Playwright CDP impl + navigation guard + trace recorder | impl Phase 3, §8 | |

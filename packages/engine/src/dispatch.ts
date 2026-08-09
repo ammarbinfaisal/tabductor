@@ -74,6 +74,31 @@ export async function dispatchToTask(db: Db, taskId: string, event: EventRow): P
   return createRun(db, { task: target.task, event, workflow: target.workflow, versionId: target.versionId });
 }
 
+export const MANUAL_TRIGGER = "manual.trigger";
+
+/**
+ * Start a task by hand — the control plane's "trigger now" (U0), and structurally the same
+ * move the scheduler makes: publish a synthetic event attributed to the task, then dispatch
+ * it *at* that task rather than along an edge.
+ *
+ * The event goes through the outbox, so downstream tasks subscribed to `type` are reached
+ * by ordinary delivery. The run this creates is the engine's to execute — the web process
+ * only writes rows, and the two share nothing but Postgres (S2c).
+ */
+export async function triggerTask(
+  db: Db,
+  input: { taskId: string; type?: string; packet?: unknown },
+): Promise<{ event: EventRow; dispatched: Dispatched | undefined }> {
+  const event = await db.transaction((trx) =>
+    publish(trx, {
+      type: input.type ?? MANUAL_TRIGGER,
+      sourceTaskId: input.taskId,
+      packet: input.packet ?? {},
+    }),
+  );
+  return { event, dispatched: await dispatchToTask(db, input.taskId, event) };
+}
+
 /**
  * Which graph does this event belong to, and which version routes it?
  *

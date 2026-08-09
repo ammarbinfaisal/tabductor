@@ -9,3 +9,7 @@ coverage/
 .turbo/
 blob-store/
 *.tsbuildinfo
+
+# Next.js
+.next/
+next-env.d.ts

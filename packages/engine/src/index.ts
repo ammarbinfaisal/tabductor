@@ -6,8 +6,16 @@ export {
   type TaskExecutor,
 } from "./executor.js";
 export { StubExecutor, parseStub, type StubScript } from "./stub-executor.js";
-export { dispatchEvent, dispatchToTask, LOOP_BUDGET_EXCEEDED, type Dispatched } from "./dispatch.js";
 export {
+  dispatchEvent,
+  dispatchToTask,
+  triggerTask,
+  LOOP_BUDGET_EXCEEDED,
+  MANUAL_TRIGGER,
+  type Dispatched,
+} from "./dispatch.js";
+export {
+  cancelRun,
   dueQueuedRuns,
   finishRun,
   heartbeat,
@@ -29,4 +37,39 @@ export {
   type SchedulerDeps,
 } from "./scheduler.js";
 export { validatePacket, type PacketCheck } from "./packet-schema.js";
+export {
+  checkGraph,
+  createWorkflow,
+  publishVersion,
+  readGraph,
+  updateTask,
+  graphSchema,
+  graphTaskSchema,
+  graphEdgeSchema,
+  graphScheduleSchema,
+  GRAPH_INVALID,
+  NODE_KINDS,
+  type Graph,
+  type GraphTask,
+  type NodeKind,
+  type PublishedVersion,
+} from "./graph.js";
+export {
+  getEvent,
+  getRun,
+  getTask,
+  getWorkflow,
+  listEvents,
+  listRuns,
+  listVersionTasks,
+  listWorkflows,
+  PAGE_LIMIT,
+  type EventDetail,
+  type EventListItem,
+  type Page,
+  type RunDetail,
+  type RunListItem,
+  type TaskSummary,
+  type WorkflowSummary,
+} from "./queries.js";
 export { seedWorkflow, seedSchedule, type SeedSpec, type SeededWorkflow } from "./seed-workflow.js";

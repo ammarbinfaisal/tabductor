@@ -1,0 +1,48 @@
+# Backing services for development and the system suite.
+#
+# Scope is deliberately "things the app talks to", not the app itself: there is no
+# composition root to containerise yet (`apps/engine` is unbuilt), and the browser stays
+# out on purpose — the testkit launches local Chrome per test on a throwaway profile, which
+# IS the BYO-CDP simulator (docs/subphases/ROADMAP.md, environment deviations).
+#
+#   docker compose up -d                        # Postgres only
+#   docker compose --profile telemetry up -d    # + Grafana LGTM, for OTLP export
+name: tabductor
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    # 5434 because a dev box's 5432 belongs to whoever claimed it first. These credentials
+    # are trivial by design: throwaway test databases, published on loopback only.
+    ports: ["127.0.0.1:5434:5432"]
+    environment:
+      POSTGRES_USER: tabductor
+      POSTGRES_PASSWORD: tabductor
+      POSTGRES_DB: tabductor
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      # -d is load-bearing: without it pg_isready probes a "tabductor" database that only
+      # exists because POSTGRES_DB says so, and reports healthy a beat early on first boot.
+      test: ["CMD-SHELL", "pg_isready -U tabductor -d tabductor"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  # Grafana LGTM all-in-one — Loki (logs), Tempo (traces), Mimir (metrics), Grafana.
+  # Opt-in: telemetry is no-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set (techical_plan
+  # §17.2 rule 2), so the suite and docker-less dev never need this running.
+  otel-lgtm:
+    image: grafana/otel-lgtm:latest
+    profiles: ["telemetry"]
+    ports:
+      - "127.0.0.1:3001:3000" # Grafana UI — 3001 to leave 3000 to `next dev`
+      - "127.0.0.1:4317:4317" # OTLP gRPC
+      - "127.0.0.1:4318:4318" # OTLP HTTP
+    volumes: ["lgtm:/data"]
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  lgtm:

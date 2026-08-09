@@ -8,17 +8,20 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "generate": "drizzle-kit generate"
+    "generate": "drizzle-kit generate",
+    "migrate": "tsx src/migrate.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.44.0",
-    "pg": "^8.13.0"
+    "pg": "^8.13.0",
+    "@tabductor/core": "workspace:*"
   },
   "devDependencies": {
     "@tabductor/testkit": "workspace:*",
     "@types/node": "^24.0.0",
     "@types/pg": "^8.11.0",
     "drizzle-kit": "^0.31.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0"
   }
 }

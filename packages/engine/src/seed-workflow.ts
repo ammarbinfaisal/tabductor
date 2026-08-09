@@ -1,15 +1,7 @@
+import { schedules, workflows, type Db, type ScheduleRow } from "@tabductor/db";
 import { newId } from "@tabductor/core";
-import {
-  edges,
-  eventDefs,
-  schedules,
-  tasks,
-  workflowVersions,
-  workflows,
-  type Db,
-  type ScheduleRow,
-} from "@tabductor/db";
 import { eq } from "drizzle-orm";
+import { createWorkflow, publishVersion, type Graph } from "./graph.js";
 
 /**
  * Builds a whole workflow — version, tasks, edges, event_defs — from one literal, because
@@ -24,6 +16,10 @@ import { eq } from "drizzle-orm";
  *   edges: [["A", "a.done", "B"]],
  * });
  * ```
+ *
+ * It is an *adapter*, not a second way to write a graph: the rows all come out of
+ * `publishVersion`, so what the tests exercise is the same path the control-plane API
+ * publishes through.
  */
 
 export type SeedTask = {
@@ -61,67 +57,37 @@ export type SeededWorkflow = {
 const ANY_OBJECT = { type: "object" };
 
 export async function seedWorkflow(db: Db, spec: SeedSpec): Promise<SeededWorkflow> {
-  return db.transaction(async (trx) => {
-    const workflowId = spec.workflowId ?? newId("wf");
-    if (!spec.workflowId) {
-      await trx.insert(workflows).values({
-        id: workflowId,
-        userId: spec.userId ?? "user_test",
-        name: spec.name ?? "test workflow",
-        ...(spec.maxHops === undefined ? {} : { maxHops: spec.maxHops }),
-      });
-    } else if (spec.maxHops !== undefined) {
-      await trx.update(workflows).set({ maxHops: spec.maxHops }).where(eq(workflows.id, workflowId));
-    }
+  const workflowId =
+    spec.workflowId ??
+    (await createWorkflow(db, {
+      name: spec.name ?? "test workflow",
+      userId: spec.userId ?? "user_test",
+      ...(spec.maxHops === undefined ? {} : { maxHops: spec.maxHops }),
+    }));
+  if (spec.workflowId && spec.maxHops !== undefined) {
+    await db.update(workflows).set({ maxHops: spec.maxHops }).where(eq(workflows.id, workflowId));
+  }
 
-    const versionId = newId("wfv");
-    await trx.insert(workflowVersions).values({ id: versionId, workflowId });
+  const graph: Graph = {
+    tasks: Object.entries(spec.tasks).map(([name, task]) => ({
+      name,
+      kind: "browser",
+      mode: task.mode ?? "stub",
+      prompt: task.prompt ?? null,
+      limits: {
+        ...(task.stub === undefined ? {} : { stub: task.stub }),
+        ...(task.runTimeoutMs === undefined ? {} : { run_timeout_ms: task.runTimeoutMs }),
+        ...(task.retry === undefined ? {} : { retry: task.retry }),
+      },
+      emits: declaredEmits(task).map(([type, packetSchema]) => ({ type, packetSchema })),
+      schedule: null,
+      position: null,
+    })),
+    edges: (spec.edges ?? []).map(([from, eventType, to]) => ({ from, eventType, to })),
+  };
 
-    const taskIds: Record<string, string> = {};
-    for (const [name, task] of Object.entries(spec.tasks)) {
-      const id = newId("task");
-      taskIds[name] = id;
-      await trx.insert(tasks).values({
-        id,
-        workflowVersionId: versionId,
-        name,
-        prompt: task.prompt ?? null,
-        mode: task.mode ?? "stub",
-        limitsJson: {
-          ...(task.stub === undefined ? {} : { stub: task.stub }),
-          ...(task.runTimeoutMs === undefined ? {} : { run_timeout_ms: task.runTimeoutMs }),
-          ...(task.retry === undefined ? {} : { retry: task.retry }),
-        },
-      });
-
-      for (const [eventType, schema] of declaredEmits(task)) {
-        await trx.insert(eventDefs).values({
-          id: newId("evd"),
-          taskId: id,
-          eventType,
-          packetSchemaJson: schema,
-        });
-      }
-    }
-
-    for (const [from, eventType, to] of spec.edges ?? []) {
-      const fromTaskId = taskIds[from];
-      const toTaskId = taskIds[to];
-      if (!fromTaskId || !toTaskId) throw new Error(`edge ${from}->${to} names an unknown task`);
-      await trx.insert(edges).values({
-        id: newId("edge"),
-        workflowVersionId: versionId,
-        fromTaskId,
-        eventType,
-        toTaskId,
-      });
-    }
-
-    // Point the workflow at the version just built; dispatch routes against it.
-    await trx.update(workflows).set({ currentVersionId: versionId }).where(eq(workflows.id, workflowId));
-
-    return { workflowId, versionId, taskIds };
-  });
+  const { versionId, taskIds } = await publishVersion(db, { workflowId, graph });
+  return { workflowId, versionId, taskIds };
 }
 
 /** Attaches a cron schedule to a task. The row is the scheduler's whole input (§7). */
@@ -157,9 +123,16 @@ export async function seedSchedule(
  * Emitted-event declarations, defaulting to every type the stub script mentions — a test
  * that scripts an emit almost never wants to also spell out a schema for it.
  */
-function declaredEmits(task: SeedTask): Array<[string, unknown]> {
+function declaredEmits(task: SeedTask): Array<[string, Record<string, unknown>]> {
   if (Array.isArray(task.emits)) return task.emits.map((type) => [type, ANY_OBJECT]);
-  if (task.emits) return Object.entries(task.emits);
+  if (task.emits) {
+    return Object.entries(task.emits).map(([type, schema]) => [
+      type,
+      typeof schema === "object" && schema !== null && !Array.isArray(schema)
+        ? (schema as Record<string, unknown>)
+        : ANY_OBJECT,
+    ]);
+  }
   return stubEmitTypes(task.stub).map((type) => [type, ANY_OBJECT]);
 }
 

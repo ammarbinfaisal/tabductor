@@ -1,0 +1,36 @@
+{
+  "name": "web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "@tabductor/bus": "workspace:*",
+    "@tabductor/core": "workspace:*",
+    "@tabductor/db": "workspace:*",
+    "@tabductor/engine": "workspace:*",
+    "@trpc/client": "^11.0.0",
+    "@trpc/server": "^11.0.0",
+    "drizzle-orm": "^0.44.0",
+    "next": "^15.5.0",
+    "pg": "^8.13.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "superjson": "^2.2.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "typescript": "^5.7.0"
+  }
+}

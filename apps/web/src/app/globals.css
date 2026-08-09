@@ -1,0 +1,178 @@
+/* A working surface, not a design pass (U0 style constraints). One stylesheet, no framework. */
+
+:root {
+  color-scheme: dark;
+  --bg: #0e1116;
+  --panel: #161b22;
+  --panel-2: #1c232c;
+  --line: #2a323d;
+  --text: #dbe3ec;
+  --muted: #8b98a8;
+  --accent: #4c9aff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --bad: #f85149;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.topbar .brand {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text);
+}
+.topbar nav {
+  display: flex;
+  gap: 16px;
+}
+
+main {
+  padding: 20px;
+}
+
+h1 {
+  font-size: 20px;
+  margin: 0 0 16px;
+}
+h2 {
+  font-size: 15px;
+  margin: 20px 0 8px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+th,
+td {
+  text-align: left;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+th {
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+tbody tr:hover {
+  background: var(--panel);
+}
+
+code,
+.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+button,
+select,
+input,
+textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 5px 9px;
+}
+button {
+  cursor: pointer;
+}
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+textarea {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  width: 100%;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 14px;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.status {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+}
+.status-succeeded {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+.status-failed,
+.status-timed_out {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+.status-running,
+.status-queued {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.status-cancelled {
+  color: var(--muted);
+}
+
+.banner {
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+.banner-error {
+  border-color: var(--bad);
+  color: var(--bad);
+}

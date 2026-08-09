@@ -26,8 +26,9 @@
 
 What exists as code: `packages/{core,db,bus,engine,policy}` + `apps/testkit` + `tests/system`
 — 53 tests in 16 files. The whole workspace typechecks clean (`tsc`). The suite talks to a
-project-owned Postgres container on `localhost:5434` whose credentials are compiled in as
-defaults (`infra/postgres/README.md`), so a clean checkout needs no environment. If every
+project-owned Postgres container on `localhost:5434` (`docker compose up -d`, see
+`infra/README.md`) whose credentials are compiled in as defaults, so a clean checkout needs
+no environment beyond starting the container. If every
 DB-backed file fails at SCRAM auth *before any test logic runs*, that container is down or a
 stale `PG*` variable is set in the shell — an environment problem, not a regression. (This
 replaced an earlier setup that connected as the OS user to a system Postgres on 5432, which
@@ -140,7 +141,7 @@ TypeScript monorepo (pnpm workspaces). One deployable process in early phases (`
 
 **Test infrastructure (built in Phase 0, used forever):**
 
-- `docker-compose.test.yml`: Postgres 16; headless Chromium launched with `--remote-debugging-port` on a throwaway `--user-data-dir` (this *is* your BYO-CDP simulator — tests connect to it exactly the way production connects to a user's endpoint); the fixture site server.
+- `docker-compose.yml` (built as the root compose file rather than a separate `docker-compose.test.yml`, since dev and test want the same services): Postgres 16, plus Grafana LGTM behind a `telemetry` profile. Chromium and the fixture sites are deliberately **not** services — the testkit launches headless Chrome per test with `--remote-debugging-port` on a throwaway `--user-data-dir` (this *is* your BYO-CDP simulator, connected to exactly the way production connects to a user's endpoint) and serves the fixture sites in-process. See `infra/README.md`.
 - **Fixture sites** (`apps/testkit/sites/`): small deterministic HTML apps served locally — `fake-tweets` (a timeline page with data attributes, plus a `POST /admin/add-tweet` endpoint so tests can inject "new tweets" mid-run), `fake-gram` (a form that records submissions), `mutator` (same page, but layout switchable via query param — used to force deopts in Phase 6), `slowpoke` (configurable latency/timeouts). Fixture sites are the backbone of system testing: real Chromium, real CDP, zero external network.
 - **LLM replay adapter**: the `agent` package's LLM client has `mode: "live" | "record" | "replay"`. `record` runs against the real API and writes the full transcript (prompts, tool calls, results) to a fixture file; `replay` serves the recorded tool-call sequence deterministically. System tests run in `replay` (fast, free, deterministic); a small separate `live-eval` suite runs `live` nightly/manually to catch model drift. Never let CI depend on live LLM calls.
 - Test DB lifecycle: each system test gets a schema-per-test (template database clone) — parallel-safe, no shared-state flakes.
