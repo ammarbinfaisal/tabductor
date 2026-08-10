@@ -11,6 +11,7 @@ export {
   workflowVersions,
   schedules,
   taskState,
+  workflowShares,
 } from "./schema.js";
 export type {
   EventRow,
@@ -24,6 +25,7 @@ export type {
   WorkflowRow,
   WorkflowVersionRow,
   ScheduleRow,
+  WorkflowShareRow,
 } from "./schema.js";
 export { createDb, migrateDb, migrationsFolder, type Db, type DbHandle } from "./client.js";
 export { createMigratedTestDb, type MigratedTestDb } from "./test-db.js";

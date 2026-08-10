@@ -12,6 +12,7 @@ const EXPECTED_TABLES = [
   "schedules",
   "task_state",
   "tasks",
+  "workflow_shares",
   "workflow_versions",
   "workflows",
 ];

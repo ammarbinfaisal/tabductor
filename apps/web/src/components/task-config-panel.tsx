@@ -115,7 +115,13 @@ function Emits({
     <section>
       <div className="row" style={{ justifyContent: "space-between" }}>
         <h3>Emitted events</h3>
-        <button onClick={() => setEmits([...task.emits, { type: "", packetSchema: { type: "object" } }])}>
+        <button
+          onClick={() =>
+            // `public: false` is spelled out rather than left to the zod default, because
+            // this is the one place a new emit is born in the editor (S2d).
+            setEmits([...task.emits, { type: "", packetSchema: { type: "object" }, public: false }])
+          }
+        >
           Add
         </button>
       </div>

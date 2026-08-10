@@ -88,8 +88,48 @@ export const eventDefs = pgTable(
       .references(() => tasks.id, { onDelete: "cascade" }),
     eventType: text("event_type").notNull(),
     packetSchemaJson: jsonb("packet_schema_json").notNull().default({}),
+    /**
+     * Share visibility (S2d, sharing.md §3.2): may a share viewer read packets of this
+     * event type? Projected from the graph document, so it versions with the graph.
+     *
+     * The default is the safety property, not a convenience: a node added in a later
+     * version arrives private because of this line, and there is no state from the
+     * previous version that could carry a stale `true` forward.
+     */
+    public: boolean("public").notNull().default(false),
   },
   (t) => [uniqueIndex("event_defs_task_type_key").on(t.taskId, t.eventType)],
+);
+
+/**
+ * A share: an unguessable link granting read-only access to one workflow's execution
+ * (sharing.md §2). The token is a bearer credential of the same class as a CDP `wss://`
+ * URL (§16 Threat 5), so only its hash is stored — a dump of this table yields no working
+ * links. `token_prefix` exists so the owner can tell their shares apart without our
+ * holding anything that opens one.
+ *
+ * There is deliberately no access-log table: a view is not product data, and a row per
+ * public page load would make Threat 16 cheaper. Views are a metric.
+ */
+export const workflowShares = pgTable(
+  "workflow_shares",
+  {
+    id: text("id").primaryKey(),
+    workflowId: text("workflow_id")
+      .notNull()
+      .references(() => workflows.id, { onDelete: "cascade" }),
+    tokenSha256: text("token_sha256").notNull(),
+    tokenPrefix: text("token_prefix").notNull(),
+    createdAt: createdAt(),
+    /** Revocation is a timestamp, not a delete, so a revoked link stays auditable. */
+    revokedAt: ts("revoked_at"),
+  },
+  (t) => [
+    // Unique because it is also the lookup: every public request resolves a token through
+    // this index, and resolution is uncached so revocation takes effect immediately.
+    uniqueIndex("workflow_shares_token_key").on(t.tokenSha256),
+    index("workflow_shares_workflow_idx").on(t.workflowId),
+  ],
 );
 
 export const events = pgTable(
@@ -222,3 +262,4 @@ export type EventDefRow = typeof eventDefs.$inferSelect;
 export type WorkflowRow = typeof workflows.$inferSelect;
 export type WorkflowVersionRow = typeof workflowVersions.$inferSelect;
 export type ScheduleRow = typeof schedules.$inferSelect;
+export type WorkflowShareRow = typeof workflowShares.$inferSelect;

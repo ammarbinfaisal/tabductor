@@ -8,7 +8,14 @@
  * which reach this package transitively through `@tabductor/engine`.
  */
 export type { Telemetry, TelemetryConfig } from "./init.js";
-export { createMetrics, type FireResult, type Metrics, type RunStatus } from "./metrics.js";
+export {
+  createMetrics,
+  type FireResult,
+  type Metrics,
+  type RunStatus,
+  type ShareAssetOutcome,
+  type ShareViewResult,
+} from "./metrics.js";
 export { createPinoLogger } from "./logger.js";
 export {
   contextFromTraceparent,

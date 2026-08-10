@@ -43,6 +43,13 @@
       "when": 1786274316226,
       "tag": "0005_traceparent",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786342106872,
+      "tag": "0006_workflow_shares",
+      "breakpoints": true
     }
   ]
 }

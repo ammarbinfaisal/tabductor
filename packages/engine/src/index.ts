@@ -72,4 +72,33 @@ export {
   type TaskSummary,
   type WorkflowSummary,
 } from "./queries.js";
+export {
+  createShare,
+  findShareByToken,
+  hashToken,
+  listShares,
+  publicEventTypes,
+  refCodec,
+  resolveShare,
+  revokeShare,
+  rotateShare,
+  SHARE_NOT_FOUND,
+  type IssuedShare,
+  type RefCodec,
+  type ShareSummary,
+} from "./shares.js";
+export {
+  publicEventGet,
+  publicEventList,
+  publicGraph,
+  publicRunGet,
+  publicRunList,
+  PUBLIC_PAGE_MAX,
+  type PublicEvent,
+  type PublicEventDetail,
+  type PublicGraph,
+  type PublicGraphTask,
+  type PublicRun,
+  type PublicRunDetail,
+} from "./public-read.js";
 export { seedWorkflow, seedSchedule, type SeedSpec, type SeededWorkflow } from "./seed-workflow.js";

@@ -31,7 +31,7 @@ function encodeCursor(at: Date, id: string): string {
   return `${at.getTime()}|${id}`;
 }
 
-function decodeCursor(cursor: string | null | undefined): { at: Date; id: string } | undefined {
+export function decodeCursor(cursor: string | null | undefined): { at: Date; id: string } | undefined {
   if (!cursor) return undefined;
   const [millis, ...rest] = cursor.split("|");
   const at = Number(millis);
@@ -39,7 +39,7 @@ function decodeCursor(cursor: string | null | undefined): { at: Date; id: string
   return Number.isFinite(at) && id ? { at: new Date(at), id } : undefined;
 }
 
-function pageOf<T extends { createdAt: Date; id: string }>(rows: T[], limit: number): Page<T> {
+export function pageOf<T extends { createdAt: Date; id: string }>(rows: T[], limit: number): Page<T> {
   const items = rows.slice(0, limit);
   const last = items.at(-1);
   return {
@@ -193,10 +193,8 @@ export type EventListItem = EventRow & { sourceTaskName: string | null };
  * all, and dropping the very events that say something went wrong out of the debugging feed
  * would be the wrong trade.
  */
-export async function listEvents(db: Db, input: EventListInput): Promise<Page<EventListItem>> {
-  const limit = input.limit ?? PAGE_LIMIT.default;
-  const after = decodeCursor(input.cursor);
-  const ofWorkflow = (id: string): SQL => sql`(
+export function eventOfWorkflow(id: string): SQL {
+  return sql`(
     ${events.sourceTaskId} in (
       select t.id from ${tasks} t
       join ${workflowVersions} v on v.id = t.workflow_version_id
@@ -209,6 +207,11 @@ export async function listEvents(db: Db, input: EventListInput): Promise<Page<Ev
       where v.workflow_id = ${id}
     )
   )`;
+}
+
+export async function listEvents(db: Db, input: EventListInput): Promise<Page<EventListItem>> {
+  const limit = input.limit ?? PAGE_LIMIT.default;
+  const after = decodeCursor(input.cursor);
 
   const rows = await db
     .select({ event: events, sourceTaskName: tasks.name })
@@ -216,7 +219,7 @@ export async function listEvents(db: Db, input: EventListInput): Promise<Page<Ev
     .leftJoin(tasks, eq(tasks.id, events.sourceTaskId))
     .where(
       and(
-        input.workflowId ? ofWorkflow(input.workflowId) : undefined,
+        input.workflowId ? eventOfWorkflow(input.workflowId) : undefined,
         input.type ? eq(events.type, input.type) : undefined,
         after ? sql`(${events.occurredAt}, ${events.eventId}) < (${after.at}, ${after.id}::uuid)` : undefined,
       ),

@@ -1,5 +1,7 @@
 import { eventRouter } from "./routers/event.js";
+import { publicRouter } from "./routers/public.js";
 import { runRouter } from "./routers/run.js";
+import { shareRouter } from "./routers/share.js";
 import { taskRouter } from "./routers/task.js";
 import { workflowRouter } from "./routers/workflow.js";
 import { createCallerFactory, createContext, router, type Context } from "./trpc.js";
@@ -9,6 +11,9 @@ export const appRouter = router({
   task: taskRouter,
   run: runRouter,
   event: eventRouter,
+  share: shareRouter,
+  /** Unauthenticated, token-scoped reads (S2d). Everything under here filters in SQL. */
+  public: publicRouter,
 });
 
 export type AppRouter = typeof appRouter;

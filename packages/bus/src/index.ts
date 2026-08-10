@@ -9,4 +9,4 @@ export {
   type DispatcherOptions,
 } from "./outbox.js";
 export { claim, type ClaimResult } from "./dedupe.js";
-export { chainDepth, chainOf } from "./lineage.js";
+export { chainDepth, chainIdsOf, chainOf } from "./lineage.js";

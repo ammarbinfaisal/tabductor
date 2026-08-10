@@ -31,6 +31,31 @@ export async function chainDepth(db: Db, eventId: string, cap = 100): Promise<nu
  * by id afterwards keeps the packets out of the recursion. Same cap, same reason.
  */
 export async function chainOf(db: Db, eventId: string, cap = 100): Promise<EventRow[]> {
+  const walked = await chainIdsOf(db, eventId, cap);
+  if (walked.length === 0) return [];
+
+  const rows = await db.select().from(events).where(
+    inArray(
+      events.eventId,
+      walked.map((r) => r.eventId),
+    ),
+  );
+  const depth = new Map(walked.map((r) => [r.eventId, r.depth]));
+  // Deepest = furthest ancestor, so descending depth reads root → leaf.
+  return rows.sort((a, b) => (depth.get(b.eventId) ?? 0) - (depth.get(a.eventId) ?? 0));
+}
+
+/**
+ * The walk alone — ids and their depth, no rows. Split out because the public share view
+ * needs the same capped chain but must select its columns differently: a private hop keeps
+ * its type and timestamp and drops its packet, which cannot be expressed by fetching the
+ * rows and deleting a field afterwards (sharing.md §4.1).
+ */
+export async function chainIdsOf(
+  db: Db,
+  eventId: string,
+  cap = 100,
+): Promise<Array<{ eventId: string; depth: number }>> {
   const walked = await db.execute<{ event_id: string; depth: number }>(sql`
     WITH RECURSIVE chain(event_id, causation_id, depth) AS (
       SELECT e.event_id, e.causation_id, 1
@@ -44,11 +69,5 @@ export async function chainOf(db: Db, eventId: string, cap = 100): Promise<Event
     )
     SELECT event_id, depth FROM chain
   `);
-  const ids = walked.rows.map((r) => r.event_id);
-  if (ids.length === 0) return [];
-
-  const rows = await db.select().from(events).where(inArray(events.eventId, ids));
-  const depth = new Map(walked.rows.map((r) => [r.event_id, r.depth]));
-  // Deepest = furthest ancestor, so descending depth reads root → leaf.
-  return rows.sort((a, b) => (depth.get(b.eventId) ?? 0) - (depth.get(a.eventId) ?? 0));
+  return walked.rows.map((r) => ({ eventId: r.event_id, depth: r.depth }));
 }

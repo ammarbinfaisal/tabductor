@@ -59,6 +59,13 @@ export const graphTaskSchema = z.object({
       z.object({
         type: z.string().min(1),
         packetSchema: packetSchemaSchema.default({ type: "object" }),
+        /**
+         * Share visibility (S2d, sharing.md §3.2). **This default is the control.** A node
+         * added in a later version arrives private because of it, so no `checkGraph` rule
+         * is needed and none should be added — a graph edit cannot silently widen a share
+         * when there is no path by which `true` survives an author not writing it.
+         */
+        public: z.boolean().default(false),
       }),
     )
     .default([]),
@@ -209,6 +216,7 @@ export async function publishVersion(
           taskId: id,
           eventType: emit.type,
           packetSchemaJson: emit.packetSchema,
+          public: emit.public,
         });
       }
 
@@ -301,7 +309,11 @@ export async function readGraph(db: Db, versionId: string): Promise<Graph> {
         limits: asRecord(row.limitsJson),
         emits: defRows
           .filter((d) => d.taskId === row.id)
-          .map((d) => ({ type: d.eventType, packetSchema: asRecord(d.packetSchemaJson) })),
+          .map((d) => ({
+            type: d.eventType,
+            packetSchema: asRecord(d.packetSchemaJson),
+            public: d.public,
+          })),
         schedule: schedule
           ? {
               cron: schedule.cron,

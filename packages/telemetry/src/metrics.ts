@@ -16,6 +16,8 @@ import type { Meter } from "@opentelemetry/api";
 
 export type RunStatus = "succeeded" | "failed" | "timed_out" | "cancelled";
 export type FireResult = "fired" | "skipped_overlap" | "skipped_missed" | "queued";
+export type ShareViewResult = "ok" | "unknown" | "revoked" | "rate_limited";
+export type ShareAssetOutcome = "ok" | "denied" | "not_found";
 
 export type Metrics = {
   /** How long an event waited in the outbox before a dispatcher delivered it. */
@@ -31,6 +33,14 @@ export type Metrics = {
   runs: { add: (labels: { kind: string; mode: string; status: RunStatus }) => void };
   runDuration: { record: (seconds: number, labels: { kind: string; mode: string }) => void };
   crashRecoveredRuns: { add: (count?: number) => void };
+  /**
+   * A request against a share link (S2d). `result="unknown"` climbing is someone guessing
+   * tokens, which is why this belongs on the security-signals board rather than an
+   * engagement one — the share *token* is never a label, and neither is the workflow.
+   */
+  shareViews: { add: (result: ShareViewResult) => void };
+  /** Public asset reads. No call site until S5d resolves assets through a share. */
+  shareAssetReads: { add: (outcome: ShareAssetOutcome) => void };
 };
 
 export function createMetrics(meter: Meter): Metrics {
@@ -45,6 +55,8 @@ export function createMetrics(meter: Meter): Metrics {
   const runs = meter.createCounter("runs_total");
   const runDuration = meter.createHistogram("run_duration_seconds", { unit: "s" });
   const crashRecoveredRuns = meter.createCounter("crash_recovered_runs_total");
+  const shareViews = meter.createCounter("share_views_total");
+  const shareAssetReads = meter.createCounter("share_asset_reads_total");
 
   return {
     outboxDispatchLag: { record: (seconds) => outboxDispatchLag.record(seconds) },
@@ -65,5 +77,7 @@ export function createMetrics(meter: Meter): Metrics {
     runs: { add: (labels) => runs.add(1, { ...labels }) },
     runDuration: { record: (seconds, labels) => runDuration.record(seconds, { ...labels }) },
     crashRecoveredRuns: { add: (count = 1) => crashRecoveredRuns.add(count) },
+    shareViews: { add: (result) => shareViews.add(1, { result }) },
+    shareAssetReads: { add: (outcome) => shareAssetReads.add(1, { outcome }) },
   };
 }

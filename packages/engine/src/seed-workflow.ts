@@ -32,6 +32,12 @@ export type SeedTask = {
   retry?: { max: number; backoff_ms?: number };
   /** Declared emitted events. A bare type gets a permissive schema. */
   emits?: Record<string, unknown> | string[];
+  /**
+   * Which of the declared types a share viewer may read packets for (S2d). Everything not
+   * listed stays private, which is also what a spec that omits this gets — the seed helper
+   * has no reason to be the one place in the system where visibility defaults open.
+   */
+  publicEvents?: readonly string[];
 };
 
 /** `[fromTask, eventType, toTask]` — the whole edge, in the order you say it aloud. */
@@ -79,7 +85,11 @@ export async function seedWorkflow(db: Db, spec: SeedSpec): Promise<SeededWorkfl
         ...(task.runTimeoutMs === undefined ? {} : { run_timeout_ms: task.runTimeoutMs }),
         ...(task.retry === undefined ? {} : { retry: task.retry }),
       },
-      emits: declaredEmits(task).map(([type, packetSchema]) => ({ type, packetSchema })),
+      emits: declaredEmits(task).map(([type, packetSchema]) => ({
+        type,
+        packetSchema,
+        public: task.publicEvents?.includes(type) ?? false,
+      })),
       schedule: null,
       position: null,
     })),
