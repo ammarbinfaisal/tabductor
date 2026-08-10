@@ -15,6 +15,7 @@ export default async function WorkflowLayout({
         <Link href={`/workflows/${id}`}>graph</Link>
         <Link href={`/workflows/${id}/runs`}>runs</Link>
         <Link href={`/workflows/${id}/events`}>events</Link>
+        <Link href={`/workflows/${id}/share`}>sharing</Link>
         <Link href="/workflows" className="muted">
           all workflows
         </Link>

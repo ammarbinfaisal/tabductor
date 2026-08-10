@@ -23,13 +23,6 @@ export function telemetry(): Promise<Telemetry> {
   return store.__tabductorTelemetry;
 }
 
-/**
- * The resolved handle, or undefined before `register()` has finished.
- *
- * Request handling is synchronous at the point a context is built, and `instrumentation.ts`
- * awaits init at boot — so by the first request this is set. Returning undefined rather
- * than awaiting keeps a missing collector from ever being a reason a request blocks.
- */
-export function telemetryNow(): Telemetry | undefined {
-  return store.__tabductorTelemetryReady;
-}
+// The resolved handle is read back by `server/metrics.ts`, which deliberately does not
+// import this module: importing it pulls the OTel SDK into whatever bundle asks, and the
+// SDK's module graph does not survive webpack (it reaches `net` through @grpc/grpc-js).

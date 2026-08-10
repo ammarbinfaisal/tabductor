@@ -154,6 +154,24 @@ function Emits({
             }
             onError={onError}
           />
+          {/*
+            Share visibility (S2d). Deliberately worded as a property of the event rather
+            than of the link: a share shows the graph and the run history either way, and
+            this is the only switch that lets a packet's *contents* out.
+          */}
+          <label className="row">
+            <input
+              type="checkbox"
+              checked={emit.public}
+              onChange={(e) =>
+                setEmits(task.emits.map((x, j) => (i === j ? { ...x, public: e.target.checked } : x)))
+              }
+            />
+            <span>
+              Readable in share links
+              <span className="muted"> — packets of this type become public when published</span>
+            </span>
+          </label>
         </div>
       ))}
     </section>

@@ -5,16 +5,15 @@ import {
   Controls,
   ReactFlow,
   type Connection,
-  type Edge,
   type EdgeChange,
-  type Node,
   type NodeChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { Graph, TaskSummary } from "@tabductor/engine";
+import { edgeId, toFlowEdges, toFlowNodes } from "../lib/graph-flow.js";
 import { KIND_LIST, NODE_KINDS } from "../lib/node-kinds.js";
 import { useStoreBridge } from "../lib/store.js";
-import { createEditorStore, edgeId, findCycles, type EditorStore } from "./editor-store.js";
+import { createEditorStore, findCycles, type EditorStore } from "./editor-store.js";
 
 /**
  * The graph editor (U0). React Flow in controlled mode over the editor store: the store
@@ -42,29 +41,8 @@ export function GraphEditor(props: {
   const selected = state.graph.tasks.find((t) => t.name === state.selected) ?? null;
   const ConfigPanel = selected ? NODE_KINDS[selected.kind].configPanel : null;
 
-  const nodes: Node[] = state.graph.tasks.map((t) => ({
-    id: t.name,
-    position: t.position ?? { x: 0, y: 0 },
-    selected: t.name === state.selected,
-    data: {
-      label: (
-        <div className="node">
-          <strong>{t.name}</strong>
-          <div className="node-meta">
-            {NODE_KINDS[t.kind].label} · {t.mode}
-            {t.schedule ? ` · ${t.schedule.cron}` : ""}
-          </div>
-        </div>
-      ),
-    },
-  }));
-
-  const edges: Edge[] = state.graph.edges.map((e) => ({
-    id: edgeId(e),
-    source: e.from,
-    target: e.to,
-    label: e.eventType,
-  }));
+  const nodes = toFlowNodes(state.graph.tasks, state.selected);
+  const edges = toFlowEdges(state.graph.edges);
 
   const onNodesChange = (changes: NodeChange[]): void => {
     for (const change of changes) {
@@ -106,6 +84,27 @@ export function GraphEditor(props: {
         </div>
       ) : null}
       {state.notice ? <div className="banner">{state.notice}</div> : null}
+      {state.confirmVisibility ? (
+        <div className="banner">
+          <strong>This publish changes what share links expose.</strong>
+          {state.confirmVisibility.adding.length > 0 ? (
+            <div>
+              Packets becoming readable by anyone with a link:{" "}
+              <span className="mono">{state.confirmVisibility.adding.join(", ")}</span>
+            </div>
+          ) : null}
+          {state.confirmVisibility.removing.length > 0 ? (
+            <div>
+              No longer readable, including past events:{" "}
+              <span className="mono">{state.confirmVisibility.removing.join(", ")}</span>
+            </div>
+          ) : null}
+          <div className="row">
+            <button onClick={() => void s.save(true)}>Publish anyway</button>
+            <button onClick={() => s.cancelVisibilityChange()}>Cancel</button>
+          </div>
+        </div>
+      ) : null}
       {cycles.length > 0 ? (
         <div className="banner">
           {cycles.length} cycle{cycles.length > 1 ? "s" : ""}:{" "}

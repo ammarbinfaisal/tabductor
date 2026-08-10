@@ -3,6 +3,7 @@
 import type { Graph, GraphTask, NodeKind, TaskSummary } from "@tabductor/engine";
 import { createStore } from "zustand/vanilla";
 import { api, asApiError, type ApiError } from "../lib/api.js";
+import { edgeId } from "../lib/graph-flow.js";
 
 /**
  * The graph editor's client state (U0). One vanilla store: the document being edited, the
@@ -27,6 +28,14 @@ export type EditorState = {
   busy: boolean;
   error: ApiError | null;
   notice: string | null;
+  /** Event types readable through a share link as of the last load or publish (S2d). */
+  publishedPublic: string[];
+  /**
+   * A pending publish whose visibility manifest differs from what is live. Publishing is
+   * the moment a packet becomes readable by anyone with a link, so the change is shown
+   * before it happens rather than reported after.
+   */
+  confirmVisibility: { adding: string[]; removing: string[] } | null;
 };
 
 export type EditorStore = ReturnType<typeof createEditorStore>;
@@ -59,6 +68,8 @@ export function createEditorStore(init: {
     busy: false,
     error: null,
     notice: null,
+    publishedPublic: publicTypesOf(init.graph),
+    confirmVisibility: null,
   }));
 
   const edit = (fn: (graph: Graph) => Graph): void =>
@@ -139,17 +150,39 @@ export function createEditorStore(init: {
     removeEdge: (id: string) =>
       edit((g) => ({ ...g, edges: g.edges.filter((e) => edgeId(e) !== id) })),
 
-    async save() {
+    /**
+     * Publish. A first call whose manifest differs from the live one does not publish — it
+     * parks the diff for confirmation, and a second call (`confirmed`) goes through.
+     */
+    async save(confirmed = false) {
       if (store.getState().busy) return;
-      store.setState({ busy: true, error: null, notice: null });
+      const { workflowId, graph, publishedPublic } = store.getState();
+
+      const next = publicTypesOf(graph);
+      const adding = next.filter((t) => !publishedPublic.includes(t));
+      const removing = publishedPublic.filter((t) => !next.includes(t));
+      if (!confirmed && (adding.length > 0 || removing.length > 0)) {
+        store.setState({ confirmVisibility: { adding, removing }, error: null, notice: null });
+        return;
+      }
+
+      store.setState({ busy: true, error: null, notice: null, confirmVisibility: null });
       try {
-        const { workflowId, graph } = store.getState();
         const { versionId, taskIds } = await api.workflow.publishVersion.mutate({ workflowId, graph });
-        store.setState({ versionId, taskIds, dirty: false, busy: false, notice: `published ${versionId}` });
+        store.setState({
+          versionId,
+          taskIds,
+          dirty: false,
+          busy: false,
+          publishedPublic: next,
+          notice: `published ${versionId}`,
+        });
       } catch (err) {
         store.setState({ busy: false, error: asApiError(err) });
       }
     },
+
+    cancelVisibilityChange: () => store.setState({ confirmVisibility: null }),
 
     /**
      * "Trigger now": publish a synthetic event at the node and let the engine pick the run
@@ -179,13 +212,17 @@ export function createEditorStore(init: {
         dirty: false,
         error: null,
         notice: "reloaded",
+        publishedPublic: publicTypesOf(got.graph),
+        confirmVisibility: null,
       });
     },
   };
 }
 
-export const edgeId = (e: { from: string; eventType: string; to: string }): string =>
-  `${e.from}|${e.eventType}|${e.to}`;
+/** The visibility manifest as a flat set of event types — what a share link exposes. */
+function publicTypesOf(graph: Graph): string[] {
+  return [...new Set(graph.tasks.flatMap((t) => t.emits.filter((e) => e.public).map((e) => e.type)))].sort();
+}
 
 /**
  * Cycles are legal — the loop budget bounds them (§18.6) — but invisible ones are how a

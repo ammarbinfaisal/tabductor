@@ -1,7 +1,7 @@
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { appRouter } from "../../../../server/router.js";
 import { db } from "../../../../server/db.js";
-import { telemetryNow } from "../../../../server/telemetry.js";
+import { metricsNow } from "../../../../server/metrics.js";
 import type { Context } from "../../../../server/trpc.js";
 
 /** The one HTTP surface: no REST duplication, no versioning (S2c). */
@@ -15,11 +15,10 @@ const handler = (req: Request): Promise<Response> =>
      * address to rate-limit and the only place allowed to reach for telemetry, which the
      * routers receive by injection rather than import (§17.2 rule 1).
      */
-    createContext: (): Context => ({
-      db: db(),
-      clientKey: clientKeyOf(req),
-      ...(telemetryNow() ? { metrics: telemetryNow()!.metrics } : {}),
-    }),
+    createContext: (): Context => {
+      const metrics = metricsNow();
+      return { db: db(), clientKey: clientKeyOf(req), ...(metrics ? { metrics } : {}) };
+    },
   });
 
 /**

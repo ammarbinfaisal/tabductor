@@ -1,4 +1,4 @@
-import { EventFeed } from "../../../../components/event-feed.js";
+import { WorkflowEvents } from "../../../../components/event-feed.js";
 
 export const dynamic = "force-dynamic";
 
@@ -11,5 +11,5 @@ export default async function EventsPage({
 }) {
   const { id } = await params;
   const { event } = await searchParams;
-  return <EventFeed workflowId={id} initialEventId={event ?? null} />;
+  return <WorkflowEvents workflowId={id} initialEventId={event ?? null} />;
 }
