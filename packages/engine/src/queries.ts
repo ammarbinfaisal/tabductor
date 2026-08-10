@@ -61,9 +61,19 @@ export type WorkflowSummary = WorkflowRow & {
  */
 export async function listWorkflows(db: Db, userId?: string): Promise<WorkflowSummary[]> {
   const rows = await db
-    // Table and column names are written out rather than interpolated: drizzle renders a
-    // column reference inside a select-list `sql` template unqualified, and a bare `id`
-    // next to the subquery's own `runs r` is ambiguous to Postgres.
+    // Table and column names are written out rather than interpolated (`${workflows.id}`),
+    // and the reason is specific enough to be worth stating.
+    //
+    // drizzle's `buildSelection` computes `isSingleTable = !joins || joins.length === 0`,
+    // and when it is true it rewrites every column chunk inside a select-list `sql` template
+    // to a bare identifier — dropping the table qualifier. That is right for a flat
+    // projection (`select "id" from "workflows"`) and wrong for a correlated subquery, which
+    // brings its own FROM scope: a bare `"id"` beside `runs r` and `workflow_versions v` is
+    // ambiguous, and Postgres rejects the statement.
+    //
+    // The `no joins` half is the trap. `listRuns` and `listEvents` interpolate columns the
+    // same way and are fine, because they join and so keep their qualifiers — which is why
+    // this failed only here, and only once a page actually called it.
     .select({
       workflow: workflows,
       taskCount: sql<number>`(
