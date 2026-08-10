@@ -23,6 +23,28 @@ import { sql } from "drizzle-orm";
 const ts = (name: string) => timestamp(name, { withTimezone: true });
 const createdAt = () => ts("created_at").notNull().defaultNow();
 
+/**
+ * Closed column domains.
+ *
+ * These are `text` columns, deliberately — §4 wants a new run status or schedule policy to
+ * be a code change rather than a migration — so the domain is declared here beside the
+ * column and applied with `$type`. It is an assertion about what the writers write, not a
+ * constraint the database enforces, and it holds because each of these columns has exactly
+ * one writing module (`run-state.ts`, `publishVersion`).
+ *
+ * They live in the schema package because everything else derives from them: the engine
+ * re-exports `RunStatus`, and the graph document builds its zod enums from these tuples
+ * instead of restating the members. One list per domain, whatever asks the question.
+ */
+export const RUN_STATUSES = ["queued", "running", "succeeded", "failed", "timed_out", "cancelled"] as const;
+export type RunStatus = (typeof RUN_STATUSES)[number];
+
+export const MISSED_POLICIES = ["skip", "fire_once_catchup"] as const;
+export type MissedPolicy = (typeof MISSED_POLICIES)[number];
+
+export const OVERLAP_POLICIES = ["skip", "queue"] as const;
+export type OverlapPolicy = (typeof OVERLAP_POLICIES)[number];
+
 export const workflows = pgTable("workflows", {
   id: text("id").primaryKey(),
   userId: text("user_id").notNull(),
@@ -160,7 +182,8 @@ export const runs = pgTable(
       .notNull()
       .references(() => workflowVersions.id, { onDelete: "cascade" }),
     triggerEventId: uuid("trigger_event_id"),
-    status: text("status").notNull().default("queued"),
+    status: text("status").$type<RunStatus>().notNull().default("queued"),
+    /** Open by design: `stub` today, `ai`/`compiled`/`python` later. Not a closed domain. */
     modeUsed: text("mode_used").notNull(),
     attempt: integer("attempt").notNull().default(0),
     /** Retry backoff gate (§15): a `queued` run is invisible to the engine's pickup poll
@@ -229,8 +252,8 @@ export const schedules = pgTable("schedules", {
     .references(() => tasks.id, { onDelete: "cascade" }),
   cron: text("cron").notNull(),
   tz: text("tz").notNull().default("UTC"),
-  missedPolicy: text("missed_policy").notNull().default("skip"),
-  overlapPolicy: text("overlap_policy").notNull().default("skip"),
+  missedPolicy: text("missed_policy").$type<MissedPolicy>().notNull().default("skip"),
+  overlapPolicy: text("overlap_policy").$type<OverlapPolicy>().notNull().default("skip"),
   /** How many fires may wait behind the live run under `queue` (§7); user-configurable. */
   maxQueueDepth: integer("max_queue_depth").notNull().default(1),
   lastFiredAt: ts("last_fired_at"),

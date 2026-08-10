@@ -1,5 +1,5 @@
 import { publish } from "@tabductor/bus";
-import { runs, schedules, type Db, type RunRow } from "@tabductor/db";
+import { runs, schedules, RUN_STATUSES, type Db, type RunRow, type RunStatus } from "@tabductor/db";
 import { and, asc, eq, inArray, isNotNull, lte, sql } from "drizzle-orm";
 
 /**
@@ -18,8 +18,14 @@ export const RUN_COMPLETED = "run.completed";
 export const RUN_FAILED = "run.failed";
 export const RUN_TIMED_OUT = "run.timed_out";
 
-/** Terminal statuses never transition again; the WHERE clauses below enforce it. */
-export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "timed_out" | "cancelled";
+/**
+ * Terminal statuses never transition again; the WHERE clauses below enforce it.
+ *
+ * The members are declared beside the column they constrain (`@tabductor/db`), so
+ * `RunRow.status` is this type rather than `string` and a stale status name is a compile
+ * error at every reader. Re-exported here because this module is the one that writes them.
+ */
+export { RUN_STATUSES, type RunStatus };
 
 /**
  * `queued → running`. Stamps the deadline the watchdog scans, computed in the database so

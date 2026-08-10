@@ -1,12 +1,16 @@
 import { chainIdsOf } from "@tabductor/bus";
 import {
   edges,
+  eventDefs,
   events,
   runs,
   schedules,
   tasks,
   workflowVersions,
   type Db,
+  type MissedPolicy,
+  type OverlapPolicy,
+  type RunStatus,
 } from "@tabductor/db";
 import { and, asc, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import { NODE_KINDS, type NodeKind } from "./graph.js";
@@ -34,18 +38,45 @@ import type { RefCodec } from "./shares.js";
  *    content leaks back in through a channel nobody thought of as a channel.
  */
 
-export type PublicRead = { workflowId: string; ref: RefCodec };
+/**
+ * The read scope: which workflow, under which share, showing which packets. One object
+ * rather than three arguments, because it is the thing a caller must not assemble
+ * partially — a `workflowId` without a `publicTypes` is how every packet becomes readable.
+ *
+ * `publicRunList` does not consult `publicTypes` today; it takes the same scope anyway, so
+ * there is no shape in this file that a caller can construct half of.
+ */
+export type PublicRead = {
+  workflowId: string;
+  ref: RefCodec;
+  publicTypes: ReadonlySet<string>;
+};
 
 /**
  * `runs.error` is executor-authored free text — a stub's message today, a Python traceback
  * or a page snippet later — so the public view gets a bounded class instead (sharing.md
  * §3.3). A bounded set is safe to render precisely because it cannot carry content.
  *
+ * Named as a union, not left as `string`, because "bounded" is the whole property: a viewer
+ * of this type can switch on it exhaustively, and a class added to the CASE below without a
+ * matching member here fails to compile rather than reaching the page as an unknown label.
+ */
+export const PUBLIC_ERROR_CLASSES = [
+  "timeout",
+  "cancelled",
+  "engine_restart",
+  "no_executor",
+  "packet_invalid",
+  "other",
+] as const;
+export type PublicErrorClass = (typeof PUBLIC_ERROR_CLASSES)[number];
+
+/**
  * Derived in SQL from status first and the string only where status cannot tell them apart.
  * Adding a class is a deliberate act: the point of `other` is that an unrecognised message
  * degrades to a label rather than to its text.
  */
-const ERROR_CLASS: SQL<string | null> = sql`
+const ERROR_CLASS: SQL<PublicErrorClass | null> = sql`
   case
     when ${runs.status} = 'timed_out' then 'timeout'
     when ${runs.status} = 'cancelled' then 'cancelled'
@@ -62,11 +93,18 @@ const ERROR_CLASS: SQL<string | null> = sql`
 export type PublicGraphTask = {
   name: string;
   kind: NodeKind;
+  /** Open by design (`stub`, then `ai`/`compiled`/`python`) — not a closed domain to narrow. */
   mode: string;
   position: { x: number; y: number } | null;
   /** `packetSchema` is present only for a public type — the fields are part of the manifest. */
   emits: Array<{ type: string; public: boolean; packetSchema?: Record<string, unknown> }>;
-  schedule: { cron: string; tz: string; missedPolicy: string; overlapPolicy: string; enabled: boolean } | null;
+  schedule: {
+    cron: string;
+    tz: string;
+    missedPolicy: MissedPolicy;
+    overlapPolicy: OverlapPolicy;
+    enabled: boolean;
+  } | null;
 };
 
 export type PublicGraph = {
@@ -105,15 +143,20 @@ export async function publicGraph(db: Db, input: { versionId: string }): Promise
   const taskIds = taskRows.map((t) => t.id);
 
   // The packet schema is selected only where the type is public — same rule as packets.
+  // A drizzle select rather than `db.execute`: the conditional projection is the only part
+  // that needs raw SQL, and hand-writing the rest would mean hand-asserting its row type.
   const defRows = taskIds.length
-    ? await db.execute<{ task_id: string; event_type: string; public: boolean; packet_schema: unknown }>(sql`
-        select task_id, event_type, public,
-               case when public then packet_schema_json else null end as packet_schema
-        from event_defs
-        where task_id in (${sql.join(taskIds.map((id) => sql`${id}`), sql`, `)})
-        order by event_type
-      `)
-    : { rows: [] as Array<{ task_id: string; event_type: string; public: boolean; packet_schema: unknown }> };
+    ? await db
+        .select({
+          taskId: eventDefs.taskId,
+          eventType: eventDefs.eventType,
+          public: eventDefs.public,
+          packetSchema: sql<unknown>`case when ${eventDefs.public} then ${eventDefs.packetSchemaJson} else null end`,
+        })
+        .from(eventDefs)
+        .where(inArray(eventDefs.taskId, taskIds))
+        .orderBy(asc(eventDefs.eventType))
+    : [];
 
   const scheduleRows = taskIds.length
     ? await db
@@ -145,12 +188,12 @@ export async function publicGraph(db: Db, input: { versionId: string }): Promise
         kind: isNodeKind(decorated?.kind) ? decorated.kind : "browser",
         mode: row.mode,
         position: isPosition(decorated?.position) ? decorated.position : null,
-        emits: defRows.rows
-          .filter((d) => d.task_id === row.id)
+        emits: defRows
+          .filter((d) => d.taskId === row.id)
           .map((d) => ({
-            type: d.event_type,
+            type: d.eventType,
             public: d.public,
-            ...(d.public && isRecord(d.packet_schema) ? { packetSchema: d.packet_schema } : {}),
+            ...(d.public && isRecord(d.packetSchema) ? { packetSchema: d.packetSchema } : {}),
           })),
         schedule: schedule
           ? {
@@ -174,10 +217,10 @@ export async function publicGraph(db: Db, input: { versionId: string }): Promise
 export type PublicRun = {
   ref: string;
   taskName: string;
-  status: string;
+  status: RunStatus;
   mode: string;
   attempt: number;
-  errorClass: string | null;
+  errorClass: PublicErrorClass | null;
   createdAt: Date;
   startedAt: Date | null;
   endedAt: Date | null;
@@ -185,7 +228,7 @@ export type PublicRun = {
 
 export async function publicRunList(
   db: Db,
-  input: PublicRead & { cursor?: string | null; limit?: number },
+  input: PublicRead & { cursor?: string | null | undefined; limit?: number | undefined },
 ): Promise<Page<PublicRun>> {
   const limit = clampLimit(input.limit);
   const after = decodeCursor(input.cursor);
@@ -214,7 +257,7 @@ export async function publicRunList(
     .orderBy(desc(runs.createdAt), desc(runs.id))
     .limit(limit + 1);
 
-  const page = pageOf(rows, limit);
+  const page = pageOf(rows, limit, (r) => ({ at: r.createdAt, id: r.id }));
   return {
     items: page.items.map(({ id, ...run }) => ({ ...run, ref: input.ref.encode(id) })),
     nextCursor: page.nextCursor,
@@ -231,7 +274,7 @@ export type PublicRunDetail = {
 
 export async function publicRunGet(
   db: Db,
-  input: PublicRead & { publicTypes: ReadonlySet<string>; runId: string },
+  input: PublicRead & { runId: string },
 ): Promise<PublicRunDetail | undefined> {
   const [row] = await db
     .select({
@@ -293,7 +336,7 @@ export type PublicEvent = {
  */
 export async function publicEventList(
   db: Db,
-  input: PublicRead & { publicTypes: ReadonlySet<string>; cursor?: string | null; limit?: number },
+  input: PublicRead & { cursor?: string | null | undefined; limit?: number | undefined },
 ): Promise<Page<PublicEvent>> {
   const limit = clampLimit(input.limit);
   const after = decodeCursor(input.cursor);
@@ -319,12 +362,9 @@ export async function publicEventList(
     .orderBy(desc(events.occurredAt), desc(events.eventId))
     .limit(limit + 1);
 
-  const page = pageOf(
-    rows.map((r) => ({ ...r, createdAt: r.occurredAt })),
-    limit,
-  );
+  const page = pageOf(rows, limit, (r) => ({ at: r.occurredAt, id: r.id }));
   return {
-    items: page.items.map(({ id, createdAt: _createdAt, ...event }) => shapeEvent(event, id, input.ref)),
+    items: page.items.map(({ id, ...event }) => shapeEvent(event, id, input.ref)),
     nextCursor: page.nextCursor,
   };
 }
@@ -333,12 +373,12 @@ export type PublicEventDetail = {
   event: PublicEvent;
   /** Oldest ancestor → this event. A private hop keeps its type and drops its packet. */
   lineage: PublicEvent[];
-  triggered: Array<{ ref: string; taskName: string; status: string }>;
+  triggered: Array<{ ref: string; taskName: string; status: RunStatus }>;
 };
 
 export async function publicEventGet(
   db: Db,
-  input: PublicRead & { publicTypes: ReadonlySet<string>; eventId: string },
+  input: PublicRead & { eventId: string },
 ): Promise<PublicEventDetail | undefined> {
   // Scope first: the ref already decodes only under this share, and this is the second lock.
   const [scoped] = await db

@@ -26,6 +26,7 @@ export {
   RUN_COMPLETED,
   RUN_FAILED,
   RUN_TIMED_OUT,
+  RUN_STATUSES,
   type RunStatus,
 } from "./run-state.js";
 export { parseRetry, scheduleRetry, RETRIES_EXHAUSTED, type RetryPolicy } from "./retry.js";
@@ -94,10 +95,13 @@ export {
   publicRunGet,
   publicRunList,
   PUBLIC_PAGE_MAX,
+  PUBLIC_ERROR_CLASSES,
+  type PublicErrorClass,
   type PublicEvent,
   type PublicEventDetail,
   type PublicGraph,
   type PublicGraphTask,
+  type PublicRead,
   type PublicRun,
   type PublicRunDetail,
 } from "./public-read.js";

@@ -13,7 +13,11 @@ export {
   taskState,
   workflowShares,
 } from "./schema.js";
+export { RUN_STATUSES, MISSED_POLICIES, OVERLAP_POLICIES } from "./schema.js";
 export type {
+  RunStatus,
+  MissedPolicy,
+  OverlapPolicy,
   EventRow,
   NewEvent,
   OutboxRow,

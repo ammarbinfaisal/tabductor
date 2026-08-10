@@ -1,6 +1,6 @@
 import { AppError } from "@tabductor/core";
 import type { Db } from "@tabductor/db";
-import { findShareByToken, publicEventTypes, refCodec, type RefCodec } from "@tabductor/engine";
+import { findShareByToken, publicEventTypes, refCodec, type PublicRead } from "@tabductor/engine";
 import type { Metrics } from "@tabductor/telemetry";
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
@@ -82,19 +82,16 @@ export const createCallerFactory = t.createCallerFactory;
 /**
  * The public read surface's context (S2d, sharing.md §4.2).
  *
- * `shareProcedure` resolves the token to a live share and hands the resolver `{db, share,
- * ref, publicTypes}` and nothing else. Everything downstream takes a **required**
- * `workflowId` from `share.workflowId`, which is what keeps this path away from anything
- * shaped like `listWorkflows` — a read whose owner filter is optional and whose only caller
- * omits it, so it returns the whole database.
+ * `shareProcedure` resolves the token to a live share and hands the resolver `{db, view}`
+ * and nothing else. `view` is the engine's own `PublicRead` scope — the workflow id, the
+ * share-scoped ref codec, and the visibility manifest — so a procedure spreads it whole
+ * rather than re-spelling three fields it could spell two of.
+ *
+ * That scope carries a **required** `workflowId`, which is what keeps this path away from
+ * anything shaped like `listWorkflows`: a read whose owner filter is optional and whose only
+ * caller omits it, so it returns the whole database.
  */
-export type ShareContext = Context & {
-  share: { id: string; workflowId: string };
-  /** Share-scoped opaque row ids: no raw run or event id ever reaches a viewer. */
-  ref: RefCodec;
-  /** The visibility manifest, as event types. */
-  publicTypes: ReadonlySet<string>;
-};
+export type ShareContext = Context & { view: PublicRead };
 
 /**
  * Two buckets. The client one is checked *before* the database lookup, so guessing tokens
@@ -107,8 +104,16 @@ const shareLimiter = createRateLimiter({ capacity: 240, refillPerSecond: 8 });
 /** Same answer for unknown, revoked and malformed — a distinct one confirms a workflow. */
 const shareGone = (): TRPCError => new TRPCError({ code: "NOT_FOUND", message: "no such share" });
 
+/**
+ * The token input, declared once. The middleware reads it off the raw input and every public
+ * procedure re-declares it as part of its own schema; two declarations would eventually
+ * disagree, and the disagreement would look like a token the gate accepts and the procedure
+ * rejects — or worse, the reverse.
+ */
+export const shareTokenSchema = z.object({ token: z.string().min(1).max(200) });
+
 export const shareProcedure = procedure.use(async ({ ctx, next, getRawInput }) => {
-  const parsed = z.object({ token: z.string().min(1).max(200) }).safeParse(await getRawInput());
+  const parsed = shareTokenSchema.safeParse(await getRawInput());
   if (!parsed.success) throw shareGone();
 
   if (ctx.clientKey && !clientLimiter.take(ctx.clientKey)) {
@@ -137,9 +142,11 @@ export const shareProcedure = procedure.use(async ({ ctx, next, getRawInput }) =
   return next({
     ctx: {
       ...ctx,
-      share: { id: share.id, workflowId: share.workflowId },
-      ref: refCodec(share),
-      publicTypes: await publicEventTypes(ctx.db, share.workflowId),
+      view: {
+        workflowId: share.workflowId,
+        ref: refCodec(share),
+        publicTypes: await publicEventTypes(ctx.db, share.workflowId),
+      },
     } satisfies ShareContext,
   });
 });

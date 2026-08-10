@@ -7,6 +7,8 @@ import {
   tasks,
   workflowVersions,
   workflows,
+  MISSED_POLICIES,
+  OVERLAP_POLICIES,
   type Db,
 } from "@tabductor/db";
 import { eq, inArray } from "drizzle-orm";
@@ -40,8 +42,10 @@ const SCHEDULABLE: readonly NodeKind[] = ["browser"];
 export const graphScheduleSchema = z.object({
   cron: z.string().min(1),
   tz: z.string().min(1).default("UTC"),
-  missedPolicy: z.enum(["skip", "fire_once_catchup"]).default("skip"),
-  overlapPolicy: z.enum(["skip", "queue"]).default("skip"),
+  // Built from the column domains rather than restating them: the document and the row it
+  // becomes cannot disagree about what a policy is.
+  missedPolicy: z.enum(MISSED_POLICIES).default("skip"),
+  overlapPolicy: z.enum(OVERLAP_POLICIES).default("skip"),
   maxQueueDepth: z.number().int().positive().max(100).default(1),
   enabled: z.boolean().default(true),
 });
@@ -318,8 +322,8 @@ export async function readGraph(db: Db, versionId: string): Promise<Graph> {
           ? {
               cron: schedule.cron,
               tz: schedule.tz,
-              missedPolicy: schedule.missedPolicy === "fire_once_catchup" ? "fire_once_catchup" : "skip",
-              overlapPolicy: schedule.overlapPolicy === "queue" ? "queue" : "skip",
+              missedPolicy: schedule.missedPolicy,
+              overlapPolicy: schedule.overlapPolicy,
               maxQueueDepth: schedule.maxQueueDepth,
               enabled: schedule.enabled,
             }

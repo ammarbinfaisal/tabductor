@@ -1,9 +1,7 @@
-import { cancelRun, getRun, listRuns, PAGE_LIMIT, triggerTask } from "@tabductor/engine";
+import { cancelRun, getRun, listRuns, PAGE_LIMIT, RUN_STATUSES, triggerTask } from "@tabductor/engine";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { procedure, router } from "../trpc.js";
-
-const RUN_STATUSES = ["queued", "running", "succeeded", "failed", "timed_out", "cancelled"] as const;
 
 export const runRouter = router({
   list: procedure

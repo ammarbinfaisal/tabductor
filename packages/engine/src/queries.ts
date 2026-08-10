@@ -8,6 +8,7 @@ import {
   type Db,
   type EventRow,
   type RunRow,
+  type RunStatus,
   type TaskRow,
   type WorkflowRow,
 } from "@tabductor/db";
@@ -39,13 +40,19 @@ export function decodeCursor(cursor: string | null | undefined): { at: Date; id:
   return Number.isFinite(at) && id ? { at: new Date(at), id } : undefined;
 }
 
-export function pageOf<T extends { createdAt: Date; id: string }>(rows: T[], limit: number): Page<T> {
+/**
+ * Trim an over-fetched page to `limit` and turn the last surviving row into the next cursor.
+ *
+ * `keyOf` names the sort key rather than requiring the row to be shaped `{createdAt, id}` —
+ * `events` sorts on `occurred_at`/`event_id`, and demanding the one shape made both event
+ * readers rename their columns on the way in and strip the aliases on the way out.
+ */
+export function pageOf<T>(rows: T[], limit: number, keyOf: (row: T) => { at: Date; id: string }): Page<T> {
   const items = rows.slice(0, limit);
   const last = items.at(-1);
-  return {
-    items,
-    nextCursor: rows.length > limit && last ? encodeCursor(last.createdAt, last.id) : null,
-  };
+  if (!(rows.length > limit && last)) return { items, nextCursor: null };
+  const key = keyOf(last);
+  return { items, nextCursor: encodeCursor(key.at, key.id) };
 }
 
 export type WorkflowSummary = WorkflowRow & {
@@ -126,12 +133,18 @@ export async function listVersionTasks(db: Db, versionId: string): Promise<TaskS
     .orderBy(tasks.name);
 }
 
+/**
+ * Optional fields are written `?: T | undefined` throughout this file, not `?: T`. Under
+ * `exactOptionalPropertyTypes` the second forbids passing an explicit `undefined`, which
+ * turns every caller holding an optional value into a `...(x === undefined ? {} : { x })`
+ * spread. The property means the same thing either way; only the call sites differ.
+ */
 export type RunListInput = {
-  workflowId?: string;
-  taskId?: string;
-  status?: string;
-  cursor?: string | null;
-  limit?: number;
+  workflowId?: string | undefined;
+  taskId?: string | undefined;
+  status?: RunStatus | undefined;
+  cursor?: string | null | undefined;
+  limit?: number | undefined;
 };
 
 export type RunListItem = RunRow & { taskName: string; workflowId: string };
@@ -159,6 +172,7 @@ export async function listRuns(db: Db, input: RunListInput): Promise<Page<RunLis
   return pageOf(
     rows.map((r) => ({ ...r.run, taskName: r.taskName, workflowId: r.workflowId })),
     limit,
+    (r) => ({ at: r.createdAt, id: r.id }),
   );
 }
 
@@ -179,10 +193,10 @@ export async function getRun(db: Db, runId: string): Promise<RunDetail | undefin
 }
 
 export type EventListInput = {
-  workflowId?: string;
-  type?: string;
-  cursor?: string | null;
-  limit?: number;
+  workflowId?: string | undefined;
+  type?: string | undefined;
+  cursor?: string | null | undefined;
+  limit?: number | undefined;
 };
 
 export type EventListItem = EventRow & { sourceTaskName: string | null };
@@ -227,18 +241,11 @@ export async function listEvents(db: Db, input: EventListInput): Promise<Page<Ev
     .orderBy(desc(events.occurredAt), desc(events.eventId))
     .limit(limit + 1);
 
-  // `events` keys on `event_id`/`occurred_at`; the cursor helper wants `id`/`createdAt`.
-  const shaped = rows.map((r) => ({
-    ...r.event,
-    sourceTaskName: r.sourceTaskName,
-    id: r.event.eventId,
-    createdAt: r.event.occurredAt,
-  }));
-  const page = pageOf(shaped, limit);
-  return {
-    items: page.items.map(({ id: _id, createdAt: _createdAt, ...event }) => event),
-    nextCursor: page.nextCursor,
-  };
+  return pageOf(
+    rows.map((r) => ({ ...r.event, sourceTaskName: r.sourceTaskName })),
+    limit,
+    (r) => ({ at: r.occurredAt, id: r.eventId }),
+  );
 }
 
 export type EventDetail = {

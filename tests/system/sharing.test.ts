@@ -11,8 +11,10 @@ import {
   refCodec,
   seedWorkflow,
   triggerTask,
+  type PublicRead,
   type RefCodec,
 } from "@tabductor/engine";
+import type { Db } from "@tabductor/db";
 import { workflowShares } from "@tabductor/db";
 import { eq } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
@@ -47,6 +49,8 @@ async function seedShared(): Promise<{
   token: string;
   shareId: string;
   ref: RefCodec;
+  /** The same read scope `shareProcedure` builds, so these tests call what production calls. */
+  view: PublicRead;
 }> {
   rig = await startRig();
   const db = rig.handle.db;
@@ -72,7 +76,20 @@ async function seedShared(): Promise<{
   const api = createCaller({ db });
   const { share } = await api.share.create({ workflowId: wf.workflowId });
   const [row] = await db.select().from(workflowShares).where(eq(workflowShares.id, share.id));
-  return { wf, api, token: share.token, shareId: share.id, ref: refCodec(row!) };
+  const ref = refCodec(row!);
+  return {
+    wf,
+    api,
+    token: share.token,
+    shareId: share.id,
+    ref,
+    view: await viewOf(db, wf.workflowId, ref),
+  };
+}
+
+/** The read scope for a workflow under a share: what the middleware assembles per request. */
+async function viewOf(db: Db, workflowId: string, ref: RefCodec): Promise<PublicRead> {
+  return { workflowId, ref, publicTypes: await publicEventTypes(db, workflowId) };
 }
 
 /** The error tRPC actually threw, so a test can assert on its code rather than its prose. */
@@ -87,12 +104,11 @@ async function trpcError(fn: () => Promise<unknown>): Promise<TRPCError> {
 }
 
 it("never selects the packet of an event type outside the manifest", async () => {
-  const { wf, ref } = await seedShared();
+  const { view } = await seedShared();
   const db = rig.handle.db;
-  const publicTypes = await publicEventTypes(db, wf.workflowId);
-  expect([...publicTypes]).toEqual(["tweet.detected"]);
+  expect([...view.publicTypes]).toEqual(["tweet.detected"]);
 
-  const page = await publicEventList(db, { workflowId: wf.workflowId, ref, publicTypes });
+  const page = await publicEventList(db, view);
   const shared = page.items.find((e) => e.type === "tweet.detected");
   const withheld = page.items.find((e) => e.type === "score.private");
 
@@ -111,17 +127,11 @@ it("never selects the packet of an event type outside the manifest", async () =>
 });
 
 it("keeps a private hop in the lineage and drops only its packet", async () => {
-  const { wf, ref } = await seedShared();
+  const { view } = await seedShared();
   const db = rig.handle.db;
-  const publicTypes = await publicEventTypes(db, wf.workflowId);
   const [scored] = await eventsOfType(rig, "score.private");
 
-  const detail = await publicEventGet(db, {
-    workflowId: wf.workflowId,
-    ref,
-    publicTypes,
-    eventId: scored!.eventId,
-  });
+  const detail = await publicEventGet(db, { ...view, eventId: scored!.eventId });
 
   // manual.start → tweet.detected → score.private: the shape is intact, so the causal
   // chain a viewer sees is the chain that happened.
@@ -148,7 +158,7 @@ it("reports a bounded error class and never the error text", async () => {
   const { share } = await api.share.create({ workflowId: wf.workflowId });
   const [row] = await db.select().from(workflowShares).where(eq(workflowShares.id, share.id));
 
-  const page = await publicRunList(db, { workflowId: wf.workflowId, ref: refCodec(row!) });
+  const page = await publicRunList(db, await viewOf(db, wf.workflowId, refCodec(row!)));
   expect(page.items).toHaveLength(1);
   expect(page.items[0]?.status).toBe("failed");
   // Unrecognised messages degrade to a label rather than to their text.
@@ -170,13 +180,13 @@ it("classifies a timeout by status rather than by message", async () => {
   const { share } = await api.share.create({ workflowId: wf.workflowId });
   const [row] = await db.select().from(workflowShares).where(eq(workflowShares.id, share.id));
 
-  const page = await publicRunList(db, { workflowId: wf.workflowId, ref: refCodec(row!) });
+  const page = await publicRunList(db, await viewOf(db, wf.workflowId, refCodec(row!)));
   expect(page.items[0]?.status).toBe("timed_out");
   expect(page.items[0]?.errorClass).toBe("timeout");
 });
 
 it("exposes no prompt, no limits and no raw row id", async () => {
-  const { wf, api, token, ref } = await seedShared();
+  const { wf, api, token, view } = await seedShared();
   const db = rig.handle.db;
 
   const graph = await publicGraph(db, { versionId: wf.versionId });
@@ -200,7 +210,7 @@ it("exposes no prompt, no limits and no raw row id", async () => {
     { type: "score.private", public: false },
   ]);
 
-  const runs = await publicRunList(db, { workflowId: wf.workflowId, ref });
+  const runs = await publicRunList(db, view);
   const runIds = JSON.stringify(runs);
   for (const id of Object.values(wf.taskIds)) expect(runIds).not.toContain(id);
 
@@ -313,9 +323,9 @@ it("gives a new node's events no visibility, and takes it back when the flag goe
 });
 
 it("clamps a hostile limit and rejects one past the router's ceiling", async () => {
-  const { wf, api, token, ref } = await seedShared();
+  const { api, token, view } = await seedShared();
 
-  const page = await publicRunList(rig.handle.db, { workflowId: wf.workflowId, ref, limit: 9999 });
+  const page = await publicRunList(rig.handle.db, { ...view, limit: 9999 });
   expect(page.items.length).toBeLessThanOrEqual(PUBLIC_PAGE_MAX);
 
   const err = await trpcError(() => api.public.runs({ token, limit: 9999 }));
@@ -323,18 +333,12 @@ it("clamps a hostile limit and rejects one past the router's ceiling", async () 
 });
 
 it("serves a run's trigger and emissions under the same manifest", async () => {
-  const { wf, ref } = await seedShared();
+  const { view } = await seedShared();
   const db = rig.handle.db;
-  const publicTypes = await publicEventTypes(db, wf.workflowId);
 
-  const list = await publicRunList(db, { workflowId: wf.workflowId, ref });
+  const list = await publicRunList(db, view);
   const scorer = list.items.find((r) => r.taskName === "Scorer");
-  const detail = await publicRunGet(db, {
-    workflowId: wf.workflowId,
-    ref,
-    publicTypes,
-    runId: ref.decode(scorer!.ref)!,
-  });
+  const detail = await publicRunGet(db, { ...view, runId: view.ref.decode(scorer!.ref)! });
 
   // Triggered by the shared event, emitted the private one.
   expect(detail?.trigger?.type).toBe("tweet.detected");

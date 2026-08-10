@@ -1,8 +1,9 @@
 "use client";
 
+import type { RunStatus } from "@tabductor/engine";
 import Link from "next/link";
-import { createStore } from "zustand/vanilla";
-import { api, asApiError } from "../lib/api.js";
+import { api, type RouterOutputs } from "../lib/api.js";
+import { createPagedStore, pagedStoreFor, type PagedStore } from "../lib/paged-store.js";
 import { usePolling, useStoreBridge } from "../lib/store.js";
 
 /**
@@ -12,19 +13,33 @@ import { usePolling, useStoreBridge } from "../lib/store.js";
  * viewer's differ only in which procedure loads a page and whether a run can be cancelled.
  * Two copies would drift, and the copy nobody is looking at is the public one.
  *
- * Live by polling. Paging and polling have to agree on one thing: a refresh re-requests
- * every page already loaded rather than only the first, or a run that finishes on page 3
- * would never update while page 1 keeps ticking.
+ * Paging, polling and error handling come from `createPagedStore`, which the event feed
+ * uses too. What is left here is the columns and the two adapters.
  */
-const STATUSES = ["queued", "running", "succeeded", "failed", "timed_out", "cancelled"] as const;
-type Status = (typeof STATUSES)[number];
+
+/**
+ * The statuses the filter offers.
+ *
+ * `Record<RunStatus, …>` rather than a list, because a record is exhaustive: a status added
+ * to the engine becomes a compile error here instead of an option nobody notices is missing.
+ * And the type is imported, never the value — `@tabductor/engine` reaches drizzle and `pg`,
+ * so a value import from a client component would drag Postgres into the browser bundle.
+ */
+const STATUS_OPTIONS: Record<RunStatus, true> = {
+  queued: true,
+  running: true,
+  succeeded: true,
+  failed: true,
+  timed_out: true,
+  cancelled: true,
+};
 
 /** One row, after each side has adapted its own shape to the one the table renders. */
 export type RunView = {
   /** Row identity: a real id for the owner, a share-scoped ref for a viewer. */
   key: string;
   taskName: string;
-  status: string;
+  status: RunStatus;
   attempt: number;
   startedAt: Date | null;
   endedAt: Date | null;
@@ -35,72 +50,39 @@ export type RunView = {
 };
 
 export type RunsSource = {
-  /** Identity of the scope. The store resets when it changes. */
+  /** Identity of the scope: one store per workflow or share token. */
   scope: string;
   load: (args: {
-    status: Status | "";
+    status: RunStatus | "";
     cursor: string | null;
   }) => Promise<{ items: RunView[]; nextCursor: string | null }>;
   cancel?: (key: string) => Promise<void>;
   emptyHint: string;
 };
 
-type State = {
-  scope: string;
-  status: Status | "";
-  items: RunView[];
-  cursors: Array<string | null>;
-  nextCursor: string | null;
-  error: string | null;
-};
+type Filter = { status: RunStatus | "" };
+type RunsStore = PagedStore<RunView, Filter>;
 
-const store = createStore<State>(() => ({
-  scope: "",
-  status: "",
-  items: [],
-  cursors: [null],
-  nextCursor: null,
-  error: null,
-}));
+const storeFor = (source: RunsSource): RunsStore =>
+  pagedStoreFor("runs", source.scope, () =>
+    createPagedStore<RunView, Filter>({
+      extra: { status: "" },
+      load: ({ status, cursor }) => source.load({ status, cursor }),
+    }),
+  );
 
-let source: RunsSource | undefined;
-
-async function refresh(): Promise<void> {
-  const { scope, status, cursors } = store.getState();
-  if (!scope || !source) return;
-  try {
-    const pages = [];
-    for (const cursor of cursors) pages.push(await source.load({ status, cursor }));
-    store.setState({
-      items: pages.flatMap((p) => p.items),
-      nextCursor: pages.at(-1)?.nextCursor ?? null,
-      error: null,
-    });
-  } catch (err) {
-    store.setState({ error: asApiError(err).message });
-  }
-}
-
-export function RunsTable({ source: from }: { source: RunsSource }) {
-  source = from;
-  if (store.getState().scope !== from.scope) {
-    store.setState({ scope: from.scope, items: [], cursors: [null], nextCursor: null });
-  }
+export function RunsTable({ source }: { source: RunsSource }) {
+  const store = storeFor(source);
   const state = useStoreBridge(store);
-  usePolling(() => void refresh(), 2000);
-
-  const setStatus = (status: Status | ""): void => {
-    store.setState({ status, cursors: [null], items: [] });
-    void refresh();
-  };
+  usePolling(() => void store.refresh(), 2000);
 
   const cancel = async (key: string): Promise<void> => {
     try {
-      await from.cancel?.(key);
+      await source.cancel?.(key);
     } catch (err) {
-      store.setState({ error: asApiError(err).message });
+      store.fail(err);
     }
-    await refresh();
+    await store.refresh();
   };
 
   return (
@@ -108,9 +90,12 @@ export function RunsTable({ source: from }: { source: RunsSource }) {
       <div className="row" style={{ justifyContent: "space-between" }}>
         <h1>Runs</h1>
         <div className="row">
-          <select value={state.status} onChange={(e) => setStatus(e.target.value as Status | "")}>
+          <select
+            value={state.status}
+            onChange={(e) => store.narrow({ status: e.target.value as RunStatus | "" })}
+          >
             <option value="">all statuses</option>
-            {STATUSES.map((s) => (
+            {Object.keys(STATUS_OPTIONS).map((s) => (
               <option key={s} value={s}>
                 {s}
               </option>
@@ -159,7 +144,7 @@ export function RunsTable({ source: from }: { source: RunsSource }) {
                 )}
               </td>
               <td>
-                {from.cancel && run.cancellable ? (
+                {source.cancel && run.cancellable ? (
                   <button onClick={() => void cancel(run.key)}>Cancel</button>
                 ) : null}
               </td>
@@ -168,23 +153,28 @@ export function RunsTable({ source: from }: { source: RunsSource }) {
         </tbody>
       </table>
 
-      {state.items.length === 0 ? <p className="muted">{from.emptyHint}</p> : null}
-      {state.nextCursor ? (
-        <button
-          onClick={() => {
-            store.setState({ cursors: [...store.getState().cursors, store.getState().nextCursor] });
-            void refresh();
-          }}
-        >
-          Load more
-        </button>
-      ) : null}
+      {state.items.length === 0 ? <p className="muted">{source.emptyHint}</p> : null}
+      {state.nextCursor ? <button onClick={() => store.more()}>Load more</button> : null}
     </>
   );
 }
 
 /** The owner's runs: real ids, real error text, and a cancel button. */
 export function WorkflowRuns({ workflowId }: { workflowId: string }) {
+  const row = (run: RouterOutputs["run"]["list"]["items"][number]): RunView => ({
+    key: run.id,
+    taskName: run.taskName,
+    status: run.status,
+    attempt: run.attempt,
+    startedAt: run.startedAt,
+    endedAt: run.endedAt,
+    error: run.error,
+    triggerHref: run.triggerEventId
+      ? `/workflows/${workflowId}/events?event=${run.triggerEventId}`
+      : null,
+    cancellable: run.status === "queued" || run.status === "running",
+  });
+
   return (
     <RunsTable
       source={{
@@ -193,26 +183,11 @@ export function WorkflowRuns({ workflowId }: { workflowId: string }) {
         async load({ status, cursor }) {
           const page = await api.run.list.query({
             workflowId,
-            ...(status ? { status } : {}),
-            ...(cursor ? { cursor } : {}),
+            status: status || undefined,
+            cursor,
             limit: 25,
           });
-          return {
-            nextCursor: page.nextCursor,
-            items: page.items.map((run) => ({
-              key: run.id,
-              taskName: run.taskName,
-              status: run.status,
-              attempt: run.attempt,
-              startedAt: run.startedAt,
-              endedAt: run.endedAt,
-              error: run.error,
-              triggerHref: run.triggerEventId
-                ? `/workflows/${workflowId}/events?event=${run.triggerEventId}`
-                : null,
-              cancellable: run.status === "queued" || run.status === "running",
-            })),
-          };
+          return { nextCursor: page.nextCursor, items: page.items.map(row) };
         },
         cancel: async (runId) => {
           await api.run.cancel.mutate({ runId });
@@ -229,31 +204,26 @@ export function WorkflowRuns({ workflowId }: { workflowId: string }) {
  * inconsistently, so the public source ignores it and shows everything.
  */
 export function SharedRuns({ token }: { token: string }) {
+  const row = (run: RouterOutputs["public"]["runs"]["items"][number]): RunView => ({
+    key: run.ref,
+    taskName: run.taskName,
+    status: run.status,
+    attempt: run.attempt,
+    startedAt: run.startedAt,
+    endedAt: run.endedAt,
+    error: run.errorClass,
+    triggerHref: `/s/${encodeURIComponent(token)}/runs/${encodeURIComponent(run.ref)}`,
+    cancellable: false,
+  });
+
   return (
     <RunsTable
       source={{
         scope: `share:${token}`,
         emptyHint: "This workflow has not run yet.",
         async load({ cursor }) {
-          const page = await api.public.runs.query({
-            token,
-            ...(cursor ? { cursor } : {}),
-            limit: 25,
-          });
-          return {
-            nextCursor: page.nextCursor,
-            items: page.items.map((run) => ({
-              key: run.ref,
-              taskName: run.taskName,
-              status: run.status,
-              attempt: run.attempt,
-              startedAt: run.startedAt,
-              endedAt: run.endedAt,
-              error: run.errorClass,
-              triggerHref: `/s/${encodeURIComponent(token)}/runs/${encodeURIComponent(run.ref)}`,
-              cancellable: false,
-            })),
-          };
+          const page = await api.public.runs.query({ token, cursor, limit: 25 });
+          return { nextCursor: page.nextCursor, items: page.items.map(row) };
         },
       }}
     />

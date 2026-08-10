@@ -1,7 +1,7 @@
 "use client";
 
-import { createStore } from "zustand/vanilla";
-import { api, asApiError } from "../lib/api.js";
+import { api, type RouterOutputs } from "../lib/api.js";
+import { createPagedStore, pagedStoreFor, type PagedStore } from "../lib/paged-store.js";
 import { usePolling, useStoreBridge } from "../lib/store.js";
 
 /**
@@ -36,6 +36,7 @@ export type EventDetailView = {
 };
 
 export type EventsSource = {
+  /** Identity of the scope: one store per workflow or share token. */
   scope: string;
   load: (args: {
     type: string;
@@ -45,80 +46,53 @@ export type EventsSource = {
   runsHref: string;
 };
 
-type State = {
-  scope: string;
+type Filter = {
   type: string;
-  items: EventView[];
+  /**
+   * The filter's options are whatever has actually been seen — no catalogue of event types
+   * exists, and inventing one would go stale the first time a node emits.
+   */
   types: string[];
-  nextCursor: string | null;
-  cursors: Array<string | null>;
   selected: EventDetailView | null;
-  error: string | null;
 };
 
-const store = createStore<State>(() => ({
-  scope: "",
-  type: "",
-  items: [],
-  types: [],
-  nextCursor: null,
-  cursors: [null],
-  selected: null,
-  error: null,
-}));
+type EventsStore = PagedStore<EventView, Filter>;
 
-let source: EventsSource | undefined;
-
-async function refresh(): Promise<void> {
-  const { scope, type, cursors } = store.getState();
-  if (!scope || !source) return;
+async function openInto(store: EventsStore, source: EventsSource, key: string): Promise<void> {
   try {
-    const pages = [];
-    for (const cursor of cursors) pages.push(await source.load({ type, cursor }));
-    const items = pages.flatMap((p) => p.items);
-    store.setState({
-      items,
-      nextCursor: pages.at(-1)?.nextCursor ?? null,
-      // The filter's options are whatever has actually been seen — no catalogue of event
-      // types exists, and inventing one would go stale the first time a node emits.
-      types: [...new Set([...store.getState().types, ...items.map((e) => e.type)])].sort(),
-      error: null,
+    const selected = await source.open(key);
+    store.setState((state) => ({ ...state, selected, error: null }));
+  } catch (err) {
+    store.fail(err);
+  }
+}
+
+const storeFor = (source: EventsSource, initialKey?: string | null): EventsStore =>
+  pagedStoreFor("events", source.scope, () => {
+    const store = createPagedStore<EventView, Filter>({
+      extra: { type: "", types: [], selected: null },
+      load: ({ type, cursor }) => source.load({ type, cursor }),
+      onLoaded: (items, state) => ({
+        types: [...new Set([...state.types, ...items.map((e) => e.type)])].sort(),
+      }),
     });
-  } catch (err) {
-    store.setState({ error: asApiError(err).message });
-  }
-}
+    if (initialKey) void openInto(store, source, initialKey);
+    return store;
+  });
 
-async function open(key: string): Promise<void> {
-  if (!source) return;
-  try {
-    store.setState({ selected: await source.open(key), error: null });
-  } catch (err) {
-    store.setState({ error: asApiError(err).message });
-  }
-}
-
-export function EventFeed({ source: from, initialKey }: { source: EventsSource; initialKey?: string | null }) {
-  source = from;
-  if (store.getState().scope !== from.scope) {
-    store.setState({ scope: from.scope, items: [], cursors: [null], nextCursor: null, selected: null });
-    if (initialKey) void open(initialKey);
-  }
+export function EventFeed({ source, initialKey }: { source: EventsSource; initialKey?: string | null }) {
+  const store = storeFor(source, initialKey);
   const state = useStoreBridge(store);
-  usePolling(() => void refresh(), 2000);
+  usePolling(() => void store.refresh(), 2000);
+
+  const open = (key: string): void => void openInto(store, source, key);
 
   return (
     <>
       <div className="row" style={{ justifyContent: "space-between" }}>
         <h1>Events</h1>
         <div className="row">
-          <select
-            value={state.type}
-            onChange={(e) => {
-              store.setState({ type: e.target.value, cursors: [null], items: [] });
-              void refresh();
-            }}
-          >
+          <select value={state.type} onChange={(e) => store.narrow({ type: e.target.value })}>
             <option value="">all types</option>
             {state.types.map((t) => (
               <option key={t} value={t}>
@@ -131,7 +105,14 @@ export function EventFeed({ source: from, initialKey }: { source: EventsSource; 
       </div>
 
       {state.error ? <div className="banner banner-error">{state.error}</div> : null}
-      {state.selected ? <Lineage detail={state.selected} runsHref={from.runsHref} /> : null}
+      {state.selected ? (
+        <Lineage
+          detail={state.selected}
+          runsHref={source.runsHref}
+          onOpen={open}
+          onClose={() => store.setState((s) => ({ ...s, selected: null }))}
+        />
+      ) : null}
 
       <table>
         <thead>
@@ -144,7 +125,7 @@ export function EventFeed({ source: from, initialKey }: { source: EventsSource; 
         </thead>
         <tbody>
           {state.items.map((event) => (
-            <tr key={event.key} onClick={() => void open(event.key)} style={{ cursor: "pointer" }}>
+            <tr key={event.key} onClick={() => open(event.key)} style={{ cursor: "pointer" }}>
               <td>
                 <code>{event.type}</code>
               </td>
@@ -159,16 +140,7 @@ export function EventFeed({ source: from, initialKey }: { source: EventsSource; 
       </table>
 
       {state.items.length === 0 ? <p className="muted">No events yet.</p> : null}
-      {state.nextCursor ? (
-        <button
-          onClick={() => {
-            store.setState({ cursors: [...store.getState().cursors, store.getState().nextCursor] });
-            void refresh();
-          }}
-        >
-          Load more
-        </button>
-      ) : null}
+      {state.nextCursor ? <button onClick={() => store.more()}>Load more</button> : null}
     </>
   );
 }
@@ -178,21 +150,31 @@ function NotShared() {
   return <em className="muted">packet not shared</em>;
 }
 
-function Lineage({ detail, runsHref }: { detail: EventDetailView; runsHref: string }) {
+function Lineage({
+  detail,
+  runsHref,
+  onOpen,
+  onClose,
+}: {
+  detail: EventDetailView;
+  runsHref: string;
+  onOpen: (key: string) => void;
+  onClose: () => void;
+}) {
   return (
     <div className="panel" style={{ marginBottom: 14 }}>
       <div className="row" style={{ justifyContent: "space-between" }}>
         <h2 style={{ margin: 0 }}>
           <code>{detail.event.type}</code>
         </h2>
-        <button onClick={() => store.setState({ selected: null })}>Close</button>
+        <button onClick={onClose}>Close</button>
       </div>
 
       <p className="row" style={{ gap: 4 }}>
         {detail.lineage.map((e, i) => (
           <span key={e.key} className="row" style={{ gap: 4 }}>
             {i > 0 ? <span className="muted">→</span> : null}
-            <button className="crumb" onClick={() => void open(e.key)}>
+            <button className="crumb" onClick={() => onOpen(e.key)}>
               {e.type}
             </button>
           </span>
@@ -223,6 +205,26 @@ function Lineage({ detail, runsHref }: { detail: EventDetailView; runsHref: stri
   );
 }
 
+/**
+ * The owner's rows come from two procedures with slightly different shapes: `event.list`
+ * joins the source task's name, `event.get` returns the bare row. The union says so, rather
+ * than a hand-written type with an optional field that hides which one is which.
+ */
+type OwnerEventRow =
+  | RouterOutputs["event"]["list"]["items"][number]
+  | RouterOutputs["event"]["get"]["event"];
+
+function ownerEvent(e: OwnerEventRow): EventView {
+  return {
+    key: e.eventId,
+    type: e.type,
+    sourceName: "sourceTaskName" in e ? e.sourceTaskName : null,
+    occurredAt: e.occurredAt,
+    packetShared: true,
+    packet: e.packet,
+  };
+}
+
 /** The owner's feed: real ids, every packet, and a type filter the server honours. */
 export function WorkflowEvents({
   workflowId,
@@ -240,8 +242,8 @@ export function WorkflowEvents({
         async load({ type, cursor }) {
           const page = await api.event.list.query({
             workflowId,
-            ...(type ? { type } : {}),
-            ...(cursor ? { cursor } : {}),
+            type: type || undefined,
+            cursor,
             limit: 25,
           });
           return { nextCursor: page.nextCursor, items: page.items.map(ownerEvent) };
@@ -259,55 +261,36 @@ export function WorkflowEvents({
   );
 }
 
-function ownerEvent(e: {
-  eventId: string;
-  type: string;
-  occurredAt: Date;
-  packet: unknown;
-  sourceTaskName?: string | null;
-}): EventView {
-  return {
-    key: e.eventId,
-    type: e.type,
-    sourceName: e.sourceTaskName ?? null,
-    occurredAt: e.occurredAt,
-    packetShared: true,
-    packet: e.packet,
-  };
-}
+/** Both public procedures return the same event shape, so one adapter covers list and detail. */
+type SharedEventRow = RouterOutputs["public"]["events"]["items"][number];
 
-/** A viewer's feed: opaque refs, and packets only for the types the author shared. */
-export function SharedEvents({ token }: { token: string }) {
-  const shared = (e: {
-    ref: string;
-    type: string;
-    sourceTaskName: string | null;
-    occurredAt: Date;
-    packetPublic: boolean;
-    packet?: unknown;
-  }): EventView => ({
+function sharedEvent(e: SharedEventRow): EventView {
+  return {
     key: e.ref,
     type: e.type,
     sourceName: e.sourceTaskName,
     occurredAt: e.occurredAt,
     packetShared: e.packetPublic,
     packet: e.packet,
-  });
+  };
+}
 
+/** A viewer's feed: opaque refs, and packets only for the types the author shared. */
+export function SharedEvents({ token }: { token: string }) {
   return (
     <EventFeed
       source={{
         scope: `share:${token}`,
         runsHref: `/s/${encodeURIComponent(token)}/runs`,
         async load({ cursor }) {
-          const page = await api.public.events.query({ token, ...(cursor ? { cursor } : {}), limit: 25 });
-          return { nextCursor: page.nextCursor, items: page.items.map(shared) };
+          const page = await api.public.events.query({ token, cursor, limit: 25 });
+          return { nextCursor: page.nextCursor, items: page.items.map(sharedEvent) };
         },
         async open(ref) {
           const detail = await api.public.event.query({ token, ref });
           return {
-            event: shared(detail.event),
-            lineage: detail.lineage.map(shared),
+            event: sharedEvent(detail.event),
+            lineage: detail.lineage.map(sharedEvent),
             triggered: detail.triggered.map((r) => ({ key: r.ref, taskName: r.taskName, status: r.status })),
           };
         },
