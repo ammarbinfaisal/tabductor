@@ -1,7 +1,7 @@
 # Agentic Browsing Platform — Incremental Implementation Plan (Backend-First)
 
-**Version:** 0.4
-**Companion to:** `techical_plan.md` (the design doc) and `graph-compilation-llm.md` (decision kind, workflow store, graph compiler). Section references (§) below point to the design doc. Resolved §18 decisions are folded in below and in the design doc itself.
+**Version:** 0.5
+**Companion to:** `techical_plan.md` (the design doc), `graph-compilation-llm.md` (decision kind, workflow store, graph compiler), `sharing.md` (shared workflows) and `python-compute.md` (`mode=python`). Section references (§) below point to the design doc. Resolved §18 decisions are folded in below and in the design doc itself.
 **Ordering constraints (updated in 0.3):** "backend only" held until the tooling + event architecture stabilized — **that gate is passed** (Phases 1–2 done and committed). From S2c onward the UI ships incrementally per the **UI track** at the end of this document: each slice lands as soon as its backend prerequisite exists, starting with U0 which needs only S2c. The policy/permissions engine stays last. Testing remains backend system testing throughout — no UI tests.
 
 **Changes in 0.2:** two node kinds (§4) — `browser` and `asset`. MCP moves off the browser node onto the asset node, joined by the asset store and LaTeX document generation. What was Phase 5 (MCP + secrets) is now **Phase 5 (asset node)**; the compiler and policy phases shift by one and gain kind-awareness.
@@ -9,6 +9,11 @@
 **Changes in 0.3 (2026-08-09):** status verified against the repo — S2b is committed (`dc4de11`), not pending. "Phase 8 — UI at the end" is replaced by the **UI track** (slices U0–U6), each gated only on its backend prerequisite; the first visible UI is one subphase away. The **decision** node kind, the **workflow data store** (per-workflow Postgres schema + role pair), and the **graph compiler** (one prompt → checked graph) are specified in `graph-compilation-llm.md` and slot in as **S5g** and **S8** (see its §10); their UI lands as slices U3.5 and U6.
 
 **Changes in 0.4 (2026-08-09):** platform observability (design-doc §17.2 — OTel + Grafana LGTM + pino logs) becomes a cross-phase concern: §0.5 below adds the telemetry package as subphase **SOb** (alongside S2c) and binds every later subphase to instrument what it builds. The design doc's Phase 5 "metrics dashboards" item is superseded — dashboards ship with SOb.
+
+**Changes in 0.5 (2026-08-10):** two tracks are added, each specified in its own companion document.
+
+- **Shared workflows** (`sharing.md`) — a read-only public link onto a workflow's graph, triggers, runs, events, opted-in packets and assets. Its only prerequisite is S2c, so it lands as **S2d + U0.5** and is independent of everything from S3a on. It is the first slice since U0 whose backend and UI can both ship immediately, and the sharing track section below sits between Phases 2 and 3 to reflect that.
+- **Python compute** (`python-compute.md`) — `mode=python` on `kind=asset`, running an authored program in a Firecracker microVM to produce spreadsheets and other computed deliverables. It lands as **S5h** inside Phase 5, gated on S5a (the `kind`/`mode` discriminants) and S5d (somewhere for output files to go), and independent of S5e. The UI folds into U3.
 
 ---
 
@@ -23,7 +28,8 @@
 | S2c | Next.js + tRPC control-plane API | **done** |
 | SOb | `packages/telemetry`: OTel + pino + bus traceparent + engine instrumentation (§0.5) | **done** |
 | U0 | First UI: graph editor, schedules, stub scripting, runs table, event feed | **done** |
-| S3a–S7, S5g, S8 | browser, agent, asset, store+decision, compiler, policy, graph compiler | not started |
+| S2d, U0.5 | shared workflows: share model + public read API, public view (needs S2c only) | not started |
+| S3a–S7, S5g, S5h, S8 | browser, agent, asset, python compute, store+decision, compiler, policy, graph compiler | not started |
 
 What exists as code: `packages/{core,db,bus,engine,policy,telemetry}` + `apps/{engine,web,testkit}`
 + `tests/system` — 70 tests in 19 files. The whole workspace typechecks clean (`tsc`) and lints
@@ -205,6 +211,32 @@ TypeScript monorepo (pnpm workspaces). One deployable process in early phases (`
 
 **Exit:** the events architecture is done and system-tested. This was the "basic tooling + events ready" gate, and it is passed — per the 0.3 ordering, the **UI track** starts the moment S2c lands: U0 renders exactly the tables and events this phase produces.
 
+## Sharing track — S2d + U0.5 (gated on S2c only)
+
+**Goal:** an unguessable link that lets anyone watch a workflow's graph, triggers, runs, events, opted-in data packets and produced assets — live or historical. Full design in `sharing.md`; §16 Threats 13–17 and §17.3 in the design doc.
+
+This sits here rather than at the end because it needs nothing that does not already exist. Everything it renders — graph, schedules, runs, events, packets, lineage — is data S2a/S2b produce and S2c already serves to the owner. It is off the Phase 3–8 critical path entirely and can be interleaved wherever it fits.
+
+### S2d — share model + public read API
+
+- **Migration:** `workflow_shares(id, workflow_id, token_sha256 unique, token_prefix, created_at, revoked_at)`; `event_defs.public boolean not null default false`.
+- **Graph document:** `GraphTask.emits[].public` (default `false`), projected by `publishVersion` into `event_defs.public` exactly as packet schemas and schedules already are. This is what makes visibility versioned, and what makes a newly added node arrive private without a check having to say so.
+- **Public read models** in `packages/engine/src/queries.ts` — `publicGraph`, `publicRunList`, `publicEventList`, `publicEventGet` — each taking a **required** `workflowId` and an explicit `publicTypes` set. **They filter in SQL:** a private packet is never selected, so no router or component bug can leak one. This is the subphase's central rule and its central test.
+- **Error-class derivation:** `runs.error` free text never leaves the owner's view; the public read model maps it to a bounded class (`timeout`, `retries_exhausted`, `engine_restart`, `packet_invalid`, `loop_budget_exceeded`, `no_executor`, `sandbox_kill`, `policy_denied`, `other`).
+- **Share procedures** (`create`/`rotate`/`revoke`/`list`) and a **public tRPC router** with its own `{db, share}` context that cannot reach `listWorkflows` — which today ignores its `userId` argument and returns every workflow in the database.
+- Rate limiting per share and per IP; hard page-size caps; the existing depth cap on the lineage CTE.
+- Metrics: `share_views_total{result}`, `share_asset_reads_total{outcome}`.
+
+**System tests:** a private event type's packet is absent from the *query result*, not merely from the response (assert on the read model directly); publishing a version that adds a node leaves it private; marking an event public then re-publishing without the flag makes it private again; revoked, unknown and malformed tokens are indistinguishable; a run that failed with a content-bearing error string exposes only its class; lineage across a private hop keeps the hop and drops the body; page-size caps hold against a hostile `limit`.
+
+### U0.5 — public workflow view
+
+Route group `/s/[token]`: graph, runs table, event feed, event detail with lineage. Server-rendered through `createCaller` like the owner's pages, polling at 2s with `usePolling` — no websockets, for U0's reason. `X-Robots-Tag: noindex`, `Referrer-Policy: no-referrer` on every public route.
+
+**Reuse rather than fork**, or the two views will drift: lift the React Flow node/edge mapping out of `apps/web/src/components/graph-editor.tsx` into a shared module, and parameterize `runs-table.tsx` and `event-feed.tsx` by the fetcher they call. Owner-side share management (create with a visibility preview, rotate, revoke) lands on the workflow page. No UI tests, as ever — S2d's tests are the contract.
+
+**Exit:** a link you can send someone, showing a workflow running, with exactly the packets you chose and nothing else.
+
 ## Phase 3 — Browser runtime + CDP layer (no AI yet)
 
 **Goal:** connect to user-style CDP endpoints, execute a fixed action script (not agent-driven), observe network, record traces, enforce resource limits.
@@ -293,6 +325,7 @@ Built before MCP and before assets, so no credential ever passes through a promp
 - Path handling: normalize, reject `..`/absolute/symlink, resolve within the user namespace root (§16 Threat 8). Writes checked against the task's `asset_write_grants` glob; reads open across the user's workflows (§13.5 decision).
 - Tools: `assets.write/append/read/list`. Every write creates an `asset_versions` row; overwrites never destroy the prior blob.
 - **Asset refs in packets:** a `{asset_id, path, mime, sha256}` shape registered as a reusable fragment for the LLM-generated packet schemas (§18.2), so the model does not invent its own shape per node.
+- **Public asset resolution** (required by S2d, `sharing.md` §4.4): an asset is publicly readable **iff** a public packet under a live share references it. Implement the derivation query and the `/s/<token>/assets/<id>` blob route with its headers (`Content-Disposition: attachment`, `nosniff`, `CSP: sandbox`, MIME allowlist) here rather than leaving them to be bolted on — visibility that is derived cannot fall out of sync, and visibility that is bolted on will.
 
 **Tests:** traversal corpus (`../../etc/passwd`, absolute paths, symlink, unicode-normalized dodges) all rejected — table-driven, extend on every new idea; write outside grant glob → denied; overwrite → new version, old blob still resolvable; asset ref round-trips through an event packet and validates against the fragment schema.
 
@@ -312,7 +345,25 @@ Built before MCP and before assets, so no credential ever passes through a promp
 
 Asserts: the PDF exists and is valid; the browser node received bytes matching the asset's `sha256`; the asset outlives the run that created it; the whole flow is replay-deterministic in CI.
 
-**Exit:** both node kinds work, exchange data only through validated packets, and the tool registries are provably disjoint.
+### S5h — Python compute mode (`mode=python`)
+
+Gated on S5a (the `kind`/`mode` discriminants) and S5d (somewhere for output files to land). **Independent of S5b/S5c/S5e** — it touches no secret, no MCP server and no renderer — so it may land before or after them. Full design in `python-compute.md`; §13.6 and Threats 18–22 in the design doc.
+
+- **`(kind, mode)` tool registry.** S5a already re-keys the *executor* registry; this re-keys the *tool* registry to match. `(asset, ai)` keeps `mcp.*`/`assets.*`/`emit`; **`(asset, python)` gets nothing at all**. That is the whole security argument for putting Python on the asset kind: the job has no host bridge, so it cannot reach `mcp.*` even though it shares a kind with them.
+- **Constraint extension:** S5a's named `tasks_kind_mode_check` grows `mode IN ('ai','compiled','python')` and `NOT (kind <> 'asset' AND mode = 'python')`. Rejected at save time by the control plane, re-asserted by the check.
+- **Graph document:** `GraphTask.code = {language, source}` and `GraphTask.runtime = {image, packages[], inputs{assets[], tables[]}}`, projected into `tasks.code_source`/`code_sha256`/`runtime_json`. Code changes go through `publishVersion`, never `updateTask` — runs pin their version, and `code_sha256` feeds the task content hash (`graph-compilation-llm.md` §6.3). Publish validates `packages` against the committed image manifest.
+- **`apps/pyrunner`:** a composition root on an internal, egress-less compose network reachable only by `engine`. Two backends behind one interface — `firecracker` (default when `/dev/kvm` is present; the only one that is a security boundary) and `subprocess` (labelled not-a-boundary in code, docs and its startup log; refuses to start without `PYRUNNER_ALLOW_UNSAFE_BACKEND=1`).
+- **The sandbox:** microVM under `jailer`, **no network device configured**, `--no-api` static boot, read-only rootfs, one fresh ext4 scratch drive as the only channel, no vsock, 1 vCPU with memory/CPU/wall-clock caps. Scratch built with `mke2fs -d` and read back with `debugfs -R rdump` — both userspace, so the host never loop-mounts an image written by untrusted code.
+- **`PythonExecutor`** in the engine: resolve declared inputs → call the runner → extract outputs → write asset versions under the write-grant glob → **publish emits host-side** through the same `emit` path every other executor uses, so packet validation, dedupe, loop budget and the outbox apply unchanged. Sandbox kills fail the run *permanently*; program errors surface `stderr` and retry per policy.
+- Metrics: `pyrun_jobs_total{outcome}`, `pyrun_duration_seconds{outcome}`, `pyrun_vm_boot_seconds`, `pyrun_sandbox_kills_total{reason}`, `pyrun_output_bytes`.
+
+**Tests — a hostile corpus in the S5e style, table-driven, extended whenever someone thinks of a new escape:** network attempts of every flavour (`socket`, `urllib`, `requests`, raw fd); `subprocess`/`os.system`; fork bomb against the pid limit; memory bomb; infinite loop against the wall clock; writes outside `/job/out`; a symlink pointing out of the scratch dir; output exceeding the byte and file-count caps; `../../etc/passwd` as an output filename; a 100 MB single-line `emits.jsonl`. Contract tests: emits validated host-side against the declared packet schema, a malformed emit failing the run; a sandbox kill failing permanently with no retry; a task declaring a package outside the manifest rejected at publish; `kind=browser, mode=python` rejected at publish and by the check constraint. Happy path: a fixture program producing a byte-stable `.xlsx` after timestamp normalisation (same rule as the PDF fixtures).
+
+**Sandbox suite gating:** the hostile corpus runs on the `firecracker` backend only and **skips with a visible message** when `/dev/kvm` is absent — never silently, and never by re-pointing at the subprocess backend, which would turn the sandbox suite into a suite that tests nothing.
+
+**E2E:** browser node scrapes fixture pricing → decision or stub node filters → python node writes `/reports/pricing-<date>.xlsx` with a pivot and a chart → emits `report.ready {asset_ref}` → browser node uploads it to `fake-gram`.
+
+**Exit:** both node kinds work, exchange data only through validated packets, the tool registries are provably disjoint, and a workflow can compute.
 
 ## Phase 6 — Compiler + static runtime (deopt loop)
 
@@ -382,9 +433,10 @@ Two standing rules, which are what make the slices cheap:
 | Slice | Lands with | What you see on screen | Prerequisite |
 |---|---|---|---|
 | **U0 — first UI** | **S2c** | Workflow list; React Flow graph editor over `workflows/tasks/edges/event_defs` (browser + asset in the palette, kind/schedule constraints validated at save, **cycle detection with in-editor warning** — cycles are legal, bounded by the loop budget, but must be visible); schedules editor (cron/tz/missed/overlap); runs table with live status; event feed with lineage links; a StubExecutor scripting panel. Author a graph, cron- or hand-trigger it, and watch runs and events flow — before any browser exists. | S2c only |
+| **U0.5 — public view** | **S2d** | `/s/<token>`: the graph, its schedules and triggers, the runs table and the event feed, read-only, for anyone holding the link — with packet bodies shown only for event types the author marked public, and a bounded error class instead of error text. Owner-side share management: create with a visibility preview, rotate, revoke. Reuses U0's components via an injected fetcher rather than forking them. | S2d only |
 | **U1 — run inspector** | S3a–S3b | The debugging surface, deliberately *before* the agent exists (you'll want it while hardening Phase 3): per-run timeline of navigations, actions, and network entries with policy verdicts, screenshots via `blob_ref`, resource-limit and disconnect failure detail; endpoint health panel for `cdp_endpoints`. | S3a (traces), S3b (observer/pool) |
 | **U2 — agent visibility** | S4a–S4b | Inspector gains LLM calls (prompts, token counts, tool-call sequences) and emitted-packet views. **Packet-schema authoring** in the node editor: free-text field description → JSON Schema compiled server-side at save (§18.2); the engine only ever sees the resulting schema — no engine change. Emitting and consuming nodes both render the declared fields. | S4b |
-| **U3 — asset surfaces** | S5a–S5f | Asset browser (paths, versions, download, quota usage), inline PDF preview for rendered deliverables, MCP server catalog with per-task tool selection, secrets manager (add/rotate, origin binding, Tier-1 vs Tier-2 with the trade-off stated plainly — Tier 2 parks scheduled runs for approval). Asset node's config panel becomes real. | S5b–S5e as each ships |
+| **U3 — asset surfaces** | S5a–S5h | Asset browser (paths, versions, download, quota usage), inline PDF preview for rendered deliverables, `.xlsx` download, MCP server catalog with per-task tool selection, secrets manager (add/rotate, origin binding, Tier-1 vs Tier-2 with the trade-off stated plainly — Tier 2 parks scheduled runs for approval). Asset node's config panel becomes real, including a **read-only Python source viewer with cross-version diff** — the same argument §11 makes for compiled scripts: users must be able to see what will run. | S5b–S5e, S5h as each ships |
 | **U3.5 — decision + store** | S5g | Palette gains the **decision** node; workflow store browser (tables, row counts, schema per version) and a read-only query console running the *same fenced read path* as `store.query`; store-schema migration diffs (additive/destructive) shown at publish. | S5g (`graph-compilation-llm.md` §10) |
 | **U4 — compiler** | S6a–S6c | Compiled-script viewer with version diff (users must be able to inspect what will run against their browser, §11), deopt timeline in the inspector, promotion/demotion state on nodes, and **LLM-cost-per-run, ai vs compiled** — the product's core claim, on screen from the day it's measurable. | S6c |
 | **U5 — policy** | S7 | Grants editor per task, account-baseline editor, approvals inbox (park / approve / expiry countdown), redaction settings, storage opt-outs. | S7 |
@@ -392,7 +444,8 @@ Two standing rules, which are what make the slices cheap:
 
 Sequencing note: slices are ordered by prerequisite, not priority — U1 (inspector) is the one
 worth pulling as early as its data exists, since it is the debugging surface for everything
-after it.
+after it. U0.5 is the one that can be pulled *now*: its prerequisite is S2d, whose prerequisite
+is S2c, which is done.
 
 ---
 

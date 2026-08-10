@@ -20,6 +20,13 @@ Environment deviations from `impl-phases.md`:
   simulator, and running it in-process keeps the connect path identical to production's.
 - Fixture sites: served in-process by the testkit, not as a compose service.
 - Blob storage: local filesystem directory behind a `BlobStore` interface (S3 later).
+- Firecracker (S5h): needs `/dev/kvm` passed through to the `pyrunner` container — not
+  `--privileged`, and never the docker socket. This machine qualifies (`/dev/kvm` present,
+  CPU reports `svm`); the `firecracker` and `jailer` binaries are not installed and are
+  vendored, pinned by hash, into the runner image. Where KVM is absent the runner falls back
+  to a subprocess backend that is **not** a security boundary, says so, and requires
+  `PYRUNNER_ALLOW_UNSAFE_BACKEND=1`; the sandbox suite skips loudly rather than running
+  against it.
 
 ## Stack decisions (user-mandated, binding for all subphases)
 - **Next.js + tRPC + zod** for the control plane (`apps/web`). Backend logic stays in
@@ -49,6 +56,8 @@ Environment deviations from `impl-phases.md`:
 | S2c | Next.js + tRPC control-plane API (workflows/tasks/edges/runs/events, zod end-to-end) | techical_plan §3, UI track U0 | **done** |
 | SOb | Telemetry package: OTel init + pino bridge, outbox/events `traceparent`, engine+scheduler instrumentation, in-repo Grafana dashboards | techical_plan §17.2, impl §0.5 | **done** |
 | U0 | First UI: React Flow graph editor, schedules editor, runs table, event feed, StubExecutor panel — over the S2c API only | impl UI track U0 | **done** |
+| S2d | Shared workflows: `workflow_shares` + `event_defs.public`, per-event-type visibility in the graph document, public read models that filter in SQL, public tRPC router, rate limits | sharing §2–6, §16 T13–17 | needs S2c only |
+| U0.5 | Public workflow view `/s/<token>`: graph, runs, events, opted-in packets; owner-side share management | sharing §5, impl UI track U0.5 | needs S2d |
 | S3a | Browser driver interface + Playwright CDP impl + navigation guard + trace recorder | impl Phase 3, §8 | |
 | S3b | Endpoint pool/leases + per-endpoint queue + network observer + resource limits + ScriptedBrowserExecutor | impl Phase 3, §9 | |
 | S4a | LLM adapter (live/record/replay) + perception builder | impl Phase 4 | prompt written |
@@ -60,6 +69,7 @@ Environment deviations from `impl-phases.md`:
 | S5e | LaTeX renderer worker (sandboxed container, tectonic, beamer decks) | impl Phase 5, §13.5, §16 T7 | |
 | S5f | Two-kind e2e: browser → asset (MCP + LaTeX) → browser upload | impl Phase 5 | |
 | S5g | Workflow store (`wfdata` schema + role pair, `store.*` tools, fenced SQL) + `kind=decision` + plan/act/record e2e | graph-compilation-llm §2–3, §10 | |
+| S5h | Python compute: `mode=python` on `kind=asset`, `(kind, mode)` tool registry, `apps/pyrunner` + Firecracker microVM, host-side emits, hostile corpus | python-compute §2–7, §13.6, §16 T18–22 | needs S5a + S5d |
 | S6a | Static runtime sandbox + script registry + lint gate | impl Phase 6, §12 | |
 | S6b | Trace consistency checker + compiler agent | impl Phase 6, §11 | |
 | S6c | CompiledExecutor + deopt handoff + promotion/demotion + flagship e2e | impl Phase 6 | |
@@ -74,6 +84,26 @@ The registries are **disjoint by design** where it matters — this is the §4 s
 a layering preference. Do not add `mcp.*` to a browser task, `page.*` to an asset task, or anything
 beyond `store.query`+`emit` to a decision task without a design-doc change. Schedules bind to
 `browser` and `decision` only; `asset` stays event-triggered only.
+
+**The tool registry keys on `(kind, mode)`, not `kind` (§4, from S5h):** for every mode that
+existed before, this changes nothing — `(browser, ai)` and `(browser, compiled)` share the browser
+registry, as §12 requires. It exists for **`(asset, python)`, which has no tool registry at all**.
+A Python job has no host bridge: its inputs are resolved by the host before the sandbox starts,
+its outputs and emissions are collected by the host after it exits, and the only channel in
+between is a block device. That is why Python can live on the kind that owns `mcp.*` without
+reopening the exfiltration chain — the chain is severed by the absence of a channel rather than by
+a rule about which names appear in a list. **Adding any host callable, network device or vsock to
+that sandbox requires a design-doc change** (§16 Threat 22). Mode constraints: `compiled` implies
+`browser`, `python` implies `asset`, both rejected at save time and re-asserted by S5a's named
+`tasks_kind_mode_check`.
+
+**Share visibility is default-deny and versioned with the graph (from S2d):** each declared
+emitted event carries `public: boolean`, default `false`, in the graph document; `publishVersion`
+projects it to `event_defs.public`. A node added in a later version arrives private because that
+is the schema default, not because a check said so. The public read models **filter in SQL** — a
+private packet is never selected — so a router, serializer or component bug cannot leak one. Run
+error free text is never public; a bounded error class is. Do not add a public read path that
+fetches first and redacts afterwards.
 
 Style rules binding for every subphase:
 - Composition over abstraction; no speculative interfaces beyond those the design docs name.

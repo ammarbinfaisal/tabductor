@@ -40,6 +40,11 @@ the phases after this one.
 - `docs/impl-phases.md` — the incremental build order
 - `docs/subphases/ROADMAP.md` — subphase status, one prompt file per subphase
 
+Companion designs, each extending the main one: `docs/graph-compilation-llm.md` (the decision
+node, the per-workflow data store, one prompt to a graph), `docs/sharing.md` (a link that lets
+anyone watch a workflow run, with visibility opt-in per event type), `docs/python-compute.md`
+(`mode=python` — an authored program in a Firecracker microVM, for the numbers).
+
 ## Working on it
 
 ```sh
