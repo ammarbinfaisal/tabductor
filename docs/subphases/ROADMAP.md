@@ -56,8 +56,8 @@ Environment deviations from `impl-phases.md`:
 | S2c | Next.js + tRPC control-plane API (workflows/tasks/edges/runs/events, zod end-to-end) | techical_plan §3, UI track U0 | **done** |
 | SOb | Telemetry package: OTel init + pino bridge, outbox/events `traceparent`, engine+scheduler instrumentation, in-repo Grafana dashboards | techical_plan §17.2, impl §0.5 | **done** |
 | U0 | First UI: React Flow graph editor, schedules editor, runs table, event feed, StubExecutor panel — over the S2c API only | impl UI track U0 | **done** |
-| S2d | Shared workflows: `workflow_shares` + `event_defs.public`, per-event-type visibility in the graph document, public read models that filter in SQL, public tRPC router, rate limits | sharing §2–6, §16 T13–17 | needs S2c only |
-| U0.5 | Public workflow view `/s/<token>`: graph, runs, events, opted-in packets; owner-side share management | sharing §5, impl UI track U0.5 | needs S2d |
+| S2d | Shared workflows: `workflow_shares` + `event_defs.public`, per-event-type visibility in the graph document, public read models that filter in SQL, public tRPC router, rate limits | sharing §2–6, §16 T13–17 | **done** `7dfe920` |
+| U0.5 | Public workflow view `/s/<token>`: graph, runs, events, opted-in packets; owner-side share management | sharing §5, impl UI track U0.5 | **done** `e1e4289` |
 | S3a | Browser driver interface + Playwright CDP impl + navigation guard + trace recorder | impl Phase 3, §8 | |
 | S3b | Endpoint pool/leases + per-endpoint queue + network observer + resource limits + ScriptedBrowserExecutor | impl Phase 3, §9 | |
 | S4a | LLM adapter (live/record/replay) + perception builder | impl Phase 4 | prompt written |

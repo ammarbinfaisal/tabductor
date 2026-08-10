@@ -31,8 +31,9 @@ is and how to run without containers.
 
 Author a graph in the editor, give a node a StubExecutor script and a cron schedule, publish
 it, and watch runs and events flow — with retries, timeouts, loop budgets, dedupe and crash
-recovery underneath. The browser runtime, the LLM agent, assets and the policy engine are
-the phases after this one.
+recovery underneath. Share a workflow with an unguessable link and anyone can watch the same
+graph, runs and events live, seeing packets only for the event types you marked shared. The
+browser runtime, the LLM agent, assets and the policy engine are the phases after this one.
 
 ## Plans
 

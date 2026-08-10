@@ -28,11 +28,12 @@
 | S2c | Next.js + tRPC control-plane API | **done** |
 | SOb | `packages/telemetry`: OTel + pino + bus traceparent + engine instrumentation (§0.5) | **done** |
 | U0 | First UI: graph editor, schedules, stub scripting, runs table, event feed | **done** |
-| S2d, U0.5 | shared workflows: share model + public read API, public view (needs S2c only) | not started |
+| S2d | Shared workflows: share model + public read API | **done** — `7dfe920` |
+| U0.5 | Public workflow view + owner-side share management | **done** — `e1e4289` |
 | S3a–S7, S5g, S5h, S8 | browser, agent, asset, python compute, store+decision, compiler, policy, graph compiler | not started |
 
 What exists as code: `packages/{core,db,bus,engine,policy,telemetry}` + `apps/{engine,web,testkit}`
-+ `tests/system` — 70 tests in 19 files. The whole workspace typechecks clean (`tsc`) and lints
++ `tests/system` — 82 tests in 20 files. The whole workspace typechecks clean (`tsc`) and lints
 clean (`pnpm lint`). `docker compose up -d` brings up Postgres, applies migrations, and runs both
 the engine and the control plane on :3000; `docker compose up -d postgres` is the tests-only
 subset. Credentials are compiled in as defaults, so a clean checkout needs no environment. If
