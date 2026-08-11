@@ -52,7 +52,10 @@ yours. Design so S3b slots in, but do not build it.
      appending to `trace_entries` (seq monotonic per run; buffered writes, flushed on demand
      and on close). Blobs (screenshots) go to a **BlobStore** — interface with ONE method pair
      (`put(bytes, meta) → blobRef`, `get(blobRef)`) and a filesystem implementation rooted at
-     config `BLOB_DIR`. Storage opt-out flags (per-task `limits_json.storage`) checked at
+     config `BLOB_DIR`. (Deviation, later: `BLOB_DIR` and the filesystem implementation were
+     replaced by MinIO — `BLOB_ENDPOINT`/`BLOB_ACCESS_KEY`/`BLOB_SECRET_KEY`/`BLOB_BUCKET` —
+     see `packages/browser/src/blob-store.ts`.) Storage opt-out flags (per-task
+     `limits_json.storage`) checked at
      write time: a category opted out is simply not written (design doc: evaluate at write
      time, don't store-then-delete).
    - **Session wiring:** a `openRunSession({conn, gate, taskCtx, trace}) → { page, close }`

@@ -72,7 +72,7 @@ it("a task that opted out of screenshots stores no blob, and still traces the ac
   expect(payloadOf(entry).ok).toBe(true);
 });
 
-it("a rejected blob ref never reaches the filesystem", async () => {
+it("a rejected blob ref never reaches storage", async () => {
   const err = await rig.blobs.get("../../etc/passwd").catch((e: unknown) => e);
   expect(err).toBeInstanceOf(AppError);
   expect((err as AppError).code).toBe("blob_ref_invalid");

@@ -14,16 +14,17 @@ That is the only command needed from a cold checkout. The first run builds the i
 | Service | What it is | Notes |
 |---|---|---|
 | `postgres` | Postgres 16 | published on `127.0.0.1:5434` for the test suite |
+| `minio` | MinIO (S3 API) blob store | published on `127.0.0.1:9002` for the test suite |
 | `migrate` | one-shot drizzle migrator | runs to completion; `engine` and `web` wait on its exit 0 |
 | `engine` | outbox dispatcher, run loop, cron scheduler, timeout watchdog, crash recovery | no ports |
 | `web` | Next.js + tRPC control plane | `127.0.0.1:3000` |
 | `otel-lgtm` | Grafana LGTM | `--profile telemetry` only |
 
 ```sh
-docker compose logs -f engine     # what the run loop is doing
-docker compose up -d --build      # after changing code
-docker compose down               # stop; add -v to discard the data volumes
-docker compose up -d postgres     # just the database — all the test suite needs
+docker compose logs -f engine        # what the run loop is doing
+docker compose up -d --build         # after changing code
+docker compose down                  # stop; add -v to discard the data volumes
+docker compose up -d postgres minio  # just the datastores — all the test suite needs
 ```
 
 ## Why it is shaped this way
@@ -52,7 +53,7 @@ in `docs/subphases/ROADMAP.md`. Fixture sites are served in-process for the same
 ## Local development without containers
 
 ```sh
-docker compose up -d postgres           # the one thing that must be a container
+docker compose up -d postgres minio     # the two things that must be containers
 pnpm install
 pnpm -F @tabductor/db migrate
 pnpm dev:engine                         # tsx watch on the engine composition root
@@ -66,9 +67,17 @@ Defaults are compiled in, so a clean checkout needs no environment at all:
 | host / port | `localhost:5434` | `apps/testkit/src/db.ts` |
 | user / password | `tabductor` / `tabductor` | `apps/testkit/src/db.ts` |
 | `DATABASE_URL` | `postgres://tabductor:tabductor@localhost:5434/tabductor` | `packages/core/src/config.ts`, `packages/db/drizzle.config.ts` |
-| `BLOB_DIR` | OS temp dir (`/data/blobs` in the containers) | `packages/core/src/config.ts` |
+| `BLOB_ENDPOINT` | `http://localhost:9002` (`http://minio:9000` in the containers) | `packages/core/src/config.ts` |
+| `BLOB_ACCESS_KEY` / `BLOB_SECRET_KEY` | `tabductor` / `tabductor` | `packages/core/src/config.ts` |
+| `BLOB_BUCKET` | `tabductor-blobs` | `packages/core/src/config.ts` |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | unset — see below | `packages/core/src/config.ts`, passed to `web` only |
 | `SCHEMA_MODEL` | provider default (`claude-opus-5` / `gpt-5.2`) | `packages/engine/src/schema-generator-ai.ts` |
+
+**Why MinIO rather than the filesystem.** Blobs are content-addressed (`sha256:<digest>` is
+both the key and the integrity check), so the store needs nothing beyond put/get — no listing,
+no delete. Speaking the S3 API for that little surface means a real S3 or R2 bucket in
+production is an endpoint swap, not a rewrite, and gets presigned URLs for free when a later
+phase wants them. The bucket is created lazily, on first `put` — no one-shot bootstrap service.
 
 Override with the standard `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD` (testkit) or
 `DATABASE_URL` (app + drizzle-kit) to point at any other instance.
@@ -106,6 +115,8 @@ The system suite clones a template database per test, so it needs an instance it
 and role lists on a dev box belong to whoever claimed them first, and the suite should not
 lose that race. If the suite fails at SCRAM authentication before any test logic runs, that
 is this container being down or a stale `PG*` variable in the shell — not a regression.
+Likewise, an `ECONNREFUSED` at `localhost:9002` before any blob-store assertion runs is the
+`minio` container being down, not a regression.
 
 ## Grafana LGTM (telemetry profile)
 

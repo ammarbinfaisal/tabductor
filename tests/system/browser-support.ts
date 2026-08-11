@@ -1,9 +1,5 @@
-import { mkdtemp, readdir, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import { asc, eq } from "drizzle-orm";
 import {
-  createFsBlobStore,
   createTraceRecorder,
   openRunSession,
   playwrightDriver,
@@ -27,7 +23,14 @@ import {
 } from "@tabductor/db";
 import { seedWorkflow } from "@tabductor/engine";
 import { AllowAllGate, type PolicyGate } from "@tabductor/policy";
-import { launchChrome, startFixtures, type Chrome, type Fixtures } from "@tabductor/testkit";
+import {
+  createTestBlobStore,
+  launchChrome,
+  startFixtures,
+  type Chrome,
+  type Fixtures,
+  type TestBlobStore,
+} from "@tabductor/testkit";
 
 /**
  * Rig for the Phase 3 system tests: a real migrated Postgres, real headless Chrome over
@@ -43,18 +46,18 @@ export type BrowserRig = {
   chrome: Chrome;
   fx: Fixtures;
   blobs: BlobStore;
-  blobDir: string;
+  testBlobs: TestBlobStore;
   taskId: string;
   versionId: string;
   close: () => Promise<void>;
 };
 
 export async function startBrowserRig(): Promise<BrowserRig> {
-  const [handle, chrome, fx, blobDir] = await Promise.all([
+  const [handle, chrome, fx, testBlobs] = await Promise.all([
     createMigratedTestDb(),
     launchChrome(),
     startFixtures(),
-    mkdtemp(path.join(tmpdir(), "tabductor-blobs-")),
+    createTestBlobStore(),
   ]);
   const wf = await seedWorkflow(handle.db, { tasks: { browse: {} } });
 
@@ -62,13 +65,12 @@ export async function startBrowserRig(): Promise<BrowserRig> {
     handle,
     chrome,
     fx,
-    blobs: createFsBlobStore(blobDir),
-    blobDir,
+    blobs: testBlobs.store,
+    testBlobs,
     taskId: wf.taskIds.browse!,
     versionId: wf.versionId,
     close: async () => {
-      await Promise.all([chrome.close(), fx.close(), handle.close()]);
-      await rm(blobDir, { recursive: true, force: true });
+      await Promise.all([chrome.close(), fx.close(), handle.close(), testBlobs.drop()]);
     },
   };
 }
@@ -140,16 +142,7 @@ export async function artifactRows(rig: BrowserRig, runId: string): Promise<Arti
 
 /** Everything the blob store has actually written, so "nothing was stored" is checkable. */
 export async function blobFiles(rig: BrowserRig): Promise<string[]> {
-  const walk = async (dir: string): Promise<string[]> => {
-    const out: string[] = [];
-    for (const entry of await readdir(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) out.push(...(await walk(full)));
-      else out.push(full);
-    }
-    return out;
-  };
-  return walk(rig.blobDir);
+  return rig.testBlobs.list();
 }
 
 /**

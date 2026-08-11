@@ -380,7 +380,7 @@ Built before MCP and before assets, so no credential ever passes through a promp
 
 ### S5d — Asset store
 
-- `assets`, `asset_versions`, `asset_write_grants` per §14. Blobs via the existing `BlobStore` interface (local FS now, S3 later).
+- `assets`, `asset_versions`, `asset_write_grants` per §14. Blobs via the existing `BlobStore` interface (MinIO, S3 API).
 - Path handling: normalize, reject `..`/absolute/symlink, resolve within the user namespace root (§16 Threat 8). Writes checked against the task's `asset_write_grants` glob; reads open across the user's workflows (§13.5 decision).
 - Tools: `assets.write/append/read/list`. Every write creates an `asset_versions` row; overwrites never destroy the prior blob.
 - **Asset refs in packets:** a `{asset_id, path, mime, sha256}` shape registered as a reusable fragment for the LLM-generated packet schemas (§18.2), so the model does not invent its own shape per node.

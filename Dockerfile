@@ -34,13 +34,9 @@ RUN pnpm build && pnpm -F web build
 
 FROM base AS runtime
 ENV NODE_ENV=production
-# Blobs (traces, screenshots, assets) live on a volume; the runtime user has to own the
-# mount point before the volume is attached or the first write fails.
-RUN mkdir -p /data/blobs && chown -R node:node /data
 COPY --from=build --chown=node:node /opt/corepack /opt/corepack
 COPY --from=build --chown=node:node /app /app
 USER node
-ENV BLOB_DIR=/data/blobs
 EXPOSE 3000
 # Overridden per service in compose; this default makes a bare `docker run` do the useful thing.
 CMD ["pnpm", "-F", "web", "start"]

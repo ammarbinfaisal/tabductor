@@ -3,8 +3,8 @@
 #   docker compose up -d                        # Postgres + migrations + engine + web
 #   open http://localhost:3000
 #
-#   docker compose up -d postgres               # just the database — what the test suite needs
-#   docker compose --profile telemetry up -d    # + Grafana LGTM, for OTLP export
+#   docker compose up -d postgres minio          # just the datastores — what the test suite needs
+#   docker compose --profile telemetry up -d     # + Grafana LGTM, for OTLP export
 #
 # Chrome stays out on purpose: the testkit launches local Chrome per test on a throwaway
 # profile, and that locally-launched browser IS the BYO-CDP simulator, connected to exactly
@@ -20,6 +20,10 @@ x-app: &app
   image: tabductor-app:local
   environment: &app-env
     DATABASE_URL: postgres://tabductor:tabductor@postgres:5432/tabductor
+    BLOB_ENDPOINT: http://minio:9000
+    BLOB_ACCESS_KEY: tabductor
+    BLOB_SECRET_KEY: tabductor
+    BLOB_BUCKET: tabductor-blobs
     LOG_LEVEL: ${LOG_LEVEL:-info}
     # Unset = telemetry is a no-op (techical_plan §17.2 rule 2). The telemetry profile
     # below sets it for the containers that should export.
@@ -27,6 +31,8 @@ x-app: &app
   depends_on:
     migrate:
       condition: service_completed_successfully
+    minio:
+      condition: service_healthy
   restart: unless-stopped
 
 services:
@@ -70,7 +76,6 @@ services:
   engine:
     <<: *app
     command: ["node", "--import", "tsx", "apps/engine/src/main.ts"]
-    volumes: ["blobs:/data/blobs"]
 
   # Control plane: Next.js + tRPC. Reads and writes definitions and run rows; never executes.
   # `next start` binds 0.0.0.0 and holds nothing that needs flushing, so it keeps the plain
@@ -95,7 +100,6 @@ services:
       SCHEMA_MODEL: ${SCHEMA_MODEL:-}
     ports: ["127.0.0.1:3000:3000"]
     init: true
-    volumes: ["blobs:/data/blobs"]
     healthcheck:
       # node rather than curl/wget — neither is in the slim base image, and adding one just
       # to answer a health check is a package to keep patched for no reason.
@@ -105,6 +109,27 @@ services:
       timeout: 5s
       retries: 12
       start_period: 20s
+
+  # The blob store: content-addressed screenshots today, response bodies and rendered assets
+  # later (`packages/browser/src/blob-store.ts`). Speaking the S3 API rather than a bespoke
+  # one means a real S3 or R2 bucket in production is an endpoint swap, not a rewrite.
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: ["server", "/data"]
+    # 9002 for the same reason postgres is on 5434: a dev box's 9000 belongs to whoever
+    # claimed it first. Trivial creds by design — throwaway blobs, loopback only.
+    ports: ["127.0.0.1:9002:9000"]
+    environment:
+      MINIO_ROOT_USER: tabductor
+      MINIO_ROOT_PASSWORD: tabductor # MinIO enforces an 8-char minimum; this clears it at 9.
+    volumes: ["miniodata:/data"]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
 
   # Grafana LGTM all-in-one — Loki (logs), Tempo (traces), Mimir (metrics), Grafana.
   # Opt-in: telemetry is no-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set (techical_plan
@@ -121,5 +146,5 @@ services:
 
 volumes:
   pgdata:
-  blobs:
+  miniodata:
   lgtm:

@@ -1,5 +1,3 @@
-import os from "node:os";
-import path from "node:path";
 import { z } from "zod";
 import { AppError } from "./errors.js";
 
@@ -20,7 +18,10 @@ const envSchema = z.object({
     .string()
     .min(1)
     .default("postgres://tabductor:tabductor@localhost:5434/tabductor"),
-  BLOB_DIR: z.string().min(1).default(path.join(os.tmpdir(), "tabductor-blobs")),
+  BLOB_ENDPOINT: z.string().url().default("http://localhost:9002"),
+  BLOB_ACCESS_KEY: z.string().min(1).default("tabductor"),
+  BLOB_SECRET_KEY: z.string().min(1).default("tabductor"),
+  BLOB_BUCKET: z.string().min(1).default("tabductor-blobs"),
   HARNESS_NAV_ALLOWLIST: z
     .string()
     .default("localhost,127.0.0.1")

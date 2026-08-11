@@ -51,7 +51,7 @@ microVM, for the numbers).
 ## Working on it
 
 ```sh
-docker compose up -d postgres
+docker compose up -d postgres minio
 pnpm install
 pnpm build      # typecheck the workspace + the Next app
 pnpm test       # unit + system suites

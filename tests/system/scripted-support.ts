@@ -1,11 +1,7 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import { createDispatcher, type Dispatcher } from "@tabductor/bus";
 import { newId } from "@tabductor/core";
 import {
   createEndpointPool,
-  createFsBlobStore,
   playwrightDriver,
   type BlobStore,
   type EndpointPool,
@@ -13,7 +9,14 @@ import {
 import { cdpEndpoints, createMigratedTestDb, traceEntries, type MigratedTestDb, type TraceEntryRow } from "@tabductor/db";
 import { createEngine, type Engine } from "@tabductor/engine";
 import { AllowAllGate, type PolicyGate } from "@tabductor/policy";
-import { createScriptedBrowserExecutor, launchChrome, startFixtures, type Chrome, type Fixtures } from "@tabductor/testkit";
+import {
+  createScriptedBrowserExecutor,
+  createTestBlobStore,
+  launchChrome,
+  startFixtures,
+  type Chrome,
+  type Fixtures,
+} from "@tabductor/testkit";
 import { asc, eq } from "drizzle-orm";
 
 /**
@@ -34,7 +37,6 @@ export type ScriptedRig = {
   chrome: Chrome;
   fx: Fixtures;
   blobs: BlobStore;
-  blobDir: string;
   endpointId: string;
   gate: PolicyGate;
   stop: () => Promise<void>;
@@ -42,13 +44,13 @@ export type ScriptedRig = {
 
 export async function startScriptedRig(opts: { chrome?: Chrome; gate?: PolicyGate } = {}): Promise<ScriptedRig> {
   const ownsChrome = !opts.chrome;
-  const [handle, chrome, fx, blobDir] = await Promise.all([
+  const [handle, chrome, fx, testBlobs] = await Promise.all([
     createMigratedTestDb(),
     opts.chrome ? Promise.resolve(opts.chrome) : launchChrome(),
     startFixtures(),
-    mkdtemp(path.join(tmpdir(), "tabductor-scripted-blobs-")),
+    createTestBlobStore(),
   ]);
-  const blobs = createFsBlobStore(blobDir);
+  const blobs = testBlobs.store;
   const gate = opts.gate ?? new AllowAllGate({ navAllowlist: ["127.0.0.1"] });
 
   const endpointId = newId("endpoint");
@@ -85,15 +87,18 @@ export async function startScriptedRig(opts: { chrome?: Chrome; gate?: PolicyGat
     chrome,
     fx,
     blobs,
-    blobDir,
     endpointId,
     gate,
     stop: async () => {
       await dispatcher.stop();
       await engine.stop();
       await pool.close();
-      await Promise.all([ownsChrome ? chrome.close() : Promise.resolve(), fx.close(), handle.close()]);
-      await rm(blobDir, { recursive: true, force: true });
+      await Promise.all([
+        ownsChrome ? chrome.close() : Promise.resolve(),
+        fx.close(),
+        handle.close(),
+        testBlobs.drop(),
+      ]);
     },
   };
 }

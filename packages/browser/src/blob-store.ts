@@ -1,13 +1,12 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
+import { Client } from "minio";
 import { AppError } from "@tabductor/core";
 
 /**
  * Where anything too big for a JSON column goes: screenshots now, response bodies and
- * rendered PDFs later. One method pair, deliberately — the local filesystem today and S3
- * later differ in exactly this much, and every extra method is another thing the S3
- * implementation has to be correct about.
+ * rendered PDFs later. One method pair, deliberately — MinIO (the S3 API) is the store, and
+ * a real S3 or R2 bucket differs from it in nothing but the endpoint; every extra method on
+ * this interface is another thing that swap has to stay correct about.
  */
 export type BlobRef = string;
 
@@ -18,23 +17,61 @@ export type BlobStore = {
 
 const REF_PATTERN = /^sha256:([0-9a-f]{64})$/;
 
+export type MinioBlobStoreOptions = {
+  endpoint: string;
+  accessKey: string;
+  secretKey: string;
+  bucket: string;
+};
+
 /**
  * Content-addressed: the ref *is* the digest, so two screenshots of the same page cost one
- * file, a write is idempotent (a retried run rewrites identical bytes), and a ref carries
- * its own integrity check. `meta.mime` is recorded by the caller on the row that points
- * here — it does not affect placement, because two identical byte strings are one blob
- * whatever anyone calls them.
+ * object, a write is idempotent (a retried run re-uploads identical bytes onto the same key),
+ * and a ref carries its own integrity check. The object key is the bare hex digest — no
+ * `aa/bb/` fanout, that split existed only to keep one filesystem directory from holding too
+ * many inodes, and an object store has no such concern. `meta.mime` becomes the object's
+ * `Content-Type` (the filesystem predecessor dropped it on the floor, having nowhere to put
+ * it), so a future reader — the run inspector, the asset MIME allowlist — gets it back from
+ * `statObject` instead of a side channel.
  */
-export function createFsBlobStore(root: string): BlobStore {
-  const pathFor = (hex: string): string =>
-    path.join(root, hex.slice(0, 2), hex.slice(2, 4), hex);
+export function createMinioBlobStore(opts: MinioBlobStoreOptions): BlobStore {
+  const url = new URL(opts.endpoint);
+  const client = new Client({
+    endPoint: url.hostname,
+    port: url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80,
+    useSSL: url.protocol === "https:",
+    accessKey: opts.accessKey,
+    secretKey: opts.secretKey,
+  });
+
+  // Memoized so concurrent `put`s share one bootstrap instead of racing `makeBucket`, and
+  // reset on rejection so a bucket that wasn't up yet gets retried rather than wedging every
+  // later `put` behind one stale failure.
+  let ready: Promise<void> | undefined;
+  function ensureBucket(): Promise<void> {
+    ready ??= client
+      .bucketExists(opts.bucket)
+      .then((exists) => {
+        if (!exists) return client.makeBucket(opts.bucket);
+      })
+      .catch((err: unknown) => {
+        ready = undefined;
+        // Two callers racing the bootstrap both see bucketExists=false and both call
+        // makeBucket; the loser's error is the bucket existing, which is success here.
+        const code = (err as { code?: string }).code;
+        if (code === "BucketAlreadyOwnedByYou" || code === "BucketAlreadyExists") return;
+        throw err;
+      });
+    return ready;
+  }
 
   return {
-    async put(bytes) {
+    async put(bytes, meta) {
       const hex = createHash("sha256").update(bytes).digest("hex");
-      const file = pathFor(hex);
-      await mkdir(path.dirname(file), { recursive: true });
-      await writeFile(file, bytes);
+      await ensureBucket();
+      await client.putObject(opts.bucket, hex, bytes, bytes.byteLength, {
+        "Content-Type": meta.mime,
+      });
       return `sha256:${hex}`;
     },
 
@@ -46,7 +83,12 @@ export function createFsBlobStore(root: string): BlobStore {
       if (!match) {
         throw new AppError("blob_ref_invalid", `not a blob ref: ${ref}`, { details: { ref } });
       }
-      return readFile(pathFor(match[1]!));
+      // A ref that is shaped right but not present throws MinIO's own NoSuchKey — nobody
+      // catches it, same as the filesystem predecessor's raw ENOENT.
+      const stream = await client.getObject(opts.bucket, match[1]!);
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream as AsyncIterable<Buffer>) chunks.push(chunk);
+      return Buffer.concat(chunks);
     },
   };
 }

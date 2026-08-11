@@ -19,7 +19,7 @@ Environment deviations from `impl-phases.md`:
   `--remote-debugging-port` on a throwaway `--user-data-dir` — that browser is the BYO-CDP
   simulator, and running it in-process keeps the connect path identical to production's.
 - Fixture sites: served in-process by the testkit, not as a compose service.
-- Blob storage: local filesystem directory behind a `BlobStore` interface (S3 later).
+- Blob storage: MinIO (S3 API) behind a `BlobStore` interface.
 - Firecracker (S5h): needs `/dev/kvm` passed through to the `pyrunner` container — not
   `--privileged`, and never the docker socket. This machine qualifies (`/dev/kvm` present,
   CPU reports `svm`); the `firecracker` and `jailer` binaries are not installed and are

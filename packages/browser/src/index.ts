@@ -13,7 +13,12 @@ export type {
   Page,
 } from "./driver.js";
 export { playwrightDriver } from "./playwright-driver.js";
-export { createFsBlobStore, type BlobRef, type BlobStore } from "./blob-store.js";
+export {
+  createMinioBlobStore,
+  type BlobRef,
+  type BlobStore,
+  type MinioBlobStoreOptions,
+} from "./blob-store.js";
 export {
   createTraceRecorder,
   type BlobInput,

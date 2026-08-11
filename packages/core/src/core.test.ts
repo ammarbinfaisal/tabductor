@@ -26,7 +26,8 @@ describe("loadConfig", () => {
   it("applies local-dev defaults and parses the allowlist", () => {
     const cfg = loadConfig({});
     expect(cfg.DATABASE_URL).toContain("postgres://");
-    expect(cfg.BLOB_DIR.length).toBeGreaterThan(0);
+    expect(cfg.BLOB_ENDPOINT).toBe("http://localhost:9002");
+    expect(cfg.BLOB_BUCKET).toBe("tabductor-blobs");
     expect(cfg.HARNESS_NAV_ALLOWLIST).toEqual(["localhost", "127.0.0.1"]);
     expect(cfg.ANTHROPIC_API_KEY).toBeUndefined();
   });

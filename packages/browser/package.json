@@ -16,6 +16,7 @@
     "@tabductor/policy": "workspace:*",
     "@tabductor/telemetry": "workspace:*",
     "drizzle-orm": "^0.44.0",
+    "minio": "^8.0.0",
     "playwright-core": "^1.49.0"
   },
   "devDependencies": {

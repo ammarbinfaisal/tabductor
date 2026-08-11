@@ -29,7 +29,9 @@ before writing code — especially impl-phases "Repository & runtime layout" and
    - `ids.ts`: `newId(prefix)` → `prefix_<uuidv7-or-v4>`.
    - `errors.ts`: one `AppError extends Error` with `code: string` + `cause` support. No error class zoo.
    - `config.ts`: zod-validated env loader (`DATABASE_URL`, `BLOB_DIR`, `HARNESS_NAV_ALLOWLIST`,
-     optional `ANTHROPIC_API_KEY`) with defaults suitable for local dev.
+     optional `ANTHROPIC_API_KEY`) with defaults suitable for local dev. (Deviation, later:
+     `BLOB_DIR` became `BLOB_ENDPOINT`/`BLOB_ACCESS_KEY`/`BLOB_SECRET_KEY`/`BLOB_BUCKET` when
+     the blob store moved to MinIO — see `packages/core/src/config.ts`.)
    - `logger.ts`: minimal leveled logger over console (JSON lines). No pino dependency.
 
 3. **`apps/testkit`** — the permanent test backbone:
