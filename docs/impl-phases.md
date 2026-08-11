@@ -1,7 +1,7 @@
 # Agentic Browsing Platform — Incremental Implementation Plan (Backend-First)
 
-**Version:** 0.5
-**Companion to:** `techical_plan.md` (the design doc), `graph-compilation-llm.md` (decision kind, workflow store, graph compiler), `sharing.md` (shared workflows) and `python-compute.md` (`mode=python`). Section references (§) below point to the design doc. Resolved §18 decisions are folded in below and in the design doc itself.
+**Version:** 0.6
+**Companion to:** `techical_plan.md` (the design doc), `graph-compilation-llm.md` (decision kind, workflow store, graph compiler), `sharing.md` (shared workflows), `python-compute.md` (`mode=python`) and `event-centric-model.md` (events as entities). Section references (§) below point to the design doc. Resolved §18 decisions are folded in below and in the design doc itself.
 **Ordering constraints (updated in 0.3):** "backend only" held until the tooling + event architecture stabilized — **that gate is passed** (Phases 1–2 done and committed). From S2c onward the UI ships incrementally per the **UI track** at the end of this document: each slice lands as soon as its backend prerequisite exists, starting with U0 which needs only S2c. The policy/permissions engine stays last. Testing remains backend system testing throughout — no UI tests.
 
 **Changes in 0.2:** two node kinds (§4) — `browser` and `asset`. MCP moves off the browser node onto the asset node, joined by the asset store and LaTeX document generation. What was Phase 5 (MCP + secrets) is now **Phase 5 (asset node)**; the compiler and policy phases shift by one and gain kind-awareness.
@@ -15,9 +15,20 @@
 - **Shared workflows** (`sharing.md`) — a read-only public link onto a workflow's graph, triggers, runs, events, opted-in packets and assets. Its only prerequisite is S2c, so it lands as **S2d + U0.5** and is independent of everything from S3a on. It is the first slice since U0 whose backend and UI can both ship immediately, and the sharing track section below sits between Phases 2 and 3 to reflect that.
 - **Python compute** (`python-compute.md`) — `mode=python` on `kind=asset`, running an authored program in a Firecracker microVM to produce spreadsheets and other computed deliverables. It lands as **S5h** inside Phase 5, gated on S5a (the `kind`/`mode` discriminants) and S5d (somewhere for output files to go), and independent of S5e. The UI folds into U3.
 
+**Changes in 0.6 (2026-08-10):** the wiring model changes — events become workflow-version-scoped
+entities carrying a description prompt and an LLM-compiled packet schema, tasks declare
+`emits`/`consumes` by type, and the `edges` table is gone. Specified in `event-centric-model.md`,
+landing as **EC1 + U1** in the event-centric track between the sharing track and Phase 3. Three
+consequences ripple backwards through this document and are marked inline where they land:
+Phase 2's edge-based graph evaluation and per-emitter `event_defs` description, S2d's
+`GraphTask.emits[].public` projection, and U2's packet-schema authoring item (shipped early,
+compiled at publish rather than at save). The UI track's old **U1 — run inspector** is renumbered
+**U1.5** so U1 can name the editor redesign; nothing about the inspector's scope or prerequisites
+changes.
+
 ---
 
-## Status — as of 2026-08-09 (verified against the working tree)
+## Status — as of 2026-08-11 (verified against the working tree)
 
 | Subphase | Scope | State |
 |---|---|---|
@@ -27,13 +38,15 @@
 | S2b | Scheduler (cron/tz, missed/overlap, queue depth), retries, crash-recovery watchdog | **done** — `dc4de11` (scheduler/retries/crash-recovery + migrations `0003`/`0004`) |
 | S2c | Next.js + tRPC control-plane API | **done** |
 | SOb | `packages/telemetry`: OTel + pino + bus traceparent + engine instrumentation (§0.5) | **done** |
-| U0 | First UI: graph editor, schedules, stub scripting, runs table, event feed | **done** |
+| U0 | First UI: graph editor, schedules, stub scripting, runs table, event feed | **done** — editor surface since replaced by U1 |
 | S2d | Shared workflows: share model + public read API | **done** — `7dfe920` |
 | U0.5 | Public workflow view + owner-side share management | **done** — `e1e4289` |
+| EC1 | Event-centric model: event entities, consumes routing, publish-time schema compiler (`event-centric-model.md`) | **done** — migration `0007` |
+| U1 | Editor redesign: declarative panels + derived map, prompt-only authoring | **done** — `DESIGN.md` locked ("Ruled Ink"), React Flow removed |
 | S3a–S7, S5g, S5h, S8 | browser, agent, asset, python compute, store+decision, compiler, policy, graph compiler | not started |
 
 What exists as code: `packages/{core,db,bus,engine,policy,telemetry}` + `apps/{engine,web,testkit}`
-+ `tests/system` — 82 tests in 20 files. The whole workspace typechecks clean (`tsc`) and lints
++ `tests/system` — 100 tests in 25 files. The whole workspace typechecks clean (`tsc`) and lints
 clean (`pnpm lint`). `docker compose up -d` brings up Postgres, applies migrations, and runs both
 the engine and the control plane on :3000; `docker compose up -d postgres` is the tests-only
 subset. Credentials are compiled in as defaults, so a clean checkout needs no environment. If
@@ -166,7 +179,7 @@ TypeScript monorepo (pnpm workspaces). One deployable process in early phases (`
 
 **Build:**
 
-- Migrations for: `events`, `run_dedupe`, `outbox`, plus the skeleton tables the engine will need (`workflows`, `workflow_versions`, `tasks`, `edges`, `event_defs`, `runs`) — schema per §14, even if some columns go unused for a phase or two. Migrating early beats renumbering later.
+- Migrations for: `events`, `run_dedupe`, `outbox`, plus the skeleton tables the engine will need (`workflows`, `workflow_versions`, `tasks`, `edges`, `event_defs`, `runs`) — schema per §14, even if some columns go unused for a phase or two. Migrating early beats renumbering later. *(EC1 later dropped `edges` and re-keyed `event_defs` to `(version, type)`, adding `task_emits`/`task_consumes` — migration `0007`.)*
 - **Outbox publisher:** domain writes and their events commit in one transaction (`INSERT INTO outbox`); a dispatcher loop polls the outbox (`FOR UPDATE SKIP LOCKED`, batch of N), publishes to in-process subscribers, marks rows dispatched. `LISTEN/NOTIFY` as a wake-up latch to keep poll latency low without tight loops.
 - **Dispatcher contract:** delivery to a subscriber that throws → row stays undelivered, retried with backoff column (`attempts`, `next_attempt_at`); after max attempts → `dead_letter` status + a `system.event_dead_lettered` event.
 - **Dedupe helper:** `claim(taskId, eventId)` — unique insert into `run_dedupe`; returns claimed/duplicate.
@@ -183,7 +196,7 @@ TypeScript monorepo (pnpm workspaces). One deployable process in early phases (`
 
 **Exit:** bus semantics are boringly reliable; every later phase publishes through it.
 
-## Phase 2 — Workflow engine + scheduler (stub executors) ✅ **DONE** (S2a `f2e2f23`, S2b `dc4de11`; S2c API outstanding)
+## Phase 2 — Workflow engine + scheduler (stub executors) ✅ **DONE** (S2a `f2e2f23`, S2b `dc4de11`, S2c)
 
 **Goal:** the full trigger→dispatch→run→emit loop working *without a browser*. Tasks are executed by a **StubExecutor** that reads a scripted behavior from the task definition (`emit these events with these packets after this delay / fail / hang`). This is deliberate: the engine's correctness must be testable independently of browsers and LLMs, and the StubExecutor remains permanently useful for testing graphs.
 
@@ -191,8 +204,8 @@ TypeScript monorepo (pnpm workspaces). One deployable process in early phases (`
 
 - **Task executor abstraction:** `interface TaskExecutor { execute(run: RunHandle): Promise<RunResult> }` — implementations: `StubExecutor` (now), `AgentExecutor` (Phase 4), `CompiledExecutor` (Phase 6). Registered per task `mode`.
 - **Run state machine** (§4): `queued → running → succeeded|failed|timed_out|cancelled` (approval state arrives in Phase 7). Transitions are DB writes + system events (`run.completed`, `run.failed`, `run.timed_out`). Run-level timeout enforced by the engine (watchdog scanning `running` runs past deadline — not `setTimeout`, so it survives restarts).
-- **Graph evaluation:** on event delivery, resolve subscribers via `edges (from_task, event_type → to_task)` against the *latest* workflow version; runs pin the version they started under (`runs.workflow_version_id`).
-- **Packet validation:** `event_defs.packet_schema_json` (JSON Schema via zod-from-schema) validated at emit; invalid → emit fails, run fails with a clear error.
+- **Graph evaluation:** on event delivery, resolve subscribers via `edges (from_task, event_type → to_task)` against the *latest* workflow version; runs pin the version they started under (`runs.workflow_version_id`). *(Superseded by EC1: the resolution is now one probe of `task_consumes (workflow_version_id, event_type)` and the `edges` table is dropped. Version pinning, dedupe and the loop budget are untouched — see `event-centric-model.md` §2.)*
+- **Packet validation:** `event_defs.packet_schema_json` (JSON Schema via zod-from-schema) validated at emit; invalid → emit fails, run fails with a clear error. *(Superseded by EC1: one schema per `(version, event type)` rather than per emitter, compiled at publish and validated under ajv; the emit is additionally gated on the task declaring the type.)*
 - **Loop budget:** on dispatch, compute lineage depth; over per-workflow `max_hops` → drop trigger, emit `system.loop_budget_exceeded`.
 - **Retry policy** per task (`max_retries`, backoff); retried runs reuse the trigger `event_id` (dedupe is on side-effect keys, not on run creation — a retry is a *new run row*, same trigger).
 - **Task concurrency (event-triggered runs):** per-task `parallelism` setting — `parallel` (independent events for the same task run concurrently; the case: a fast emitter feeding a slow consumer) or `queue` (serialize runs per task). Note this is an *engine-level* dispatch policy; per-endpoint browser serialization (§8, Phase 3) still applies underneath on the browser layer.
@@ -221,7 +234,7 @@ This sits here rather than at the end because it needs nothing that does not alr
 ### S2d — share model + public read API
 
 - **Migration:** `workflow_shares(id, workflow_id, token_sha256 unique, token_prefix, created_at, revoked_at)`; `event_defs.public boolean not null default false`.
-- **Graph document:** `GraphTask.emits[].public` (default `false`), projected by `publishVersion` into `event_defs.public` exactly as packet schemas and schedules already are. This is what makes visibility versioned, and what makes a newly added node arrive private without a check having to say so.
+- **Graph document:** `GraphTask.emits[].public` (default `false`), projected by `publishVersion` into `event_defs.public` exactly as packet schemas and schedules already are. This is what makes visibility versioned, and what makes a newly added node arrive private without a check having to say so. *(Superseded by EC1: the flag re-homed to the event entity as `graph.events[].public` → `event_defs.public` keyed `(version, type)`. Both properties this bullet claims survive — visibility is still versioned, and a new event still arrives private — and the migration collapsed the old per-emitter rows with `bool_or` to preserve the union semantics the read models already enforced.)*
 - **Public read models** in `packages/engine/src/queries.ts` — `publicGraph`, `publicRunList`, `publicEventList`, `publicEventGet` — each taking a **required** `workflowId` and an explicit `publicTypes` set. **They filter in SQL:** a private packet is never selected, so no router or component bug can leak one. This is the subphase's central rule and its central test.
 - **Error-class derivation:** `runs.error` free text never leaves the owner's view; the public read model maps it to a bounded class (`timeout`, `retries_exhausted`, `engine_restart`, `packet_invalid`, `loop_budget_exceeded`, `no_executor`, `sandbox_kill`, `policy_denied`, `other`).
 - **Share procedures** (`create`/`rotate`/`revoke`/`list`) and a **public tRPC router** with its own `{db, share}` context that cannot reach `listWorkflows` — which today ignores its `userId` argument and returns every workflow in the database.
@@ -234,9 +247,53 @@ This sits here rather than at the end because it needs nothing that does not alr
 
 Route group `/s/[token]`: graph, runs table, event feed, event detail with lineage. Server-rendered through `createCaller` like the owner's pages, polling at 2s with `usePolling` — no websockets, for U0's reason. `X-Robots-Tag: noindex`, `Referrer-Policy: no-referrer` on every public route.
 
-**Reuse rather than fork**, or the two views will drift: lift the React Flow node/edge mapping out of `apps/web/src/components/graph-editor.tsx` into a shared module, and parameterize `runs-table.tsx` and `event-feed.tsx` by the fetcher they call. Owner-side share management (create with a visibility preview, rotate, revoke) lands on the workflow page. No UI tests, as ever — S2d's tests are the contract.
+**Reuse rather than fork**, or the two views will drift: lift the React Flow node/edge mapping out of `apps/web/src/components/graph-editor.tsx` into a shared module, and parameterize `runs-table.tsx` and `event-feed.tsx` by the fetcher they call. *(EC1/U1 kept the rule and changed the shared module: the public view and the editor both render `derived-map.tsx` over a topology derived from `emits`/`consumes`, and both render the same event cards.)* Owner-side share management (create with a visibility preview, rotate, revoke) lands on the workflow page. No UI tests, as ever — S2d's tests are the contract.
 
 **Exit:** a link you can send someone, showing a workflow running, with exactly the packets you chose and nothing else.
+
+## Event-centric track — EC1 + U1 (full design in `event-centric-model.md`)
+
+### EC1 — event entities, consumes routing, publish-time schema compiler ✅ **DONE**
+
+The wiring model change: events become workflow-version-scoped entities
+(`event_defs` re-keyed to `(version, type)`, carrying the author's description prompt, the
+compiled `packet_schema_json`, the carry-forward `prompt_hash`, and S2d's `public` flag);
+tasks declare `emits`/`consumes` by type (`task_emits`/`task_consumes`); the `edges` table
+is dropped (migration `0007` backfills consumes from it first) and dispatch routes by one
+probe of `task_consumes(workflow_version_id, event_type)`. `publishVersion` takes an
+injected `SchemaGenerator`, reuses unchanged schemas via the hash, gates everything under
+ajv strict (+formats), and returns a per-event compile report; failure writes nothing.
+The Anthropic implementation (`claude-opus-5`, bounded self-repair) lives behind
+`@tabductor/engine/anthropic`, constructed only in the web composition root off
+`ANTHROPIC_API_KEY`. Scriptless stub tasks emit sampled packets derived from their
+compiled schemas, so a published graph runs with nothing hand-scripted.
+
+### U1 — the declarative editor (replaces U0's canvas) ✅ **DONE**
+
+The client stops accepting JSON anywhere: no packet schemas, no stub scripts. Three
+panels — Events (description prompts, visibility, read-only compiled schemas), Nodes
+(prompts, trigger/emit chips), and a derived read-only map of the bipartite topology
+(dependency-free SVG; React Flow removed) — plus the compile report in the publish flow.
+Designed through the design track (JOURNEY.md → DESIGN.md → component specs) rather than
+grown from U0's inspector.
+
+As built: `JOURNEY.md` and a locked `DESIGN.md` ("Ruled Ink" — light, editorial, ink-blue
+events against amber nodes) sit at the repo root with their component specs and contrast
+validator under `.design-foundations/`; `apps/web/src/app/globals.css` is the token block
+plus everything derived from it, and no component names a raw colour. `@xyflow/react` is
+gone from `apps/web`, along with `json-field.tsx`, `stub-panel.tsx` and
+`task-config-panel.tsx`. Compile failures render as a per-event report with a deep link
+into the offending description; the S2d visibility-diff confirm survives, now reading
+`graph.events[].public`. The hook policy held — panel state (menus, delete confirms, the
+deep-link flash) lives in the editor store's `ui` slice, not in `useState`.
+
+Deliberately still open, because both belong to whoever runs the app rather than to this
+slice: `ANTHROPIC_API_KEY` is unset in `docker-compose.yml`, so a compose deployment
+publishes only carry-forward schemas until it is passed through; and the long-lived dev
+database is still at migration `0006` — `0007` has been exercised against throwaway
+databases only.
+
+---
 
 ## Phase 3 — Browser runtime + CDP layer (no AI yet)
 
@@ -433,20 +490,21 @@ Two standing rules, which are what make the slices cheap:
 
 | Slice | Lands with | What you see on screen | Prerequisite |
 |---|---|---|---|
-| **U0 — first UI** | **S2c** | Workflow list; React Flow graph editor over `workflows/tasks/edges/event_defs` (browser + asset in the palette, kind/schedule constraints validated at save, **cycle detection with in-editor warning** — cycles are legal, bounded by the loop budget, but must be visible); schedules editor (cron/tz/missed/overlap); runs table with live status; event feed with lineage links; a StubExecutor scripting panel. Author a graph, cron- or hand-trigger it, and watch runs and events flow — before any browser exists. | S2c only |
+| **U0 — first UI** | **S2c** | Workflow list; React Flow graph editor over `workflows/tasks/edges/event_defs` (browser + asset in the palette, kind/schedule constraints validated at save, **cycle detection with in-editor warning** — cycles are legal, bounded by the loop budget, but must be visible); schedules editor (cron/tz/missed/overlap); runs table with live status; event feed with lineage links; a StubExecutor scripting panel. Author a graph, cron- or hand-trigger it, and watch runs and events flow — before any browser exists. **The editor half of this slice is superseded by U1** — the canvas, the schema JSON field and the stub scripting panel are all gone; the workflow list, runs table and event feed carried forward. | S2c only |
 | **U0.5 — public view** | **S2d** | `/s/<token>`: the graph, its schedules and triggers, the runs table and the event feed, read-only, for anyone holding the link — with packet bodies shown only for event types the author marked public, and a bounded error class instead of error text. Owner-side share management: create with a visibility preview, rotate, revoke. Reuses U0's components via an injected fetcher rather than forking them. | S2d only |
-| **U1 — run inspector** | S3a–S3b | The debugging surface, deliberately *before* the agent exists (you'll want it while hardening Phase 3): per-run timeline of navigations, actions, and network entries with policy verdicts, screenshots via `blob_ref`, resource-limit and disconnect failure detail; endpoint health panel for `cdp_endpoints`. | S3a (traces), S3b (observer/pool) |
-| **U2 — agent visibility** | S4a–S4b | Inspector gains LLM calls (prompts, token counts, tool-call sequences) and emitted-packet views. **Packet-schema authoring** in the node editor: free-text field description → JSON Schema compiled server-side at save (§18.2); the engine only ever sees the resulting schema — no engine change. Emitting and consuming nodes both render the declared fields. | S4b |
+| **U1 — declarative editor** | **EC1** | The editor stops being a canvas: an Events panel (one description prompt per event, its visibility switch, and its compiled schema as a read-only field list), a Nodes panel (prompt, trigger chips ⏰/◈, emit chips, limits), and a derived read-only map of the bipartite topology with the loop budget annotated on back-edges. Publishing renders a per-event compile report. No JSON anywhere in the client; React Flow removed. | EC1 only |
+| **U1.5 — run inspector** | S3a–S3b | The debugging surface, deliberately *before* the agent exists (you'll want it while hardening Phase 3): per-run timeline of navigations, actions, and network entries with policy verdicts, screenshots via `blob_ref`, resource-limit and disconnect failure detail; endpoint health panel for `cdp_endpoints`. | S3a (traces), S3b (observer/pool) |
+| **U2 — agent visibility** | S4a–S4b | Inspector gains LLM calls (prompts, token counts, tool-call sequences) and emitted-packet views. **Packet-schema authoring shipped early with EC1/U1** and in a different place than this row anticipated: the description belongs to the event, not to the emitting node, and it compiles at *publish* rather than at save, so the schema is versioned with everything else. Emitting and consuming nodes both render the declared fields — via the derived map and the Events panel. | S4b |
 | **U3 — asset surfaces** | S5a–S5h | Asset browser (paths, versions, download, quota usage), inline PDF preview for rendered deliverables, `.xlsx` download, MCP server catalog with per-task tool selection, secrets manager (add/rotate, origin binding, Tier-1 vs Tier-2 with the trade-off stated plainly — Tier 2 parks scheduled runs for approval). Asset node's config panel becomes real, including a **read-only Python source viewer with cross-version diff** — the same argument §11 makes for compiled scripts: users must be able to see what will run. | S5b–S5e, S5h as each ships |
 | **U3.5 — decision + store** | S5g | Palette gains the **decision** node; workflow store browser (tables, row counts, schema per version) and a read-only query console running the *same fenced read path* as `store.query`; store-schema migration diffs (additive/destructive) shown at publish. | S5g (`graph-compilation-llm.md` §10) |
 | **U4 — compiler** | S6a–S6c | Compiled-script viewer with version diff (users must be able to inspect what will run against their browser, §11), deopt timeline in the inspector, promotion/demotion state on nodes, and **LLM-cost-per-run, ai vs compiled** — the product's core claim, on screen from the day it's measurable. | S6c |
 | **U5 — policy** | S7 | Grants editor per task, account-baseline editor, approvals inbox (park / approve / expiry countdown), redaction settings, storage opt-outs. | S7 |
-| **U6 — one-prompt authoring** | S8 | Intent prompt → draft graph rendered in the editor; compile-report panel (per-check pass/warn/fail); **proposed-grants review checklist** with diffs on recompile — the approval flow that turns proposals into `task_grants`. | S8 (`graph-compilation-llm.md` §4–5) |
+| **U6 — one-prompt authoring** | S8 | Intent prompt → draft graph rendered in the editor; compile-report panel (per-check pass/warn/fail — the same surface U1 already renders for per-event schema compilation, widened to S8's graph checks); **proposed-grants review checklist** with diffs on recompile — the approval flow that turns proposals into `task_grants`. | S8 (`graph-compilation-llm.md` §4–5) |
 
-Sequencing note: slices are ordered by prerequisite, not priority — U1 (inspector) is the one
+Sequencing note: slices are ordered by prerequisite, not priority — U1.5 (inspector) is the one
 worth pulling as early as its data exists, since it is the debugging surface for everything
-after it. U0.5 is the one that can be pulled *now*: its prerequisite is S2d, whose prerequisite
-is S2c, which is done.
+after it. U0, U0.5 and U1 are done; the next slice with a satisfiable prerequisite is U1.5,
+which waits on S3a.
 
 ---
 

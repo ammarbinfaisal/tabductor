@@ -14,6 +14,8 @@
 - **Shared workflows** (`sharing.md`) — an unguessable link that lets anyone watch a workflow's graph, triggers, runs, events and produced assets, live or historical. Visibility is opt-in per event type and default-deny, declared in the graph document and versioned with it. §1's scope line is narrowed rather than reversed: read-only visibility into a workflow's *own execution* is in; a marketplace of reusable workflows stays out. Adds §17.3 (a third observability audience) and Threats 13–17. Decisions #16–#18.
 - **Python compute** (`python-compute.md`) — a third execution mode, `mode=python` on `kind=asset`, running an LLM- or human-authored program on our infrastructure inside a Firecracker microVM with a pinned dependency set, to produce spreadsheets and other computed deliverables. The tool registry keys on `(kind, mode)`, and `(asset, python)` has no tools at all: the job's only channel is a block device. Adds §13.6 and Threats 18–22. Decisions #19–#20.
 
+**Changes in 0.6 — the event-centric model (`event-centric-model.md`, implemented as EC1):** events become first-class workflow-version entities carrying an author-written description, an LLM-compiled packet schema, and the S2d visibility flag; tasks declare `consumes`/`emits` by type; authored edges are gone — topology is derived, and dispatch routes by type within the version. The client sends prompts only, never JSON: packet schemas are compiled at publish (carry-forward hashed, ajv-strict gated, per-event compile report) and stub behavior is derived from them. Where §4–§5 speak of edges or per-emitter `event_defs`, that document supersedes them.
+
 ---
 
 ## 1. Purpose and Scope

@@ -1,5 +1,15 @@
 # LLM Graph Compilation — One Prompt to a Running, Self-Optimizing Workflow
 
+> **Amendment (2026-08-10, `event-centric-model.md`):** the wiring model changed under
+> this document. Events are now first-class workflow-version entities; tasks declare
+> `consumes`/`emits` by type; there are no authored edges — topology is derived. Read
+> "edges with event-type bindings" (P1) as "event entities + trigger/emit bindings", and
+> §5 check 3 as: every *emit* references a declared event (fail); consumed-but-never-
+> emitted is advisory, because external/system events are legitimate. The P3 packet-schema
+> pipeline shipped early in minimal form (publish-time compiler with carry-forward hashing
+> and a per-event compile report — the seed of §5's report artifact); P3's store-schema
+> half and the rest of P1–P5 are unchanged and still S8.
+
 **Version:** 0.1 (extends `techical_plan.md` 0.2)
 **Status:** Specifies the third node kind (**decision**), the **workflow data store** (per-workflow Postgres schema + role pair), and the **graph compiler** — the save-time LLM pipeline that turns a plain-language intent into a checked, versioned graph: node prompts, kinds, grants, packet schemas, and store schema. Ends with how this composes with the §11 script compiler into a single compilation ladder.
 

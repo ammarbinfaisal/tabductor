@@ -11,8 +11,8 @@ You are implementing UI-track slice U0. Read, in order:
 
 ## Scope
 Everything a user needs to author a graph, trigger it, and watch runs/events flow — with
-StubExecutor, before any browser exists. NOT in scope: run inspector (U1), packet-schema
-authoring (U2), grants/approvals (U5), any asset/secret/MCP surface (U3). **No UI tests**
+StubExecutor, before any browser exists. NOT in scope: run inspector (U1.5), packet-schema
+authoring (shipped later as EC1/U1), grants/approvals (U5), any asset/secret/MCP surface (U3). **No UI tests**
 (doctrine): if a page needs data no endpoint serves, that is an S2c-family backend change
 with a system test — never logic in the web app.
 

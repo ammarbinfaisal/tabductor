@@ -77,7 +77,7 @@ The `tables` input materialises the read fence of `graph-compilation-llm.md` §3
 
 ### 3.2 Emits are published host-side
 
-The guest writes `emits.jsonl`. The **host** reads it after the VM exits and calls the same `handle.emit()` the `StubExecutor` uses, one line at a time. Packet-schema validation (ajv, against the task's declared `event_defs`), loop budget, dedupe and the transactional outbox therefore apply unchanged and cannot be bypassed.
+The guest writes `emits.jsonl`. The **host** reads it after the VM exits and calls the same `handle.emit()` the `StubExecutor` uses, one line at a time. Packet-schema validation (ajv, against the event's compiled schema for the task's workflow version, gated by the task's emit declaration — `event-centric-model.md`), loop budget, dedupe and the transactional outbox therefore apply unchanged and cannot be bypassed.
 
 This is §12's "every `ctx` call crosses the boundary into the host, where the policy check happens", expressed in a sandbox that has no calls. A malformed line fails the run with the ajv error, exactly as a malformed agent emit does.
 

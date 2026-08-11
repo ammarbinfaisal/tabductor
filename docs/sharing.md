@@ -1,5 +1,16 @@
 # Shared Workflows — A Public Read Surface
 
+> **Amendment (2026-08-10, `event-centric-model.md` / EC1):** visibility mechanics moved
+> with the event entity. `public` now lives on the workflow-version-scoped `event_defs`
+> row (one per `(version, type)`), declared as `graph.events[].public` in the document —
+> not on per-emitter emit declarations, which no longer exist. Everything this document
+> *means* survives unchanged: opt-in per event type, default deny, versioned with the
+> graph, deny-wins enforcement from the current version, SQL-level filtering, whole shape
+> or nothing. The structural claim about platform events also survives: system types have
+> no event entity, so nothing can mark them public. `publicGraph` now returns an `events`
+> entity list plus per-task `emits`/`consumes` type lists, with `edges` derived for
+> rendering; the visibility preview lists events with their emitters.
+
 **Version:** 0.1 (extends `techical_plan.md` 0.5)
 **Status:** Specifies **shares** — an unguessable link that lets anyone watch a workflow's graph, triggers, runs, events and produced assets, live or historical, without an account. Covers the token model, the per-event-type visibility manifest, the SQL-level filtering rule that makes the manifest enforceable, the public HTTP posture, and Threats 13–17.
 
