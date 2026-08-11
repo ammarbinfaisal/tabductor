@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createMigratedTestDb, runs, type MigratedTestDb } from "@tabductor/db";
-import { finishRun, startRun } from "@tabductor/engine";
+import { finishRun, startRun, staticSchemaGenerator } from "@tabductor/engine";
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { createCaller } from "../../apps/web/src/server/router.js";
@@ -18,9 +18,14 @@ import { createCaller } from "../../apps/web/src/server/router.js";
 let handle: MigratedTestDb;
 let api: ReturnType<typeof createCaller>;
 
+/** Deterministic publish: the one schema these tests declare, no model in the loop. */
+const TEST_SCHEMAS = {
+  "tweet.detected": { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
+};
+
 beforeAll(async () => {
   handle = await createMigratedTestDb();
-  api = createCaller({ db: handle.db });
+  api = createCaller({ db: handle.db, schemaGenerator: staticSchemaGenerator(TEST_SCHEMAS) });
 });
 
 afterAll(async () => {
@@ -35,12 +40,8 @@ const twoNodeGraph = {
       mode: "stub",
       prompt: "watch the timeline",
       limits: { stub: { emits: [{ type: "tweet.detected", packet: { url: "https://x.com/1" } }] } },
-      emits: [
-        {
-          type: "tweet.detected",
-          packetSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
-        },
-      ],
+      emits: ["tweet.detected"],
+      consumes: [],
       schedule: { cron: "*/5 * * * *", tz: "UTC", missedPolicy: "skip" as const, overlapPolicy: "skip" as const, maxQueueDepth: 1, enabled: true },
       position: { x: 40, y: 80 },
     },
@@ -51,11 +52,14 @@ const twoNodeGraph = {
       prompt: null,
       limits: {},
       emits: [],
+      consumes: ["tweet.detected"],
       schedule: null,
       position: { x: 320, y: 80 },
     },
   ],
-  edges: [{ from: "Watcher", eventType: "tweet.detected", to: "Poster" }],
+  events: [
+    { type: "tweet.detected", description: "A tweet the watcher found on the timeline.", public: false },
+  ],
 };
 
 /** The error tRPC actually threw, so a test can assert on its code rather than its prose. */
@@ -80,14 +84,19 @@ describe("workflow", () => {
     expect(got.versionId).toBe(versionId);
     expect(got.tasks.map((t) => t.name)).toEqual(["Poster", "Watcher"]);
 
-    // The document survives the round trip through rows: prompts, limits, declared packet
-    // schemas, the schedule, and the canvas positions the editor needs back.
+    // The document survives the round trip through rows: prompts, limits, declarations,
+    // the event entity, the schedule, and the canvas positions the editor needs back.
     const watcher = got.graph.tasks.find((t) => t.name === "Watcher")!;
     expect(watcher.prompt).toBe("watch the timeline");
-    expect(watcher.emits[0]!.packetSchema).toMatchObject({ required: ["url"] });
+    expect(watcher.emits).toEqual(["tweet.detected"]);
     expect(watcher.schedule).toMatchObject({ cron: "*/5 * * * *", overlapPolicy: "skip" });
     expect(watcher.position).toEqual({ x: 40, y: 80 });
-    expect(got.graph.edges).toEqual([{ from: "Watcher", eventType: "tweet.detected", to: "Poster" }]);
+    expect(got.graph.tasks.find((t) => t.name === "Poster")!.consumes).toEqual(["tweet.detected"]);
+    expect(got.graph.events).toEqual([
+      { type: "tweet.detected", description: "A tweet the watcher found on the timeline.", public: false },
+    ]);
+    // The compiled schema rides beside the document, read-only.
+    expect(got.eventSchemas["tweet.detected"]).toMatchObject({ required: ["url"] });
     expect(Object.keys(taskIds).sort()).toEqual(["Poster", "Watcher"]);
   });
 
@@ -96,7 +105,7 @@ describe("workflow", () => {
     const first = await api.workflow.publishVersion({ workflowId, graph: twoNodeGraph });
     const second = await api.workflow.publishVersion({
       workflowId,
-      graph: { tasks: [twoNodeGraph.tasks[0]!], edges: [] },
+      graph: { tasks: [twoNodeGraph.tasks[0]!], events: twoNodeGraph.events },
     });
 
     expect(second.versionId).not.toBe(first.versionId);
@@ -107,32 +116,61 @@ describe("workflow", () => {
     expect(await api.workflow.get({ id: workflowId }).then((w) => w.tasks)).toHaveLength(1);
   });
 
-  it("rejects a packet schema that does not compile, naming the node", async () => {
+  it("fails the publish with a per-event report when schema generation fails, writing nothing", async () => {
     const workflowId = await api.workflow.create({ name: "bad schema" });
+    const failing = createCaller({
+      db: handle.db,
+      schemaGenerator: { generate: () => Promise.resolve({ ok: false, error: "generator says no" }) },
+    });
+    const graph = {
+      tasks: [
+        {
+          name: "Broken",
+          kind: "browser" as const,
+          mode: "stub",
+          prompt: null,
+          limits: {},
+          emits: ["thing.done"],
+          consumes: [],
+          schedule: null,
+          position: null,
+        },
+      ],
+      events: [{ type: "thing.done", description: "The thing finished.", public: false }],
+    };
+
+    const err = await trpcError(() => failing.workflow.publishVersion({ workflowId, graph }));
+    expect(err.code).toBe("BAD_REQUEST");
+    const details = (err.cause as { details?: { report?: { events: unknown[] } } }).details;
+    expect(details?.report?.events).toEqual([
+      { type: "thing.done", status: "failed", error: "generator says no" },
+    ]);
+    // Nothing was written: the workflow still has no current version.
+    expect((await api.workflow.get({ id: workflowId })).versionId).toBeNull();
+  });
+
+  it("gates a generated schema that does not compile under ajv strict", async () => {
+    const workflowId = await api.workflow.create({ name: "bad generated schema" });
+    const hostile = createCaller({
+      db: handle.db,
+      schemaGenerator: {
+        generate: () => Promise.resolve({ ok: true, schema: { type: "not-a-json-schema-type" } }),
+      },
+    });
     const err = await trpcError(() =>
-      api.workflow.publishVersion({
+      hostile.workflow.publishVersion({
         workflowId,
         graph: {
-          tasks: [
-            {
-              name: "Broken",
-              kind: "browser",
-              mode: "stub",
-              prompt: null,
-              limits: {},
-              emits: [{ type: "thing.done", packetSchema: { type: "not-a-json-schema-type" } }],
-              schedule: null,
-              position: null,
-            },
-          ],
-          edges: [],
+          tasks: [],
+          events: [{ type: "thing.done", description: "The thing finished.", public: false }],
         },
       }),
     );
-
     expect(err.code).toBe("BAD_REQUEST");
-    expect(err.message).toContain("Broken");
-    expect((err.cause as { details?: Record<string, unknown> }).details).toMatchObject({ task: "Broken" });
+    const details = (err.cause as { details?: { report?: { events: Array<{ status: string; error?: string }> } } })
+      .details;
+    expect(details?.report?.events[0]).toMatchObject({ status: "failed" });
+    expect(details?.report?.events[0]!.error).toContain("compile");
   });
 
   it("rejects a schedule bound to an asset node", async () => {
@@ -153,7 +191,7 @@ describe("workflow", () => {
               position: null,
             },
           ],
-          edges: [],
+          events: [],
         },
       }),
     );
@@ -165,16 +203,16 @@ describe("workflow", () => {
     });
   });
 
-  it("rejects an edge naming a task that is not in the graph", async () => {
-    const workflowId = await api.workflow.create({ name: "dangling edge" });
+  it("rejects an emit of an event no entity declares", async () => {
+    const workflowId = await api.workflow.create({ name: "undeclared emit" });
     const err = await trpcError(() =>
       api.workflow.publishVersion({
         workflowId,
-        graph: { tasks: [twoNodeGraph.tasks[0]!], edges: [{ from: "Watcher", eventType: "x", to: "Ghost" }] },
+        graph: { tasks: [{ ...twoNodeGraph.tasks[0]!, emits: ["ghost.event"] }], events: [] },
       }),
     );
     expect(err.code).toBe("BAD_REQUEST");
-    expect(err.message).toContain("Ghost");
+    expect(err.message).toContain("ghost.event");
   });
 
   it("lists workflows with their task count and last run", async () => {

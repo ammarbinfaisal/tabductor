@@ -5,6 +5,7 @@ import {
   listVersionTasks,
   listWorkflows,
   publishVersion,
+  readEventSchemas,
   readGraph,
 } from "@tabductor/engine";
 import { TRPCError } from "@trpc/server";
@@ -30,17 +31,29 @@ export const workflowRouter = router({
     if (!workflow) throw new TRPCError({ code: "NOT_FOUND", message: `no workflow "${input.id}"` });
 
     const versionId = workflow.currentVersionId;
-    if (!versionId) return { workflow, versionId: null, graph: { tasks: [], edges: [] }, tasks: [] };
+    if (!versionId) {
+      return {
+        workflow,
+        versionId: null,
+        graph: { tasks: [], events: [] },
+        tasks: [],
+        eventSchemas: {} as Record<string, Record<string, unknown>>,
+      };
+    }
 
     return {
       workflow,
       versionId,
       graph: await readGraph(ctx.db, versionId),
       tasks: await listVersionTasks(ctx.db, versionId),
+      /** Compiled at publish, displayed read-only — never part of the editable document. */
+      eventSchemas: await readEventSchemas(ctx.db, versionId),
     };
   }),
 
   publishVersion: procedure
     .input(z.object({ workflowId: z.string().min(1), graph: graphSchema }))
-    .mutation(({ ctx, input }) => publishVersion(ctx.db, input)),
+    .mutation(({ ctx, input }) =>
+      publishVersion(ctx.db, input, { schemaGenerator: ctx.schemaGenerator }),
+    ),
 });

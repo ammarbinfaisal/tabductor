@@ -1,23 +1,20 @@
 "use client";
 
-import {
-  Background,
-  Controls,
-  ReactFlow,
-  type Connection,
-  type EdgeChange,
-  type NodeChange,
-} from "@xyflow/react";
-import "@xyflow/react/dist/style.css";
 import type { Graph, TaskSummary } from "@tabductor/engine";
-import { edgeId, toFlowEdges, toFlowNodes } from "../lib/graph-flow.js";
-import { KIND_LIST, NODE_KINDS } from "../lib/node-kinds.js";
+import Link from "next/link";
+import { findCycles } from "../lib/topology.js";
 import { useStoreBridge } from "../lib/store.js";
-import { createEditorStore, findCycles, type EditorStore } from "./editor-store.js";
+import { CompileReport } from "./compile-report.js";
+import { DerivedMap } from "./derived-map.js";
+import { createEditorStore, type EditorStore } from "./editor-store.js";
+import { EventPanel } from "./event-panel.js";
+import { NodePanel } from "./node-panel.js";
+import { SectionLabel } from "./primitives.js";
 
 /**
- * The graph editor (U0). React Flow in controlled mode over the editor store: the store
- * holds the document, this renders it, and every interaction is a store action.
+ * The declarative editor (U1, component-specs §4.2): header + compile report + banners,
+ * the Events | Nodes panel row, and the derived Map. There is no canvas — wiring is
+ * toggling a chip, and the map only ever draws what the declarations already say.
  *
  * The store is created once per mounted page. It is module-level rather than passed in
  * because a page owns exactly one graph at a time — the same shape the runs and events
@@ -31,52 +28,85 @@ export function GraphEditor(props: {
   versionId: string | null;
   graph: Graph;
   tasks: TaskSummary[];
+  eventSchemas: Record<string, Record<string, unknown>>;
+  maxHops: number;
 }) {
   // Rebuilt when the page is showing a different workflow than the one the store holds —
   // otherwise navigating between two graphs would edit the first one's document.
   if (!store || store.getState().workflowId !== props.workflowId) store = createEditorStore(props);
   const s = store;
   const state = useStoreBridge(s);
-  const cycles = findCycles(state.graph);
-  const selected = state.graph.tasks.find((t) => t.name === state.selected) ?? null;
-  const ConfigPanel = selected ? NODE_KINDS[selected.kind].configPanel : null;
+  const cycles = findCycles(state.graph.tasks);
+  const failedEntries = (state.compileReport ?? []).filter((e) => e.status === "failed");
+  const empty = state.graph.tasks.length === 0 || state.graph.events.length === 0;
 
-  const nodes = toFlowNodes(state.graph.tasks, state.selected);
-  const edges = toFlowEdges(state.graph.edges);
-
-  const onNodesChange = (changes: NodeChange[]): void => {
-    for (const change of changes) {
-      if (change.type === "position" && change.position) s.moveNode(change.id, change.position);
-      if (change.type === "select" && change.selected) s.select(change.id);
-      if (change.type === "remove") s.removeNode(change.id);
-    }
-  };
-
-  const onEdgesChange = (changes: EdgeChange[]): void => {
-    for (const change of changes) if (change.type === "remove") s.removeEdge(change.id);
-  };
-
-  const onConnect = (c: Connection): void => {
-    if (c.source && c.target) s.beginConnect(c.source, c.target);
-  };
+  const publishReason = empty
+    ? "Publish needs at least one event and one node."
+    : !state.dirty && state.versionId
+      ? `Everything here is already published as ${state.versionId}.`
+      : null;
 
   return (
     <>
-      <div className="row" style={{ justifyContent: "space-between" }}>
-        <h1>{props.workflowName}</h1>
-        <div className="row">
-          <span className="muted mono">{state.versionId ?? "unpublished"}</span>
-          <button onClick={() => void s.reload()} disabled={state.busy}>
-            Reload
-          </button>
-          <button onClick={() => void s.save()} disabled={state.busy}>
-            {state.dirty ? "Publish version •" : "Publish version"}
-          </button>
-        </div>
+      <div className="row row--between editor-header">
+        <span>
+          <span className="section-label">
+            <Link href="/workflows">Workflows</Link> /
+          </span>
+          <h1 style={{ display: "inline", marginLeft: "var(--space-2)" }}>{props.workflowName}</h1>
+          <span className="section-label" style={{ marginLeft: "var(--space-3)" }}>
+            {state.versionId
+              ? state.dirty
+                ? `${state.versionId} · unpublished edits`
+                : state.versionId
+              : "draft · never published"}
+          </span>
+        </span>
+        <span className="row" style={{ flexDirection: "column", alignItems: "flex-end", gap: "var(--space-1)" }}>
+          <span className="row">
+            <button className="btn--quiet" onClick={() => void s.reload()} disabled={state.busy}>
+              Reload
+            </button>
+            <button
+              className="btn--primary"
+              disabled={state.busy || publishReason !== null}
+              aria-describedby="publish-reason"
+              onClick={() => void s.save()}
+            >
+              Publish
+            </button>
+          </span>
+          {publishReason ? (
+            <span id="publish-reason" className="muted" style={{ fontSize: "var(--text-sm)" }}>
+              {publishReason}
+            </span>
+          ) : null}
+        </span>
       </div>
 
-      {state.error ? (
-        <div className="banner banner-error">
+      {state.compileReport ? (
+        <CompileReport
+          entries={state.compileReport}
+          versionId={state.versionId}
+          failed={failedEntries.length > 0}
+          onDismiss={() => s.setState({ compileReport: null })}
+        />
+      ) : null}
+
+      {failedEntries.map((entry) => (
+        <div key={entry.type} className="banner banner--error">
+          <span className="mono">◈ {entry.type}</span> didn&apos;t compile:{" "}
+          <span className="mono">&ldquo;{entry.error}&rdquo;</span>. The schema comes from the prose —
+          edit the description, then publish again. Nothing was published;{" "}
+          {state.versionId ? <span className="mono">{state.versionId}</span> : "the draft"} is
+          unchanged.{" "}
+          <button className="btn--quiet mono" onClick={() => s.select({ kind: "event", id: entry.type })}>
+            Go to ◈ {entry.type} ↓
+          </button>
+        </div>
+      ))}
+      {state.error && failedEntries.length === 0 ? (
+        <div className="banner banner--error">
           {state.error.message}
           {Object.keys(state.error.details).length > 0 ? (
             <span className="mono"> — {JSON.stringify(state.error.details)}</span>
@@ -84,141 +114,68 @@ export function GraphEditor(props: {
         </div>
       ) : null}
       {state.notice ? <div className="banner">{state.notice}</div> : null}
-      {state.confirmVisibility ? (
-        <div className="banner">
-          <strong>This publish changes what share links expose.</strong>
-          {state.confirmVisibility.adding.length > 0 ? (
-            <div>
-              Packets becoming readable by anyone with a link:{" "}
-              <span className="mono">{state.confirmVisibility.adding.join(", ")}</span>
-            </div>
-          ) : null}
-          {state.confirmVisibility.removing.length > 0 ? (
-            <div>
-              No longer readable, including past events:{" "}
-              <span className="mono">{state.confirmVisibility.removing.join(", ")}</span>
-            </div>
-          ) : null}
-          <div className="row">
-            <button onClick={() => void s.save(true)}>Publish anyway</button>
-            <button onClick={() => s.cancelVisibilityChange()}>Cancel</button>
-          </div>
-        </div>
-      ) : null}
       {cycles.length > 0 ? (
-        <div className="banner">
-          {cycles.length} cycle{cycles.length > 1 ? "s" : ""}:{" "}
-          {cycles.map((c) => c.join(" → ")).join("; ")}. Legal — the workflow&apos;s{" "}
-          <code>max_hops</code> loop budget bounds it — but every lap spends budget.
+        <div className="banner banner--warning">
+          This graph loops: <span className="mono">{cycles[0]!.join(" → ")}</span>. Loops are allowed
+          and capped at {props.maxHops} hops per causation chain.
         </div>
       ) : null}
 
-      <div className="editor">
-        <div className="canvas">
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onNodeDragStop={() => s.markDirty()}
-            onConnect={onConnect}
-            onPaneClick={() => s.select(null)}
-            fitView
-            proOptions={{ hideAttribution: true }}
-          >
-            <Background />
-            <Controls />
-          </ReactFlow>
-
-          <div className="palette">
-            {KIND_LIST.map((kind) => (
-              <button key={kind} onClick={() => s.addNode(kind)} title={NODE_KINDS[kind].hint}>
-                + {NODE_KINDS[kind].label}
+      {state.confirmVisibility ? (
+        <div className="modal-overlay" onClick={() => s.cancelVisibilityChange()}>
+          <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal>
+            <h2 style={{ fontSize: "var(--text-xl)" }}>This publish changes what share links show</h2>
+            <p>Anyone with a share link sees the difference immediately.</p>
+            {state.confirmVisibility.adding.length > 0 ? (
+              <>
+                <SectionLabel>Becoming public</SectionLabel>
+                <div className="ruled">
+                  {state.confirmVisibility.adding.map((t) => (
+                    <div key={t} className="mono" style={{ fontSize: "var(--text-sm)" }}>
+                      ◈ {t} — packet contents become readable by anyone with a link
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : null}
+            {state.confirmVisibility.removing.length > 0 ? (
+              <>
+                <SectionLabel>Becoming hidden</SectionLabel>
+                <div className="ruled">
+                  {state.confirmVisibility.removing.map((t) => (
+                    <div key={t} className="mono" style={{ fontSize: "var(--text-sm)" }}>
+                      ◈ {t} — packet no longer readable, past events included; the event itself stays
+                      listed
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : null}
+            <div className="row" style={{ justifyContent: "flex-end", marginTop: "var(--space-5)" }}>
+              <button className="btn--quiet" autoFocus onClick={() => s.cancelVisibilityChange()}>
+                Cancel
               </button>
-            ))}
+              <button className="btn--primary" onClick={() => void s.save(true)}>
+                Publish with these changes
+              </button>
+            </div>
           </div>
         </div>
+      ) : null}
 
-        <aside className="side">
-          {state.pending ? <PendingEdge store={s} /> : null}
-          {selected && ConfigPanel ? (
-            <ConfigPanel
-              task={selected}
-              taskId={state.taskIds[selected.name] ?? null}
-              store={s}
-              state={state}
-            />
-          ) : (
-            <p className="muted">Select a node, or add one from the palette.</p>
-          )}
-          <EdgeList store={s} graph={state.graph} />
-        </aside>
+      <div className="editor-panels">
+        <EventPanel store={s} state={state} />
+        <NodePanel store={s} state={state} />
       </div>
-    </>
-  );
-}
 
-/**
- * An edge is (source, event type, target) — React Flow only draws the first and last, so a
- * new connection parks here until it is named. The source node's declared events are
- * offered as a datalist rather than a closed list: schedule fires and manual triggers are
- * event types no node declares, and the API allows them for exactly that reason.
- */
-function PendingEdge({ store: s }: { store: EditorStore }) {
-  const state = useStoreBridge(s);
-  const pending = state.pending;
-  if (!pending) return null;
-  const declared = state.graph.tasks.find((t) => t.name === pending.from)?.emits ?? [];
-
-  return (
-    <div className="panel" style={{ marginBottom: 12 }}>
-      <h3 style={{ marginTop: 0 }}>
-        {pending.from} → {pending.to}
-      </h3>
-      <div className="row">
-        <input
-          autoFocus
-          list="declared-events"
-          placeholder="event type"
-          defaultValue={declared[0]?.type ?? ""}
-          onKeyDown={(e) =>
-            e.key === "Enter" ? s.completeConnect((e.target as HTMLInputElement).value) : undefined
-          }
-          id="pending-edge-type"
+      <section className="map-region">
+        <SectionLabel>Map</SectionLabel>
+        <DerivedMap
+          tasks={state.graph.tasks}
+          kinds={Object.fromEntries(state.graph.tasks.map((t) => [t.name, t.kind]))}
+          maxHops={props.maxHops}
         />
-        <datalist id="declared-events">
-          {declared.map((d) => (
-            <option key={d.type} value={d.type} />
-          ))}
-        </datalist>
-        <button
-          onClick={() =>
-            s.completeConnect(
-              (document.getElementById("pending-edge-type") as HTMLInputElement | null)?.value ?? "",
-            )
-          }
-        >
-          Add edge
-        </button>
-        <button onClick={() => s.cancelConnect()}>Cancel</button>
-      </div>
-    </div>
-  );
-}
-
-function EdgeList({ store: s, graph }: { store: EditorStore; graph: Graph }) {
-  if (graph.edges.length === 0) return null;
-  return (
-    <section>
-      <h3>Edges</h3>
-      {graph.edges.map((e) => (
-        <div className="row" key={edgeId(e)} style={{ justifyContent: "space-between" }}>
-          <span className="mono">
-            {e.from} —[{e.eventType}]→ {e.to}
-          </span>
-          <button onClick={() => s.removeEdge(edgeId(e))}>×</button>
-        </div>
-      ))}
-    </section>
+      </section>
+    </>
   );
 }

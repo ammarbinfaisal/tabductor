@@ -2,6 +2,7 @@ import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { appRouter } from "../../../../server/router.js";
 import { db } from "../../../../server/db.js";
 import { metricsNow } from "../../../../server/metrics.js";
+import { schemaGenerator } from "../../../../server/schema-generator.js";
 import type { Context } from "../../../../server/trpc.js";
 
 /** The one HTTP surface: no REST duplication, no versioning (S2c). */
@@ -17,7 +18,12 @@ const handler = (req: Request): Promise<Response> =>
      */
     createContext: (): Context => {
       const metrics = metricsNow();
-      return { db: db(), clientKey: clientKeyOf(req), ...(metrics ? { metrics } : {}) };
+      return {
+        db: db(),
+        schemaGenerator: schemaGenerator(),
+        clientKey: clientKeyOf(req),
+        ...(metrics ? { metrics } : {}),
+      };
     },
   });
 

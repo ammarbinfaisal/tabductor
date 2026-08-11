@@ -1,9 +1,12 @@
 import { Ajv } from "ajv";
+import addFormatsModule from "ajv-formats";
+const addFormats = addFormatsModule.default ?? addFormatsModule;
 import { AppError, newId } from "@tabductor/core";
 import {
-  edges,
   eventDefs,
   schedules,
+  taskConsumes,
+  taskEmits,
   tasks,
   workflowVersions,
   workflows,
@@ -13,10 +16,18 @@ import {
 } from "@tabductor/db";
 import { eq, inArray } from "drizzle-orm";
 import { z } from "zod";
+import { promptHashOf, type SchemaGenerator, type SchemaGenInput } from "./schema-generator.js";
 
 /**
  * The workflow graph: one document, authored by the editor, validated here, and exploded
- * into the `tasks`/`edges`/`event_defs`/`schedules` rows the engine routes against.
+ * into the `tasks`/`event_defs`/`task_emits`/`task_consumes`/`schedules` rows the engine
+ * routes against.
+ *
+ * The document is event-centric: events are first-class entries describing a packet in
+ * plain language, tasks declare which types they consume (their triggers) and emit, and
+ * topology is *derived* by matching types — there are no authored edges. Nothing in the
+ * document is JSON Schema; packet schemas are compiled from the descriptions at publish
+ * time by the injected SchemaGenerator and gated deterministically with ajv.
  *
  * Publishing is append-only (§5): every save writes a *new* `workflow_versions` row with
  * fresh task rows and repoints `workflows.current_version_id`. Nothing is updated in place,
@@ -24,8 +35,19 @@ import { z } from "zod";
  * new one — which is the versioning behaviour S2a's dispatch already assumes.
  */
 
-/** A user-authored JSON Schema. Structurally an object here; ajv is what actually judges it. */
-const packetSchemaSchema = z.record(z.unknown());
+/** An event as the author declares it: a name, what the packet means, who may see it. */
+export const graphEventSchema = z.object({
+  type: z.string().min(1).max(200),
+  /** The prompt the schema compiler works from — required, because it *is* the schema. */
+  description: z.string().min(1).max(4000),
+  /**
+   * Share visibility (S2d, sharing.md §3.2). **This default is the control.** An event
+   * added in a later version arrives private because of it, so no `checkGraph` rule
+   * is needed and none should be added — a graph edit cannot silently widen a share
+   * when there is no path by which `true` survives an author not writing it.
+   */
+  public: z.boolean().default(false),
+});
 
 /**
  * Node kinds (§4). The column that will carry this (`tasks.kind`) arrives in S5a; until
@@ -58,58 +80,61 @@ export const graphTaskSchema = z.object({
   prompt: z.string().nullable().default(null),
   /** `limits_json`: run timeout, retry policy, and the StubExecutor script. */
   limits: z.record(z.unknown()).default({}),
-  emits: z
-    .array(
-      z.object({
-        type: z.string().min(1),
-        packetSchema: packetSchemaSchema.default({ type: "object" }),
-        /**
-         * Share visibility (S2d, sharing.md §3.2). **This default is the control.** A node
-         * added in a later version arrives private because of it, so no `checkGraph` rule
-         * is needed and none should be added — a graph edit cannot silently widen a share
-         * when there is no path by which `true` survives an author not writing it.
-         */
-        public: z.boolean().default(false),
-      }),
-    )
-    .default([]),
+  /** Event types this task may emit. The types' schemas live on the events, not here. */
+  emits: z.array(z.string().min(1)).default([]),
+  /** Event types that trigger this task — its subscriptions. Wiring is these lists. */
+  consumes: z.array(z.string().min(1)).default([]),
   schedule: graphScheduleSchema.nullable().default(null),
   /** Editor-only decoration, round-tripped through `graph_json` and ignored by the engine. */
   position: z.object({ x: z.number(), y: z.number() }).nullable().default(null),
 });
 
-export const graphEdgeSchema = z.object({
-  from: z.string().min(1),
-  eventType: z.string().min(1),
-  to: z.string().min(1),
-});
-
 export const graphSchema = z.object({
   tasks: z.array(graphTaskSchema).max(200),
-  edges: z.array(graphEdgeSchema).max(500).default([]),
+  events: z.array(graphEventSchema).max(500).default([]),
 });
 
 export type Graph = z.infer<typeof graphSchema>;
 export type GraphTask = z.infer<typeof graphTaskSchema>;
+export type GraphEvent = z.infer<typeof graphEventSchema>;
 
 export const GRAPH_INVALID = "graph_invalid";
+export const GRAPH_COMPILE_FAILED = "graph_compile_failed";
+
+/** One line of the publish-time compile report: what happened to each event's schema. */
+export type CompileEntry = {
+  type: string;
+  status: "generated" | "reused" | "failed";
+  error?: string;
+};
+export type CompileReport = { events: CompileEntry[] };
 
 const invalid = (message: string, details: Record<string, unknown>): AppError =>
   new AppError(GRAPH_INVALID, message, { details });
 
 /**
  * Everything that makes a graph unpublishable, checked before a single row is written and
- * reported with the node or edge at fault so the editor can mark it.
+ * reported with the node or event at fault so the editor can mark it.
  *
- * Deliberately absent: "the edge's event type must be one the source node declares". Events
- * reach a task from outside the graph too — a manual trigger, and in S2b a schedule fire —
- * so requiring a declaration would outlaw the entry edge of every workflow.
+ * Emits must reference declared events — an emit whose type has no entry would sail past
+ * publish and then fail every run at `validatePacket`. Consumes are deliberately allowed
+ * to reference undeclared types: system events (`run.failed`), manual triggers, and
+ * events injected from outside the graph are all legitimate subscriptions with no
+ * in-graph emitter, and demanding a declaration would force authors to describe packets
+ * this graph never produces. (The old edge model made the same call for entry edges.)
  */
 export function checkGraph(graph: Graph): void {
-  // A throwaway instance: ajv keeps compiled schemas by `$id`, and a long-lived one would
-  // reject the second publish of a schema that declares one as a duplicate registration.
-  const ajv = new Ajv({ allErrors: true, strict: false });
   const seen = new Set<string>();
+  const declared = new Set(graph.events.map((e) => e.type));
+
+  const types = new Set<string>();
+  for (const event of graph.events) {
+    if (types.has(event.type)) {
+      throw invalid(`event "${event.type}" is declared twice`, { eventType: event.type });
+    }
+    types.add(event.type);
+  }
+
   for (const task of graph.tasks) {
     if (seen.has(task.name)) throw invalid(`duplicate task name "${task.name}"`, { task: task.name });
     seen.add(task.name);
@@ -121,38 +146,25 @@ export function checkGraph(graph: Graph): void {
       });
     }
 
-    const types = new Set<string>();
-    for (const emit of task.emits) {
-      if (types.has(emit.type)) {
-        throw invalid(`task "${task.name}" declares "${emit.type}" twice`, {
+    for (const [label, list] of [
+      ["emits", task.emits],
+      ["consumes", task.consumes],
+    ] as const) {
+      const dupe = list.find((t, i) => list.indexOf(t) !== i);
+      if (dupe !== undefined) {
+        throw invalid(`task "${task.name}" declares "${dupe}" twice in ${label}`, {
           task: task.name,
-          eventType: emit.type,
+          eventType: dupe,
         });
-      }
-      types.add(emit.type);
-
-      // A packet schema that does not compile is a 400 now rather than a run failure later.
-      try {
-        ajv.compile(emit.packetSchema);
-      } catch (err) {
-        throw new AppError(
-          GRAPH_INVALID,
-          `task "${task.name}" declares an invalid packet schema for "${emit.type}": ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-          { cause: err, details: { task: task.name, eventType: emit.type } },
-        );
       }
     }
-  }
 
-  for (const edge of graph.edges) {
-    for (const end of [edge.from, edge.to]) {
-      if (!seen.has(end)) {
-        throw invalid(`edge ${edge.from} -[${edge.eventType}]-> ${edge.to} names unknown task "${end}"`, {
-          edge: `${edge.from}|${edge.eventType}|${edge.to}`,
-          task: end,
-        });
+    for (const type of task.emits) {
+      if (!declared.has(type)) {
+        throw invalid(
+          `task "${task.name}" emits "${type}" but no event with that type is declared`,
+          { task: task.name, eventType: type },
+        );
       }
     }
   }
@@ -162,6 +174,7 @@ export type PublishedVersion = {
   versionId: string;
   /** Task name → the id of its row *in this version*. */
   taskIds: Record<string, string>;
+  report: CompileReport;
 };
 
 export async function createWorkflow(
@@ -178,26 +191,147 @@ export async function createWorkflow(
   return id;
 }
 
+/** The generator context for one event: its description plus everyone touching it. */
+function genInputFor(graph: Graph, event: GraphEvent): SchemaGenInput {
+  const touching = (list: "emits" | "consumes") =>
+    graph.tasks
+      .filter((t) => t[list].includes(event.type))
+      .map((t) => ({ name: t.name, prompt: t.prompt }));
+  return {
+    eventType: event.type,
+    description: event.description,
+    emitters: touching("emits"),
+    consumers: touching("consumes"),
+  };
+}
+
+/** How many events compile concurrently on a publish; the rest queue behind them. */
+const COMPILE_CONCURRENCY = 4;
+
+type CompiledEvent = {
+  event: GraphEvent;
+  promptHash: string;
+  schema: Record<string, unknown>;
+  entry: CompileEntry;
+};
+
 /**
- * Validate, then write the whole version in one transaction — version row, task rows, their
- * declared events and schedules, the edges between them, and the pointer that makes it
- * current. Half a published graph would route events into a shape nobody authored.
+ * The publish-time schema compiler (graph-compilation-llm.md §4 P3, minimal v1).
+ *
+ * Per event: hash its generator context; a match against the previous version's stored
+ * hash carries that schema forward untouched (zero generator calls — the steady state of
+ * a publish that edits stubs or timeouts). Changed and new events go to the generator,
+ * whose output is only accepted if it compiles under ajv *strict* — the deterministic
+ * gate that makes LLM authorship safe. Failures don't stop the pass: every event gets a
+ * report entry, because the author fixing a graph wants all the bad news at once.
+ */
+async function compileEventSchemas(
+  graph: Graph,
+  previous: Map<string, { promptHash: string; schema: Record<string, unknown> }>,
+  generator: SchemaGenerator,
+): Promise<CompiledEvent[]> {
+  // Formats are part of the generator's allowlist (`uri`, `date-time`, …), so the gate
+  // must know them — an unknown format is a strict-mode failure, which is correct for
+  // formats *outside* the allowlist.
+  const ajv = addFormats(new Ajv({ allErrors: true, strict: true }));
+
+  const compiled: CompiledEvent[] = graph.events.map((event) => ({
+    event,
+    promptHash: promptHashOf(genInputFor(graph, event)),
+    schema: {},
+    entry: { type: event.type, status: "failed" },
+  }));
+
+  const pending: CompiledEvent[] = [];
+  for (const item of compiled) {
+    const prev = previous.get(item.event.type);
+    if (prev && prev.promptHash !== "" && prev.promptHash === item.promptHash) {
+      item.schema = prev.schema;
+      item.entry = { type: item.event.type, status: "reused" };
+    } else {
+      pending.push(item);
+    }
+  }
+
+  const queue = [...pending];
+  const worker = async (): Promise<void> => {
+    for (let item = queue.shift(); item; item = queue.shift()) {
+      const result = await generator.generate(genInputFor(graph, item.event));
+      if (!result.ok) {
+        item.entry = { type: item.event.type, status: "failed", error: result.error };
+        continue;
+      }
+      try {
+        ajv.compile(result.schema);
+      } catch (err) {
+        item.entry = {
+          type: item.event.type,
+          status: "failed",
+          error: `generated schema does not compile: ${err instanceof Error ? err.message : String(err)}`,
+        };
+        continue;
+      }
+      item.schema = result.schema;
+      item.entry = { type: item.event.type, status: "generated" };
+    }
+  };
+  await Promise.all(Array.from({ length: COMPILE_CONCURRENCY }, worker));
+
+  return compiled;
+}
+
+/**
+ * Validate, compile, then write the whole version in one transaction — version row, task
+ * rows, their emit/consume declarations, the event entities with their compiled schemas,
+ * schedules, and the pointer that makes it current. Half a published graph would route
+ * events into a shape nobody authored.
+ *
+ * Generation happens *before* the transaction: it is the slow, fallible part, and a
+ * failed compile must leave the workflow exactly as it was — current version unmoved, no
+ * rows written. The whole report rides out on the error so the editor can mark every
+ * failed event, not just the first.
  */
 export async function publishVersion(
   db: Db,
   input: { workflowId: string; graph: Graph },
+  deps: { schemaGenerator: SchemaGenerator },
 ): Promise<PublishedVersion> {
   const graph = graphSchema.parse(input.graph);
   checkGraph(graph);
 
-  return db.transaction(async (trx) => {
-    const [workflow] = await trx.select().from(workflows).where(eq(workflows.id, input.workflowId));
-    if (!workflow) {
-      throw new AppError("workflow_not_found", `no workflow "${input.workflowId}"`, {
-        details: { workflowId: input.workflowId },
+  const [workflow] = await db.select().from(workflows).where(eq(workflows.id, input.workflowId));
+  if (!workflow) {
+    throw new AppError("workflow_not_found", `no workflow "${input.workflowId}"`, {
+      details: { workflowId: input.workflowId },
+    });
+  }
+
+  const previous = new Map<string, { promptHash: string; schema: Record<string, unknown> }>();
+  if (workflow.currentVersionId) {
+    const rows = await db
+      .select()
+      .from(eventDefs)
+      .where(eq(eventDefs.workflowVersionId, workflow.currentVersionId));
+    for (const row of rows) {
+      previous.set(row.eventType, {
+        promptHash: row.promptHash,
+        schema: asRecord(row.packetSchemaJson),
       });
     }
+  }
 
+  const compiled = await compileEventSchemas(graph, previous, deps.schemaGenerator);
+  const report: CompileReport = { events: compiled.map((c) => c.entry) };
+  const failed = report.events.filter((e) => e.status === "failed");
+  if (failed.length > 0) {
+    throw new AppError(
+      GRAPH_COMPILE_FAILED,
+      `${failed.length} event schema(s) failed to compile`,
+      { details: { report } },
+    );
+  }
+
+  return db.transaction(async (trx) => {
     const versionId = newId("wfv");
     await trx.insert(workflowVersions).values({ id: versionId, workflowId: workflow.id, graphJson: graph });
 
@@ -214,14 +348,11 @@ export async function publishVersion(
         limitsJson: task.limits,
       });
 
-      for (const emit of task.emits) {
-        await trx.insert(eventDefs).values({
-          id: newId("evd"),
-          taskId: id,
-          eventType: emit.type,
-          packetSchemaJson: emit.packetSchema,
-          public: emit.public,
-        });
+      for (const type of task.emits) {
+        await trx.insert(taskEmits).values({ taskId: id, workflowVersionId: versionId, eventType: type });
+      }
+      for (const type of task.consumes) {
+        await trx.insert(taskConsumes).values({ taskId: id, workflowVersionId: versionId, eventType: type });
       }
 
       if (task.schedule) {
@@ -229,18 +360,20 @@ export async function publishVersion(
       }
     }
 
-    for (const edge of graph.edges) {
-      await trx.insert(edges).values({
-        id: newId("edge"),
+    for (const item of compiled) {
+      await trx.insert(eventDefs).values({
+        id: newId("evd"),
         workflowVersionId: versionId,
-        fromTaskId: taskIds[edge.from]!,
-        eventType: edge.eventType,
-        toTaskId: taskIds[edge.to]!,
+        eventType: item.event.type,
+        description: item.event.description,
+        packetSchemaJson: item.schema,
+        promptHash: item.promptHash,
+        public: item.event.public,
       });
     }
 
     await trx.update(workflows).set({ currentVersionId: versionId }).where(eq(workflows.id, workflow.id));
-    return { versionId, taskIds };
+    return { versionId, taskIds, report };
   });
 }
 
@@ -251,6 +384,10 @@ export async function publishVersion(
  * (retry counts, a stub script, a timeout), and forcing a new version for each would bury
  * the structural history the version list exists to show. Anything that changes the *shape*
  * of the graph goes through `publishVersion`.
+ *
+ * Note the schema-compiler consequence: a task's `prompt` is generator *context*, so
+ * editing it here changes what the next publish will hash — the connected events
+ * recompile then, not now. Schemas only ever change at publish.
  */
 export async function updateTask(
   db: Db,
@@ -272,10 +409,15 @@ export async function updateTask(
 /**
  * The inverse: rows back into the document the editor edits.
  *
- * Rebuilt from the rows rather than served straight from `graph_json`, because the rows are
- * what the engine actually routes on and `task.update` writes to them. `graph_json` is
- * consulted for one thing only — node positions, which no row carries and losing which
- * would reshuffle the canvas on every reload.
+ * Rebuilt from the rows rather than served straight from `graph_json`, because the rows
+ * are what the engine actually routes on and `task.update` writes to them. `graph_json`
+ * is consulted for one thing only — node positions and kinds, which no row carries and
+ * losing which would reshuffle the canvas on every reload. (Versions published under the
+ * old edge-shaped document fail that parse and degrade to defaults; their routing rows
+ * still read fine.)
+ *
+ * Event descriptions and visibility come back; the compiled schemas deliberately do not —
+ * they are not part of the authored document. `readEventSchemas` serves them read-only.
  */
 export async function readGraph(db: Db, versionId: string): Promise<Graph> {
   const [version] = await db.select().from(workflowVersions).where(eq(workflowVersions.id, versionId));
@@ -286,17 +428,19 @@ export async function readGraph(db: Db, versionId: string): Promise<Graph> {
   }
 
   const taskRows = await db.select().from(tasks).where(eq(tasks.workflowVersionId, versionId));
-  const edgeRows = await db.select().from(edges).where(eq(edges.workflowVersionId, versionId));
-  const nameOf = new Map(taskRows.map((t) => [t.id, t.name]));
   const stored = graphSchema.safeParse(version.graphJson);
   const decoration = new Map(
     (stored.success ? stored.data.tasks : []).map((t) => [t.name, { kind: t.kind, position: t.position }]),
   );
 
+  const emitRows = await db.select().from(taskEmits).where(eq(taskEmits.workflowVersionId, versionId));
+  const consumeRows = await db
+    .select()
+    .from(taskConsumes)
+    .where(eq(taskConsumes.workflowVersionId, versionId));
+  const eventRows = await db.select().from(eventDefs).where(eq(eventDefs.workflowVersionId, versionId));
+
   const taskIds = taskRows.map((t) => t.id);
-  const defRows = taskIds.length
-    ? await db.select().from(eventDefs).where(inArray(eventDefs.taskId, taskIds))
-    : [];
   const scheduleRows = taskIds.length
     ? await db.select().from(schedules).where(inArray(schedules.taskId, taskIds))
     : [];
@@ -311,13 +455,14 @@ export async function readGraph(db: Db, versionId: string): Promise<Graph> {
         mode: row.mode,
         prompt: row.prompt,
         limits: asRecord(row.limitsJson),
-        emits: defRows
-          .filter((d) => d.taskId === row.id)
-          .map((d) => ({
-            type: d.eventType,
-            packetSchema: asRecord(d.packetSchemaJson),
-            public: d.public,
-          })),
+        emits: emitRows
+          .filter((e) => e.taskId === row.id)
+          .map((e) => e.eventType)
+          .sort(),
+        consumes: consumeRows
+          .filter((c) => c.taskId === row.id)
+          .map((c) => c.eventType)
+          .sort(),
         schedule: schedule
           ? {
               cron: schedule.cron,
@@ -331,12 +476,23 @@ export async function readGraph(db: Db, versionId: string): Promise<Graph> {
         position: decoration.get(row.name)?.position ?? null,
       };
     }),
-    edges: edgeRows.flatMap((e) => {
-      const from = e.fromTaskId && nameOf.get(e.fromTaskId);
-      const to = nameOf.get(e.toTaskId);
-      return from && to ? [{ from, eventType: e.eventType, to }] : [];
-    }),
+    events: eventRows
+      .map((e): GraphEvent => ({ type: e.eventType, description: e.description, public: e.public }))
+      .sort((a, b) => a.type.localeCompare(b.type)),
   };
+}
+
+/**
+ * The compiled schemas for a version, keyed by type — read-only companion to `readGraph`
+ * for the editor's schema display. Never part of the document; the client cannot send
+ * one back.
+ */
+export async function readEventSchemas(
+  db: Db,
+  versionId: string,
+): Promise<Record<string, Record<string, unknown>>> {
+  const rows = await db.select().from(eventDefs).where(eq(eventDefs.workflowVersionId, versionId));
+  return Object.fromEntries(rows.map((r) => [r.eventType, asRecord(r.packetSchemaJson)]));
 }
 
 /** jsonb columns are `unknown` by construction; anything not an object reads as empty. */

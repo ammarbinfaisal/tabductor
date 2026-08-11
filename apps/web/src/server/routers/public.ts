@@ -46,9 +46,11 @@ export const publicRouter = router({
     if (!workflow) throw gone();
     return {
       name: workflow.name,
+      /** The loop-budget cap — already viewer-visible via the map's LOOP annotation. */
+      maxHops: workflow.maxHops,
       graph: workflow.currentVersionId
         ? await publicGraph(ctx.db, { versionId: workflow.currentVersionId })
-        : { tasks: [], edges: [] },
+        : { tasks: [], events: [], edges: [] },
     };
   }),
 

@@ -91,36 +91,51 @@ export function SharePanel({ workflowId }: { workflowId: string }) {
       <section>
         <h3>What a viewer can read</h3>
         <p className="muted">
-          The graph, its schedules, run statuses and timings, and the event timeline are visible to
-          anyone holding a link. <strong>Packets are not</strong>, unless the emitting node marks that
-          event type as shared. Run error messages are never shared — a viewer sees a category such as{" "}
-          <code>timeout</code> instead. Marking an event shared is a change to the graph, so it takes
-          effect when you publish a version.
+          Every link always shows: the workflow name, the graph shape — node names, kinds, modes,
+          and edges — schedules, run statuses and timings, and the event timeline. Packet contents
+          appear only for events marked public. Run error messages are never shared — a viewer sees
+          a bounded class such as <code>timeout</code> instead. Change what&apos;s public in the
+          editor; it takes effect when you publish.
         </p>
         {preview === null ? (
           <p className="muted">Loading…</p>
         ) : (
           <>
-            <p className="mono muted">nodes: {preview.nodes.join(", ") || "none"}</p>
             {preview.publicEvents.length === 0 ? (
-              <p className="muted">No event type is shared, so no packet is readable.</p>
+              <p className="muted">No event is public, so no packet is readable.</p>
             ) : (
-              preview.publicEvents.map((e) => (
-                <div className="emit" key={`${e.task}|${e.type}`}>
-                  <div className="row" style={{ justifyContent: "space-between" }}>
-                    <code>{e.type}</code>
-                    <span className="muted">from {e.task}</span>
+              <div className="ruled">
+                {preview.publicEvents.map((e) => (
+                  <div key={e.type} className="row row--between">
+                    <span className="row">
+                      <span className="chip chip--event">◈ {e.type}</span>
+                      <span className="mono muted" style={{ fontSize: "var(--text-xs)" }}>
+                        from {e.emitters.join(", ") || "no emitter yet"}
+                      </span>
+                    </span>
+                    <span className="mono muted" style={{ fontSize: "var(--text-xs)" }}>
+                      {e.fields.length > 0 ? e.fields.join(" · ") : "any object"}
+                    </span>
                   </div>
-                  <div className="mono muted">
-                    {e.fields.length > 0 ? `fields: ${e.fields.join(", ")}` : "schema declares no fields"}
-                  </div>
-                </div>
-              ))
+                ))}
+              </div>
             )}
             {preview.privateEvents.length > 0 ? (
-              <p className="mono muted">
-                withheld: {preview.privateEvents.map((e) => e.type).join(", ")}
-              </p>
+              <div className="ruled">
+                {preview.privateEvents.map((e) => (
+                  <div key={e.type} className="row row--between">
+                    <span className="row">
+                      <span className="chip chip--event">◈ {e.type}</span>
+                      <span className="mono muted" style={{ fontSize: "var(--text-xs)" }}>
+                        from {e.emitters.join(", ") || "no emitter yet"}
+                      </span>
+                    </span>
+                    <span className="muted" style={{ fontSize: "var(--text-sm)" }}>
+                      packet never shown
+                    </span>
+                  </div>
+                ))}
+              </div>
             ) : null}
           </>
         )}

@@ -53,14 +53,15 @@ export const shareRouter = router({
 
 export type VisibilityPreview = {
   nodes: string[];
-  publicEvents: Array<{ task: string; type: string; fields: string[] }>;
-  privateEvents: Array<{ task: string; type: string }>;
+  publicEvents: Array<{ type: string; emitters: string[]; fields: string[] }>;
+  privateEvents: Array<{ type: string; emitters: string[] }>;
 };
 
 /**
  * Built from the same `publicGraph` read model the public view uses, so the preview cannot
- * drift from the thing it previews. `fields` comes from the declared packet schema, which
- * is exactly what a viewer gets to read.
+ * drift from the thing it previews. Visibility is a property of the *event*, so the
+ * preview lists events with their emitters rather than emitters with their events; `fields`
+ * comes from the compiled packet schema, which is exactly what a viewer gets to read.
  */
 async function visibilityPreview(
   ctx: { db: Parameters<typeof getWorkflow>[0] },
@@ -71,16 +72,16 @@ async function visibilityPreview(
   if (!workflow.currentVersionId) return { nodes: [], publicEvents: [], privateEvents: [] };
 
   const graph = await publicGraph(ctx.db, { versionId: workflow.currentVersionId });
+  const emittersOf = (type: string): string[] =>
+    graph.tasks.filter((t) => t.emits.includes(type)).map((t) => t.name);
   return {
     nodes: graph.tasks.map((t) => t.name),
-    publicEvents: graph.tasks.flatMap((t) =>
-      t.emits
-        .filter((e) => e.public)
-        .map((e) => ({ task: t.name, type: e.type, fields: schemaFields(e.packetSchema) })),
-    ),
-    privateEvents: graph.tasks.flatMap((t) =>
-      t.emits.filter((e) => !e.public).map((e) => ({ task: t.name, type: e.type })),
-    ),
+    publicEvents: graph.events
+      .filter((e) => e.public)
+      .map((e) => ({ type: e.type, emitters: emittersOf(e.type), fields: schemaFields(e.packetSchema) })),
+    privateEvents: graph.events
+      .filter((e) => !e.public)
+      .map((e) => ({ type: e.type, emitters: emittersOf(e.type) })),
   };
 }
 

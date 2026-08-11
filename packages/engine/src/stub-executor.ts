@@ -1,15 +1,19 @@
 import { z } from "zod";
 import type { RunHandle, RunResult, TaskExecutor } from "./executor.js";
+import { sampleFromSchema } from "./schema-sample.js";
 
 /**
  * The permanent graph-testing executor (impl-phases Phase 2): it makes the engine's
  * correctness testable without a browser or an LLM, and stays useful forever for exercising
  * graph shapes.
  *
- * Behavior is scripted in `tasks.limits_json.stub`. That is author-supplied config, not a
- * user-authored packet schema, so it is parsed with zod (ajv is reserved for packet
- * schemas). An absent or malformed `stub` block means "do nothing and succeed" — a task
- * with no script is a no-op node, not an error.
+ * Behavior can be scripted in `tasks.limits_json.stub`. That is author-supplied config,
+ * not a user-authored packet schema, so it is parsed with zod (ajv is reserved for packet
+ * schemas). An absent or malformed `stub` block means "emit one valid sample of every
+ * event this task declares, then succeed" — derived from the compiled schemas, so a graph
+ * is exercisable the moment it publishes, with nothing scripted by hand. A present script
+ * fully specifies behavior, including "emit nothing"; a task with neither script nor
+ * declared emits is a no-op node, not an error.
  */
 
 const stubSchema = z.object({
@@ -50,7 +54,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 export const StubExecutor: TaskExecutor = {
   async execute(handle: RunHandle): Promise<RunResult> {
     const stub = parseStub(handle.task.limitsJson);
-    if (!stub) return { ok: true };
+    if (!stub) return emitDerived(handle);
 
     // `fail_times` is checked *before* the emits, not after `fail` is: an attempt that is
     // scripted to fail should look like a task that died before doing its work, so the
@@ -76,3 +80,19 @@ export const StubExecutor: TaskExecutor = {
     return { ok: true };
   },
 };
+
+/**
+ * The scriptless path: one valid sample per declared event, synthesized from its compiled
+ * schema. Emit failures end the run exactly as scripted emits do — a schema the sampler
+ * cannot satisfy should be loud, not skipped.
+ */
+async function emitDerived(handle: RunHandle): Promise<RunResult> {
+  for (const { type, schema } of await handle.declaredEmits()) {
+    try {
+      await handle.emit(type, sampleFromSchema(schema));
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+  return { ok: true };
+}

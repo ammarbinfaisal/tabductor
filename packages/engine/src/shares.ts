@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from "node:crypto";
 import { AppError, newId } from "@tabductor/core";
-import { eventDefs, tasks, workflows, workflowShares, type Db, type WorkflowShareRow } from "@tabductor/db";
+import { eventDefs, workflows, workflowShares, type Db, type WorkflowShareRow } from "@tabductor/db";
 import { and, eq, isNull } from "drizzle-orm";
 
 /**
@@ -137,8 +137,7 @@ export async function publicEventTypes(db: Db, workflowId: string): Promise<Set<
   const rows = await db
     .select({ eventType: eventDefs.eventType })
     .from(eventDefs)
-    .innerJoin(tasks, eq(tasks.id, eventDefs.taskId))
-    .where(and(eq(tasks.workflowVersionId, workflow.currentVersionId), eq(eventDefs.public, true)));
+    .where(and(eq(eventDefs.workflowVersionId, workflow.currentVersionId), eq(eventDefs.public, true)));
   return new Set(rows.map((r) => r.eventType));
 }
 

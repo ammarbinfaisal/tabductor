@@ -1,8 +1,18 @@
 import { publish, type Dispatcher } from "@tabductor/bus";
 import { createLogger, type Logger } from "@tabductor/core";
-import { events, runs, tasks, type Db, type EventRow, type RunRow, type TaskRow } from "@tabductor/db";
+import {
+  eventDefs,
+  events,
+  runs,
+  taskEmits,
+  tasks,
+  type Db,
+  type EventRow,
+  type RunRow,
+  type TaskRow,
+} from "@tabductor/db";
 import { context, inSpan, trace, type Metrics, type Tracer } from "@tabductor/telemetry";
-import { eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { dispatchEvent } from "./dispatch.js";
 import type { ExecutorRegistry, RunHandle, RunResult } from "./executor.js";
 import { validatePacket } from "./packet-schema.js";
@@ -213,6 +223,7 @@ export function createEngine(deps: EngineDeps): Engine {
       task: ctx.task,
       trigger: ctx.trigger,
       emit: (type, packet) => emitFromRun(db, ctx, type, packet),
+      declaredEmits: () => declaredEmitsOf(db, ctx.task),
     };
     try {
       return await executor.execute(handle);
@@ -330,6 +341,35 @@ async function emitFromRun(
       packet,
     }),
   );
+}
+
+/**
+ * The task's declared emits joined to their events' compiled schemas — what a scriptless
+ * stub synthesizes packets from. Queried lazily because most executors never ask.
+ */
+async function declaredEmitsOf(
+  db: Db,
+  task: TaskRow,
+): Promise<Array<{ type: string; schema: Record<string, unknown> }>> {
+  const rows = await db
+    .select({ type: taskEmits.eventType, schema: eventDefs.packetSchemaJson })
+    .from(taskEmits)
+    .innerJoin(
+      eventDefs,
+      and(
+        eq(eventDefs.workflowVersionId, taskEmits.workflowVersionId),
+        eq(eventDefs.eventType, taskEmits.eventType),
+      ),
+    )
+    .where(eq(taskEmits.taskId, task.id))
+    .orderBy(asc(taskEmits.eventType));
+  return rows.map((r) => ({
+    type: r.type,
+    schema:
+      typeof r.schema === "object" && r.schema !== null && !Array.isArray(r.schema)
+        ? (r.schema as Record<string, unknown>)
+        : {},
+  }));
 }
 
 /** Run timeout lives in `limits_json.run_timeout_ms`; anything non-numeric means no limit. */

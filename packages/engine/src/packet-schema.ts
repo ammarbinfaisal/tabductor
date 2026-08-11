@@ -1,16 +1,26 @@
 import { Ajv, type ValidateFunction } from "ajv";
-import { eventDefs, type Db, type EventDefRow } from "@tabductor/db";
+import addFormatsModule from "ajv-formats";
+const addFormats = addFormatsModule.default ?? addFormatsModule;
+import { eventDefs, taskEmits, tasks, type Db, type EventDefRow } from "@tabductor/db";
 import { and, eq } from "drizzle-orm";
 
 /**
- * Packet schemas are *user-authored JSON Schema* (§4), which is why this is the one place
- * ajv is used instead of zod — zod is for boundaries whose shape we write ourselves.
+ * Packet schemas are compiled from the author's event descriptions at publish time
+ * (graph.ts), which is why this is the one place ajv is used at runtime instead of zod —
+ * zod is for boundaries whose shape we write ourselves. The runtime instance stays
+ * non-strict: the *publish* gate is where strictness lives, and rows backfilled from the
+ * pre-entity model never passed it.
+ *
+ * The schema belongs to the event, scoped to the emitting task's workflow version — a
+ * run pinned to v3 validates against v3's schema even while v4 routes new events, the
+ * same pinning rule runs follow everywhere else. The task's own `task_emits` row is the
+ * emit gate: declaring the type is what licenses producing it.
  *
  * Compiling a schema is the expensive part, so validators are cached by event_def id and
- * only recompiled when the row's schema actually changes (a graph edit rewrites the row).
+ * only recompiled when the row's schema actually changes (a publish writes new rows).
  */
 
-const ajv = new Ajv({ allErrors: true, strict: false });
+const ajv = addFormats(new Ajv({ allErrors: true, strict: false }));
 
 type Cached = { schema: string; validate: ValidateFunction };
 
@@ -18,22 +28,31 @@ const cache = new Map<string, Cached>();
 
 export type PacketCheck = { ok: true } | { ok: false; error: string };
 
-/** No declared event_def = nothing to validate against; the emit is a graph authoring error. */
 export async function validatePacket(
   db: Db,
   taskId: string,
   eventType: string,
   packet: unknown,
 ): Promise<PacketCheck> {
-  const [def] = await db
-    .select()
-    .from(eventDefs)
-    .where(and(eq(eventDefs.taskId, taskId), eq(eventDefs.eventType, eventType)));
+  const [row] = await db
+    .select({ event: eventDefs, declared: taskEmits.taskId })
+    .from(tasks)
+    .leftJoin(
+      eventDefs,
+      and(eq(eventDefs.workflowVersionId, tasks.workflowVersionId), eq(eventDefs.eventType, eventType)),
+    )
+    .leftJoin(taskEmits, and(eq(taskEmits.taskId, tasks.id), eq(taskEmits.eventType, eventType)))
+    .where(eq(tasks.id, taskId));
 
-  if (!def) return { ok: false, error: `task declares no event_def for "${eventType}"` };
+  if (!row || !row.event) {
+    return { ok: false, error: `no event "${eventType}" is declared in this workflow version` };
+  }
+  if (row.declared === null) {
+    return { ok: false, error: `task does not declare emitting "${eventType}"` };
+  }
 
-  const validate = validatorFor(def);
-  if (!validate) return { ok: false, error: `event_def "${eventType}" has a malformed packet schema` };
+  const validate = validatorFor(row.event);
+  if (!validate) return { ok: false, error: `event "${eventType}" has a malformed packet schema` };
   if (validate(packet)) return { ok: true };
   return { ok: false, error: `packet failed schema for "${eventType}": ${ajv.errorsText(validate.errors)}` };
 }

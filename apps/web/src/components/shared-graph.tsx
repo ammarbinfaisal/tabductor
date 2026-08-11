@@ -1,84 +1,107 @@
 "use client";
 
-import { Background, Controls, ReactFlow } from "@xyflow/react";
-import "@xyflow/react/dist/style.css";
 import type { PublicGraph } from "@tabductor/engine";
-import { toFlowEdges, toFlowNodes } from "../lib/graph-flow.js";
 import { NODE_KINDS } from "../lib/node-kinds.js";
+import { DerivedMap } from "./derived-map.js";
+import { EventChip, ScheduleChip, VisibilityStamp } from "./primitives.js";
 
 /**
- * The graph as a share viewer sees it (U0.5).
- *
- * The same mapping the editor uses (`lib/graph-flow`), with every interaction turned off —
- * not a second renderer that happens to look similar. There is no store behind this and no
- * mutation reachable from it: the component takes a document and draws it.
+ * The graph as a share viewer sees it (U0.5/U1): the same derived map the editor renders —
+ * not a second renderer that happens to look similar — plus the declarations, read-only.
+ * There is no store behind this and no mutation reachable from it: the component takes a
+ * document and draws it.
  */
-export function SharedGraph({ name, graph }: { name: string; graph: PublicGraph }) {
+export function SharedGraph({
+  name,
+  graph,
+  maxHops,
+}: {
+  name: string;
+  graph: PublicGraph;
+  maxHops: number;
+}) {
   return (
     <>
-      <div className="row" style={{ justifyContent: "space-between" }}>
+      <div className="row row--between">
         <h1>{name}</h1>
-        <span className="muted">read-only shared view</span>
+        <span className="section-label">read-only shared view</span>
       </div>
 
-      <div className="editor">
-        <div className="canvas">
-          <ReactFlow
-            nodes={toFlowNodes(graph.tasks)}
-            edges={toFlowEdges(graph.edges)}
-            nodesDraggable={false}
-            nodesConnectable={false}
-            elementsSelectable={false}
-            fitView
-            proOptions={{ hideAttribution: true }}
-          >
-            <Background />
-            <Controls showInteractive={false} />
-          </ReactFlow>
-        </div>
+      <section className="map-region">
+        <DerivedMap
+          tasks={graph.tasks}
+          kinds={Object.fromEntries(graph.tasks.map((t) => [t.name, t.kind]))}
+          maxHops={maxHops}
+        />
+      </section>
 
-        <aside className="side">
-          <section>
-            <h3>Nodes</h3>
+      <div className="editor-panels">
+        <section className="panel-region">
+          <span className="section-label">Events</span>
+          <div className="ruled">
+            {graph.events.map((event) => (
+              <div key={event.type} className="entity-card entity-card--event">
+                <div className="row row--between">
+                  <span className="mono" style={{ color: "var(--event-text)", fontWeight: 500 }}>
+                    ◈ {event.type}
+                  </span>
+                  <VisibilityStamp isPublic={event.public} />
+                </div>
+                {event.packetSchema ? (
+                  <span className="mono muted" style={{ fontSize: "var(--text-xs)" }}>
+                    fields:{" "}
+                    {Object.keys((event.packetSchema.properties as object) ?? {}).join(" · ") || "any"}
+                  </span>
+                ) : (
+                  <span className="muted" style={{ fontSize: "var(--text-sm)" }}>
+                    Packet withheld by the owner.
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="panel-region">
+          <span className="section-label">Nodes</span>
+          <div className="ruled">
             {graph.tasks.map((task) => (
-              <div key={task.name} className="emit">
-                <div className="row" style={{ justifyContent: "space-between" }}>
-                  <strong>{task.name}</strong>
-                  <span className="muted">
+              <div key={task.name} className="entity-card entity-card--node">
+                <div className="row row--between">
+                  <span className="row">
+                    <span className="badge--node">{task.kind}</span>
+                    <span className="mono" style={{ fontWeight: 500 }}>
+                      {task.name}
+                    </span>
+                  </span>
+                  <span className="section-label">
                     {NODE_KINDS[task.kind].label} · {task.mode}
                   </span>
                 </div>
                 {task.schedule ? (
-                  <div className="mono muted">
-                    {task.schedule.cron} {task.schedule.tz}
-                    {task.schedule.enabled ? "" : " · disabled"}
-                  </div>
+                  <span className="row">
+                    <ScheduleChip cron={task.schedule.cron} />
+                    <span className="section-label">
+                      {task.schedule.tz}
+                      {task.schedule.enabled ? "" : " · disabled"}
+                    </span>
+                  </span>
                 ) : null}
-                {task.emits.length === 0 ? (
-                  <div className="muted">emits nothing</div>
-                ) : (
-                  task.emits.map((emit) => (
-                    <div key={emit.type} className="row" style={{ justifyContent: "space-between" }}>
-                      <code>{emit.type}</code>
-                      <span className="muted">{emit.public ? "shared" : "packet not shared"}</span>
-                    </div>
-                  ))
-                )}
+                <div className="chip-row">
+                  {task.consumes.map((t) => (
+                    <EventChip key={`c-${t}`} type={t} />
+                  ))}
+                  {task.consumes.length > 0 && task.emits.length > 0 ? (
+                    <span className="muted">→</span>
+                  ) : null}
+                  {task.emits.map((t) => (
+                    <EventChip key={`e-${t}`} type={t} />
+                  ))}
+                </div>
               </div>
             ))}
-          </section>
-
-          {graph.edges.length > 0 ? (
-            <section>
-              <h3>Edges</h3>
-              {graph.edges.map((e) => (
-                <div className="mono" key={`${e.from}|${e.eventType}|${e.to}`}>
-                  {e.from} —[{e.eventType}]→ {e.to}
-                </div>
-              ))}
-            </section>
-          ) : null}
-        </aside>
+          </div>
+        </section>
       </div>
     </>
   );

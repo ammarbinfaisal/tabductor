@@ -1,6 +1,7 @@
 "use client";
 
 import { api, type RouterOutputs } from "../lib/api.js";
+import { VisibilityStamp } from "./primitives.js";
 import { createPagedStore, pagedStoreFor, type PagedStore } from "../lib/paged-store.js";
 import { usePolling, useStoreBridge } from "../lib/store.js";
 
@@ -104,7 +105,7 @@ export function EventFeed({ source, initialKey }: { source: EventsSource; initia
         </div>
       </div>
 
-      {state.error ? <div className="banner banner-error">{state.error}</div> : null}
+      {state.error ? <div className="banner banner--error">The event feed didn&apos;t load. {state.error}</div> : null}
       {state.selected ? (
         <Lineage
           detail={state.selected}
@@ -114,7 +115,7 @@ export function EventFeed({ source, initialKey }: { source: EventsSource; initia
         />
       ) : null}
 
-      <table>
+      <table className="ledger">
         <thead>
           <tr>
             <th>Type</th>
@@ -127,9 +128,9 @@ export function EventFeed({ source, initialKey }: { source: EventsSource; initia
           {state.items.map((event) => (
             <tr key={event.key} onClick={() => open(event.key)} style={{ cursor: "pointer" }}>
               <td>
-                <code>{event.type}</code>
+                <span className="chip chip--event">◈ {event.type}</span>
               </td>
-              <td>{event.sourceName ?? <span className="muted">system</span>}</td>
+              <td style={{ color: "var(--node-text)" }}>{event.sourceName ?? <span className="muted">system</span>}</td>
               <td className="mono muted">{event.occurredAt.toLocaleTimeString()}</td>
               <td className="mono muted packet">
                 {event.packetShared ? JSON.stringify(event.packet) : <NotShared />}
@@ -139,15 +140,25 @@ export function EventFeed({ source, initialKey }: { source: EventsSource; initia
         </tbody>
       </table>
 
-      {state.items.length === 0 ? <p className="muted">No events yet.</p> : null}
-      {state.nextCursor ? <button onClick={() => store.more()}>Load more</button> : null}
+      {state.items.length === 0 ? (
+        <p className="muted">
+          No events yet. Packets land here when a node runs — Trigger now in the editor is the
+          fastest way to see one.
+        </p>
+      ) : null}
+      {state.nextCursor ? <button onClick={() => store.more()}>Older</button> : null}
     </>
   );
 }
 
 /** Not `{}` — an empty object reads as "the packet was empty", which is a different claim. */
 function NotShared() {
-  return <em className="muted">packet not shared</em>;
+  return (
+    <span className="row" style={{ gap: "var(--space-2)" }}>
+      <VisibilityStamp isPublic={false} />
+      <span className="muted">Packet withheld by the owner.</span>
+    </span>
+  );
 }
 
 function Lineage({
@@ -162,11 +173,11 @@ function Lineage({
   onClose: () => void;
 }) {
   return (
-    <div className="panel" style={{ marginBottom: 14 }}>
+    <div className="compile-report" style={{ marginBottom: 14 }}>
       <div className="row" style={{ justifyContent: "space-between" }}>
-        <h2 style={{ margin: 0 }}>
-          <code>{detail.event.type}</code>
-        </h2>
+        <span className="mono" style={{ color: "var(--event-text)", fontWeight: 600, fontSize: "var(--text-lg)" }}>
+          ◈ {detail.event.type}
+        </span>
         <button onClick={onClose}>Close</button>
       </div>
 
@@ -194,7 +205,10 @@ function Lineage({
           triggered{" "}
           {detail.triggered.map((r) => (
             <span key={r.key}>
-              <a href={runsHref}>{r.taskName}</a> <span className={`status status-${r.status}`}>{r.status}</span>{" "}
+              <a href={runsHref}>{r.taskName}</a>{" "}
+              <span className="stamp" style={{ color: `var(--status-${r.status.replace("_", "-")})` }}>
+                {r.status.replace("_", " ").toUpperCase()}
+              </span>{" "}
             </span>
           ))}
         </p>

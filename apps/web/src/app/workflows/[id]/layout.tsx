@@ -11,14 +11,11 @@ export default async function WorkflowLayout({
   const { id } = await params;
   return (
     <>
-      <nav className="tabs">
-        <Link href={`/workflows/${id}`}>graph</Link>
-        <Link href={`/workflows/${id}/runs`}>runs</Link>
-        <Link href={`/workflows/${id}/events`}>events</Link>
-        <Link href={`/workflows/${id}/share`}>sharing</Link>
-        <Link href="/workflows" className="muted">
-          all workflows
-        </Link>
+      <nav className="tabbar">
+        <Link href={`/workflows/${id}`}>Editor</Link>
+        <Link href={`/workflows/${id}/runs`}>Runs</Link>
+        <Link href={`/workflows/${id}/events`}>Events</Link>
+        <Link href={`/workflows/${id}/share`}>Share</Link>
       </nav>
       {children}
     </>

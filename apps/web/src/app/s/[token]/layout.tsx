@@ -33,11 +33,13 @@ export default async function ShareLayout({
   const at = (path: string): string => `/s/${encodeURIComponent(token)}${path}`;
   return (
     <>
-      <nav className="tabs">
-        <Link href={at("")}>graph</Link>
-        <Link href={at("/runs")}>runs</Link>
-        <Link href={at("/events")}>events</Link>
-        <span className="muted">{shared.name} · shared, read-only</span>
+      <nav className="tabbar">
+        <Link href={at("")}>Overview</Link>
+        <Link href={at("/runs")}>Runs</Link>
+        <Link href={at("/events")}>Events</Link>
+        <span className="section-label" style={{ marginLeft: "auto", alignSelf: "center" }}>
+          {shared.name} · shared, read-only
+        </span>
       </nav>
       {children}
     </>

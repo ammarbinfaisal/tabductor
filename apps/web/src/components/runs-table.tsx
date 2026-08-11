@@ -2,6 +2,7 @@
 
 import type { RunStatus } from "@tabductor/engine";
 import Link from "next/link";
+import { Stamp } from "./primitives.js";
 import { api, type RouterOutputs } from "../lib/api.js";
 import { createPagedStore, pagedStoreFor, type PagedStore } from "../lib/paged-store.js";
 import { usePolling, useStoreBridge } from "../lib/store.js";
@@ -105,9 +106,9 @@ export function RunsTable({ source }: { source: RunsSource }) {
         </div>
       </div>
 
-      {state.error ? <div className="banner banner-error">{state.error}</div> : null}
+      {state.error ? <div className="banner banner--error">The runs list didn&apos;t load. {state.error}</div> : null}
 
-      <table>
+      <table className="ledger">
         <thead>
           <tr>
             <th>Task</th>
@@ -128,7 +129,7 @@ export function RunsTable({ source }: { source: RunsSource }) {
                 <div className="mono muted">{run.key.slice(0, 12)}</div>
               </td>
               <td>
-                <span className={`status status-${run.status}`}>{run.status}</span>
+                <Stamp kind={run.status} />
               </td>
               <td>{run.attempt}</td>
               <td className="mono muted">{run.startedAt?.toLocaleTimeString() ?? "—"}</td>
@@ -145,7 +146,7 @@ export function RunsTable({ source }: { source: RunsSource }) {
               </td>
               <td>
                 {source.cancel && run.cancellable ? (
-                  <button onClick={() => void cancel(run.key)}>Cancel</button>
+                  <button className="btn--destructive" onClick={() => void cancel(run.key)}>Cancel</button>
                 ) : null}
               </td>
             </tr>
@@ -154,7 +155,7 @@ export function RunsTable({ source }: { source: RunsSource }) {
       </table>
 
       {state.items.length === 0 ? <p className="muted">{source.emptyHint}</p> : null}
-      {state.nextCursor ? <button onClick={() => store.more()}>Load more</button> : null}
+      {state.nextCursor ? <button onClick={() => store.more()}>Older</button> : null}
     </>
   );
 }
@@ -179,7 +180,7 @@ export function WorkflowRuns({ workflowId }: { workflowId: string }) {
     <RunsTable
       source={{
         scope: `workflow:${workflowId}`,
-        emptyHint: "No runs yet. Trigger a node from the graph.",
+        emptyHint: "No runs yet. Publish, wait for a schedule, or use Trigger now in the editor.",
         async load({ status, cursor }) {
           const page = await api.run.list.query({
             workflowId,
@@ -220,7 +221,7 @@ export function SharedRuns({ token }: { token: string }) {
     <RunsTable
       source={{
         scope: `share:${token}`,
-        emptyHint: "This workflow has not run yet.",
+        emptyHint: "Nothing yet — this workflow hasn't run.",
         async load({ cursor }) {
           const page = await api.public.runs.query({ token, cursor, limit: 25 });
           return { nextCursor: page.nextCursor, items: page.items.map(row) };

@@ -23,12 +23,18 @@ export type RunHandle = {
   /** `null` for a run with no trigger (a schedule fire in S2b, or a manual start). */
   trigger: EventRow | null;
   /**
-   * Validates `packet` against the task's declared `event_defs` schema and, if it passes,
-   * publishes through the outbox in one transaction. Rejects on a schema violation — the
-   * executor is expected to let that failure end the run (§4: "a packet that fails
-   * validation should fail the emit rather than silently propagating malformed data").
+   * Validates `packet` against the event's compiled schema for this task's workflow
+   * version and, if it passes, publishes through the outbox in one transaction. Rejects on
+   * a schema violation — the executor is expected to let that failure end the run (§4: "a
+   * packet that fails validation should fail the emit rather than silently propagating
+   * malformed data").
    */
   emit: (type: string, packet: unknown) => Promise<EventRow>;
+  /**
+   * The task's declared emit types with their compiled schemas, for executors that
+   * synthesize output — the StubExecutor's scriptless mode emits one valid sample of each.
+   */
+  declaredEmits: () => Promise<Array<{ type: string; schema: Record<string, unknown> }>>;
 };
 
 /** Registry is a plain object on purpose: no factory, no DI container. */

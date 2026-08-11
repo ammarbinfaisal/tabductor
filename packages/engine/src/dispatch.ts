@@ -1,8 +1,8 @@
 import { chainDepth, claim, publish } from "@tabductor/bus";
 import { newId } from "@tabductor/core";
 import {
-  edges,
   runs,
+  taskConsumes,
   tasks,
   workflowVersions,
   workflows,
@@ -18,8 +18,14 @@ export const LOOP_BUDGET_EXCEEDED = "system.loop_budget_exceeded";
 
 /**
  * Graph evaluation is one function, not a planner: given an event, find the tasks that
- * subscribe to it in the *latest* workflow version, and create one pinned `queued` run per
- * task. Execution is the caller's business.
+ * subscribe to its *type* in the latest workflow version, and create one pinned `queued`
+ * run per task. Execution is the caller's business.
+ *
+ * Routing is by type alone — the event-centric model. An event of type T reaches every
+ * task consuming T in the workflow, whichever task emitted it; the emitter only matters
+ * for resolving *which workflow* the event belongs to. A task that consumes a type it
+ * also emits self-triggers, which is a legal cycle: the causation-chain loop budget and
+ * the `(task, event)` dedupe claim below bound it exactly as they bounded edge cycles.
  */
 
 export type Dispatched = {
@@ -42,13 +48,12 @@ export async function dispatchEvent(db: Db, event: EventRow, metrics?: Metrics):
 
   const subscribers = await db
     .select({ task: tasks })
-    .from(edges)
-    .innerJoin(tasks, eq(tasks.id, edges.toTaskId))
+    .from(taskConsumes)
+    .innerJoin(tasks, eq(tasks.id, taskConsumes.taskId))
     .where(
       and(
-        eq(edges.workflowVersionId, source.versionId),
-        eq(edges.eventType, event.type),
-        eq(edges.fromTaskId, source.taskId),
+        eq(taskConsumes.workflowVersionId, source.versionId),
+        eq(taskConsumes.eventType, event.type),
       ),
     );
 

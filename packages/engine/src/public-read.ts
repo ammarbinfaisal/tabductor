@@ -1,10 +1,11 @@
 import { chainIdsOf } from "@tabductor/bus";
 import {
-  edges,
   eventDefs,
   events,
   runs,
   schedules,
+  taskConsumes,
+  taskEmits,
   tasks,
   workflowVersions,
   type Db,
@@ -84,11 +85,19 @@ const ERROR_CLASS: SQL<PublicErrorClass | null> = sql`
     when ${runs.error} = 'engine_restart' then 'engine_restart'
     when ${runs.error} like 'no executor registered%' then 'no_executor'
     when ${runs.error} like 'packet failed schema%'
-      or ${runs.error} like 'task declares no event_def%'
-      or ${runs.error} like 'event_def %malformed packet schema' then 'packet_invalid'
+      or ${runs.error} like 'no event %declared in this workflow version'
+      or ${runs.error} like 'task does not declare emitting%'
+      or ${runs.error} like 'event %malformed packet schema' then 'packet_invalid'
     else 'other'
   end
 `;
+
+export type PublicGraphEvent = {
+  type: string;
+  public: boolean;
+  /** Present only for a public type — the fields are part of the manifest. */
+  packetSchema?: Record<string, unknown>;
+};
 
 export type PublicGraphTask = {
   name: string;
@@ -96,8 +105,9 @@ export type PublicGraphTask = {
   /** Open by design (`stub`, then `ai`/`compiled`/`python`) — not a closed domain to narrow. */
   mode: string;
   position: { x: number; y: number } | null;
-  /** `packetSchema` is present only for a public type — the fields are part of the manifest. */
-  emits: Array<{ type: string; public: boolean; packetSchema?: Record<string, unknown> }>;
+  /** Types only — the events entity list below carries visibility and schemas. */
+  emits: string[];
+  consumes: string[];
   schedule: {
     cron: string;
     tz: string;
@@ -109,6 +119,9 @@ export type PublicGraphTask = {
 
 export type PublicGraph = {
   tasks: PublicGraphTask[];
+  /** The event entities — the manifest a share panel actually renders. */
+  events: PublicGraphEvent[];
+  /** Derived, not stored: emitters of a type × its consumers. Kept for graph rendering. */
   edges: Array<{ from: string; eventType: string; to: string }>;
 };
 
@@ -145,18 +158,24 @@ export async function publicGraph(db: Db, input: { versionId: string }): Promise
   // The packet schema is selected only where the type is public — same rule as packets.
   // A drizzle select rather than `db.execute`: the conditional projection is the only part
   // that needs raw SQL, and hand-writing the rest would mean hand-asserting its row type.
-  const defRows = taskIds.length
-    ? await db
-        .select({
-          taskId: eventDefs.taskId,
-          eventType: eventDefs.eventType,
-          public: eventDefs.public,
-          packetSchema: sql<unknown>`case when ${eventDefs.public} then ${eventDefs.packetSchemaJson} else null end`,
-        })
-        .from(eventDefs)
-        .where(inArray(eventDefs.taskId, taskIds))
-        .orderBy(asc(eventDefs.eventType))
-    : [];
+  const eventRows = await db
+    .select({
+      eventType: eventDefs.eventType,
+      public: eventDefs.public,
+      packetSchema: sql<unknown>`case when ${eventDefs.public} then ${eventDefs.packetSchemaJson} else null end`,
+    })
+    .from(eventDefs)
+    .where(eq(eventDefs.workflowVersionId, input.versionId))
+    .orderBy(asc(eventDefs.eventType));
+
+  const emitRows = await db
+    .select({ taskId: taskEmits.taskId, eventType: taskEmits.eventType })
+    .from(taskEmits)
+    .where(eq(taskEmits.workflowVersionId, input.versionId));
+  const consumeRows = await db
+    .select({ taskId: taskConsumes.taskId, eventType: taskConsumes.eventType })
+    .from(taskConsumes)
+    .where(eq(taskConsumes.workflowVersionId, input.versionId));
 
   const scheduleRows = taskIds.length
     ? await db
@@ -173,11 +192,22 @@ export async function publicGraph(db: Db, input: { versionId: string }): Promise
     : [];
   const scheduleOf = new Map(scheduleRows.map((s) => [s.taskId, s]));
 
-  const edgeRows = await db
-    .select({ fromTaskId: edges.fromTaskId, eventType: edges.eventType, toTaskId: edges.toTaskId })
-    .from(edges)
-    .where(eq(edges.workflowVersionId, input.versionId));
   const nameOf = new Map(taskRows.map((t) => [t.id, t.name]));
+
+  // Topology is derived: every emitter of a type feeds every consumer of it.
+  const consumersOf = new Map<string, string[]>();
+  for (const c of consumeRows) {
+    const to = nameOf.get(c.taskId);
+    if (!to) continue;
+    const list = consumersOf.get(c.eventType);
+    if (list) list.push(to);
+    else consumersOf.set(c.eventType, [to]);
+  }
+  const derivedEdges = emitRows.flatMap((e) => {
+    const from = nameOf.get(e.taskId);
+    if (!from) return [];
+    return (consumersOf.get(e.eventType) ?? []).map((to) => ({ from, eventType: e.eventType, to }));
+  });
 
   return {
     tasks: taskRows.map((row) => {
@@ -188,13 +218,14 @@ export async function publicGraph(db: Db, input: { versionId: string }): Promise
         kind: isNodeKind(decorated?.kind) ? decorated.kind : "browser",
         mode: row.mode,
         position: isPosition(decorated?.position) ? decorated.position : null,
-        emits: defRows
-          .filter((d) => d.taskId === row.id)
-          .map((d) => ({
-            type: d.eventType,
-            public: d.public,
-            ...(d.public && isRecord(d.packetSchema) ? { packetSchema: d.packetSchema } : {}),
-          })),
+        emits: emitRows
+          .filter((e) => e.taskId === row.id)
+          .map((e) => e.eventType)
+          .sort(),
+        consumes: consumeRows
+          .filter((c) => c.taskId === row.id)
+          .map((c) => c.eventType)
+          .sort(),
         schedule: schedule
           ? {
               cron: schedule.cron,
@@ -206,11 +237,12 @@ export async function publicGraph(db: Db, input: { versionId: string }): Promise
           : null,
       };
     }),
-    edges: edgeRows.flatMap((e) => {
-      const from = e.fromTaskId && nameOf.get(e.fromTaskId);
-      const to = nameOf.get(e.toTaskId);
-      return from && to ? [{ from, eventType: e.eventType, to }] : [];
-    }),
+    events: eventRows.map((e) => ({
+      type: e.eventType,
+      public: e.public,
+      ...(e.public && isRecord(e.packetSchema) ? { packetSchema: e.packetSchema } : {}),
+    })),
+    edges: derivedEdges,
   };
 }
 

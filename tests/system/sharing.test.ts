@@ -10,6 +10,7 @@ import {
   PUBLIC_PAGE_MAX,
   refCodec,
   seedWorkflow,
+  staticSchemaGenerator,
   triggerTask,
   type PublicRead,
   type RefCodec,
@@ -73,7 +74,7 @@ async function seedShared(): Promise<{
   await triggerTask(db, { taskId: wf.taskIds.Watcher! });
   await waitForQuiet(rig);
 
-  const api = createCaller({ db });
+  const api = createCaller({ db, schemaGenerator: staticSchemaGenerator() });
   const { share } = await api.share.create({ workflowId: wf.workflowId });
   const [row] = await db.select().from(workflowShares).where(eq(workflowShares.id, share.id));
   const ref = refCodec(row!);
@@ -154,7 +155,7 @@ it("reports a bounded error class and never the error text", async () => {
   await triggerTask(db, { taskId: wf.taskIds.Boom! });
   await waitForQuiet(rig);
 
-  const api = createCaller({ db });
+  const api = createCaller({ db, schemaGenerator: staticSchemaGenerator() });
   const { share } = await api.share.create({ workflowId: wf.workflowId });
   const [row] = await db.select().from(workflowShares).where(eq(workflowShares.id, share.id));
 
@@ -176,7 +177,7 @@ it("classifies a timeout by status rather than by message", async () => {
   await triggerTask(db, { taskId: wf.taskIds.Slow! });
   await waitForQuiet(rig);
 
-  const api = createCaller({ db });
+  const api = createCaller({ db, schemaGenerator: staticSchemaGenerator() });
   const { share } = await api.share.create({ workflowId: wf.workflowId });
   const [row] = await db.select().from(workflowShares).where(eq(workflowShares.id, share.id));
 
@@ -202,12 +203,13 @@ it("exposes no prompt, no limits and no raw row id", async () => {
   expect(graph.tasks.map((t) => t.name)).toEqual(["Scorer", "Sink", "Watcher"]);
   expect(graph.edges).toHaveLength(2);
   const watcher = graph.tasks.find((t) => t.name === "Watcher");
-  expect(watcher?.emits).toEqual([
-    { type: "tweet.detected", public: true, packetSchema: { type: "object" } },
-  ]);
-  // A private type's schema is withheld along with its packets.
-  expect(graph.tasks.find((t) => t.name === "Scorer")?.emits).toEqual([
+  expect(watcher?.emits).toEqual(["tweet.detected"]);
+  expect(graph.tasks.find((t) => t.name === "Scorer")?.consumes).toEqual(["tweet.detected"]);
+  // Visibility and schemas live on the event entities; a private type's schema — and its
+  // authored description — are withheld along with its packets.
+  expect(graph.events).toEqual([
     { type: "score.private", public: false },
+    { type: "tweet.detected", public: true, packetSchema: { type: "object" } },
   ]);
 
   const runs = await publicRunList(db, view);
@@ -302,7 +304,7 @@ it("gives a new node's events no visibility, and takes it back when the flag goe
   const preview = await api.share.preview({ workflowId: wf.workflowId });
   expect(preview.privateEvents.map((e) => e.type).sort()).toEqual(["extra.detail", "score.private"]);
   expect(preview.publicEvents).toEqual([
-    { task: "Watcher", type: "tweet.detected", fields: [] },
+    { type: "tweet.detected", emitters: ["Watcher"], fields: [] },
   ]);
 
   // Republish without the flag: visibility is withdrawn from history too, because deny

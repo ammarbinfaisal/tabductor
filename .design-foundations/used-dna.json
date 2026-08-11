@@ -1,0 +1,168 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "seed": "tabductor|2026-08-10|0|pin:chroma=muted,family=editorial-minimalism",
+      "output": {
+        "seed": "tabductor|2026-08-10|0|pin:chroma=muted,family=editorial-minimalism",
+        "project": "tabductor",
+        "date": "2026-08-10",
+        "reroll": 0,
+        "candidates": 5,
+        "pins": {
+          "family": "editorial-minimalism",
+          "chroma": "muted"
+        },
+        "baseHue": 331.68,
+        "goldenAngle": 137.50776405003785,
+        "constraintTier": 1,
+        "cellSpace": {
+          "families": 12,
+          "disciplines": 9,
+          "cells": 108,
+          "banned": 6,
+          "excluded": 0,
+          "available": 9
+        },
+        "hands": [
+          {
+            "index": 1,
+            "family": {
+              "id": "editorial-minimalism",
+              "name": "Editorial Minimalism"
+            },
+            "composition": {
+              "id": "poster-bleed",
+              "name": "Poster Bleed",
+              "variance": 8,
+              "scale": "one full-bleed image or letterform at viewport scale",
+              "density": "minimal copy pinned to edges and corners",
+              "symmetry": "edge-anchored, center deliberately vacant or occupied by the bleed",
+              "hierarchy": "the bleed is the message; text is caption-rank",
+              "ground": "the bleed IS the ground",
+              "dominantElement": "the full-bleed image/letterform"
+            },
+            "hue": {
+              "deg": 331.68,
+              "name": "pink",
+              "paletteCommand": "node scripts/palette.mjs --seed 331.68 --chroma muted --harmony mono"
+            },
+            "signature": {
+              "id": "single-diagonal",
+              "text": "Exactly one diagonal element per view, always at the same angle"
+            }
+          },
+          {
+            "index": 2,
+            "family": {
+              "id": "editorial-minimalism",
+              "name": "Editorial Minimalism"
+            },
+            "composition": {
+              "id": "split-stage",
+              "name": "Split Stage",
+              "variance": 6,
+              "scale": "two panes at unequal scale",
+              "density": "unbalanced by design — one pane packed, one calm",
+              "symmetry": "hard asymmetric vertical split (e.g. 38/62)",
+              "hierarchy": "the heavier pane leads; the split line is structural",
+              "ground": "two grounds in tension (tone, texture, or value)",
+              "dominantElement": "the heavier pane"
+            },
+            "hue": {
+              "deg": 109.18,
+              "name": "lime",
+              "paletteCommand": "node scripts/palette.mjs --seed 109.18 --chroma muted --harmony mono"
+            },
+            "signature": {
+              "id": "accent-scarcity",
+              "text": "The accent color appears ONLY on the current nav item and the primary CTA — nowhere else"
+            }
+          },
+          {
+            "index": 3,
+            "family": {
+              "id": "editorial-minimalism",
+              "name": "Editorial Minimalism"
+            },
+            "composition": {
+              "id": "ledger-grid",
+              "name": "Ledger Grid",
+              "variance": 2,
+              "scale": "uniform small type, few size jumps",
+              "density": "high and even — tabular rows and columns",
+              "symmetry": "columnar, ruled",
+              "hierarchy": "flat with rank cues (position, weight), not size",
+              "ground": "ruled paper — hairlines structure everything",
+              "dominantElement": "the table/ruling system itself"
+            },
+            "hue": {
+              "deg": 246.69,
+              "name": "blue",
+              "paletteCommand": "node scripts/palette.mjs --seed 246.69 --chroma muted --harmony mono"
+            },
+            "signature": {
+              "id": "duotone-images",
+              "text": "All imagery is a strict duotone built from the two palette anchors"
+            }
+          },
+          {
+            "index": 4,
+            "family": {
+              "id": "editorial-minimalism",
+              "name": "Editorial Minimalism"
+            },
+            "composition": {
+              "id": "editorial-spread",
+              "name": "Editorial Spread",
+              "variance": 7,
+              "scale": "oversized display type against modest body columns",
+              "density": "varied — columns, pull elements, deliberate gaps",
+              "symmetry": "magazine asymmetry; elements cross column boundaries",
+              "hierarchy": "display type first, decks and pulls second, body third",
+              "ground": "multi-column page the display type violates on purpose",
+              "dominantElement": "the display typography"
+            },
+            "hue": {
+              "deg": 24.2,
+              "name": "orange",
+              "paletteCommand": "node scripts/palette.mjs --seed 24.2 --chroma muted --harmony mono"
+            },
+            "signature": {
+              "id": "border-interrupt-headings",
+              "text": "Headings interrupt their top border like a legend on a map frame"
+            }
+          },
+          {
+            "index": 5,
+            "family": {
+              "id": "editorial-minimalism",
+              "name": "Editorial Minimalism"
+            },
+            "composition": {
+              "id": "monolith-center",
+              "name": "Monolith Center",
+              "variance": 1,
+              "scale": "one oversized element, everything else small",
+              "density": "sparse — most of the viewport is empty",
+              "symmetry": "strict central axis",
+              "hierarchy": "single-point: one focus, no competing levels",
+              "ground": "vast unbroken field",
+              "dominantElement": "the single centered mass"
+            },
+            "hue": {
+              "deg": 161.71,
+              "name": "green",
+              "paletteCommand": "node scripts/palette.mjs --seed 161.71 --chroma muted --harmony mono"
+            },
+            "signature": {
+              "id": "box-drawing-borders",
+              "text": "Tables and rules use box-drawing characters as borders"
+            }
+          }
+        ],
+        "contract": "The model justifies and executes this dealt hand — it does not re-choose. Rejected hand: re-deal with --reroll N+1; both deals stay recorded in used-dna.json. Pinned axes are user law — dealt around, never re-chosen."
+      }
+    }
+  ]
+}

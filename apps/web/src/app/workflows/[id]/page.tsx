@@ -22,6 +22,8 @@ export default async function WorkflowPage({ params }: { params: Promise<{ id: s
       versionId={got.versionId}
       graph={got.graph}
       tasks={got.tasks}
+      eventSchemas={got.eventSchemas}
+      maxHops={got.workflow.maxHops}
     />
   );
 }

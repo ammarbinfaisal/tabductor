@@ -1,11 +1,13 @@
 import { schedules, workflows, type Db, type ScheduleRow } from "@tabductor/db";
 import { newId } from "@tabductor/core";
 import { eq } from "drizzle-orm";
-import { createWorkflow, publishVersion, type Graph } from "./graph.js";
+import { createWorkflow, publishVersion, type Graph, type GraphEvent } from "./graph.js";
+import { staticSchemaGenerator } from "./schema-generator.js";
 
 /**
- * Builds a whole workflow — version, tasks, edges, event_defs — from one literal, because
- * every engine test needs a graph and none of them should spend twenty lines building one.
+ * Builds a whole workflow — version, tasks, event entities, emit/consume declarations —
+ * from one literal, because every engine test needs a graph and none of them should spend
+ * twenty lines building one.
  *
  * Tasks are keyed by name, which is also their cross-version identity (see
  * `tasks.name`), so `edges` and the returned `taskIds` both read in those names:
@@ -17,9 +19,14 @@ import { createWorkflow, publishVersion, type Graph } from "./graph.js";
  * });
  * ```
  *
+ * `edges` is *sugar* over the event-centric document: `[from, type, to]` compiles to
+ * "`to` consumes `type`" — the emitter half is already carried by `from`'s declared or
+ * scripted emits, and routing no longer cares who emitted. The spelling survives because
+ * it is how a test reads aloud.
+ *
  * It is an *adapter*, not a second way to write a graph: the rows all come out of
- * `publishVersion`, so what the tests exercise is the same path the control-plane API
- * publishes through.
+ * `publishVersion` (with a deterministic schema generator), so what the tests exercise is
+ * the same path the control-plane API publishes through.
  */
 
 export type SeedTask = {
@@ -32,6 +39,8 @@ export type SeedTask = {
   retry?: { max: number; backoff_ms?: number };
   /** Declared emitted events. A bare type gets a permissive schema. */
   emits?: Record<string, unknown> | string[];
+  /** Event types that trigger this task — the direct spelling of what `edges` sugars. */
+  consumes?: string[];
   /**
    * Which of the declared types a share viewer may read packets for (S2d). Everything not
    * listed stays private, which is also what a spec that omits this gets — the seed helper
@@ -46,6 +55,11 @@ export type SeedEdge = readonly [from: string, eventType: string, to: string];
 export type SeedSpec = {
   tasks: Record<string, SeedTask>;
   edges?: readonly SeedEdge[];
+  /**
+   * Explicit event entities, merged over the inferred ones. A test that cares about a
+   * schema or a description says so here; everything else gets a permissive default.
+   */
+  events?: Record<string, { description?: string; public?: boolean; schema?: Record<string, unknown> }>;
   name?: string;
   userId?: string;
   maxHops?: number;
@@ -74,6 +88,41 @@ export async function seedWorkflow(db: Db, spec: SeedSpec): Promise<SeededWorkfl
     await db.update(workflows).set({ maxHops: spec.maxHops }).where(eq(workflows.id, workflowId));
   }
 
+  // Consumes: the direct field plus whatever the edges sugar wires in.
+  const consumesOf = new Map<string, Set<string>>(
+    Object.entries(spec.tasks).map(([name, task]) => [name, new Set(task.consumes ?? [])]),
+  );
+  for (const [, eventType, to] of spec.edges ?? []) {
+    consumesOf.get(to)?.add(eventType);
+  }
+
+  // Event entities: every declared emit becomes one, explicit `events` entries win, and
+  // each carries its schema into the deterministic generator below.
+  const schemas: Record<string, Record<string, unknown>> = {};
+  const entities = new Map<string, GraphEvent>();
+  const declare = (type: string, patch: { description?: string; public?: boolean; schema?: Record<string, unknown> }) => {
+    const existing = entities.get(type) ?? {
+      type,
+      description: `Test event "${type}".`,
+      public: false,
+    };
+    entities.set(type, {
+      ...existing,
+      ...(patch.description === undefined ? {} : { description: patch.description }),
+      public: existing.public || (patch.public ?? false),
+    });
+    if (patch.schema) schemas[type] = patch.schema;
+  };
+
+  for (const [, task] of Object.entries(spec.tasks)) {
+    for (const [type, schema] of declaredEmits(task)) {
+      declare(type, { schema, public: task.publicEvents?.includes(type) ?? false });
+    }
+  }
+  for (const [type, event] of Object.entries(spec.events ?? {})) {
+    declare(type, event);
+  }
+
   const graph: Graph = {
     tasks: Object.entries(spec.tasks).map(([name, task]) => ({
       name,
@@ -85,18 +134,19 @@ export async function seedWorkflow(db: Db, spec: SeedSpec): Promise<SeededWorkfl
         ...(task.runTimeoutMs === undefined ? {} : { run_timeout_ms: task.runTimeoutMs }),
         ...(task.retry === undefined ? {} : { retry: task.retry }),
       },
-      emits: declaredEmits(task).map(([type, packetSchema]) => ({
-        type,
-        packetSchema,
-        public: task.publicEvents?.includes(type) ?? false,
-      })),
+      emits: declaredEmits(task).map(([type]) => type),
+      consumes: [...(consumesOf.get(name) ?? [])],
       schedule: null,
       position: null,
     })),
-    edges: (spec.edges ?? []).map(([from, eventType, to]) => ({ from, eventType, to })),
+    events: [...entities.values()],
   };
 
-  const { versionId, taskIds } = await publishVersion(db, { workflowId, graph });
+  const { versionId, taskIds } = await publishVersion(
+    db,
+    { workflowId, graph },
+    { schemaGenerator: staticSchemaGenerator(schemas) },
+  );
   return { workflowId, versionId, taskIds };
 }
 

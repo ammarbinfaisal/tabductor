@@ -84,43 +84,87 @@ export const tasks = pgTable(
   (t) => [uniqueIndex("tasks_version_name_key").on(t.workflowVersionId, t.name)],
 );
 
-export const edges = pgTable(
-  "edges",
+/**
+ * The event as an entity of the graph, not a property of its emitter: one row per
+ * (version, type), whoever emits it. The wiring model routes on event types, so this is
+ * where everything about a type lives — the author's plain-language `description` (the
+ * only thing the client sends), the `packet_schema_json` the publish-time compiler
+ * generated from it, and the S2d share visibility.
+ *
+ * Emission and consumption are declared by tasks in `task_emits` / `task_consumes`;
+ * there is no edges table — topology is derived by matching types.
+ */
+export const eventDefs = pgTable(
+  "event_defs",
   {
     id: text("id").primaryKey(),
     workflowVersionId: text("workflow_version_id")
       .notNull()
       .references(() => workflowVersions.id, { onDelete: "cascade" }),
-    fromTaskId: text("from_task_id").references(() => tasks.id, { onDelete: "cascade" }),
     eventType: text("event_type").notNull(),
-    toTaskId: text("to_task_id")
-      .notNull()
-      .references(() => tasks.id, { onDelete: "cascade" }),
-    predicate: text("predicate"),
-  },
-  (t) => [index("edges_routing_idx").on(t.workflowVersionId, t.eventType)],
-);
-
-export const eventDefs = pgTable(
-  "event_defs",
-  {
-    id: text("id").primaryKey(),
-    taskId: text("task_id")
-      .notNull()
-      .references(() => tasks.id, { onDelete: "cascade" }),
-    eventType: text("event_type").notNull(),
+    /** The author's prompt — what the packet *means*. The schema below is compiled from it. */
+    description: text("description").notNull().default(""),
     packetSchemaJson: jsonb("packet_schema_json").notNull().default({}),
+    /**
+     * sha256 over (description + sorted emitter prompts + sorted consumer prompts) at the
+     * time the schema was compiled. Publish compares the incoming document's hash against
+     * this and carries the schema forward untouched on a match — the stability guarantee
+     * that makes republishing an unchanged event free of LLM calls. Empty means "never
+     * compiled" (backfilled rows), which forces generation on the next publish.
+     */
+    promptHash: text("prompt_hash").notNull().default(""),
     /**
      * Share visibility (S2d, sharing.md §3.2): may a share viewer read packets of this
      * event type? Projected from the graph document, so it versions with the graph.
      *
-     * The default is the safety property, not a convenience: a node added in a later
+     * The default is the safety property, not a convenience: an event added in a later
      * version arrives private because of this line, and there is no state from the
      * previous version that could carry a stale `true` forward.
      */
     public: boolean("public").notNull().default(false),
   },
-  (t) => [uniqueIndex("event_defs_task_type_key").on(t.taskId, t.eventType)],
+  (t) => [uniqueIndex("event_defs_version_type_key").on(t.workflowVersionId, t.eventType)],
+);
+
+/**
+ * A task's declaration that it emits packets of a type. The type's schema lives on
+ * `event_defs`. `workflow_version_id` is denormalized from the task so per-version reads
+ * (the graph document, the public manifest) need no join.
+ */
+export const taskEmits = pgTable(
+  "task_emits",
+  {
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    workflowVersionId: text("workflow_version_id")
+      .notNull()
+      .references(() => workflowVersions.id, { onDelete: "cascade" }),
+    eventType: text("event_type").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.taskId, t.eventType] })],
+);
+
+/**
+ * A task's subscription: an event of this type triggers it. This is the routing table —
+ * dispatch resolves subscribers as one probe of `(version, type)`, the exact successor of
+ * the dropped `edges_routing_idx`, which is why the version id is denormalized here.
+ */
+export const taskConsumes = pgTable(
+  "task_consumes",
+  {
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    workflowVersionId: text("workflow_version_id")
+      .notNull()
+      .references(() => workflowVersions.id, { onDelete: "cascade" }),
+    eventType: text("event_type").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.taskId, t.eventType] }),
+    index("task_consumes_routing_idx").on(t.workflowVersionId, t.eventType),
+  ],
 );
 
 /**
@@ -280,8 +324,9 @@ export type OutboxRow = typeof outbox.$inferSelect;
 export type RunRow = typeof runs.$inferSelect;
 export type NewRun = typeof runs.$inferInsert;
 export type TaskRow = typeof tasks.$inferSelect;
-export type EdgeRow = typeof edges.$inferSelect;
 export type EventDefRow = typeof eventDefs.$inferSelect;
+export type TaskEmitRow = typeof taskEmits.$inferSelect;
+export type TaskConsumeRow = typeof taskConsumes.$inferSelect;
 export type WorkflowRow = typeof workflows.$inferSelect;
 export type WorkflowVersionRow = typeof workflowVersions.$inferSelect;
 export type ScheduleRow = typeof schedules.$inferSelect;

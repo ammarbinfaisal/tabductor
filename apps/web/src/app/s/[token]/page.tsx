@@ -12,5 +12,5 @@ export default async function SharedGraphPage({ params }: { params: Promise<{ to
     if (err instanceof TRPCError) notFound();
     throw err;
   });
-  return <SharedGraph name={shared.name} graph={shared.graph} />;
+  return <SharedGraph name={shared.name} graph={shared.graph} maxHops={shared.maxHops} />;
 }

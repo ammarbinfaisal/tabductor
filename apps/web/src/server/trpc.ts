@@ -1,15 +1,24 @@
 import { AppError } from "@tabductor/core";
 import type { Db } from "@tabductor/db";
-import { findShareByToken, publicEventTypes, refCodec, type PublicRead } from "@tabductor/engine";
+import {
+  findShareByToken,
+  publicEventTypes,
+  refCodec,
+  type PublicRead,
+  type SchemaGenerator,
+} from "@tabductor/engine";
 import type { Metrics } from "@tabductor/telemetry";
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import { z } from "zod";
 import { db } from "./db.js";
 import { createRateLimiter } from "./rate-limit.js";
+import { schemaGenerator } from "./schema-generator.js";
 
 export type Context = {
   db: Db;
+  /** The publish-time schema compiler — injected so tests publish deterministically. */
+  schemaGenerator: SchemaGenerator;
   /**
    * Who is asking, for rate-limiting purposes — an IP-derived string, supplied by whatever
    * composition point has a request in hand (the HTTP route, a server component). Absent
@@ -21,7 +30,7 @@ export type Context = {
 };
 
 export function createContext(): Context {
-  return { db: db() };
+  return { db: db(), schemaGenerator: schemaGenerator() };
 }
 
 /**
