@@ -45,7 +45,7 @@ describe("loadConfig", () => {
   // `docker compose` renders an unset `${ANTHROPIC_API_KEY:-}` as an empty string rather than
   // omitting the variable. Empty has to read as absent, or declaring the setting in compose and
   // leaving it unset would throw config_invalid and take the web app down on boot.
-  it("reads an empty optional secret as absent rather than invalid", () => {
+  it("reads an empty optional setting as absent rather than invalid", () => {
     const cfg = loadConfig({ ANTHROPIC_API_KEY: "" });
     expect(cfg.ANTHROPIC_API_KEY).toBeUndefined();
   });

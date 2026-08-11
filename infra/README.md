@@ -67,19 +67,25 @@ Defaults are compiled in, so a clean checkout needs no environment at all:
 | user / password | `tabductor` / `tabductor` | `apps/testkit/src/db.ts` |
 | `DATABASE_URL` | `postgres://tabductor:tabductor@localhost:5434/tabductor` | `packages/core/src/config.ts`, `packages/db/drizzle.config.ts` |
 | `BLOB_DIR` | OS temp dir (`/data/blobs` in the containers) | `packages/core/src/config.ts` |
-| `ANTHROPIC_API_KEY` | unset — see below | `packages/core/src/config.ts`, passed to `web` only |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | unset — see below | `packages/core/src/config.ts`, passed to `web` only |
+| `SCHEMA_MODEL` | provider default (`claude-opus-5` / `gpt-5.2`) | `packages/engine/src/schema-generator-ai.ts` |
 
 Override with the standard `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD` (testkit) or
 `DATABASE_URL` (app + drizzle-kit) to point at any other instance.
 
-`ANTHROPIC_API_KEY` is the one setting a full deployment eventually wants. Publishing a
-workflow version compiles each event's description into a packet schema
+A model API key is the one setting a full deployment eventually wants. Publishing a workflow
+version compiles each event's description into a packet schema
 (`docs/event-centric-model.md` §3), and the `web` service is the only composition root that
 does it — the engine executes published versions and never calls a model, so it does not get
-the key. Put it in a `.env` beside `docker-compose.yml` and compose picks it up:
+a key. Either provider works; Anthropic wins when both are set. Put it in a `.env` beside
+`docker-compose.yml` and compose picks it up:
 
 ```sh
 echo 'ANTHROPIC_API_KEY=sk-ant-...' >> .env && docker compose up -d web
+# or
+echo 'OPENAI_API_KEY=sk-...' >> .env && docker compose up -d web
+# pin a model id, whichever provider:
+echo 'SCHEMA_MODEL=gpt-5.4' >> .env
 ```
 
 Unset is a working mode rather than a broken one: unchanged events carry their schema forward

@@ -10,7 +10,7 @@ import { AppError } from "./errors.js";
  * unset would fail the whole parse and take the process down, which is the opposite of what
  * "optional" is for.
  */
-const optionalSecret = z.preprocess(
+const optionalSetting = z.preprocess(
   (v) => (v === "" ? undefined : v),
   z.string().min(1).optional(),
 );
@@ -25,7 +25,11 @@ const envSchema = z.object({
     .string()
     .default("localhost,127.0.0.1")
     .transform((s) => s.split(",").map((d) => d.trim()).filter(Boolean)),
-  ANTHROPIC_API_KEY: optionalSecret,
+  // Publish-time schema compilation picks a provider from whichever of these is set
+  // (Anthropic first). SCHEMA_MODEL overrides that provider's default model id.
+  ANTHROPIC_API_KEY: optionalSetting,
+  OPENAI_API_KEY: optionalSetting,
+  SCHEMA_MODEL: optionalSetting,
 });
 
 export type Config = z.output<typeof envSchema>;

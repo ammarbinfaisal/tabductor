@@ -1,32 +1,25 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { Ajv } from "ajv";
 import addFormatsModule from "ajv-formats";
 const addFormats = addFormatsModule.default ?? addFormatsModule;
 import type { SchemaGenerator, SchemaGenInput, SchemaGenResult } from "./schema-generator.js";
 
 /**
- * The real schema compiler: Claude turns an event's plain-language description into a
- * JSON Schema, reading the prompts of every task that emits or consumes the type — which
- * is what keeps field names coherent end to end (a `tweet_id` the emitter's prompt talks
- * about stays `tweet_id` in the schema the consumer validates against).
+ * Everything the schema compiler does that is not a network call: the instructions, the
+ * prompt assembly, the fence-tolerant parse, the ajv-strict gate, and the bounded
+ * self-repair loop that feeds the gate's verdict back to the model.
  *
- * Output is constrained by instruction to a small allowlisted subset of JSON Schema (the
- * same subset `sampleFromSchema` can synthesize packets for), then checked here under ajv
- * strict with the error fed back for a bounded self-repair loop — the compiler bends, the
- * gate never does (graph-compilation-llm.md §4 P5). Publish re-runs the gate regardless;
- * this module's checks only exist to make retries useful.
- *
- * Constructed only at composition roots that hold an API key (the web server today —
- * publish runs in the tRPC mutation). Everything else uses the interface.
+ * Providers differ only in `ChatTransport`. That split is the point — the compiler's
+ * behaviour is one implementation tested against a fake transport, so adding a provider
+ * cannot quietly change how schemas are gated or how many repair attempts they get
+ * (`docs/event-centric-model.md` §3).
  */
 
-const MODEL = "claude-opus-5";
 const MAX_ATTEMPTS = 3;
 
-const SYSTEM = `You compile event packet schemas for a workflow engine. Given an event's \
-description and the prompts of the tasks that emit and consume it, respond with a single \
-JSON object: the JSON Schema for the event's packet. No prose, no markdown fences — the \
-raw JSON object only.
+export const SCHEMA_SYSTEM_PROMPT = `You compile event packet schemas for a workflow engine. \
+Given an event's description and the prompts of the tasks that emit and consume it, respond \
+with a single JSON object: the JSON Schema for the event's packet. No prose, no markdown \
+fences — the raw JSON object only.
 
 Rules for the schema:
 - Top level is {"type": "object"} with "properties", "required" listing every property, \
@@ -39,35 +32,35 @@ constraint keywords.
 - Prefer few, well-named fields. Reuse the exact field names the task prompts use; use \
 snake_case where the prompts don't dictate a name.`;
 
-export function anthropicSchemaGenerator(opts: { apiKey?: string; model?: string } = {}): SchemaGenerator {
-  const client = new Anthropic(opts.apiKey === undefined ? {} : { apiKey: opts.apiKey });
-  const model = opts.model ?? MODEL;
+export interface ChatTurn {
+  role: "assistant" | "user";
+  content: string;
+}
 
+export interface ChatTransport {
+  /**
+   * One completion. Returns the model's raw text, or `refused` when the model declined —
+   * a refusal is final, not something a repair attempt can talk around. Throws on API
+   * failure; the loop reports that without burning attempts, because a 401 does not become
+   * a 200 by being asked three times.
+   */
+  complete(turns: ChatTurn[]): Promise<{ refused: true } | { refused?: false; text: string }>;
+}
+
+export function llmSchemaGenerator(transport: ChatTransport): SchemaGenerator {
   return {
     async generate(input: SchemaGenInput): Promise<SchemaGenResult> {
       const ajv = addFormats(new Ajv({ allErrors: true, strict: true }));
-      const messages: Anthropic.MessageParam[] = [{ role: "user", content: describe(input) }];
+      const turns: ChatTurn[] = [{ role: "user", content: describeEvent(input) }];
       let lastError = "generator produced no output";
 
       for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
         let text: string;
         try {
-          const response = await client.messages.create({
-            model,
-            max_tokens: 4096,
-            system: SYSTEM,
-            messages,
-          });
-          if (response.stop_reason === "refusal") {
-            return { ok: false, error: "schema generation was declined by the model" };
-          }
-          text = response.content
-            .filter((block): block is Anthropic.TextBlock => block.type === "text")
-            .map((block) => block.text)
-            .join("");
+          const reply = await transport.complete(turns);
+          if (reply.refused) return { ok: false, error: "schema generation was declined by the model" };
+          text = reply.text;
         } catch (err) {
-          // API failures are not retried here — the SDK already retries transient ones,
-          // and a hard failure should surface in the compile report, not burn attempts.
           return { ok: false, error: err instanceof Error ? err.message : String(err) };
         }
 
@@ -84,7 +77,7 @@ export function anthropicSchemaGenerator(opts: { apiKey?: string; model?: string
         }
 
         // Self-repair: the model sees its own output and the gate's verdict, verbatim.
-        messages.push(
+        turns.push(
           { role: "assistant", content: text },
           {
             role: "user",
@@ -98,7 +91,7 @@ export function anthropicSchemaGenerator(opts: { apiKey?: string; model?: string
   };
 }
 
-function describe(input: SchemaGenInput): string {
+export function describeEvent(input: SchemaGenInput): string {
   const list = (tasks: Array<{ name: string; prompt: string | null }>): string =>
     tasks.length === 0
       ? "  (none)"
@@ -116,7 +109,9 @@ Tasks that consume this event:
 ${list(input.consumers)}`;
 }
 
-function parseSchema(text: string): { ok: true; schema: Record<string, unknown> } | { ok: false; error: string } {
+export function parseSchema(
+  text: string,
+): { ok: true; schema: Record<string, unknown> } | { ok: false; error: string } {
   // Tolerate a fenced reply rather than retrying over formatting — the fence is noise,
   // the schema inside it is the work.
   const unfenced = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");

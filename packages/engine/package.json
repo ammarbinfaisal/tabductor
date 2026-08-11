@@ -5,17 +5,19 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./anthropic": "./src/schema-generator-anthropic.ts"
+    "./ai": "./src/schema-generator-ai.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.116.0",
+    "@ai-sdk/anthropic": "^4.0.37",
+    "@ai-sdk/openai": "^4.0.37",
     "@tabductor/bus": "workspace:*",
     "@tabductor/core": "workspace:*",
     "@tabductor/db": "workspace:*",
     "@tabductor/telemetry": "workspace:*",
+    "ai": "^7.0.59",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",
     "croner": "^9.0.0",

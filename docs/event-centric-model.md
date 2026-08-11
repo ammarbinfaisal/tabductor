@@ -58,12 +58,20 @@ This is `graph-compilation-llm.md` §4's P3 pass, shipped in minimal form ahead 
 rest of the graph compiler, with §4.2's staging contract honoured where it applies:
 
 - **Interface, not import:** `publishVersion(db, input, { schemaGenerator })`. The engine
-  defines `SchemaGenerator`; the Anthropic implementation (`claude-opus-5`, bounded
-  3-attempt self-repair per §4 P5 — the gate's verdict fed back verbatim) lives behind the
-  `@tabductor/engine/anthropic` subpath and is constructed only at composition roots that
-  hold `ANTHROPIC_API_KEY`. Publish runs in the web process today, so that root is the
-  tRPC context; tests and `seedWorkflow` inject a deterministic generator and still
-  exercise the one true publish path.
+  defines `SchemaGenerator`; the model-backed implementation (bounded 3-attempt self-repair
+  per §4 P5 — the gate's verdict fed back verbatim) lives behind the `@tabductor/engine/ai`
+  subpath and is constructed only at composition roots that hold a key. Publish runs in the
+  web process today, so that root is the tRPC context; tests and `seedWorkflow` inject a
+  deterministic generator and still exercise the one true publish path.
+- **One compiler, two providers.** The prompt, the gate and the repair loop live in
+  `schema-generator-llm.ts` behind a `ChatTransport` seam that is ours rather than an SDK's;
+  `schema-generator-ai.ts` fills that seam through the Vercel AI SDK, so a provider is a
+  config line. Selection is by key — `ANTHROPIC_API_KEY` (default `claude-opus-5`) first,
+  then `OPENAI_API_KEY` (default `gpt-5.2`), with `SCHEMA_MODEL` overriding the model id.
+  Anthropic wins when both are set because the instructions were written and checked against
+  Claude. The seam is what keeps that a transport choice: the gating and the attempt budget
+  are one tested implementation neither provider can vary
+  (`packages/engine/src/schema-generator-llm.test.ts`).
 - **The deterministic gate:** every schema — generated or carried — must compile under
   ajv **strict** (+ formats) before a row is written. The generator's instructed
   allowlist (flat-ish objects, string/number/integer/boolean, string formats, enums,

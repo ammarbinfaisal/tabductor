@@ -263,9 +263,9 @@ is dropped (migration `0007` backfills consumes from it first) and dispatch rout
 probe of `task_consumes(workflow_version_id, event_type)`. `publishVersion` takes an
 injected `SchemaGenerator`, reuses unchanged schemas via the hash, gates everything under
 ajv strict (+formats), and returns a per-event compile report; failure writes nothing.
-The Anthropic implementation (`claude-opus-5`, bounded self-repair) lives behind
-`@tabductor/engine/anthropic`, constructed only in the web composition root off
-`ANTHROPIC_API_KEY`. Scriptless stub tasks emit sampled packets derived from their
+The model-backed implementation (bounded self-repair) lives behind
+`@tabductor/engine/ai` over the Vercel AI SDK, constructed only in the web composition
+root off `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. Scriptless stub tasks emit sampled packets derived from their
 compiled schemas, so a published graph runs with nothing hand-scripted.
 
 ### U1 — the declarative editor (replaces U0's canvas) ✅ **DONE**
