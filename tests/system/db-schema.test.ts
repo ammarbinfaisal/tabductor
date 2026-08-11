@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db";
 
 const EXPECTED_TABLES = [
+  "artifacts",
   "event_defs",
   "events",
   "outbox",
@@ -13,6 +14,7 @@ const EXPECTED_TABLES = [
   "task_emits",
   "task_state",
   "tasks",
+  "trace_entries",
   "workflow_shares",
   "workflow_versions",
   "workflows",

@@ -5,10 +5,13 @@ You are implementing subphase S8. Read, in order:
 2. `docs/graph-compilation-llm.md` — the primary design source: §4 (passes P1–P5, grant boundary),
    §5 (deterministic gate), §6 (versioning, content hash, migrations), §7 (canonical example —
    your flagship fixture), §9 (data model additions).
-3. `docs/techical_plan.md` — §18 Decision 2 (the packet-schema pipeline P3 generalizes),
+3. `docs/event-centric-model.md` — the wiring model you compile into (events are entities, tasks
+   declare `emits`/`consumes`, no edges) and §3, the publish-time schema compiler P3 must reuse
+   rather than duplicate.
+4. `docs/techical_plan.md` — §18 Decision 2 (the packet-schema pipeline P3 generalizes),
    §11 (the script registry your content hash invalidates into).
-4. `docs/impl-phases.md` — UI track U6 (the consumer of your API — you build the API only).
-5. `docs/subphases/ROADMAP.md` — stack/style rules.
+5. `docs/impl-phases.md` — UI track U6 (the consumer of your API — you build the API only).
+6. `docs/subphases/ROADMAP.md` — stack/style rules.
 
 Existing code to reuse (read first): `apps/web` + `packages/db` (S2c's `publishVersion` path —
 the compiler and gate bolt onto it, they do not replace it), the S4a **LLM adapter** in
@@ -27,11 +30,16 @@ dispose). The invariant to preserve verbatim: *the compiler can propose anything
 
 1. **`packages/graph-compiler`** — the passes (§4.2), each with a defined output the gate checks
    independently:
-   - **P1 topology**: nodes with kinds, edges with event-type bindings, schedules. Prompted with
-     the kind taxonomy/constraints and standard shapes, including the plan/act/record triangle.
+   - **P1 topology**: nodes with kinds, the event entities the workflow needs, each node's
+     `emits`/`consumes` type lists, schedules. There are no edges — topology is derived from the
+     declarations (`event-centric-model.md` §1.3). Prompted with the kind taxonomy/constraints and
+     standard shapes, including the plan/act/record triangle.
    - **P2 node prompts**: one task prompt per node derived from the intent.
-   - **P3 data declarations**: packet schemas AND store schema (DDL + ajv table specs) compiled
-     in ONE pass, so field names cohere across edges and tables (`tweet_id` stays `tweet_id`).
+   - **P3 data declarations**: event descriptions AND store schema (DDL + ajv table specs)
+     authored in ONE pass, so field names cohere between packets and tables (`tweet_id` stays
+     `tweet_id`). **Do not build a second schema lowering**: EC1's publish-time compiler already
+     turns a description into a gated JSON Schema — P3 writes the description and reuses
+     `SchemaGenerator` and the existing publish path.
    - **P4 grant proposal**: least-privilege grants derived from the intent; the ONLY output
      channel is `proposed_grants` rows — never `task_grants`.
    - **P5 self-repair**: gate failures fed back to the compiler VERBATIM (like the S5e TeX log),
@@ -40,11 +48,15 @@ dispose). The invariant to preserve verbatim: *the compiler can propose anything
 2. **Deterministic gate** — runs at save, on the WHOLE graph (cross-references span it), all
    checks mechanical. Implement all ten as named checks, each emitting pass/warn/fail + location
    into the report:
-   1. **graph shape** — zod-valid `graph_json`; unique node refs; edges reference existing nodes.
-   2. **kind constraints** — schedules bind to `browser`/`decision` only; asset nodes have ≥1
-      inbound edge; no tool references outside the node's registry in any grant.
-   3. **event wiring** — every edge's event type declared by its source's `event_defs`; packet
-      schemas compile under ajv strict; WARN emitted-but-unconsumed, FAIL consumed-but-never-emitted.
+   1. **graph shape** — zod-valid `graph_json`; unique node refs; unique event types per version.
+   2. **kind constraints** — schedules bind to `browser`/`decision` only; asset nodes declare ≥1
+      `consumes` type; no tool references outside the node's registry in any grant.
+   3. **event wiring** — every `emits` type references a declared event entity (FAIL — an
+      undeclared emit passes publish and then fails every run at `validatePacket`); every declared
+      event has a non-empty description; WARN emitted-but-unconsumed; **consumed-but-never-emitted
+      is advisory, not a failure** — system events, `manual.trigger` and schedule fires are
+      legitimate external types. Schema compilation is not checked here: it happens at publish
+      under its own ajv-strict gate and reports per event.
    4. **store DDL** — parses; applies cleanly to a scratch schema (then rolled back); every table
       has a PK; column types from the allowlist (int/bigint/text/bool/timestamptz/date/numeric/jsonb);
       no triggers, functions, foreign tables, or cross-schema references; names match the spec.
@@ -56,11 +68,13 @@ dispose). The invariant to preserve verbatim: *the compiler can propose anything
    8. **grant sanity** — proposed grants reference secrets/MCP tools/asset paths that exist;
       baseline conflicts → stripped + reported (status `stripped_by_baseline`), never silently kept.
    9. **cycles and budgets** — cycle detection; any cycle without a workflow loop budget → FAIL.
-   10. **coherence lints (advisory)** — field-name drift across an edge, prompts naming absent
-       tables — WARN only.
+   10. **coherence lints (advisory)** — field-name drift between an event's description and a
+       consumer's prompt, prompts naming absent tables — WARN only.
 3. **Data model** (§9, Drizzle migrations): `proposed_grants(workflow_version_id, task_ref,
    grant_json, status[pending|approved|rejected|stripped_by_baseline])`,
-   `compile_reports(workflow_version_id, report_json, created_at)`, `tasks.content_hash`;
+   `compile_reports(workflow_version_id, report_json, created_at)` — this **persists** the report
+   EC1 currently returns transiently from `publishVersion`, so fold the per-event schema results
+   into the same row rather than reporting them separately —, `tasks.content_hash`;
    `store_schemas` columns if S5g left gaps (`migration_sql`, `migration_class`).
 4. **Grant boundary**: the engine dispatches against `task_grants` ONLY. A tRPC approval
    endpoint converts `pending` proposals to `task_grants`; recompiles compute and store the diff

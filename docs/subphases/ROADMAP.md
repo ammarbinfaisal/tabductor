@@ -53,12 +53,14 @@ Environment deviations from `impl-phases.md`:
 | S1 | DB migrations + outbox event bus + dedupe + lineage + PolicyGate/AllowAllGate | impl Phase 1, §14 | **done** `7e2b7fd` |
 | S2a | Workflow engine core: run state machine, graph eval, packet validation, loop budget, StubExecutor | impl Phase 2 | **done** `f2e2f23` |
 | S2b | Scheduler (cron/tz, missed/overlap), retries, crash recovery watchdog | impl Phase 2, §7 | **done** `dc4de11` |
-| S2c | Next.js + tRPC control-plane API (workflows/tasks/edges/runs/events, zod end-to-end) | techical_plan §3, UI track U0 | **done** |
+| S2c | Next.js + tRPC control-plane API (workflows/tasks/events/runs, zod end-to-end) | techical_plan §3, UI track U0 | **done** |
 | SOb | Telemetry package: OTel init + pino bridge, outbox/events `traceparent`, engine+scheduler instrumentation, in-repo Grafana dashboards | techical_plan §17.2, impl §0.5 | **done** |
-| U0 | First UI: React Flow graph editor, schedules editor, runs table, event feed, StubExecutor panel — over the S2c API only | impl UI track U0 | **done** |
+| U0 | First UI: workflow list, schedules editor, runs table, event feed — over the S2c API only (its React Flow canvas, schema JSON field and StubExecutor panel were removed at U1) | impl UI track U0 | **done** |
 | S2d | Shared workflows: `workflow_shares` + `event_defs.public`, per-event-type visibility in the graph document, public read models that filter in SQL, public tRPC router, rate limits | sharing §2–6, §16 T13–17 | **done** `7dfe920` |
 | U0.5 | Public workflow view `/s/<token>`: graph, runs, events, opted-in packets; owner-side share management | sharing §5, impl UI track U0.5 | **done** `e1e4289` |
-| S3a | Browser driver interface + Playwright CDP impl + navigation guard + trace recorder | impl Phase 3, §8 | |
+| EC1 | Event-centric model: `event_defs` re-keyed to `(version, type)`, `task_emits`/`task_consumes`, `edges` dropped, publish-time schema compiler with carry-forward hashing | event-centric-model §1–5, §7 | **done** (migration `0007`) |
+| U1 | Declarative editor: Events/Nodes panels + derived read-only map, prompt-only authoring, per-event compile report; React Flow removed | event-centric-model §6, impl UI track U1 | **done** |
+| S3a | Browser driver interface + Playwright CDP impl + navigation guard + trace recorder | impl Phase 3, §8 | **done** (migration `0008`) |
 | S3b | Endpoint pool/leases + per-endpoint queue + network observer + resource limits + ScriptedBrowserExecutor | impl Phase 3, §9 | |
 | S4a | LLM adapter (live/record/replay) + perception builder | impl Phase 4 | prompt written |
 | S4b | Agent loop + tool registry + structured emit + AgentExecutor + e2e milestone | impl Phase 4 | |

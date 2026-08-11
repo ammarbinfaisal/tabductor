@@ -1,5 +1,10 @@
 # U0 — First UI: graph editor, runs, events (over the S2c API)
 
+> **Historical build order, superseded in part by U1.** The React Flow canvas, the packet-schema
+> JSON field and the StubExecutor scripting panel described here were all removed; the workflow
+> list, runs table and event feed carried forward. Current model: `docs/event-centric-model.md`
+> §6, and `DESIGN.md` for the visual language.
+
 You are implementing UI-track slice U0. Read, in order:
 1. This file (authoritative).
 2. `docs/impl-phases.md` — "The UI track" section (U0 row + the two standing rules).

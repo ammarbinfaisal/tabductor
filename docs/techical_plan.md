@@ -14,7 +14,7 @@
 - **Shared workflows** (`sharing.md`) — an unguessable link that lets anyone watch a workflow's graph, triggers, runs, events and produced assets, live or historical. Visibility is opt-in per event type and default-deny, declared in the graph document and versioned with it. §1's scope line is narrowed rather than reversed: read-only visibility into a workflow's *own execution* is in; a marketplace of reusable workflows stays out. Adds §17.3 (a third observability audience) and Threats 13–17. Decisions #16–#18.
 - **Python compute** (`python-compute.md`) — a third execution mode, `mode=python` on `kind=asset`, running an LLM- or human-authored program on our infrastructure inside a Firecracker microVM with a pinned dependency set, to produce spreadsheets and other computed deliverables. The tool registry keys on `(kind, mode)`, and `(asset, python)` has no tools at all: the job's only channel is a block device. Adds §13.6 and Threats 18–22. Decisions #19–#20.
 
-**Changes in 0.6 — the event-centric model (`event-centric-model.md`, implemented as EC1):** events become first-class workflow-version entities carrying an author-written description, an LLM-compiled packet schema, and the S2d visibility flag; tasks declare `consumes`/`emits` by type; authored edges are gone — topology is derived, and dispatch routes by type within the version. The client sends prompts only, never JSON: packet schemas are compiled at publish (carry-forward hashed, ajv-strict gated, per-event compile report) and stub behavior is derived from them. Where §4–§5 speak of edges or per-emitter `event_defs`, that document supersedes them.
+**Changes in 0.6 — the event-centric model (`event-centric-model.md`, implemented as EC1):** events become first-class workflow-version entities carrying an author-written description, an LLM-compiled packet schema, and the S2d visibility flag; tasks declare `consumes`/`emits` by type; authored edges are gone — topology is derived, and dispatch routes by type within the version. The client sends prompts only, never JSON: packet schemas are compiled at publish (carry-forward hashed, ajv-strict gated, per-event compile report) and stub behavior is derived from them. §4, §5 and §14 are written against this model; `event-centric-model.md` carries the routing, compiler and editor detail behind it.
 
 ---
 
@@ -41,7 +41,7 @@ Out of scope for v1: multi-tenant organizations, a marketplace of reusable workf
 ```
                       ┌────────────────────────────────────────────┐
                       │              Control Plane                 │
-                      │  React Flow editor · Task/Policy config    │
+                      │  Events/Nodes editor · Task/Policy config  │
                       │  Run inspector · Approval UI               │
                       └───────────────┬────────────────────────────┘
                                       │ (definitions, policies)
@@ -89,7 +89,7 @@ Components communicate only through the event bus and the state store. The Polic
 
 ## 4. Core Concepts
 
-**Task.** A unit of work defined by a prompt, a policy grant set, resource limits, and a set of declared *emitted events* (each with a data-packet schema).
+**Task.** A unit of work defined by a prompt, a policy grant set, resource limits, and two lists of event types: the ones it may *emit* and the ones that *trigger* it. The packet schema belongs to the event, not to this list (see **Event** below).
 
 Tasks have two orthogonal discriminants:
 
@@ -110,17 +110,19 @@ The two kinds exchange data only through **events with validated packet schemas*
 
 **Run.** One execution of a task, triggered by a schedule or an event. Runs have a timeout (task-level setting), a status machine (`queued → running → succeeded | failed | timed_out | cancelled | awaiting_approval`), and a trace.
 
-**Event.** `{ event_id, type, source_task_id, run_id, packet, occurred_at }`. `type` is user-named per task (e.g. `tweet.detected`). `event_id` is a UUID used for idempotency/deduplication downstream.
+**Event.** Two things share the name, and keeping them apart matters. The **event definition** is an entity of the workflow version — one row per `(version, type)`, carrying the author's plain-language description of the packet, the compiled schema, and the S2d visibility flag. It is not a property of whoever emits it: two tasks emitting `tweet.detected` emit the *same* event, with one schema. The **event occurrence** is the runtime message, `{ event_id, type, source_task_id, run_id, packet, occurred_at }`; `event_id` is a UUID used for idempotency/deduplication downstream.
 
-**Data packet.** The typed payload of an event. The schema is declared *in the emitting node* (this is your decision and it works well): the author describes the fields in the node definition, so (a) the emitting agent knows what to produce, and (b) any node that subscribes to this event gets those fields injected as named variables into its prompt context. Recommendation: store the declaration as JSON Schema, generated from the author's plain-language description at save time, and validate emitted packets against it. A packet that fails validation should fail the emit (and surface in the run log) rather than silently propagating malformed data.
+**Data packet.** The typed payload of an occurrence, validated against its definition's schema. The author never writes the schema: they describe the fields in prose on the event, and the schema is compiled from that description at **publish** time by an LLM whose context is the neighbourhood of the event — the prompts of every task that emits it and every that consumes it — then gated under ajv strict before any row is written. Consumers get the declared fields injected as named variables into their prompt context. A packet that fails validation fails the emit (and surfaces in the run log) rather than silently propagating malformed data. Full mechanics, including the carry-forward hash that keeps schemas stable across republishes: `event-centric-model.md` §3.
 
 **Trace.** Ordered log of a run: navigations, DOM snapshots (as configured), actions with the selectors/coordinates used, network observations, LLM calls, policy decisions, emitted events, artifacts. Storage of each trace category is individually opt-in/out per user settings.
 
 **Compiled script.** Versioned artifact produced by the compiler agent from one or more successful AI-mode traces, containing static code, guard assertions, and deopt points.
 
-## 5. Workflow Graph (React Flow)
+## 5. Workflow Graph
 
-The node taxonomy is two **task nodes** — `browser` and `asset` (§4; 0.3 adds a third, **decision** — `graph-compilation-llm.md` §2) — plus **trigger/schedule** sources. Both kinds share one `tasks` table, one edge model, one run state machine, and one trace format; `kind` is a discriminant column, not a separate entity. The graph is unchanged by the split: edges bind an emitted event type on one node to the trigger input of another, regardless of kind.
+The node taxonomy is two **task nodes** — `browser` and `asset` (§4; 0.3 adds a third, **decision** — `graph-compilation-llm.md` §2) — plus **trigger/schedule** sources. All kinds share one `tasks` table, one wiring model, one run state machine, and one trace format; `kind` is a discriminant column, not a separate entity.
+
+**There are no edges.** A task declares `consumes` (the event types that trigger it, alongside an optional schedule) and `emits` (the types it may produce); the graph is the bipartite structure *nodes ↔ events* that falls out of those declarations, materialized only for display. Dispatch resolves subscribers by type alone within the workflow's version — one probe of `task_consumes(workflow_version_id, event_type)` — so an event of type T reaches every consumer of T whichever task emitted it. What this means for coupling, cycles and external event types is `event-centric-model.md` §2. Because the authored artifact is a set of declarations rather than a drawing, the editor is panels plus a derived read-only map, not a canvas.
 
 Conditionals are expressed by *which event a task emits*: the task prompt tells the agent under what conditions to emit `tweet.relevant` versus emitting nothing (or `tweet.ignored`).
 
@@ -141,7 +143,7 @@ Conditionals-as-emissions is coherent, but be aware of the trade-off you're maki
 - **What you gain:** no dedicated conditional node, a simpler mental model, and conditions that can be arbitrarily semantic ("emit only if the tweet is about AI") since the LLM evaluates them.
 - **What you give up:** deterministic, free, auditable branching. Every conditional now costs an LLM call and is probabilistic. "Retry if status ≥ 500" or "route by language code" shouldn't need a model.
 
-**Recommended middle ground that preserves your single-node model:** keep the node taxonomy as-is, but allow an optional *edge predicate* — a small JSONPath/JMESPath expression evaluated against the packet (`$.tweet.lang == "en"`). No new node type, no prompt, evaluated by the engine for free. Semantic filtering stays in the task prompt; mechanical filtering moves to edges. If you skip this in v1, design the edge model so it can be added without migration (edges already carry an event-type binding; a predicate is just one more nullable field).
+**Recommended middle ground that preserves your single-node model:** keep the node taxonomy as-is, but allow an optional *consume predicate* — a small JSONPath/JMESPath expression evaluated against the packet (`$.tweet.lang == "en"`) before a consumer is triggered. No new node type, no prompt, evaluated by the engine for free. Semantic filtering stays in the task prompt; mechanical filtering moves to the declaration. It attaches per `(consumer, event type)`, so one task can ignore packets another acts on, and it is one more nullable column on `task_consumes` if it is skipped in v1 — no migration risk in deferring it. (This is where the idea landed once edges were dropped; it was originally drafted as an edge predicate.)
 
 Graph-level rules the engine must enforce:
 
@@ -369,8 +371,11 @@ tasks(id, workflow_version_id, name, prompt,
       kind[browser|asset], mode[ai|compiled|python], limits_json)  -- §4 two discriminants
 task_grants(task_id, grant_key, grant_value)          -- policy
 account_baseline_rules(user_id, rule_json)            -- §10 recommendation
-event_defs(task_id, event_type, packet_schema_json)
-edges(from_task_id, event_type, to_task_id, predicate) -- predicate nullable, v1 unused
+event_defs(id, workflow_version_id, event_type, description,
+           packet_schema_json, prompt_hash, public)   -- unique(workflow_version_id, event_type)
+task_emits(task_id, workflow_version_id, event_type)      -- pk(task_id, event_type)
+task_consumes(task_id, workflow_version_id, event_type)   -- pk(task_id, event_type)
+                                                          -- index(workflow_version_id, event_type): routing
 schedules(task_id, cron, tz, missed_policy, overlap_policy)
 events(event_id, type, source_run_id, causation_id, packet_json, occurred_at)
 runs(id, task_id, trigger_event_id, status, mode_used, started, ended, error)
@@ -590,7 +595,7 @@ The share viewer's counterpart of the §17.2 content rules is therefore stricter
 Resolved:
 
 1. **Account-level baseline deny rules** (§10) — **accepted.** Account-level baseline rules that per-task grants cannot override.
-2. **Packet schema authoring** — **free-text description compiled to JSON Schema by an LLM at save time.** Both sides of an edge are schema-aware: the emitting node's agent knows what fields to produce, and every consuming node has the declared fields injected into its prompt context.
+2. **Packet schema authoring** — **free-text description compiled to JSON Schema by an LLM at publish time.** The description belongs to the event, not to an emitter, so there is one schema per type per version. Both sides are schema-aware: an emitting node's agent knows what fields to produce, and every consuming node has the declared fields injected into its prompt context.
 3. **Overlap policy for event-triggered runs** — **per-task parallelism setting: `parallel` or `queue`.** Rationale: a task may emit events faster than a downstream consumer processes them; the user decides whether the consumer runs concurrently or serializes. (Per-endpoint browser serialization, §8, still applies underneath.)
 4. **Scheduled-run overlap queue depth** (§7) — **user-configurable max queue depth** per schedule (default 1).
 5. **Recompilation trigger** — **automatic** after successful deopt-recovery.
@@ -614,7 +619,7 @@ Still open:
 
 Each 0.5 companion document carries its own open list — `sharing.md` §10 (expiring shares, per-field packet redaction, a separate blob origin) and `python-compute.md` §11 (snapshot warm pool, store writes from Python, who authors the code, resource ceilings). The ones that belong here:
 
-1. **Edge predicates in v1** (§5) — or event-emission-as-branching only?
+1. **Consume predicates in v1** (§5) — or event-emission-as-branching only? Drafted as edge predicates before 0.6; with edges gone the mechanical filter would be a nullable column on `task_consumes`, evaluated per `(consumer, type)`.
 2. **Captcha/login-wall handling** — deopt to agent is not enough (agents can't solve captchas, and shouldn't try): park for human takeover via the approval mechanism, with the user completing the step in their own browser (BYO CDP makes this natural — it's their browser)? Recommend yes; needs UI.
 3. **Trace retention defaults** and blob storage budget per user. Note assets are *not* covered by trace TTL (§13.5) — they need their own quota policy.
 4. **Tier-2 secrets in v1, or Tier-1 only?** Tier 2 is the stronger marketing and security story but adds a client-side crypto surface and blocks unattended use of those secrets.
@@ -644,4 +649,4 @@ Each 0.5 companion document carries its own open list — `sharing.md` §10 (exp
 - **MCP:** `@modelcontextprotocol/sdk`, one client per configured server, wired only into the asset node's tool registry.
 - **Crypto:** libsodium (`sodium-native`) for XChaCha20-Poly1305 + Argon2id; KMS/Vault Transit for KEK wrapping. Do not hand-roll envelope encryption.
 - **Telemetry:** `@opentelemetry/sdk-node` + OTLP → Grafana LGTM (Loki logs, Tempo traces, Mimir/Prometheus metrics); `pino` for structured JSON logs bridged to OTLP; the all-in-one `grafana/otel-lgtm` container for dev/single-node. No-op providers when no endpoint is configured (§17.2 rule 2) — the app never requires a collector.
-- **UI:** React Flow (decided) + a run-inspector; the inspector is not optional polish — it is the debugging surface for a probabilistic system and should exist from Phase 1.
+- **UI:** declarative Events/Nodes panels over a dependency-free derived map (no graph-canvas library — React Flow was the original pick and was removed at U1, since topology is derived rather than drawn) + a run-inspector; the inspector is not optional polish — it is the debugging surface for a probabilistic system and should exist from Phase 1.

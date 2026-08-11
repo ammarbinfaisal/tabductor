@@ -110,6 +110,26 @@ const FAKE_GRAM_PAGE = page(
 </form>`,
 );
 
+/**
+ * The two ways a navigation happens without anyone calling `goto` — a server redirect and a
+ * script-opened window. Both are S3a navigation-guard fixtures: a guard that only wrapped
+ * `goto` would wave both of these straight through.
+ */
+function popupPage(to: string): string {
+  // A listener rather than an inline `onclick`: the target is a URL, `JSON.stringify` quotes
+  // it with `"`, and `"` inside a double-quoted HTML attribute ends the attribute.
+  return page(
+    "Popup opener",
+    `<h1>Opener</h1>
+<button data-testid="open">open</button>
+<script>
+document.querySelector('[data-testid="open"]').addEventListener("click", function () {
+  window.open(${JSON.stringify(to)}, "_blank");
+});
+</script>`,
+  );
+}
+
 // --- server -----------------------------------------------------------------
 
 export async function startFixtures(port = 0): Promise<Fixtures> {
@@ -162,6 +182,17 @@ export async function startFixtures(port = 0): Promise<Fixtures> {
     // mutator (same in-memory timeline as fake-tweets, server-rendered)
     if (route === "GET /mutator") return sendHtml(res, mutatorPage(tweets, url.searchParams.get("layout") ?? "v1"));
     if (route === "GET /mutator/api/timeline") return sendJson(res, { tweets });
+
+    // navigation-guard fixtures
+    if (route === "GET /redirect") {
+      const to = url.searchParams.get("to") ?? "/fake-tweets";
+      res.writeHead(302, { location: to });
+      res.end();
+      return;
+    }
+    if (route === "GET /popup") {
+      return sendHtml(res, popupPage(url.searchParams.get("to") ?? "/fake-tweets"));
+    }
 
     // slowpoke
     if (route === "GET /slowpoke") {

@@ -1,5 +1,10 @@
 # S1 — DB layer + outbox event bus + dedupe + lineage + PolicyGate
 
+> **Historical build order, superseded in part by EC1 (migration `0007`).** The `edges` table
+> this file describes no longer exists: events are workflow-version entities keyed
+> `(version, type)`, tasks declare `emits`/`consumes`, and dispatch routes by type. Current
+> model: `docs/event-centric-model.md`.
+
 You are implementing subphase S1 of the agentic browsing platform. Read, in order:
 1. This file (authoritative task spec).
 2. `docs/impl-phases.md` — "§0 policy precondition" and "Phase 1" sections.

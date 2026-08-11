@@ -57,6 +57,13 @@
       "when": 1786357268695,
       "tag": "0007_event_entity",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1786429956882,
+      "tag": "0008_neat_the_liberteens",
+      "breakpoints": true
     }
   ]
 }

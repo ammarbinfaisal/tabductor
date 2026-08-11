@@ -304,6 +304,63 @@ export const schedules = pgTable("schedules", {
   enabled: boolean("enabled").notNull().default(true),
 });
 
+/**
+ * The trace: the ordered log of one run (§14). Traces are the assertion surface for the
+ * system tests and the compiler's input in Phase 6, so the columns are deliberately dumb —
+ * a kind, a JSON payload, and an optional pointer to a blob that was too big to inline.
+ *
+ * `seq` is assigned by the writer (`createTraceRecorder`), monotonic within a run, and the
+ * second half of the primary key: ordering is a property of the row, not of `created_at`,
+ * because a buffered flush writes several entries inside one millisecond.
+ *
+ * Storage of each category is opt-out per task (§14) and evaluated at *write* time — a
+ * category the user turned off is never written, rather than written and later deleted.
+ */
+export const TRACE_KINDS = [
+  "navigation",
+  "action",
+  "network",
+  "policy_denied",
+  "llm",
+] as const;
+export type TraceKind = (typeof TRACE_KINDS)[number];
+
+export const traceEntries = pgTable(
+  "trace_entries",
+  {
+    runId: text("run_id")
+      .notNull()
+      .references(() => runs.id, { onDelete: "cascade" }),
+    seq: integer("seq").notNull(),
+    kind: text("kind").$type<TraceKind>().notNull(),
+    payloadJson: jsonb("payload_json").notNull().default({}),
+    /** Set when the entry's payload was offloaded to the blob store (screenshots, bodies). */
+    blobRef: text("blob_ref"),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.runId, t.seq] })],
+);
+
+/**
+ * A blob a run produced, addressed by `blob_ref` in the blob store. Separate from
+ * `trace_entries` because artifacts outlive the entry that referenced them and are listed
+ * on their own (the run inspector's screenshot strip, U1.5).
+ */
+export const artifacts = pgTable(
+  "artifacts",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id")
+      .notNull()
+      .references(() => runs.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    blobRef: text("blob_ref").notNull(),
+    meta: jsonb("meta").notNull().default({}),
+    createdAt: createdAt(),
+  },
+  (t) => [index("artifacts_run_idx").on(t.runId)],
+);
+
 /** `ctx.state` (§12) — per-task key/value, used by emitIfNew and compiled scripts. */
 export const taskState = pgTable(
   "task_state",
@@ -318,6 +375,8 @@ export const taskState = pgTable(
   (t) => [primaryKey({ columns: [t.taskId, t.key] })],
 );
 
+export type TraceEntryRow = typeof traceEntries.$inferSelect;
+export type ArtifactRow = typeof artifacts.$inferSelect;
 export type EventRow = typeof events.$inferSelect;
 export type NewEvent = typeof events.$inferInsert;
 export type OutboxRow = typeof outbox.$inferSelect;

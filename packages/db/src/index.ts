@@ -13,12 +13,17 @@ export {
   schedules,
   taskState,
   workflowShares,
+  traceEntries,
+  artifacts,
 } from "./schema.js";
-export { RUN_STATUSES, MISSED_POLICIES, OVERLAP_POLICIES } from "./schema.js";
+export { RUN_STATUSES, MISSED_POLICIES, OVERLAP_POLICIES, TRACE_KINDS } from "./schema.js";
 export type {
   RunStatus,
   MissedPolicy,
   OverlapPolicy,
+  TraceKind,
+  TraceEntryRow,
+  ArtifactRow,
   EventRow,
   NewEvent,
   OutboxRow,

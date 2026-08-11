@@ -1,20 +1,11 @@
 # Shared Workflows — A Public Read Surface
 
-> **Amendment (2026-08-10, `event-centric-model.md` / EC1):** visibility mechanics moved
-> with the event entity. `public` now lives on the workflow-version-scoped `event_defs`
-> row (one per `(version, type)`), declared as `graph.events[].public` in the document —
-> not on per-emitter emit declarations, which no longer exist. Everything this document
-> *means* survives unchanged: opt-in per event type, default deny, versioned with the
-> graph, deny-wins enforcement from the current version, SQL-level filtering, whole shape
-> or nothing. The structural claim about platform events also survives: system types have
-> no event entity, so nothing can mark them public. `publicGraph` now returns an `events`
-> entity list plus per-task `emits`/`consumes` type lists, with `edges` derived for
-> rendering; the visibility preview lists events with their emitters.
-
-**Version:** 0.1 (extends `techical_plan.md` 0.5)
+**Version:** 0.2 (extends `techical_plan.md` 0.6)
 **Status:** Specifies **shares** — an unguessable link that lets anyone watch a workflow's graph, triggers, runs, events and produced assets, live or historical, without an account. Covers the token model, the per-event-type visibility manifest, the SQL-level filtering rule that makes the manifest enforceable, the public HTTP posture, and Threats 13–17.
 
 Decisions incorporated from review: visibility is **opt-in per event type, default deny**; the manifest is versioned with the graph, not stored beside it; the whole graph shape is shared or nothing is; run error text is never public.
+
+**Changes in 0.2 (2026-08-11), against `event-centric-model.md`:** visibility rides the event entity. `public` is a column on the workflow-version-scoped `event_defs` row, one per `(version, type)`, declared as `graph.events[].public` — not on a per-emitter declaration, which no longer exists. Nothing this document *means* changed: opt-in per event type, default deny, versioned with the graph, deny-wins from the current version, filtered in SQL, whole shape or nothing. The structural claim about platform events survives too — system types have no event entity, so nothing can mark them public.
 
 ---
 
@@ -60,7 +51,7 @@ A share is per **workflow**. Deep links to a run or an event live inside it (`/s
 
 ### 3.1 Three tiers, fixed
 
-**Always visible once shared.** Workflow name; graph shape — nodes with their `name`, `kind` and `mode`, and all edges with their event types; schedules (cron expression, timezone, missed and overlap policy); run rows as `{status, attempt, started_at, ended_at, duration}`; the event timeline as `{type, occurred_at, source node}`; lineage edges between events.
+**Always visible once shared.** Workflow name; graph shape — nodes with their `name`, `kind` and `mode`, the event types the version declares, and each node's `emits`/`consumes` lists (which is what the rendered map is derived from); schedules (cron expression, timezone, missed and overlap policy); run rows as `{status, attempt, started_at, ended_at, duration}`; the event timeline as `{type, occurred_at, source node}`; lineage edges between events.
 
 **Never visible.** Task prompts. `limits_json` in any form, including StubExecutor scripts and Python source. CDP endpoints, secrets, secret names, grants, MCP server configuration. Workflow and task **ids** are replaced by share-scoped opaque ids so a leaked share cannot be used to address rows through some future authenticated endpoint. And — the one that is easy to get wrong — **`runs.error` free text** (§3.3).
 
@@ -68,12 +59,14 @@ A share is per **workflow**. Deep links to a run or an event live inside it (`/s
 
 ### 3.2 The manifest lives in the graph document
 
-Visibility is declared on the emitted event, in the graph document that `publishVersion` already compiles:
+Visibility is declared on the event entity, in the graph document that `publishVersion` already compiles:
 
 ```ts
-// packages/engine/src/graph.ts — GraphTask.emits[]
-{ type: "tweet.detected", packetSchema: {...}, public: false }   // default
+// packages/engine/src/graph.ts — GraphEvent, in graph.events[]
+{ type: "tweet.detected", description: "one detected tweet…", public: false }   // default
 ```
+
+One declaration per type per version, whoever emits it — so two emitters of `tweet.detected` cannot disagree about whether it is public, which under the old per-emitter model was resolvable only by unioning.
 
 `publishVersion` projects it into a new column, `event_defs.public boolean not null default false`, exactly as it already projects packet schemas and schedules. Two properties follow, and they are the reason the manifest is not a side table keyed on `(workflow_id, event_type)`:
 
@@ -92,13 +85,13 @@ A bounded set is safe to render because it cannot carry content. The owner still
 
 ### 3.4 The whole graph, or nothing
 
-There is no per-node hide flag. A partially hidden graph is a misleading graph: edges into the hidden node dangle, its existence is inferable from the gap, and the viewer is shown a topology that is not the topology. If a node is too sensitive to show, the workflow is too sensitive to share.
+There is no per-node hide flag. A partially hidden graph is a misleading graph: the events the hidden node consumes and emits are still declared, so its slot in the topology is inferable from the gap, and the viewer is shown a shape that is not the shape. If a node is too sensitive to show, the workflow is too sensitive to share.
 
 What *is* shown at share-creation time, and again at publish whenever the manifest changes, is a **visibility preview**: the exact list of node names, event types, and packet fields that a viewer will be able to read. Widening is a deliberate act with a diff in front of it (§16 Threat 13).
 
 ### 3.5 System events
 
-Platform events — `run.completed`, `run.failed`, `system.loop_budget_exceeded`, `schedule.fired`, `manual.trigger` — appear in the public timeline as **type and timestamp only**. Their packets are never public and there is no flag that could make them so: `public` lives on `event_defs`, which only exists for user-declared emissions. System events have no `event_defs` row, so the structure of the schema is what enforces this, not a check somewhere.
+Platform events — `run.completed`, `run.failed`, `system.loop_budget_exceeded`, `schedule.fired`, `manual.trigger` — appear in the public timeline as **type and timestamp only**. Their packets are never public and there is no flag that could make them so: `public` lives on `event_defs`, which only exists for event types the workflow version declares. System events have no `event_defs` row, so the structure of the schema is what enforces this, not a check somewhere.
 
 This is also how the user's ask for "triggers" is met: a cron fire is a visible `schedule.fired` at a visible timestamp against a visible schedule, and a hand-trigger is a visible `manual.trigger`.
 
@@ -118,7 +111,7 @@ New functions in `packages/engine/src/queries.ts`, each taking a **required** `w
 
 | Function | Returns |
 |---|---|
-| `publicGraph(db, versionId)` | Nodes (name, kind, mode, position), edges, schedules. No prompts, no limits |
+| `publicGraph(db, versionId)` | Nodes (name, kind, mode, position) with their `emits`/`consumes` type lists, the version's event entities (type, visibility, schema where public — never the description, which is authored content), schedules. No prompts, no limits |
 | `publicRunList(db, {workflowId, cursor, limit})` | Status, attempt, timings, error **class** |
 | `publicEventList(db, {workflowId, publicTypes, cursor, limit})` | Type, timestamp, source node; packet only where the type is public |
 | `publicEventGet(db, {workflowId, publicTypes, eventId})` | One event plus depth-capped lineage; packets of non-public types omitted, their existence and type retained |
@@ -207,18 +200,18 @@ Two new §17.2 metric rows, under the binding-name rule:
 workflow_shares(id, workflow_id, token_sha256 unique, token_prefix,
                 created_at, revoked_at)                  -- token never stored in plaintext
 
--- event_defs gains one column:
-event_defs.public boolean not null default false          -- projected from graph_json
+-- event_defs gains one column, on the row keyed (workflow_version_id, event_type):
+event_defs.public boolean not null default false          -- projected from graph.events[]
 ```
 
 That is the whole schema change. There is no `share_grants`, no per-asset ACL and no public-access log table: asset visibility is derived (§4.4), and access counting is a metric, not a row — a share view is not product data, and writing a row per public page load would make a DoS cheaper.
 
 ## 9. Build Plan Placement
 
-The prerequisite is S2c, which is done. This track is independent of S3–S8 and can land next.
+S2d and U0.5 are **done**; this track is independent of S3–S8 and did land next, as planned.
 
-- **S2d — share model + public read API.** Migration (`workflow_shares`, `event_defs.public`), `GraphTask.emits[].public` in the graph document and its projection in `publishVersion`, the four public read models, the share management procedures, the public tRPC router and its context, rate limiting, error-class derivation. System tests are the contract, as always: a non-public event type's packet must be absent from the query result, not merely absent from the response.
-- **U0.5 — public workflow view.** The `/s/[token]` route group. Reuse rather than fork: lift the React Flow node/edge mapping out of `apps/web/src/components/graph-editor.tsx` into a shared module, and parameterize `runs-table.tsx` and `event-feed.tsx` by the fetcher they call, so the public and owner views cannot drift. Share management UI (create, preview, rotate, revoke) in the owner's workflow page. Hook policy unchanged — `usePolling` and `useStoreBridge` only.
+- **S2d — share model + public read API.** Migration (`workflow_shares`, `event_defs.public`), the visibility flag in the graph document and its projection in `publishVersion`, the four public read models, the share management procedures, the public tRPC router and its context, rate limiting, error-class derivation. System tests are the contract, as always: a non-public event type's packet must be absent from the query result, not merely absent from the response.
+- **U0.5 — public workflow view.** The `/s/[token]` route group. Reuse rather than fork: the public view and the editor render the same shared topology map and the same event cards, and `runs-table.tsx`/`event-feed.tsx` are parameterized by the fetcher they call, so the two views cannot drift. Share management UI (create, preview, rotate, revoke) in the owner's workflow page. Hook policy unchanged — `usePolling` and `useStoreBridge` only.
 - **S5d addendum.** The asset store's subphase must implement the public asset derivation and the blob route headers (§4.4, §5.2) as part of its own deliverables. Assets are the one part of the user's ask this track cannot deliver on its own.
 
 ## 10. Decisions and Open Questions

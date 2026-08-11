@@ -47,8 +47,9 @@ missing, and say so in the report). MCP, assets, secrets do not exist on this no
 
 2. **Agent loop** (`loop.ts`): `runAgentLoop({llm, session, task, triggerPacket, trace, budget})`.
    System prompt assembled from, in order: the task prompt; the trigger event's packet
-   fields injected as named variables **per the emitting node's declared schema** (event_defs);
-   the task's declared emit event types + packet schemas ("what you may emit"); tool docs.
+   fields injected as named variables **per that event type's compiled schema** — one
+   `event_defs` row per `(workflow_version_id, event_type)`, not per emitter; the task's
+   `emits` types with their schemas ("what you may emit"); tool docs.
    Perception text and packet values are wrapped in explicit data delimiters and labelled
    as untrusted content (§16 Threat 1d — helps, never load-bearing). Loop: perception →
    `llm.complete` → execute tool calls → append results → repeat. Step budget from
@@ -57,8 +58,8 @@ missing, and say so in the report). MCP, assets, secrets do not exist on this no
    duplicate timer here. Every LLM call → trace entry (prompt hash, usage, tool-call
    summary — S4a adapter already does this when given the recorder).
 
-3. **Structured emit**: `emit` validates the packet against the node's `event_defs` schema
-   (ajv) BEFORE publishing. Invalid → the validation error is returned as the TOOL RESULT
+3. **Structured emit**: `emit` rejects a type the task does not declare in `emits`, then
+   validates the packet against that event's `event_defs` schema (ajv) BEFORE publishing. Invalid → the validation error is returned as the TOOL RESULT
    (not a run failure) so the model corrects within its step budget; valid → outbox publish
    with `causation_id` = trigger event. `dedupeKey` routes through the bus side-effect
    dedupe (`emitIfNew` semantics, §6). Emitted events → trace.

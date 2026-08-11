@@ -1,19 +1,18 @@
 # LLM Graph Compilation — One Prompt to a Running, Self-Optimizing Workflow
 
-> **Amendment (2026-08-10, `event-centric-model.md`):** the wiring model changed under
-> this document. Events are now first-class workflow-version entities; tasks declare
-> `consumes`/`emits` by type; there are no authored edges — topology is derived. Read
-> "edges with event-type bindings" (P1) as "event entities + trigger/emit bindings", and
-> §5 check 3 as: every *emit* references a declared event (fail); consumed-but-never-
-> emitted is advisory, because external/system events are legitimate. The P3 packet-schema
-> pipeline shipped early in minimal form (publish-time compiler with carry-forward hashing
-> and a per-event compile report — the seed of §5's report artifact); P3's store-schema
-> half and the rest of P1–P5 are unchanged and still S8.
-
-**Version:** 0.1 (extends `techical_plan.md` 0.2)
-**Status:** Specifies the third node kind (**decision**), the **workflow data store** (per-workflow Postgres schema + role pair), and the **graph compiler** — the save-time LLM pipeline that turns a plain-language intent into a checked, versioned graph: node prompts, kinds, grants, packet schemas, and store schema. Ends with how this composes with the §11 script compiler into a single compilation ladder.
+**Version:** 0.2 (extends `techical_plan.md` 0.6)
+**Status:** Specifies the third node kind (**decision**), the **workflow data store** (per-workflow Postgres schema + role pair), and the **graph compiler** — the LLM pipeline that turns a plain-language intent into a checked, versioned graph: node prompts, kinds, grants, event declarations, and store schema. Ends with how this composes with the §11 script compiler into a single compilation ladder.
 
 Decisions incorporated from review: decision node accepted as a third kind; store is a Postgres schema per workflow (not SQLite, not a separate database); store schema compiled from a prompt like packet schemas (tech plan Decision #2); DB roles per workflow as defense in depth; decision nodes are schedule- **and** event-triggered.
+
+**Changes in 0.2 (2026-08-11), against `event-centric-model.md`:** this document is written
+against the event-centric wiring model rather than the edge model it was drafted on. Events are
+workflow-version entities; tasks declare `consumes`/`emits` by type; there are no authored edges,
+so P1 produces event entities and bindings, and the §5 checks that walked edges now walk
+declarations. **P3's packet-schema half has shipped** as EC1 — the publish-time compiler with
+carry-forward hashing, an ajv-strict gate and a per-event compile report — so what remains of P3
+here is the store schema, compiled in the same pass for the naming-coherence reason §4.2 gives.
+The rest of P1–P5 is unchanged and still S8.
 
 ---
 
@@ -26,7 +25,8 @@ L0  user intent            one prompt, or conversational edits
  │        graph compiler (LLM, save time)
  │        ▼ deterministic gate: schema/DDL/graph lints          §5
 L1  graph definition       nodes + kinds + prompts + grants(proposed)
- │                         + packet schemas + store schema + edges + schedules
+ │                         + event entities (description → packet schema)
+ │                         + emits/consumes bindings + store schema + schedules
  │        script compiler (LLM, from traces, §11)
  │        ▼ deterministic gate: lint, sandbox, guards
 L2  compiled JS            per browser task (and later, decision task)
@@ -54,8 +54,8 @@ The registries remain **disjoint by design** where it matters: only asset nodes 
 
 Kind-constraint updates to tech plan §5:
 
-- Schedules may bind to `kind=browser` **or `kind=decision`**. Asset nodes remain event-only.
-- Edges may still connect any kind to any kind.
+- Schedules may bind to `kind=browser` **or `kind=decision`**. Asset nodes remain event-only — an asset node must declare at least one `consumes` type.
+- Any kind may consume any event type, whichever kind emitted it. Routing is by type alone (`event-centric-model.md` §2), so kind places no constraint on who may hear whom.
 - Browser nodes get **no store tools at all**. The triangle is: decision reads, asset writes, browser neither. Data crosses node boundaries only via validated events, as before.
 
 ### 2.2 A decision is a function of (stored state, trigger packet)
@@ -65,9 +65,9 @@ Both inputs are optional per invocation, neither is optional in the design:
 - **Cron-triggered:** the fire carries an empty packet (§7 of the tech plan); the decision is a function of stored state alone. "Every night, find the next 50 unvisited tweets and emit `browse.request` for each."
 - **Event-triggered:** the trigger packet's declared fields are injected into the prompt context exactly as for any consuming node (Decision #2 mechanics, unchanged). The decision is then a join of packet against state. Examples:
   - `run.completed` (system event) from the browser task triggers the decision node to plan the next batch — a backfill loop, bounded by the existing loop budget (§5 graph rules).
-  - `tweet.detected` triggers a decision node that consults a stored ranking table and emits `tweet.relevant` only for accounts marked high-priority — stateful routing that edge predicates (stateless, per-packet) cannot express.
+  - `tweet.detected` triggers a decision node that consults a stored ranking table and emits `tweet.relevant` only for accounts marked high-priority — stateful routing that a stateless per-packet predicate cannot express.
 
-Decision nodes and edge predicates are complementary, not competing: predicates filter one packet with no history; decision nodes filter *with* history. The open question on edge predicates in v1 (tech plan §18 open #1) is unaffected.
+Decision nodes and mechanical packet filtering are complementary, not competing: a predicate filters one packet with no history; a decision node filters *with* history. That open question (tech plan §18 open #1) survives the loss of edges, but its shape changed — a predicate has no edge row to hang on, so if it returns it attaches to a task's `consumes` declaration, filtering per (consumer, type) rather than per wire. Nothing in this section depends on which way it resolves.
 
 ### 2.3 Tool contract
 
@@ -78,7 +78,7 @@ Decision nodes and edge predicates are complementary, not competing: predicates 
 - Results are returned to the agent **delimited as data** (same demarcation discipline as MCP results, §13) and **capped**: first N rows plus a count ("… and 4,112 more; refine the query"), mirroring the `network.list` truncation pattern (§9). No unbounded result set ever enters context.
 - Per-run query budget (default: 10 queries) enforced by the runtime, like all resource limits (§8).
 
-`emit(type, packet)`: unchanged; packets validated against the emitting node's declared schema; `emitIfNew` dedupe semantics available as everywhere else.
+`emit(type, packet)`: unchanged; the type must be one the node declares in `emits`, and the packet is validated against that event's compiled schema; `emitIfNew` dedupe semantics available as everywhere else.
 
 ### 2.4 Compilability (deliberately deferred, deliberately not forbidden)
 
@@ -163,7 +163,7 @@ One prompt in, a runnable workflow out:
 
 > "Study @acmecorp's tweet history. Every night, work through older tweets in batches of 50, turn each into a markdown research note, and keep track of what's been covered so we never re-read a tweet."
 
-From this the compiler produces a draft graph — topology, one prompt per node, packet schemas, store schema, schedules, and **proposed** grants — rendered in the React Flow editor for review. The user edits conversationally ("also skip retweets", "make the notes PDFs instead"); each edit recompiles a new draft. Save runs the deterministic gate (§5); publish applies migrations and activates the version. From there the runtime takes over and the §11 script compiler lowers the hot paths to JS without further authoring.
+From this the compiler produces a draft graph — nodes, event entities with their description prompts, emit/consume bindings, one prompt per node, store schema, schedules, and **proposed** grants — rendered in the declarative editor (U1's Events/Nodes panels and derived map) for review. The user edits conversationally ("also skip retweets", "make the notes PDFs instead"); each edit recompiles a new draft. Save runs the deterministic gate (§5); publish compiles the packet schemas, applies migrations and activates the version. From there the runtime takes over and the §11 script compiler lowers the hot paths to JS without further authoring.
 
 The compiler is an authoring assistant with a checker, not an authority: **it can propose anything and grant nothing** (§4.3).
 
@@ -171,16 +171,16 @@ The compiler is an authoring assistant with a checker, not an authority: **it ca
 
 The compiler runs as staged passes over one evolving draft. Staging matters less for the LLM (it may be one call or several) than for the *contract*: each pass has a defined output that the gate checks independently.
 
-**P1 — Topology.** Nodes with kinds, edges with event-type bindings, schedules. The compiler is prompted with the kind taxonomy and constraints (§2.1) and the standard shapes — notably the plan/act/record triangle below, which the canonical example instantiates. Cycles are legal but flagged (Decision #6) and require a loop budget.
+**P1 — Topology.** Nodes with kinds, the event entities the workflow needs, each node's `emits`/`consumes` bindings, and schedules. There is nothing to draw: topology falls out of the declarations (`event-centric-model.md` §1.3), so P1's output is two lists and their cross-references. The compiler is prompted with the kind taxonomy and constraints (§2.1) and the standard shapes — notably the plan/act/record triangle below, which the canonical example instantiates. Cycles are legal but flagged (Decision #6) and require a loop budget.
 
 **P2 — Node prompts.** One task prompt per node, derived from the intent: what to do, when to emit which event, what *not* to do. These are the L1 artifacts the runtime agents actually execute against, so the compiler writes them the way the tech plan writes policy — behavior in the prompt, enforcement in the runtime.
 
 **P3 — Data declarations.** Two outputs, one pass, because they must cohere:
 
-- **Packet schemas** per emitted event — the existing Decision #2 pipeline (free text → JSON Schema, ajv-validated), unchanged.
+- **Event descriptions** — one plain-language description per event entity, which the publish-time compiler lowers to a JSON Schema. **This half has shipped** (EC1): the pipeline, its ajv-strict gate, its carry-forward hash and its per-event report all exist, so P3 authors the *description* and inherits the lowering rather than emitting schemas itself.
 - **Store schema** — DDL plus a typed *table spec* per table (the ajv-checkable analogue of a packet schema, used by `store.insert`/`upsert` validation).
 
-Compiling them together is what keeps names coherent end to end: the compiler sees that `tweet.detected.tweet_id` feeds `visited.tweet_id` and keeps the field name identical rather than drifting to `id` in one place and `tweet_id` in another. The gate then verifies the mechanical parts of that coherence (§5).
+Compiling them together is what keeps names coherent end to end: the compiler sees that `tweet.detected.tweet_id` feeds `visited.tweet_id` and keeps the field name identical rather than drifting to `id` in one place and `tweet_id` in another. The two halves land at different moments — the store schema is fixed at save, the packet schema at publish — so the coherence P3 writes into the descriptions is checked mechanically at both (§5).
 
 **P4 — Grant proposal.** Least-privilege grants per node, derived from what each prompt actually needs: navigation allowlist from the domains the intent names, capability flags from the actions described, store write grants from the tables each asset node populates, MCP allowlist from tools referenced. Emitted as **proposed**, persisted in a pending state, and surfaced as an explicit review checklist in the editor. Nothing executes until the user approves the grant set — see §4.3.
 
@@ -200,24 +200,24 @@ This is the same shape as the rest of the system: LLM authors, deterministic lay
 
 Runs at save, in full, on every version — not a delta check, because cross-references span the whole graph. All checks are mechanical; no LLM judges another LLM here.
 
-1. **Graph shape.** `graph_json` validates against the graph schema (zod). Node refs unique; edges reference existing nodes.
-2. **Kind constraints.** Schedules bind only to `browser`/`decision`; asset nodes have at least one inbound edge; no tool references outside the node's registry in any grant.
-3. **Event wiring.** Every edge's event type is declared by its source node's `event_defs`; every declared packet schema compiles under ajv strict mode; warn on emitted-but-unconsumed events (often intentional), fail on consumed-but-never-emitted.
+1. **Graph shape.** `graph_json` validates against the graph schema (zod). Node refs unique; event types unique within the version.
+2. **Kind constraints.** Schedules bind only to `browser`/`decision`; asset nodes declare at least one `consumes` type; no tool references outside the node's registry in any grant.
+3. **Event wiring.** Every `emits` type references a declared event entity — **fail**, because an undeclared emit passes publish and then fails every run at `validatePacket`. Every declared event has a non-empty description. Consumed-but-never-emitted is **advisory**, not a failure: system events (`run.failed`), `manual.trigger` and schedule fires are legitimate external types no entity declares. Emitted-but-unconsumed stays a warning (often intentional). Schema compilation itself is not checked here — it happens at publish, under its own ajv-strict gate, and reports per event (`event-centric-model.md` §3).
 4. **Store DDL.** Parses; applies cleanly to a scratch schema (create, then rolled back); every table has a primary key; column types from the allowlist (int/bigint/text/bool/timestamptz/date/numeric/jsonb); no triggers, functions, foreign tables, or cross-schema references; table and column names match the table spec exactly.
 5. **Table specs.** Each compiles under ajv; spec fields ↔ DDL columns are bijective; primary key named by the spec exists in the DDL.
 6. **Store references.** Every `store_write_grants` table exists in the spec; every decision node's workflow has a store schema if any `store.*` tool would be exposed; warn on tables no task writes.
 7. **Migration classification.** Diff against the current version's spec → `none | additive | destructive` (§6.2). Destructive requires the author's explicit confirmation flag on this save; absent flag → fail with the diff shown.
 8. **Grant sanity.** Proposed grants reference secrets, MCP tools, and asset paths that exist; no proposed grant conflicts with an account baseline rule (conflict → stripped and reported, not silently kept pending).
 9. **Cycles and budgets.** Cycle detection; any cycle requires an explicit loop budget on the workflow (Decision #6 UI warning becomes a gate failure if no budget set).
-10. **Coherence lints (advisory).** Field-name mismatches across an edge (packet field `tweet_id` vs prompt referencing `tweetId`), prompts naming tables that don't exist. Warnings, not failures — prose references are heuristic.
+10. **Coherence lints (advisory).** Field-name mismatches between an event's description and a consumer's prompt (`tweet_id` described, `tweetId` referenced), prompts naming tables that don't exist. Warnings, not failures — prose references are heuristic.
 
-Output: a **compile report** (per-check pass/warn/fail with locations) stored with the version and rendered in the editor. The report is to the graph compiler what the trace is to the script compiler: the ground truth an author debugs against.
+Output: a **compile report** (per-check pass/warn/fail with locations) stored with the version and rendered in the editor. EC1 ships the per-event slice of this already — publish returns `{events: [{type, status, error?}]}` and the editor deep-links each failure into its description — so S8 widens an existing surface rather than inventing one, and adds the `compile_reports` table the transient version does without. The report is to the graph compiler what the trace is to the script compiler: the ground truth an author debugs against.
 
 ## 6. Versioning
 
 ### 6.1 What pins, what flows
 
-The §5 rule holds and extends: **runs pin the workflow version they started under; new events route against the latest.** A workflow version now snapshots: `graph_json`, tasks (prompts, kinds, limits), event defs, edges, schedules, the store schema artifact, and the approved grant sets. One version, one review, one publish.
+The §5 rule holds and extends: **runs pin the workflow version they started under; new events route against the latest.** A workflow version now snapshots: `graph_json`, tasks (prompts, kinds, limits), event defs with their compiled schemas, the `task_emits`/`task_consumes` bindings, schedules, the store schema artifact, and the approved grant sets. One version, one review, one publish.
 
 The store's *data* is the deliberate exception — it is shared across versions, because it is the workflow's memory. You version the schema and migrate the one store forward; you do not fork data per version.
 
@@ -313,7 +313,7 @@ compile_reports(workflow_version_id, report_json, created_at)
 Fits the existing roadmap after the asset store lands, reusing its two key patterns (path/table write grants; packet-schema compile pipeline):
 
 - **S5g — workflow store + decision kind:** `wfdata` schema/role provisioning, migrator, `store.*` tools with parse gate and role fencing, `kind=decision` registry + trigger constraints, table-spec ajv validation. The canonical example's plan/act/record triangle as the e2e test.
-- **S8 (new) — graph compiler:** passes P1–P5, deterministic gate, compile reports, proposed-grants flow in the control plane, conversational recompile in the editor. Depends on S2c (API) and S7 (real policy evaluator, so approved grants mean something).
+- **S8 (new) — graph compiler:** passes P1–P5, deterministic gate, compile reports, proposed-grants flow in the control plane, conversational recompile in the editor. Depends on S2c (API) and S7 (real policy evaluator, so approved grants mean something). P3's packet-schema half and the per-event report are **already built** (EC1) — S8 reuses `SchemaGenerator` and the publish path rather than adding a second lowering.
 - Decision-node L2 compilation (`ctx.store` in the static runtime, `guard.storeSchema`) is post-S6c, deliberately unscheduled (§2.4).
 
 ## 11. Decisions and Open Questions
@@ -324,7 +324,7 @@ Resolved in this document:
 2. **Store = Postgres schema per workflow, same database** — outbox atomicity is the deciding argument; SQLite/NoSQL/database-per-graph rejected (§3.2).
 3. **Role pair per workflow, no per-graph databases** — DB-level fence behind the tool-layer gate; DDL confined to the publish-time migrator.
 4. **Writes structured + ajv-validated; reads raw SELECT, fenced** (§3.4–3.5). `store.delete` deferred.
-5. **Store schema compiled from a prompt at save time** — same pipeline as packet schemas (Decision #2), one pass so names cohere.
+5. **Store schema compiled from a prompt** — same shape as the packet-schema pipeline (Decision #2), authored in one pass with the event descriptions so names cohere. The two land at different moments: store schema at save, because §5's DDL checks and migration classification need it; packet schemas at publish, per EC1.
 6. **Migrations: additive auto, destructive gated** (drain by default); `schema_version` guard for future compiled decisions.
 7. **Compiled scripts key on task content hash** — graph edits invalidate exactly the tasks they change.
 8. **The compiler proposes grants, never applies them** — approval + baseline remain the only path to `task_grants`.

@@ -6,6 +6,7 @@
       "@tabductor/core": ["packages/core/src/index.ts"],
       "@tabductor/db": ["packages/db/src/index.ts"],
       "@tabductor/bus": ["packages/bus/src/index.ts"],
+      "@tabductor/browser": ["packages/browser/src/index.ts"],
       "@tabductor/engine": ["packages/engine/src/index.ts"],
       "@tabductor/policy": ["packages/policy/src/index.ts"],
       "@tabductor/telemetry": ["packages/telemetry/src/index.ts"],

@@ -1,5 +1,10 @@
 # S2d — Share model + public read API
 
+> **Historical build order, amended by EC1.** Visibility re-homed from the per-emitter
+> declaration to the event entity: `graph.events[].public` → `event_defs.public` keyed
+> `(version, type)`. What the subphase enforces is unchanged. Current model:
+> `docs/event-centric-model.md` §4.
+
 You are implementing subphase S2d. Read, in order:
 1. This file (authoritative).
 2. `docs/sharing.md` — the whole document. It is the design; this file is the build order.

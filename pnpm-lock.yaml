@@ -8,6 +8,9 @@ importers:
 
   .:
     devDependencies:
+      '@tabductor/browser':
+        specifier: workspace:*
+        version: link:packages/browser
       '@tabductor/bus':
         specifier: workspace:*
         version: link:packages/bus
@@ -176,6 +179,34 @@ importers:
       eslint:
         specifier: ^9.0.0
         version: 9.39.5
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
+  packages/browser:
+    dependencies:
+      '@tabductor/core':
+        specifier: workspace:*
+        version: link:../core
+      '@tabductor/db':
+        specifier: workspace:*
+        version: link:../db
+      '@tabductor/policy':
+        specifier: workspace:*
+        version: link:../policy
+      '@tabductor/telemetry':
+        specifier: workspace:*
+        version: link:../telemetry
+      drizzle-orm:
+        specifier: ^0.44.0
+        version: 0.44.7(@opentelemetry/api@1.9.1)(@types/pg@8.20.3)(pg@8.22.0)
+      playwright-core:
+        specifier: ^1.49.0
+        version: 1.62.1
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.13.3
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
@@ -2243,6 +2274,11 @@ packages:
     resolution: {integrity: sha512-8OEwKp5juEvb/MjpIc4hjqfgCNysrS94RIOMXYvpYCdm/jglrKEiAYmiumbmGhCvs+IcInsphYDFwqrjr7398w==}
     hasBin: true
 
+  playwright-core@1.62.1:
+    resolution: {integrity: sha512-wPYSwEBJY9GHraISXqyqtx0na0LpO3XEX7jNDhntbex7tzUS7kLnZsOlFruFJB4Hi/rhDMjXGqHewDZ68nYZVw==}
+    engines: {node: '>=20'}
+    hasBin: true
+
   postcss@8.4.31:
     resolution: {integrity: sha512-PS08Iboia9mts/2ygV3eLpY5ghnUcfLV/EXTOW1E2qYxJKGGBUtNjN76FYHnMs36RmARn41bC0AZmn+rR0OVpQ==}
     engines: {node: ^10 || ^12 || >=14}
@@ -4202,6 +4238,8 @@ snapshots:
       safe-stable-stringify: 2.5.0
       sonic-boom: 4.2.1
       thread-stream: 3.2.0
+
+  playwright-core@1.62.1: {}
 
   postcss@8.4.31:
     dependencies:

@@ -18,6 +18,7 @@ export type RunStatus = "succeeded" | "failed" | "timed_out" | "cancelled";
 export type FireResult = "fired" | "skipped_overlap" | "skipped_missed" | "queued";
 export type ShareViewResult = "ok" | "unknown" | "revoked" | "rate_limited";
 export type ShareAssetOutcome = "ok" | "denied" | "not_found";
+export type PolicyCheck = "navigation" | "action" | "network_read" | "mcp_call";
 
 export type Metrics = {
   /** How long an event waited in the outbox before a dispatcher delivered it. */
@@ -41,6 +42,14 @@ export type Metrics = {
   shareViews: { add: (result: ShareViewResult) => void };
   /** Public asset reads. No call site until S5d resolves assets through a share. */
   shareAssetReads: { add: (outcome: ShareAssetOutcome) => void };
+  /**
+   * Every verdict the gate returns (S3a). `result="deny"` on the security-signals board is
+   * an agent trying to leave its allowlist, which is a thing to be told about.
+   *
+   * No `rule` label yet, deliberately: under `AllowAllGate` there is exactly one rule, and
+   * S7 is where the label becomes worth its cardinality (§17.2).
+   */
+  policyVerdicts: { add: (labels: { check: PolicyCheck; result: "allow" | "deny" }) => void };
 };
 
 export function createMetrics(meter: Meter): Metrics {
@@ -57,6 +66,7 @@ export function createMetrics(meter: Meter): Metrics {
   const crashRecoveredRuns = meter.createCounter("crash_recovered_runs_total");
   const shareViews = meter.createCounter("share_views_total");
   const shareAssetReads = meter.createCounter("share_asset_reads_total");
+  const policyVerdicts = meter.createCounter("policy_verdicts_total");
 
   return {
     outboxDispatchLag: { record: (seconds) => outboxDispatchLag.record(seconds) },
@@ -79,5 +89,6 @@ export function createMetrics(meter: Meter): Metrics {
     crashRecoveredRuns: { add: (count = 1) => crashRecoveredRuns.add(count) },
     shareViews: { add: (result) => shareViews.add(1, { result }) },
     shareAssetReads: { add: (outcome) => shareAssetReads.add(1, { outcome }) },
+    policyVerdicts: { add: (labels) => policyVerdicts.add(1, { ...labels }) },
   };
 }

@@ -1,9 +1,10 @@
 # The Event-Centric Model — events as entities, prompts as the only authoring surface
 
-**Version:** 1.0
-**Status:** Implemented (EC1, 2026-08-10). Supersedes the edge-based wiring model of
-`techical_plan.md` §4–§5 and amends `graph-compilation-llm.md` §4–§5 where each speaks of
-authored edges or per-emitter packet schemas. The rest of both documents stands.
+**Version:** 1.1
+**Status:** Implemented (EC1, 2026-08-10). This is the wiring model of record. It replaced the
+edge-based model, and `techical_plan.md` (0.6) and `graph-compilation-llm.md` (0.2) are now
+written against it — this document carries the routing, publish-compiler and editor detail
+behind their summaries rather than sitting as an amendment over them.
 
 ---
 
@@ -118,8 +119,8 @@ exercisable the moment it publishes, with nothing hand-written.
 ## 6. The editor consequence
 
 Since the authored artifact is declarations, the editor stops being a canvas. The U1
-redesign (design track, `JOURNEY.md`/`DESIGN.md` to come) replaces React Flow with three
-panels — **Events** (cards: type, description prompt, visibility, read-only compiled
+redesign (design track: `JOURNEY.md` → a locked `DESIGN.md`, "Ruled Ink") replaced React
+Flow with three panels — **Events** (cards: type, description prompt, visibility, read-only compiled
 schema), **Nodes** (cards: kind, prompt, trigger chips = schedule/consumes, emit chips) —
 and a **derived map**: an auto-laid-out, read-only rendering of the bipartite topology
 (dependency-free SVG; cycles annotated with the loop-budget note). Wiring is toggling a

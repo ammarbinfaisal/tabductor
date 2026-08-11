@@ -12,6 +12,7 @@ export {
   createMetrics,
   type FireResult,
   type Metrics,
+  type PolicyCheck,
   type RunStatus,
   type ShareAssetOutcome,
   type ShareViewResult,

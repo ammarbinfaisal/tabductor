@@ -1,5 +1,10 @@
 # S2a — Workflow engine core (state machine, graph eval, StubExecutor)
 
+> **Historical build order, superseded in part by EC1 (migration `0007`).** The `edges` table
+> this file describes no longer exists: events are workflow-version entities keyed
+> `(version, type)`, tasks declare `emits`/`consumes`, and dispatch routes by type. Current
+> model: `docs/event-centric-model.md`.
+
 You are implementing subphase S2a. Read, in order:
 1. This file (authoritative).
 2. `docs/impl-phases.md` — Phase 2.

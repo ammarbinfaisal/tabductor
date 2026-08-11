@@ -1,5 +1,23 @@
 # S3a — Browser driver + navigation guard + trace recorder
 
+> **Built, with one deviation from the deliverable below.** `context.route('**/*')` alone does
+> *not* catch redirects: `route.continue()` hands the chain to Chromium, which follows it
+> internally, so the handler only ever sees the first URL. Measured, not assumed. The guard is
+> therefore two layers — a raw CDP `Fetch` session per page (documents only) that sees every
+> hop including redirects, plus `context.route` for the one request CDP cannot be attached in
+> time for: a popup's opening navigation, which arrives with no frame at all and whose `page`
+> event does not fire until it commits. That request is not probed ahead of time; it is
+> answered with an inert stub at the requested URL, which births the popup without touching
+> the network. The popup is then attributed to its opener via `page.opener()` (falling back to
+> the conjunction of every live hook when `noopener` severs attribution), guarded, and the
+> navigation re-issued for real — so the actual redirect chain is checked hop by hop. A popup
+> denied before any real document commits is closed; a non-GET popup birth (form
+> `target="_blank"`) is refused outright, since its body cannot survive the stub. See the
+> header comment in `packages/browser/src/playwright-driver.ts`, including the two structural
+> costs it names (the context-wide route tax on the user's own tabs, and multi-hook recording
+> for unattributable popups). S3b's network observer should extend the CDP session that
+> already exists rather than adding a third interception point.
+
 You are implementing subphase S3a. Read, in order:
 1. This file (authoritative).
 2. `docs/impl-phases.md` — Phase 3 (driver interface, navigation guard, trace recorder bullets).

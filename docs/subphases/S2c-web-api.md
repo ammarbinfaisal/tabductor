@@ -1,5 +1,10 @@
 # S2c — Next.js + tRPC control-plane API
 
+> **Historical build order, superseded in part by EC1 (migration `0007`).** The `edges` table
+> this file describes no longer exists: events are workflow-version entities keyed
+> `(version, type)`, tasks declare `emits`/`consumes`, and dispatch routes by type. Current
+> model: `docs/event-centric-model.md`.
+
 You are implementing subphase S2c. Read, in order:
 1. This file (authoritative).
 2. `docs/subphases/ROADMAP.md` — stack decisions (Next.js/tRPC/zod/Drizzle, React hook policy).
