@@ -15,6 +15,8 @@ export {
   workflowShares,
   traceEntries,
   artifacts,
+  cdpEndpoints,
+  endpointLeases,
 } from "./schema.js";
 export { RUN_STATUSES, MISSED_POLICIES, OVERLAP_POLICIES, TRACE_KINDS } from "./schema.js";
 export type {
@@ -37,6 +39,9 @@ export type {
   WorkflowVersionRow,
   ScheduleRow,
   WorkflowShareRow,
+  CdpEndpointRow,
+  NewCdpEndpoint,
+  EndpointLeaseRow,
 } from "./schema.js";
 export { createDb, migrateDb, migrationsFolder, type Db, type DbHandle } from "./client.js";
 export { createMigratedTestDb, type MigratedTestDb } from "./test-db.js";

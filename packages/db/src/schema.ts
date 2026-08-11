@@ -361,6 +361,41 @@ export const artifacts = pgTable(
   (t) => [index("artifacts_run_idx").on(t.runId)],
 );
 
+/**
+ * A user's CDP endpoint (§8, §14): one physical browser connection, pooled and
+ * health-checked by S3b's endpoint pool (`packages/browser/src/pool.ts`).
+ *
+ * -- TODO S7: encrypt `ws_url`. It is a bearer credential (§16 Threat 5) — plaintext is
+ * acceptable this phase only because the product is single-user local; nothing here is a
+ * security decision that survives multi-tenant.
+ */
+export const cdpEndpoints = pgTable("cdp_endpoints", {
+  id: text("id").primaryKey(),
+  userId: text("user_id"),
+  wsUrl: text("ws_url").notNull(),
+  label: text("label"),
+  healthy: boolean("healthy").notNull().default(true),
+  lastCheckedAt: ts("last_checked_at"),
+  /** Waiters beyond this many queued runs fail `endpoint_queue_full` (§15 backpressure). */
+  maxQueueDepth: integer("max_queue_depth").notNull().default(10),
+  createdAt: createdAt(),
+});
+
+/**
+ * Per-endpoint serialization (§8): one row means one run holds the endpoint. A DB row
+ * rather than an in-memory lock so the claim survives an engine restart — the next process
+ * to boot sees the same row and the same heartbeat. `endpoint_id` alone is the primary key,
+ * which is the serialization itself: a second run cannot insert its own row while this one
+ * exists, only steal it once `heartbeat_at` goes stale (the pool's atomic claim query).
+ */
+export const endpointLeases = pgTable("endpoint_leases", {
+  endpointId: text("endpoint_id")
+    .primaryKey()
+    .references(() => cdpEndpoints.id, { onDelete: "cascade" }),
+  runId: text("run_id").notNull(),
+  heartbeatAt: ts("heartbeat_at").notNull().defaultNow(),
+});
+
 /** `ctx.state` (§12) — per-task key/value, used by emitIfNew and compiled scripts. */
 export const taskState = pgTable(
   "task_state",
@@ -390,3 +425,6 @@ export type WorkflowRow = typeof workflows.$inferSelect;
 export type WorkflowVersionRow = typeof workflowVersions.$inferSelect;
 export type ScheduleRow = typeof schedules.$inferSelect;
 export type WorkflowShareRow = typeof workflowShares.$inferSelect;
+export type CdpEndpointRow = typeof cdpEndpoints.$inferSelect;
+export type NewCdpEndpoint = typeof cdpEndpoints.$inferInsert;
+export type EndpointLeaseRow = typeof endpointLeases.$inferSelect;

@@ -191,5 +191,11 @@ it("a denial is recorded even when the task opted out of storing navigations", a
   await page.goto(BLOCKED).catch(() => undefined);
 
   const rows = await waitForTrace(rig, sess, "the denial", (r) => denials(r).length > 0);
-  expect(rows.map((r) => r.kind)).toEqual(["policy_denied"]);
+  // The blocked request still fails at the network layer (Chromium reports it as
+  // `requestfailed`, same as any other refused request), so the observer (S3b) still
+  // produces a `network` row for it — unaffected, because this task only opted out of
+  // `navigations`/`actions`, and a failed request is not a security signal the way the
+  // denial itself is, so it is not exempt from the `network` flag the way `policy_denied` is
+  // exempt from every flag.
+  expect(rows.map((r) => r.kind)).toEqual(["policy_denied", "network"]);
 });

@@ -55,9 +55,14 @@ it("drives a real CDP endpoint end to end and traces what it did", async () => {
 
   // Ordering is the assertion: `seq` is what the Phase 6 checker reads traces by.
   expect(rows.map((r) => r.seq)).toEqual([...rows.keys()]);
+  // Two `network:` rows join the sequence (S3b) — the document request and the timeline
+  // XHR fake-tweets fires — landing wherever their response settled relative to the action
+  // that was in flight when it did, which is not necessarily after that action's own entry.
   expect(rows.map((r) => `${r.kind}:${payloadOf(r).action ?? payloadOf(r).cause ?? ""}`)).toEqual([
     "navigation:initial",
+    "network:",
     "action:goto",
+    "network:",
     "action:waitFor",
     "action:queryAll",
     "action:screenshot",

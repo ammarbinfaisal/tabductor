@@ -47,6 +47,37 @@ export type Page = {
   close: () => Promise<void>;
 };
 
+/**
+ * §9 step 1's normalized shape, minus `index` — indexing is a session-level ordinal (a tab
+ * opened later must not collide with one still generating traffic on an earlier tab), so it
+ * is assigned by whatever holds `network`, not by the driver, which only sees one page's
+ * traffic at a time.
+ */
+export type NetworkRecord = {
+  method: string;
+  url: string;
+  resourceType: string;
+  status: number | null;
+  timings: { startedAt: number; endedAt: number | null; durationMs: number | null };
+};
+
+/** What `NetworkHooks.onSettled` hands back for a request that got a response. */
+export type NetworkBody = { bytes: Buffer; mime: string };
+
+/**
+ * Fired twice for a request that gets a response, once for one that doesn't. `onStart` fires
+ * first, with `status: null` — §9 step 2 requires a pending request to already be listable,
+ * so the record has to exist before its outcome does. `onSettled` fires once more, with the
+ * *same* `record` reference now mutated in place (status/timings filled in), so a caller that
+ * kept the reference from `onStart` sees the update without a second lookup. `body` resolves
+ * the response body lazily — nothing here has read it yet — and rejects for a failed request,
+ * which never gets one.
+ */
+export type NetworkHooks = {
+  onStart?: (record: NetworkRecord) => void | Promise<void>;
+  onSettled?: (record: NetworkRecord, body: () => Promise<NetworkBody>) => void | Promise<void>;
+};
+
 export type CreatePageOptions = {
   /**
    * Applies to this page *and to anything it opens*. A popup is the classic way around a
@@ -54,12 +85,21 @@ export type CreatePageOptions = {
    * rather than treating it as unguarded.
    */
   onNavigationRequest?: NavigationHook;
+  /** Same popup attribution as `onNavigationRequest`; absent means this page is unobserved. */
+  network?: NetworkHooks;
 };
 
 export type BrowserConn = {
   createPage: (opts?: CreatePageOptions) => Promise<Page>;
   /** `Browser.getVersion` — the health-check ping S3b's pool loop will run. */
   version: () => Promise<string>;
+  /**
+   * Fires the moment the underlying connection drops, out of band from any in-flight
+   * call — S3b's pool needs this the instant Playwright itself knows, rather than waiting
+   * for the next health-loop tick to notice a dead ping. Optional: a driver that cannot
+   * detect this out of band leaves the pool relying on the ping alone.
+   */
+  onDisconnect?: (cb: () => void) => void;
   close: () => Promise<void>;
 };
 

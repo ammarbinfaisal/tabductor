@@ -61,7 +61,7 @@ Environment deviations from `impl-phases.md`:
 | EC1 | Event-centric model: `event_defs` re-keyed to `(version, type)`, `task_emits`/`task_consumes`, `edges` dropped, publish-time schema compiler with carry-forward hashing | event-centric-model §1–5, §7 | **done** (migration `0007`) |
 | U1 | Declarative editor: Events/Nodes panels + derived read-only map, prompt-only authoring, per-event compile report; React Flow removed | event-centric-model §6, impl UI track U1 | **done** |
 | S3a | Browser driver interface + Playwright CDP impl + navigation guard + trace recorder | impl Phase 3, §8 | **done** (migration `0008`) |
-| S3b | Endpoint pool/leases + per-endpoint queue + network observer + resource limits + ScriptedBrowserExecutor | impl Phase 3, §9 | |
+| S3b | Endpoint pool/leases + per-endpoint queue + network observer + resource limits + ScriptedBrowserExecutor | impl Phase 3, §9 | **done** (migration `0009`) |
 | S4a | LLM adapter (live/record/replay) + perception builder | impl Phase 4 | prompt written |
 | S4b | Agent loop + tool registry + structured emit + AgentExecutor + e2e milestone | impl Phase 4 | |
 | S5a | `tasks.kind` discriminant + AssetExecutor skeleton + kind constraints | impl Phase 5, §4 | |

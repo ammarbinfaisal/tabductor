@@ -7,6 +7,9 @@ export type {
   FieldSpec,
   NavigationHook,
   NavigationRequest,
+  NetworkBody,
+  NetworkHooks,
+  NetworkRecord,
   Page,
 } from "./driver.js";
 export { playwrightDriver } from "./playwright-driver.js";
@@ -17,4 +20,18 @@ export {
   type StorageFlags,
   type TraceRecorder,
 } from "./trace.js";
-export { openRunSession, type RunSession, type SessionDeps } from "./session.js";
+export {
+  openRunSession,
+  type NetworkApi,
+  type NetworkListRecord,
+  type NetworkListResult,
+  type ResourceLimits,
+  type RunSession,
+  type SessionDeps,
+} from "./session.js";
+export {
+  createEndpointPool,
+  type EndpointLease,
+  type EndpointPool,
+  type EndpointPoolDeps,
+} from "./pool.js";

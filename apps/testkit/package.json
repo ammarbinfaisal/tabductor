@@ -11,7 +11,14 @@
     "fixtures": "tsx sites/server.ts"
   },
   "dependencies": {
-    "pg": "^8.13.0"
+    "@tabductor/browser": "workspace:*",
+    "@tabductor/core": "workspace:*",
+    "@tabductor/db": "workspace:*",
+    "@tabductor/engine": "workspace:*",
+    "@tabductor/policy": "workspace:*",
+    "@tabductor/telemetry": "workspace:*",
+    "pg": "^8.13.0",
+    "zod": "^3.25.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

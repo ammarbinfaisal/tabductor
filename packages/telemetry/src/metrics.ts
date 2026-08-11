@@ -19,6 +19,7 @@ export type FireResult = "fired" | "skipped_overlap" | "skipped_missed" | "queue
 export type ShareViewResult = "ok" | "unknown" | "revoked" | "rate_limited";
 export type ShareAssetOutcome = "ok" | "denied" | "not_found";
 export type PolicyCheck = "navigation" | "action" | "network_read" | "mcp_call";
+export type ResourceLimit = "max_tabs" | "max_visits" | "max_wall_ms";
 
 export type Metrics = {
   /** How long an event waited in the outbox before a dispatcher delivered it. */
@@ -50,6 +51,31 @@ export type Metrics = {
    * S7 is where the label becomes worth its cardinality (§17.2).
    */
   policyVerdicts: { add: (labels: { check: PolicyCheck; result: "allow" | "deny" }) => void };
+  /**
+   * Per-endpoint health, sampled on collection (S3b) — the pool holds no counter of its
+   * own for this, `cdp_endpoints.healthy` already is one, so the callback just reads it.
+   */
+  observeBrowserEndpointHealthy: (
+    list: () => Promise<{ endpointId: string; healthy: boolean }[]>,
+  ) => void;
+  /** A connection the pool was actively using dropped out from under a lease (S3b). */
+  browserDisconnects: { add: (labels: { endpointId: string }) => void };
+  /** Time an `acquire` spent queued behind another run before the lease was granted (S3b),
+   * recorded at grant — zero for an endpoint that was free. */
+  browserQueueWait: { record: (seconds: number, labels: { endpointId: string }) => void };
+  /**
+   * Not in the §17.2 catalogue by name; added under its "every later subphase adds its own
+   * rows" growth clause. `browser_queue_wait_seconds` alone cannot distinguish "briefly
+   * queued" from "the queue is full and rejecting" — this is the backpressure signal (§15)
+   * for the latter.
+   */
+  browserQueueRejected: { add: (labels: { endpointId: string }) => void };
+  /**
+   * A run aborted by `packages/browser`'s runtime caps (S3b, §8) — never the policy engine's
+   * business, which is why this counter is separate from `policyVerdicts` even though both
+   * fire from the same `session.ts` call sites.
+   */
+  resourceLimitAborts: { add: (labels: { limit: ResourceLimit }) => void };
 };
 
 export function createMetrics(meter: Meter): Metrics {
@@ -67,6 +93,10 @@ export function createMetrics(meter: Meter): Metrics {
   const shareViews = meter.createCounter("share_views_total");
   const shareAssetReads = meter.createCounter("share_asset_reads_total");
   const policyVerdicts = meter.createCounter("policy_verdicts_total");
+  const browserDisconnects = meter.createCounter("browser_disconnects_total");
+  const browserQueueWait = meter.createHistogram("browser_queue_wait_seconds", { unit: "s" });
+  const browserQueueRejected = meter.createCounter("browser_queue_rejected_total");
+  const resourceLimitAborts = meter.createCounter("resource_limit_aborts_total");
 
   return {
     outboxDispatchLag: { record: (seconds) => outboxDispatchLag.record(seconds) },
@@ -90,5 +120,27 @@ export function createMetrics(meter: Meter): Metrics {
     shareViews: { add: (result) => shareViews.add(1, { result }) },
     shareAssetReads: { add: (outcome) => shareAssetReads.add(1, { outcome }) },
     policyVerdicts: { add: (labels) => policyVerdicts.add(1, { ...labels }) },
+
+    observeBrowserEndpointHealthy(list) {
+      // Same "pull on collection" shape as `observeOutboxDepth`: with no exporter
+      // configured the callback is never invoked, so this stays inert when disabled.
+      const gauge = meter.createObservableGauge("browser_endpoint_healthy");
+      gauge.addCallback(async (result) => {
+        for (const { endpointId, healthy } of await list()) {
+          result.observe(healthy ? 1 : 0, { endpoint_id: endpointId });
+        }
+      });
+    },
+
+    browserDisconnects: {
+      add: ({ endpointId }) => browserDisconnects.add(1, { endpoint_id: endpointId }),
+    },
+    browserQueueWait: {
+      record: (seconds, { endpointId }) => browserQueueWait.record(seconds, { endpoint_id: endpointId }),
+    },
+    browserQueueRejected: {
+      add: ({ endpointId }) => browserQueueRejected.add(1, { endpoint_id: endpointId }),
+    },
+    resourceLimitAborts: { add: (labels) => resourceLimitAborts.add(1, { ...labels }) },
   };
 }

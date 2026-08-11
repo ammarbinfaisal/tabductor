@@ -90,6 +90,9 @@ it("close flushes what the buffer still held", async () => {
   sess = undefined;
 
   const rows = await traceRows(rig, runId);
-  expect(rows.map((r) => r.kind)).toEqual(["navigation", "action"]);
-  expect(rows.map((r) => r.seq)).toEqual([0, 1]);
+  // The document request's `network` row (S3b) joins the two already here — its response
+  // settles, and is written, before `goto`'s own action entry is (the entry is written after
+  // `goto` resolves, by which point the response that let it resolve already landed).
+  expect(rows.map((r) => r.kind)).toEqual(["navigation", "network", "action"]);
+  expect(rows.map((r) => r.seq)).toEqual([0, 1, 2]);
 });

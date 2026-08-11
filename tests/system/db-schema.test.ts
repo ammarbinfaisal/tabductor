@@ -4,6 +4,8 @@ import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db";
 
 const EXPECTED_TABLES = [
   "artifacts",
+  "cdp_endpoints",
+  "endpoint_leases",
   "event_defs",
   "events",
   "outbox",

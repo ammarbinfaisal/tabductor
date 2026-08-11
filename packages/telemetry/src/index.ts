@@ -13,6 +13,7 @@ export {
   type FireResult,
   type Metrics,
   type PolicyCheck,
+  type ResourceLimit,
   type RunStatus,
   type ShareAssetOutcome,
   type ShareViewResult,

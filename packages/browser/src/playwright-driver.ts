@@ -3,6 +3,7 @@ import {
   chromium,
   type Frame,
   type Page as PwPage,
+  type Request as PwRequest,
   type Route,
 } from "playwright-core";
 import type {
@@ -12,6 +13,8 @@ import type {
   ExtractedRecord,
   ExtractSpec,
   NavigationHook,
+  NetworkHooks,
+  NetworkRecord,
   Page,
 } from "./driver.js";
 import type { NavCause } from "@tabductor/policy";
@@ -109,6 +112,9 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
   const denials = new Map<PwPage, { url: string; cause: NavCause }>();
   let routed = false;
 
+  /** Which page's traffic goes where (S3b). A popup inherits its opener's, same as `hooks`. */
+  const netHooks = new Map<PwPage, NetworkHooks>();
+
   /**
    * The hook an unattributable page answers to: every hook this connection holds must
    * allow. `window.open(url, "", "noopener")` severs the opener on purpose, and a guard
@@ -176,9 +182,81 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
     return attaching;
   };
 
-  const adopt = async (page: PwPage, hook: NavigationHook): Promise<void> => {
+  /**
+   * The network observer (S3b §9 step 1). Playwright's page-level `request`/`response`
+   * events, not raw CDP `Network.*`: unlike the navigation guard, nothing here needs to
+   * intercept or delay a request, so there is no gap for CDP to close — and a redirect's hops
+   * are each their own `request`/`response` pair with `request.redirectedFrom()` linking
+   * them, which is everything §9 step 1 asks a normalized record to carry. CDP stays the
+   * fallback the S3b doc names, for if Playwright's view of some traffic (service workers,
+   * cross-process navigations) proves lossy in practice.
+   *
+   * One request, two events here: `request` fires with method/url/resourceType known and
+   * `status: null`, `response`/`requestfailed` fires once more against the *same* record
+   * object, filled in. A `WeakMap` keyed by Playwright's own `Request` is what connects the
+   * two — nothing about it survives past this function, which is the whole point of driver.ts
+   * (§20): the caller never sees a `Request` or a `Response`, only the normalized record and a
+   * body-fetching closure.
+   */
+  const attachNetwork = (page: PwPage, hooks: NetworkHooks): void => {
+    const pending = new WeakMap<PwRequest, NetworkRecord>();
+
+    page.on("request", (req) => {
+      const record: NetworkRecord = {
+        method: req.method(),
+        url: req.url(),
+        resourceType: req.resourceType(),
+        status: null,
+        timings: { startedAt: Date.now(), endedAt: null, durationMs: null },
+      };
+      pending.set(req, record);
+      // Fire-and-forget: nothing here can wait on `hooks.onStart` without stalling the page's
+      // own event loop, so a rejected trace write (session's implementation, not this file's
+      // problem) is swallowed rather than surfaced as an unhandled rejection.
+      Promise.resolve(hooks.onStart?.(record)).catch(() => undefined);
+    });
+
+    page.on("response", (res) => {
+      const req = res.request();
+      const record = pending.get(req);
+      // No record means `response` fired for a request from before this listener attached
+      // (a service-worker-served response can do this) — nothing to complete.
+      if (!record) return;
+      record.status = res.status();
+      record.timings.endedAt = Date.now();
+      record.timings.durationMs = record.timings.endedAt - record.timings.startedAt;
+      Promise.resolve(
+        hooks.onSettled?.(record, async () => ({
+          bytes: await res.body(),
+          mime: res.headers()["content-type"] ?? "application/octet-stream",
+        })),
+      ).catch(() => undefined);
+    });
+
+    page.on("requestfailed", (req) => {
+      const record = pending.get(req);
+      if (!record) return;
+      record.timings.endedAt = Date.now();
+      record.timings.durationMs = record.timings.endedAt - record.timings.startedAt;
+      Promise.resolve(
+        hooks.onSettled?.(record, () =>
+          Promise.reject(
+            new AppError("network_body_unavailable", `request to ${record.url} failed, no response body`, {
+              details: { url: record.url },
+            }),
+          ),
+        ),
+      ).catch(() => undefined);
+    });
+  };
+
+  const adopt = async (page: PwPage, hook: NavigationHook, net?: NetworkHooks): Promise<void> => {
     hooks.set(page, hook);
     ourPages.add(page);
+    if (net) {
+      netHooks.set(page, net);
+      attachNetwork(page, net);
+    }
     page.once("close", () => {
       hooks.delete(page);
       guards.delete(page);
@@ -187,6 +265,7 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
       pendingGoto.delete(page);
       birthing.delete(page);
       denials.delete(page);
+      netHooks.delete(page);
     });
     await attachGuard(page);
   };
@@ -261,7 +340,11 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
 
     const opener = await page.opener().catch(() => null);
     const hook = opener ? hooks.get(opener) : everyHook();
-    if (hook && !hooks.has(page)) await adopt(page, hook);
+    // No `everyHook`-style fallback for network: an unattributable popup is not part of any
+    // session's page tree, so it is not this session's traffic to observe — only a security
+    // guard has to answer for a page it cannot identify, an observer does not.
+    const net = opener ? netHooks.get(opener) : undefined;
+    if (hook && !hooks.has(page)) await adopt(page, hook, net);
 
     if (!stubbed) return;
     if (hook) {
@@ -344,14 +427,21 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
       const pwPage = await context.newPage();
       if (opts.onNavigationRequest) {
         await ensureRouted();
-        await adopt(pwPage, opts.onNavigationRequest);
+        await adopt(pwPage, opts.onNavigationRequest, opts.network);
       } else {
+        // Network observation piggybacks on the navigation guard's adoption path — a session
+        // always supplies both (`session.ts`), and a page with no guard has no owner to
+        // attribute popups to either, so there is nothing sound to wire up here.
         ourPages.add(pwPage);
       }
       return wrap(pwPage);
     },
 
     version: async () => browser.version(),
+
+    // S3b's pool sole extra hook (see driver.ts): Playwright's own disconnect signal,
+    // out of band from the health-loop ping.
+    onDisconnect: (cb) => browser.on("disconnected", cb),
 
     /**
      * Closes what we opened, then drops the connection. For a CDP-attached browser this

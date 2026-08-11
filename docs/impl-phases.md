@@ -43,10 +43,11 @@ inspector's scope or prerequisites changes.
 | EC1 | Event-centric model: event entities, consumes routing, publish-time schema compiler (`event-centric-model.md`) | **done** — migration `0007` |
 | U1 | Editor redesign: declarative panels + derived map, prompt-only authoring | **done** — `DESIGN.md` locked ("Ruled Ink"), React Flow removed |
 | S3a | Browser driver + navigation guard + trace recorder + blob store (`packages/browser`) | **done** — migration `0008` |
-| S3b–S7, S5g, S5h, S8 | pool/observer/limits, agent, asset, python compute, store+decision, compiler, policy, graph compiler | not started |
+| S3b | Endpoint pool + DB leases, network observer, resource limits, ScriptedBrowserExecutor | **done** — migration `0009` |
+| S4a–S7, S5g, S5h, S8 | agent, asset, python compute, store+decision, compiler, policy, graph compiler | not started |
 
 What exists as code: `packages/{core,db,bus,engine,policy,telemetry,browser}` +
-`apps/{engine,web,testkit}` + `tests/system` — 122 tests in 29 files. The whole workspace typechecks clean (`tsc`) and lints
+`apps/{engine,web,testkit}` + `tests/system` — 142 tests in 33 files. The whole workspace typechecks clean (`tsc`) and lints
 clean (`pnpm lint`). `docker compose up -d` brings up Postgres, applies migrations, and runs both
 the engine and the control plane on :3000; `docker compose up -d postgres` is the tests-only
 subset. Credentials are compiled in as defaults, so a clean checkout needs no environment. If

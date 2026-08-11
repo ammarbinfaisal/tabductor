@@ -99,9 +99,30 @@ importers:
 
   apps/testkit:
     dependencies:
+      '@tabductor/browser':
+        specifier: workspace:*
+        version: link:../../packages/browser
+      '@tabductor/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@tabductor/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@tabductor/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+      '@tabductor/policy':
+        specifier: workspace:*
+        version: link:../../packages/policy
+      '@tabductor/telemetry':
+        specifier: workspace:*
+        version: link:../../packages/telemetry
       pg:
         specifier: ^8.13.0
         version: 8.22.0
+      zod:
+        specifier: ^3.25.0
+        version: 3.25.76
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
@@ -185,6 +206,9 @@ importers:
 
   packages/browser:
     dependencies:
+      '@tabductor/bus':
+        specifier: workspace:*
+        version: link:../bus
       '@tabductor/core':
         specifier: workspace:*
         version: link:../core

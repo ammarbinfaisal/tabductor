@@ -1,5 +1,25 @@
 # S3b — Endpoint pool, per-endpoint queue, network observer, resource limits
 
+> **Built, with five deviations from the deliverable below, each argued at its site.**
+> (1) No driver `ping()` was added — `BrowserConn.version()` already *is* `Browser.getVersion`,
+> so the pool's health loop calls that. (2) The disconnect-recovery test updates the endpoint
+> row's `ws_url` after relaunching Chrome rather than pinning a port: a fresh browser gets a
+> fresh `/devtools/browser/<uuid>` path regardless of port, and updating the row is what a
+> real user does after restarting their browser. (3) The network observer is Playwright
+> `page.on('request'/'response'/'requestfailed')`, not the S3a note's "extend the CDP
+> session": observation needs no interception, redirect hops are each their own event pair,
+> and CDP remains the named fallback if Playwright's view proves lossy. (4)
+> `resource_limit_exceeded` is a **permanent** run failure — the script and its limits are
+> fixed inputs, so a retry replays the identical sequence into the identical wall;
+> `browser.disconnected` and `endpoint_queue_full` stay retryable. (5) The
+> ScriptedBrowserExecutor takes one injected `defaultEndpointId` instead of scanning
+> `cdp_endpoints` — there is no per-task endpoint model yet, and a declared dependency beats
+> an implicit DB scan in a harness whose point is legibility. Side effect worth knowing:
+> `apps/testkit` now depends on `@tabductor/{db,browser,engine,policy}`, forming a
+> package-level cycle with `packages/db`'s devDependency on testkit — safe because every
+> cyclic edge resolves inside function bodies, never at module top level (see
+> `packages/db/src/test-db.ts`).
+
 You are implementing subphase S3b. Read, in order:
 1. This file (authoritative).
 2. `docs/impl-phases.md` — Phase 3 (endpoint pool, network observer, resource limits,

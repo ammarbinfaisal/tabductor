@@ -9,6 +9,8 @@ import {
   playwrightDriver,
   type BlobStore,
   type BrowserConn,
+  type NetworkListRecord,
+  type ResourceLimits,
   type RunSession,
   type StorageFlags,
   type TraceRecorder,
@@ -99,7 +101,7 @@ export type SessionRig = {
  */
 export async function openSession(
   rig: BrowserRig,
-  opts: { gate?: PolicyGate; storage?: StorageFlags } = {},
+  opts: { gate?: PolicyGate; storage?: StorageFlags; limits?: ResourceLimits } = {},
 ): Promise<SessionRig> {
   const runId = await newRun(rig);
   const trace = createTraceRecorder(rig.handle.db, rig.blobs, runId, opts.storage ?? {});
@@ -109,6 +111,7 @@ export async function openSession(
     gate: opts.gate ?? new AllowAllGate({ navAllowlist: ["127.0.0.1"] }),
     taskCtx: { taskId: rig.taskId, runId },
     trace,
+    limits: opts.limits,
   });
 
   return {
@@ -170,6 +173,28 @@ export async function waitForTrace(
     await new Promise((r) => setTimeout(r, 50));
   }
   throw new Error(`timed out waiting for ${what}; trace was ${JSON.stringify(rows, null, 2)}`);
+}
+
+/**
+ * Polls `network.list` until a predicate is satisfied — the driver's `response` handler
+ * settles a record synchronously into the session's own array (see `session.ts`), but the
+ * page's own JS (the thing a test waits on, e.g. `data-loaded`) can in principle observe its
+ * XHR complete a tick before Node does, so a poll rather than a bare assertion keeps this
+ * robust to that ordering.
+ */
+export async function waitForNetwork(
+  sess: SessionRig,
+  predicate: (records: NetworkListRecord[]) => boolean,
+  timeoutMs = 15_000,
+): Promise<NetworkListRecord[]> {
+  const deadline = Date.now() + timeoutMs;
+  let records: NetworkListRecord[] = [];
+  while (Date.now() < deadline) {
+    ({ records } = await sess.session.network.list({ limit: 1000 }));
+    if (predicate(records)) return records;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  throw new Error(`timed out waiting for network records; had ${JSON.stringify(records, null, 2)}`);
 }
 
 export type Payload = Record<string, unknown>;
