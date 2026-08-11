@@ -67,9 +67,25 @@ Defaults are compiled in, so a clean checkout needs no environment at all:
 | user / password | `tabductor` / `tabductor` | `apps/testkit/src/db.ts` |
 | `DATABASE_URL` | `postgres://tabductor:tabductor@localhost:5434/tabductor` | `packages/core/src/config.ts`, `packages/db/drizzle.config.ts` |
 | `BLOB_DIR` | OS temp dir (`/data/blobs` in the containers) | `packages/core/src/config.ts` |
+| `ANTHROPIC_API_KEY` | unset — see below | `packages/core/src/config.ts`, passed to `web` only |
 
 Override with the standard `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD` (testkit) or
 `DATABASE_URL` (app + drizzle-kit) to point at any other instance.
+
+`ANTHROPIC_API_KEY` is the one setting a full deployment eventually wants. Publishing a
+workflow version compiles each event's description into a packet schema
+(`docs/event-centric-model.md` §3), and the `web` service is the only composition root that
+does it — the engine executes published versions and never calls a model, so it does not get
+the key. Put it in a `.env` beside `docker-compose.yml` and compose picks it up:
+
+```sh
+echo 'ANTHROPIC_API_KEY=sk-ant-...' >> .env && docker compose up -d web
+```
+
+Unset is a working mode rather than a broken one: unchanged events carry their schema forward
+by prompt hash, so a publish that adds no event and edits no prompt still succeeds. A publish
+that needs a *new* schema fails atomically, naming the events it could not compile and leaving
+the previous version serving.
 
 The credentials are trivial on purpose — the container holds nothing but throwaway test
 databases and binds to loopback. Do not reuse it for anything else.

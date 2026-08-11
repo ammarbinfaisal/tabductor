@@ -41,6 +41,14 @@ describe("loadConfig", () => {
     expect(cfg.HARNESS_NAV_ALLOWLIST).toEqual(["x.com", "instagram.com", "localhost"]);
     expect(cfg.ANTHROPIC_API_KEY).toBe("sk-test");
   });
+
+  // `docker compose` renders an unset `${ANTHROPIC_API_KEY:-}` as an empty string rather than
+  // omitting the variable. Empty has to read as absent, or declaring the setting in compose and
+  // leaving it unset would throw config_invalid and take the web app down on boot.
+  it("reads an empty optional secret as absent rather than invalid", () => {
+    const cfg = loadConfig({ ANTHROPIC_API_KEY: "" });
+    expect(cfg.ANTHROPIC_API_KEY).toBeUndefined();
+  });
 });
 
 describe("createLogger", () => {

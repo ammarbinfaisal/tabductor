@@ -78,6 +78,16 @@ services:
   web:
     <<: *app
     command: ["pnpm", "-F", "web", "start"]
+    environment:
+      <<: *app-env
+      # Publish compiles each event's description into a packet schema, and this is the only
+      # composition root that does it (docs/event-centric-model.md §3) — the engine executes
+      # published versions and never calls a model, so it does not get the key. Unset is a
+      # working mode, not a broken one: unchanged events carry their schema forward by hash,
+      # so a publish that adds no new event and edits no prompt still succeeds. It is a
+      # publish needing a *new* schema that fails, atomically, naming the events it could not
+      # compile.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     ports: ["127.0.0.1:3000:3000"]
     init: true
     volumes: ["blobs:/data/blobs"]
