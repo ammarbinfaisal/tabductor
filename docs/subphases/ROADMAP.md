@@ -73,6 +73,7 @@ Environment deviations from `impl-phases.md`:
 | S5e | LaTeX renderer worker (sandboxed container, tectonic, beamer decks) | impl Phase 5, §13.5, §16 T7 | **done** |
 | S5f | Two-kind e2e: browser → asset (MCP + LaTeX) → browser upload | impl Phase 5 | **done** |
 | S5g | Workflow store (`wfdata` schema + role pair, `store.*` tools, fenced SQL) + `kind=decision` + plan/act/record e2e | graph-compilation-llm §2–3, §10 | **done** (migration `0014`) |
+| U3.5 | Decision node's kind badge (third entity family) + workflow store browser (tables/row-counts/schema per version) + read-only query console over S5g's own fenced read path + schema-diff-at-publish preview | graph-compilation-llm §3, impl UI track U3.5 | **done** |
 | S5h | Python compute: `mode=python` on `kind=asset`, `(kind, mode)` tool registry, `apps/pyrunner` + Firecracker microVM, host-side emits, hostile corpus | python-compute §2–7, §13.6, §16 T18–22 | needs S5a + S5d |
 | S6a | Static runtime sandbox + script registry + lint gate | impl Phase 6, §12 | |
 | S6b | Trace consistency checker + compiler agent | impl Phase 6, §11 | |

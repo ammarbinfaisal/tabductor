@@ -64,8 +64,11 @@ function NodeCard({ task, store, state }: { task: GraphTask; store: EditorStore;
   const patchLimits = (patch: Record<string, unknown>): void =>
     store.patchNode(task.name, { limits: { ...task.limits, ...patch } });
 
+  const cardClass =
+    task.kind === "decision" ? "entity-card entity-card--node entity-card--node-decision" : "entity-card entity-card--node";
+
   return (
-    <div className="entity-card entity-card--node">
+    <div className={cardClass}>
       <div className="row">
         <KindBadge kind={task.kind} />
         <input

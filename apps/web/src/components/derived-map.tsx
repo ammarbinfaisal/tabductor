@@ -169,19 +169,30 @@ export function DerivedMap({
           );
         })}
 
-        {[...markers.values()].map((m) =>
-          m.kind === "task" ? (
-            <g key={`task:${m.id}`}>
-              <rect x={m.x} y={m.y} width={m.w} height={m.h} fill="var(--node-bg)" stroke="var(--node-border)" strokeWidth="1.5" />
-              <text x={m.x + m.w / 2} y={m.y + 18} textAnchor="middle" fill="var(--node-text)" fontWeight="500">
-                {m.label}
-                <title>{m.id}</title>
-              </text>
-              <text x={m.x + m.w / 2} y={m.y + 34} textAnchor="middle" fill="var(--node-text)">
-                {m.kindWord}
-              </text>
-            </g>
-          ) : (
+        {[...markers.values()].map((m) => {
+          // `decision` renders in the third entity family (`--decision-*`, globals.css) —
+          // the map is the one surface besides the kind badge where `browser`/`asset` and
+          // `decision` sit side by side, so the same distinction the node panel draws with a
+          // badge class has to hold here too, not just in the panel.
+          if (m.kind === "task") {
+            const isDecision = m.kindWord === "decision";
+            const fill = isDecision ? "var(--decision-bg)" : "var(--node-bg)";
+            const stroke = isDecision ? "var(--decision-border)" : "var(--node-border)";
+            const text = isDecision ? "var(--decision-text)" : "var(--node-text)";
+            return (
+              <g key={`task:${m.id}`}>
+                <rect x={m.x} y={m.y} width={m.w} height={m.h} fill={fill} stroke={stroke} strokeWidth="1.5" />
+                <text x={m.x + m.w / 2} y={m.y + 18} textAnchor="middle" fill={text} fontWeight="500">
+                  {m.label}
+                  <title>{m.id}</title>
+                </text>
+                <text x={m.x + m.w / 2} y={m.y + 34} textAnchor="middle" fill={text}>
+                  {m.kindWord}
+                </text>
+              </g>
+            );
+          }
+          return (
             <g key={`event:${m.id}`}>
               <rect x={m.x} y={m.y} width={m.w} height={m.h} rx="2" fill="var(--event-bg)" stroke="var(--event-border)" strokeWidth="1.5" />
               <text x={m.x + m.w / 2} y={m.y + 18} textAnchor="middle" fill="var(--event-text)" fontWeight="500">
@@ -189,8 +200,8 @@ export function DerivedMap({
                 <title>{m.id}</title>
               </text>
             </g>
-          ),
-        )}
+          );
+        })}
       </svg>
       {cycles.length > 0 ? null : null}
     </div>

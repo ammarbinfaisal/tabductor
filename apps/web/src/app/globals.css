@@ -94,6 +94,22 @@
   --node-text: var(--amber-11);
   --node-solid: var(--amber-9);
   --node-on-solid: var(--amber-on-solid);
+  /* U3.5: `decision` is a third entity family, not a node-badge variant — its registry
+     (store.query + emit only) and its role in the graph (the planner, not an actor) are as
+     distinct from `browser`/`asset` as nodes are from events. No new hex: this reuses the
+     already-generated `--warning-*` ramp under its own alias, the same "alias, not raw
+     colour" law the two families above already follow. `--warning-*` already does double
+     duty by hue in this exact stylesheet (`--map-annotation` and `--status-timed-out` both
+     alias `warning-11` in unrelated contexts) with no reported confusion, because this
+     system disambiguates by FORM (badge vs. stamp vs. map marker), not by reserving a hue to
+     one selector — the same redundancy law DESIGN.md states outright ("Entity chips ...
+     status stamps ... are distinct FORMS, so hue adjacencies cannot confuse"). `--info-*` is
+     the one ramp actually off-limits here (DESIGN.md: "No second blue meaning ... appears
+     ONLY inside the RUNNING stamp") — decision reuses warning precisely because no such
+     single-use rule was ever written for it. */
+  --decision-bg: var(--warning-3);
+  --decision-border: var(--warning-11);
+  --decision-text: var(--warning-11);
 
   /* Controls */
   --border-control: var(--neutral-10);
@@ -455,6 +471,12 @@ label.field > span {
   padding: 2px 8px;
 }
 
+/* U3.5: the decision kind's own family — same form as `.badge--node`, third-family ink. */
+.badge--node-decision {
+  background: var(--decision-bg);
+  color: var(--decision-text);
+}
+
 /* ---------- Banners ---------- */
 
 .banner {
@@ -666,6 +688,10 @@ table.ledger td {
 
 .entity-card--node {
   border-left-color: var(--node-bg);
+}
+
+.entity-card--node-decision {
+  border-left-color: var(--decision-bg);
 }
 
 .entity-title {

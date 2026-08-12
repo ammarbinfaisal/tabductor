@@ -114,8 +114,16 @@ export function EventChip({
   );
 }
 
+/**
+ * `decision` gets its own token-family class (`.badge--node-decision`, globals.css) —
+ * `browser`/`asset` share `--node-*` (amber, "the machinery that acts"); `decision` is the
+ * third family (`--decision-*`, aliased off `--warning-*`, argued in globals.css) because it
+ * neither acts on a page nor writes the store — it plans. The kind word itself (the
+ * redundancy law's non-color cue) is unchanged either way.
+ */
 export function KindBadge({ kind }: { kind: string }) {
-  return <span className="badge--node">{kind}</span>;
+  const classes = kind === "decision" ? "badge--node badge--node-decision" : "badge--node";
+  return <span className={classes}>{kind}</span>;
 }
 
 export function ScheduleChip({ cron, onRemove }: { cron: string; onRemove?: () => void }) {

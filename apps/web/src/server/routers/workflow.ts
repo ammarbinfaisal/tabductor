@@ -15,8 +15,10 @@ import { LOCAL_USER, procedure, router } from "../trpc.js";
 
 /** One `StoreTableSpec` (`@tabductor/store`), restated as zod rather than imported: the
  * package's own type is a plain TS shape (it feeds ajv, not a request boundary), and this
- * router is the one place a client-supplied artifact needs a runtime-checked schema. */
-const storeTableSpecSchema = z.object({
+ * router is the one place a client-supplied artifact needs a runtime-checked schema.
+ * Exported for `store.ts`'s `previewMigration` (U3.5) — one zod declaration for the same
+ * wire shape, not two that could drift. */
+export const storeTableSpecSchema = z.object({
   primaryKey: z.array(z.string().min(1)).min(1),
   schema: z.record(z.string(), z.unknown()),
 });

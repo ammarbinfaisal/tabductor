@@ -58,7 +58,7 @@ inspector's scope or prerequisites changes.
 | S5h, S6–S8 | python compute, compiler, policy, graph compiler | not started |
 
 What exists as code: `packages/{core,db,bus,engine,policy,telemetry,browser}` +
-`apps/{engine,web,testkit}` + `tests/system` — 270 tests in 59 files (one live-mode LLM
+`apps/{engine,web,testkit}` + `tests/system` — 286 tests in 60 files (one live-mode LLM
 smoke skips itself when no API key is set — CI never calls live; a separate `tests/live-eval`
 suite runs outside the CI vitest projects, live-only, outcome assertions only). The whole workspace typechecks clean (`tsc`) and lints
 clean (`pnpm lint`). `docker compose up -d` brings up Postgres, applies migrations, and runs both

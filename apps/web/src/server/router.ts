@@ -3,6 +3,7 @@ import { eventRouter } from "./routers/event.js";
 import { publicRouter } from "./routers/public.js";
 import { runRouter } from "./routers/run.js";
 import { shareRouter } from "./routers/share.js";
+import { storeRouter } from "./routers/store.js";
 import { taskRouter } from "./routers/task.js";
 import { workflowRouter } from "./routers/workflow.js";
 import { createCallerFactory, createContext, router, type Context } from "./trpc.js";
@@ -15,6 +16,9 @@ export const appRouter = router({
   share: shareRouter,
   /** cdp_endpoints health, ws_url filtered out at the query (U1.5). */
   endpoint: endpointRouter,
+  /** The store browser + query console (U3.5) — every procedure routes through
+   * `@tabductor/store`'s fenced read path; see `routers/store.ts`'s own doc comment. */
+  store: storeRouter,
   /** Unauthenticated, token-scoped reads (S2d). Everything under here filters in SQL. */
   public: publicRouter,
 });
