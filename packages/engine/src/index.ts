@@ -108,6 +108,7 @@ export {
   type ShareSummary,
 } from "./shares.js";
 export {
+  publicAssetRef,
   publicEventGet,
   publicEventList,
   publicGraph,
@@ -115,6 +116,7 @@ export {
   publicRunList,
   PUBLIC_PAGE_MAX,
   PUBLIC_ERROR_CLASSES,
+  type PublicAssetRef,
   type PublicErrorClass,
   type PublicEvent,
   type PublicEventDetail,

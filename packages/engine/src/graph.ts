@@ -1,7 +1,7 @@
 import { Ajv } from "ajv";
 import addFormatsModule from "ajv-formats";
 const addFormats = addFormatsModule.default ?? addFormatsModule;
-import { AppError, newId } from "@tabductor/core";
+import { AppError, ASSET_REF_SCHEMA, newId } from "@tabductor/core";
 import {
   eventDefs,
   schedules,
@@ -248,6 +248,10 @@ async function compileEventSchemas(
   // must know them — an unknown format is a strict-mode failure, which is correct for
   // formats *outside* the allowlist.
   const ajv = addFormats(new Ajv({ allErrors: true, strict: true }));
+  // S5d §18.2: same registration as `packet-schema.ts`'s runtime instance, on the
+  // publish-time strict gate — a stored schema that `$ref`s "assetRef" must compile here
+  // too, or a hand-authored one would pass the runtime validator and fail publish.
+  ajv.addSchema(ASSET_REF_SCHEMA, "assetRef");
 
   const compiled: CompiledEvent[] = graph.events.map((event) => ({
     event,

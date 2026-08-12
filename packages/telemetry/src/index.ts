@@ -10,6 +10,8 @@
 export type { Telemetry, TelemetryConfig } from "./init.js";
 export {
   createMetrics,
+  type AssetReadOutcome,
+  type AssetWriteOutcome,
   type FireResult,
   type LlmDirection,
   type Metrics,

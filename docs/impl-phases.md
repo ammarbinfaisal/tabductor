@@ -49,10 +49,12 @@ inspector's scope or prerequisites changes.
 | S4b | Agent loop + tool registry + structured emit + AgentExecutor wired in `apps/engine` + e2e milestone | **done** |
 | U2 | Agent visibility in the inspector: llm rows, emit rows, token totals | **done** |
 | S5a | `tasks.kind` + `(kind, mode)` executor registry + AssetExecutor skeleton + constraints | **done** — migration `0010` |
-| S5b–S7, S5g, S5h, S8 | secrets, MCP, assets, LaTeX, python compute, store+decision, compiler, policy, graph compiler | not started |
+| S5b | Secrets broker: envelope encryption, `fill`/`injectIntoMcpArg`, origin binding, no `get()` | **done** — migration `0011` |
+| S5d | Asset store + versions + write grants + public asset route (`packages/assets`) | **done** — migration `0012` |
+| S5c, S5e–S7, S5g, S5h, S8 | MCP, LaTeX, python compute, store+decision, compiler, policy, graph compiler | not started |
 
 What exists as code: `packages/{core,db,bus,engine,policy,telemetry,browser}` +
-`apps/{engine,web,testkit}` + `tests/system` — 175 tests in 44 files (one live-mode LLM
+`apps/{engine,web,testkit}` + `tests/system` — 219 tests in 49 files (one live-mode LLM
 smoke skips itself when no API key is set — CI never calls live; a separate `tests/live-eval`
 suite runs outside the CI vitest projects, live-only, outcome assertions only). The whole workspace typechecks clean (`tsc`) and lints
 clean (`pnpm lint`). `docker compose up -d` brings up Postgres, applies migrations, and runs both

@@ -15,6 +15,7 @@
   },
   "devDependencies": {
     "@tabductor/agent": "workspace:*",
+    "@tabductor/assets": "workspace:*",
     "@tabductor/browser": "workspace:*",
     "@tabductor/bus": "workspace:*",
     "@tabductor/core": "workspace:*",

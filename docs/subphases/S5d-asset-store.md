@@ -1,5 +1,45 @@
 # S5d — Asset store: paths, versions, write grants, public asset resolution
 
+> **Built, with deviations.** Migration `0012` (a parallel agent, S5b, took `0011` for
+> `packages/secrets` in its own worktree — the two schema.ts blocks are kept separate and
+> merge cleanly). New package `packages/assets` (`paths.ts`, `grants.ts`, `tools.ts`); the
+> asset-ref fragment lives in `packages/core/src/asset-ref.ts` (`ASSET_REF_SCHEMA`); the
+> public route is `apps/web/src/app/s/[token]/assets/[id]/route.ts`; the derivation query is
+> `publicAssetRef` in `packages/engine/src/public-read.ts`.
+>
+> Deviations from the letter of this doc, each argued in the report:
+> - **`assets.*` tools are not wired into a live agent loop.** S4b's loop
+>   (`packages/agent/src/loop.ts`) builds its tool list from a browser `RunSession`
+>   unconditionally; there is no `(kind, mode)`-keyed tool-registry seam yet for
+>   `AssetExecutor` to plug into. `buildAssetToolRegistry` in `packages/assets/src/tools.ts`
+>   produces the tool list — same `{name, description, parameters, execute}` shape as
+>   `packages/agent/src/tools.ts`'s `AgentTool`, duplicated rather than imported to avoid a
+>   package cycle (S5c's merge needs `packages/agent` to import `packages/assets`) — and is
+>   tested by calling `.execute()` directly. S5c is where an asset-node loop exists to call it.
+> - **The asset-ref fragment is registered on both ajv instances (`packet-schema.ts`'s
+>   runtime validator, `graph.ts`'s publish-time strict gate) but the live schema compiler
+>   inlines the shape rather than emitting `$ref`.** `schema-generator-llm.ts`'s
+>   `SCHEMA_SYSTEM_PROMPT` forbids `$ref` outright (no `$ref`/`allOf`/`anyOf`/…), so a
+>   compiled schema that names an asset field gets the literal fragment shape inlined, shown
+>   to the model in that same prompt. The `$ref` registration is real and exercised (a
+>   hand-authored/test schema using `$ref: "assetRef"` compiles under both instances) — it
+>   just is not the path the live generator takes.
+> - **`minimatch` is a new dependency**, for `asset_write_grants.path_glob` matching only —
+>   the spec's own style constraints call this acceptable when hand-rolling glob semantics
+>   (`**` across segments, character classes) would be the larger risk, which it is for a
+>   write-authorization gate.
+> - **The public route returns the standard `Response`, not `NextResponse`.** Nothing here
+>   needs `next/server` (no cookies, no redirect helper), and returning it kept the route
+>   resolvable from a system test importing it directly under the root workspace's
+>   `tsconfig.json` (`next/server`'s types are shaped for `apps/web`'s own bundler
+>   resolution and are not resolvable under the root's Node-style resolution).
+>
+> `pnpm install && pnpm build && pnpm lint && pnpm test` green twice (207 tests, 46 files, 1
+> skipped — up from the prior 175/44/1). See the full report for the write-grant
+> default-allow resolution, the rate-limit outcome-label choice, and one transient failure
+> caused by a parallel agent racing the shared Postgres migration-template database (not a
+> bug here; a clean retry passed).
+
 You are implementing subphase S5d. Read, in order:
 1. This file (authoritative).
 2. `docs/impl-phases.md` — Phase 5, S5d section.

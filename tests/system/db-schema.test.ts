@@ -4,6 +4,9 @@ import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db
 
 const EXPECTED_TABLES = [
   "artifacts",
+  "asset_versions",
+  "asset_write_grants",
+  "assets",
   "cdp_endpoints",
   "endpoint_leases",
   "event_defs",

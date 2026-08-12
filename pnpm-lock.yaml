@@ -11,6 +11,9 @@ importers:
       '@tabductor/agent':
         specifier: workspace:*
         version: link:packages/agent
+      '@tabductor/assets':
+        specifier: workspace:*
+        version: link:packages/assets
       '@tabductor/browser':
         specifier: workspace:*
         version: link:packages/browser
@@ -260,6 +263,37 @@ importers:
       drizzle-orm:
         specifier: ^0.44.0
         version: 0.44.7(@opentelemetry/api@1.9.1)(@types/pg@8.20.3)(pg@8.22.0)
+      zod:
+        specifier: ^3.25.0
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.13.3
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
+  packages/assets:
+    dependencies:
+      '@tabductor/browser':
+        specifier: workspace:*
+        version: link:../browser
+      '@tabductor/core':
+        specifier: workspace:*
+        version: link:../core
+      '@tabductor/db':
+        specifier: workspace:*
+        version: link:../db
+      '@tabductor/telemetry':
+        specifier: workspace:*
+        version: link:../telemetry
+      drizzle-orm:
+        specifier: ^0.44.0
+        version: 0.44.7(@opentelemetry/api@1.9.1)(@types/pg@8.20.3)(pg@8.22.0)
+      minimatch:
+        specifier: ^10.0.1
+        version: 10.2.6
       zod:
         specifier: ^3.25.0
         version: 3.25.76

@@ -1,6 +1,7 @@
 import { Ajv } from "ajv";
 import addFormatsModule from "ajv-formats";
 const addFormats = addFormatsModule.default ?? addFormatsModule;
+import { ASSET_REF_SCHEMA } from "@tabductor/core";
 import type { SchemaGenerator, SchemaGenInput, SchemaGenResult } from "./schema-generator.js";
 
 /**
@@ -30,7 +31,12 @@ arrays of those, and at most one level of nested objects (which follow the same 
 - No "$ref", "allOf", "anyOf", "oneOf", "not", "patternProperties", or numeric/string \
 constraint keywords.
 - Prefer few, well-named fields. Reuse the exact field names the task prompts use; use \
-snake_case where the prompts don't dictate a name.`;
+snake_case where the prompts don't dictate a name.
+- If a field is a reference to a stored asset (a generated file, image or document — \
+anything an asset node writes via assets.write or assets.render), give that field exactly \
+this shape, reusing these four property names verbatim and no others: ${JSON.stringify(
+  ASSET_REF_SCHEMA,
+)}. Do not invent a different shape for an asset reference.`;
 
 export interface ChatTurn {
   role: "assistant" | "user";

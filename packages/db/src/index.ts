@@ -20,6 +20,9 @@ export {
   secrets,
   secretGrants,
   secretAccessLog,
+  assets,
+  assetVersions,
+  assetWriteGrants,
 } from "./schema.js";
 export {
   RUN_STATUSES,
@@ -60,6 +63,9 @@ export type {
   SecretGrantRow,
   SecretAccessAction,
   SecretAccessLogRow,
+  AssetRow,
+  AssetVersionRow,
+  AssetWriteGrantRow,
 } from "./schema.js";
 // test-db is deliberately NOT re-exported here: it imports @tabductor/testkit, which
 // imports playwright-core, and this barrel is what `apps/web` bundles — the chain broke

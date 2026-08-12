@@ -1,5 +1,6 @@
 import { chainIdsOf } from "@tabductor/bus";
 import {
+  assets,
   eventDefs,
   events,
   runs,
@@ -455,6 +456,46 @@ export async function publicEventGet(
       status: t.status,
     })),
   };
+}
+
+export type PublicAssetRef = { blobRef: string; mime: string };
+
+/**
+ * Whether `assetId` resolves publicly under this share (sharing.md §4.4, S5d). An asset has
+ * no ACL of its own: it is visible **iff** a public-type event of this workflow carries a
+ * packet whose asset-ref fragment (`@tabductor/core`'s `ASSET_REF_SCHEMA`) names it — no
+ * asset visibility table, nothing to keep in sync (`techical_plan.md` §14).
+ *
+ * One correlated query, not two: the `assets` row is selected only when the `exists`
+ * subquery already holds, so this is a gate rather than a fetch-then-filter — the row for
+ * an asset nobody may see is never read at all, the same rule §4.1 states for packets.
+ * `jsonb_path_exists`'s recursive `$.**` is needed because an asset ref is not guaranteed to
+ * sit at a fixed top-level key of the packet.
+ */
+export async function publicAssetRef(
+  db: Db,
+  input: { workflowId: string; publicTypes: ReadonlySet<string>; assetId: string },
+): Promise<PublicAssetRef | undefined> {
+  const isPublic = publicTypePredicate(input.publicTypes);
+  const [row] = await db
+    .select({ blobRef: assets.blobRef, mime: assets.mime })
+    .from(assets)
+    .where(
+      and(
+        eq(assets.id, input.assetId),
+        sql`exists (
+          select 1 from ${events}
+          where ${eventOfWorkflow(input.workflowId)}
+            and ${isPublic}
+            and jsonb_path_exists(
+              ${events.packet},
+              '$.**.asset_id ? (@ == $assetId)',
+              jsonb_build_object('assetId', ${assets.id}::text)
+            )
+        )`,
+      ),
+    );
+  return row;
 }
 
 type PublicEventColumns = {

@@ -525,6 +525,81 @@ export const secretAccessLog = pgTable(
   (t) => [index("secret_access_log_run_idx").on(t.runId)],
 );
 
+// -- S5d: asset store (techical_plan §13.5, §14) --------------------------------------
+//
+// User deliverables, not trace exhaust: no TTL, and nothing here cascades away when a run
+// or a task is deleted. Reads are open across a user's workflows (`assets` carries no
+// workflow id at all, only `user_id`); writes are scoped by `asset_write_grants`, checked
+// in `packages/assets`, not by anything the database enforces — the grant table is data the
+// tool layer consults, the same posture `AllowAllGate` uses everywhere else pre-Phase-7.
+
+/**
+ * One row per `(user_id, path)` — the current pointer. `blob_ref`/`sha256`/`size` mirror the
+ * *current* version's row in `asset_versions` so a reader wanting only the latest content
+ * never joins; `current_version` is the version counter, bumped by every write.
+ */
+export const assets = pgTable(
+  "assets",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    path: text("path").notNull(),
+    mime: text("mime").notNull(),
+    size: integer("size").notNull(),
+    sha256: text("sha256").notNull(),
+    blobRef: text("blob_ref").notNull(),
+    currentVersion: integer("current_version").notNull().default(1),
+    createdAt: createdAt(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("assets_user_path_key").on(t.userId, t.path)],
+);
+
+/**
+ * Every write's history. `(asset_id, version)` is the natural key — versions are assigned
+ * by the writer as `assets.current_version` is bumped, never reused. **Overwrites never
+ * destroy the prior blob**: this table's old rows keep pointing at their own `blob_ref`,
+ * which stays a valid `sha256:<hex>` key in the content-addressed store regardless of what
+ * `assets.blob_ref` has moved on to — a property of `BlobStore` being content-addressed
+ * (`packages/browser/src/blob-store.ts`), not a check this table or any code performs.
+ */
+export const assetVersions = pgTable(
+  "asset_versions",
+  {
+    assetId: text("asset_id")
+      .notNull()
+      .references(() => assets.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    blobRef: text("blob_ref").notNull(),
+    sha256: text("sha256").notNull(),
+    size: integer("size").notNull(),
+    /** No `.references()`, deliberately — same reasoning as `endpointLeases.runId`: an
+     * asset must outlive the run that wrote it (S5f), so this column is never cascade-deleted
+     * when its run is. */
+    runId: text("run_id"),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.assetId, t.version] })],
+);
+
+/**
+ * Per-task write scope (§13.5 decision 14): a task with at least one row here may write only
+ * to a path matching one of its globs; a task with none may write anywhere under its own
+ * user namespace (the `AllowAllGate` default, pre-Phase-7 — see `packages/assets/src/grants.ts`).
+ * Reads are never grant-scoped, so this table has nothing to say about `assets.read`/`list`.
+ */
+export const assetWriteGrants = pgTable(
+  "asset_write_grants",
+  {
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    pathGlob: text("path_glob").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.taskId, t.pathGlob] })],
+);
+// ---------------------------------------------------------------------------------------
+
 export type TraceEntryRow = typeof traceEntries.$inferSelect;
 export type ArtifactRow = typeof artifacts.$inferSelect;
 export type EventRow = typeof events.$inferSelect;
@@ -547,3 +622,6 @@ export type SecretRow = typeof secrets.$inferSelect;
 export type NewSecret = typeof secrets.$inferInsert;
 export type SecretGrantRow = typeof secretGrants.$inferSelect;
 export type SecretAccessLogRow = typeof secretAccessLog.$inferSelect;
+export type AssetRow = typeof assets.$inferSelect;
+export type AssetVersionRow = typeof assetVersions.$inferSelect;
+export type AssetWriteGrantRow = typeof assetWriteGrants.$inferSelect;

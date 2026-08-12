@@ -18,6 +18,12 @@ export type RunStatus = "succeeded" | "failed" | "timed_out" | "cancelled";
 export type FireResult = "fired" | "skipped_overlap" | "skipped_missed" | "queued";
 export type ShareViewResult = "ok" | "unknown" | "revoked" | "rate_limited";
 export type ShareAssetOutcome = "ok" | "denied" | "not_found";
+/** `packages/assets`'s tool call sites (S5d). Not in the §17.2 catalogue as shipped — this
+ * is that catalogue's first addition since the doc was written; note it there via a doc
+ * change, the same courtesy the catalogue's own "rename via doc change" rule implies for a
+ * new row. */
+export type AssetWriteOutcome = "ok" | "denied" | "invalid" | "error";
+export type AssetReadOutcome = "ok" | "not_found" | "invalid" | "error";
 export type PolicyCheck = "navigation" | "action" | "network_read" | "mcp_call";
 export type ResourceLimit = "max_tabs" | "max_visits" | "max_wall_ms";
 /** Which side of one `Llm.complete` call a token count belongs to (§17.2 catalogue). */
@@ -47,8 +53,13 @@ export type Metrics = {
    * engagement one — the share *token* is never a label, and neither is the workflow.
    */
   shareViews: { add: (result: ShareViewResult) => void };
-  /** Public asset reads. No call site until S5d resolves assets through a share. */
+  /** Public asset reads (S2d reserved the name; S5d is the first real call site, at the
+   * public asset route). */
   shareAssetReads: { add: (outcome: ShareAssetOutcome) => void };
+  /** `assets.write`/`assets.append` (S5d). */
+  assetWrites: { add: (outcome: AssetWriteOutcome) => void };
+  /** `assets.read`/`assets.list` (S5d). */
+  assetReads: { add: (outcome: AssetReadOutcome) => void };
   /**
    * Every verdict the gate returns (S3a). `result="deny"` on the security-signals board is
    * an agent trying to leave its allowlist, which is a thing to be told about.
@@ -114,6 +125,8 @@ export function createMetrics(meter: Meter): Metrics {
   const crashRecoveredRuns = meter.createCounter("crash_recovered_runs_total");
   const shareViews = meter.createCounter("share_views_total");
   const shareAssetReads = meter.createCounter("share_asset_reads_total");
+  const assetWrites = meter.createCounter("asset_writes_total");
+  const assetReads = meter.createCounter("asset_reads_total");
   const policyVerdicts = meter.createCounter("policy_verdicts_total");
   const browserDisconnects = meter.createCounter("browser_disconnects_total");
   const browserQueueWait = meter.createHistogram("browser_queue_wait_seconds", { unit: "s" });
@@ -144,6 +157,8 @@ export function createMetrics(meter: Meter): Metrics {
     crashRecoveredRuns: { add: (count = 1) => crashRecoveredRuns.add(count) },
     shareViews: { add: (result) => shareViews.add(1, { result }) },
     shareAssetReads: { add: (outcome) => shareAssetReads.add(1, { outcome }) },
+    assetWrites: { add: (outcome) => assetWrites.add(1, { outcome }) },
+    assetReads: { add: (outcome) => assetReads.add(1, { outcome }) },
     policyVerdicts: { add: (labels) => policyVerdicts.add(1, { ...labels }) },
 
     observeBrowserEndpointHealthy(list) {

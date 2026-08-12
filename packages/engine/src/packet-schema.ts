@@ -1,6 +1,7 @@
 import { Ajv, type ValidateFunction } from "ajv";
 import addFormatsModule from "ajv-formats";
 const addFormats = addFormatsModule.default ?? addFormatsModule;
+import { ASSET_REF_SCHEMA } from "@tabductor/core";
 import { eventDefs, taskEmits, tasks, type Db, type EventDefRow } from "@tabductor/db";
 import { and, eq } from "drizzle-orm";
 
@@ -21,6 +22,12 @@ import { and, eq } from "drizzle-orm";
  */
 
 const ajv = addFormats(new Ajv({ allErrors: true, strict: false }));
+// S5d §18.2: the asset-ref fragment, registered so a stored packet schema may `$ref` it
+// instead of inventing its own `{asset_id, path, mime, sha256}` shape. The live schema
+// compiler inlines the shape it is shown rather than emitting a `$ref` (its system prompt
+// forbids `$ref` outright — see `schema-generator-llm.ts`), so this registration mainly
+// serves hand-authored and test schemas; it costs nothing to keep available either way.
+ajv.addSchema(ASSET_REF_SCHEMA, "assetRef");
 
 type Cached = { schema: string; validate: ValidateFunction };
 
