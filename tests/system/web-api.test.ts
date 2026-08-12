@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { runs } from "@tabductor/db";
+import { newId } from "@tabductor/core";
+import { cdpEndpoints, runs, traceEntries } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import { finishRun, startRun, staticSchemaGenerator } from "@tabductor/engine";
 import { TRPCError } from "@trpc/server";
@@ -388,6 +389,78 @@ describe("event", () => {
       { id: runId, taskId, taskName: "Watcher", status: "failed" },
     ]);
     expect((await trpcError(() => api.event.get({ eventId: "not-a-uuid" }))).code).toBe("BAD_REQUEST");
+  });
+});
+
+describe("run trace (U1.5)", () => {
+  it("pages trace entries in seq order, forward, and clamps a hostile limit", async () => {
+    const workflowId = await api.workflow.create({ name: "traced" });
+    const { taskIds } = await api.workflow.publishVersion({ workflowId, graph: twoNodeGraph });
+    const { runId } = await api.run.triggerManual({ taskId: taskIds.Watcher! });
+
+    await handle.db.insert(traceEntries).values(
+      Array.from({ length: 5 }, (_, seq) => ({
+        runId: runId!,
+        seq,
+        kind: "action" as const,
+        payloadJson: { action: `step-${seq}`, ok: true },
+      })),
+    );
+
+    const first = await api.run.trace({ runId: runId!, limit: 2 });
+    expect(first.items.map((e) => e.seq)).toEqual([0, 1]);
+    expect(first.nextCursor).toBe("1");
+
+    const second = await api.run.trace({ runId: runId!, cursor: first.nextCursor, limit: 2 });
+    expect(second.items.map((e) => e.seq)).toEqual([2, 3]);
+    expect(second.nextCursor).toBe("3");
+
+    const rest = await api.run.trace({ runId: runId!, cursor: second.nextCursor });
+    expect(rest.items.map((e) => e.seq)).toEqual([4]);
+    expect(rest.nextCursor).toBeNull();
+
+    // A limit past the hard cap is rejected at the zod boundary, not silently clamped —
+    // the same "caps hold against a hostile limit" property S2d's read models test.
+    expect((await trpcError(() => api.run.trace({ runId: runId!, limit: 100_000 }))).code).toBe(
+      "BAD_REQUEST",
+    );
+  });
+
+  it("returns an empty page for a run with no trace, rather than erroring", async () => {
+    const empty = await api.run.trace({ runId: "run_nope" });
+    expect(empty).toEqual({ items: [], nextCursor: null });
+  });
+});
+
+describe("endpoint health (U1.5)", () => {
+  it("lists cdp_endpoints with ws_url nowhere in the serialized result", async () => {
+    const id = newId("endpoint");
+    await handle.db.insert(cdpEndpoints).values({
+      id,
+      wsUrl: "ws://127.0.0.1:9999/devtools/browser/super-secret-token",
+      label: "dev chrome",
+      healthy: true,
+      maxQueueDepth: 5,
+    });
+
+    const list = await api.endpoint.list();
+    const row = list.find((e) => e.id === id);
+    expect(row).toEqual({
+      id,
+      label: "dev chrome",
+      healthy: true,
+      lastCheckedAt: null,
+      maxQueueDepth: 5,
+      createdAt: expect.any(Date),
+    });
+
+    // The central test (techical_plan §16 Threat 5): the credential is absent from the
+    // result, not merely from the type — a `select()` that pulled it in and a component
+    // that declined to render it would still pass a type-only check.
+    const serialized = JSON.stringify(list);
+    expect(serialized).not.toContain("ws://");
+    expect(serialized).not.toContain("wsUrl");
+    expect(serialized).not.toContain("super-secret-token");
   });
 });
 

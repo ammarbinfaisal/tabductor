@@ -1,18 +1,22 @@
 import { chainOf } from "@tabductor/bus";
 import {
+  cdpEndpoints,
   events,
   runs,
   tasks,
+  traceEntries,
   workflowVersions,
   workflows,
+  type CdpEndpointRow,
   type Db,
   type EventRow,
   type RunRow,
   type RunStatus,
   type TaskRow,
+  type TraceEntryRow,
   type WorkflowRow,
 } from "@tabductor/db";
-import { and, desc, eq, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, sql, type SQL } from "drizzle-orm";
 
 /**
  * Read models for the control plane (S2c). They live beside the engine rather than in the
@@ -269,4 +273,66 @@ export async function getEvent(db: Db, eventId: string): Promise<EventDetail | u
     .orderBy(runs.createdAt);
 
   return { event, lineage, triggered };
+}
+
+/**
+ * The run inspector's timeline (U1.5). Forward paged by `seq` — the writer's own ordering
+ * (`createTraceRecorder`), not `created_at`: a buffered flush can land several entries in
+ * one millisecond, so `seq` is the only column that is actually monotonic within a run.
+ *
+ * The cursor is the last-returned `seq`, not the composite `<at>|<id>` codec the other
+ * lists use — a trace entry has no id of its own, and `(run_id, seq)` is already the whole
+ * key, so a second field would encode nothing `seq` doesn't.
+ */
+export type TraceListInput = {
+  runId: string;
+  cursor?: string | null | undefined;
+  limit?: number | undefined;
+};
+
+export type TraceEntryItem = Omit<TraceEntryRow, "runId">;
+
+export async function listTraceEntries(db: Db, input: TraceListInput): Promise<Page<TraceEntryItem>> {
+  const limit = Math.min(Math.max(Math.trunc(input.limit ?? PAGE_LIMIT.default), PAGE_LIMIT.min), PAGE_LIMIT.max);
+  const after = input.cursor ? Number(input.cursor) : undefined;
+  const afterSeq = after !== undefined && Number.isFinite(after) ? after : undefined;
+
+  const rows = await db
+    .select({
+      seq: traceEntries.seq,
+      kind: traceEntries.kind,
+      payloadJson: traceEntries.payloadJson,
+      blobRef: traceEntries.blobRef,
+      createdAt: traceEntries.createdAt,
+    })
+    .from(traceEntries)
+    .where(and(eq(traceEntries.runId, input.runId), afterSeq !== undefined ? gt(traceEntries.seq, afterSeq) : undefined))
+    .orderBy(asc(traceEntries.seq))
+    .limit(limit + 1);
+
+  const items = rows.slice(0, limit);
+  const nextCursor = rows.length > limit ? String(items.at(-1)!.seq) : null;
+  return { items, nextCursor };
+}
+
+/**
+ * Endpoint health (U1.5, `cdp_endpoints`). `ws_url` is a bearer credential (techical_plan
+ * §16 Threat 5) and is filtered out **here, in the column list** — never selected, so no
+ * router or component bug downstream can leak it. Deleting the field from a fetched row
+ * would still let a stray `select()` upstream pull it into a log or a wider payload.
+ */
+export type CdpEndpointSummary = Omit<CdpEndpointRow, "wsUrl" | "userId">;
+
+export async function listCdpEndpoints(db: Db): Promise<CdpEndpointSummary[]> {
+  return db
+    .select({
+      id: cdpEndpoints.id,
+      label: cdpEndpoints.label,
+      healthy: cdpEndpoints.healthy,
+      lastCheckedAt: cdpEndpoints.lastCheckedAt,
+      maxQueueDepth: cdpEndpoints.maxQueueDepth,
+      createdAt: cdpEndpoints.createdAt,
+    })
+    .from(cdpEndpoints)
+    .orderBy(desc(cdpEndpoints.createdAt));
 }

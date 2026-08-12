@@ -47,7 +47,7 @@ inspector's scope or prerequisites changes.
 | S4a–S7, S5g, S5h, S8 | agent, asset, python compute, store+decision, compiler, policy, graph compiler | not started |
 
 What exists as code: `packages/{core,db,bus,engine,policy,telemetry,browser}` +
-`apps/{engine,web,testkit}` + `tests/system` — 142 tests in 33 files. The whole workspace typechecks clean (`tsc`) and lints
+`apps/{engine,web,testkit}` + `tests/system` — 148 tests in 34 files. The whole workspace typechecks clean (`tsc`) and lints
 clean (`pnpm lint`). `docker compose up -d` brings up Postgres, applies migrations, and runs both
 the engine and the control plane on :3000; `docker compose up -d postgres` is the tests-only
 subset. Credentials are compiled in as defaults, so a clean checkout needs no environment. If
@@ -504,8 +504,8 @@ Two standing rules, which are what make the slices cheap:
 
 Sequencing note: slices are ordered by prerequisite, not priority — U1.5 (inspector) is the one
 worth pulling as early as its data exists, since it is the debugging surface for everything
-after it. U0, U0.5 and U1 are done; U1.5 is next, and half its prerequisite is in — S3a
-produces the traces and the screenshots it renders, S3b the endpoints and network entries.
+after it. U0, U0.5, U1 and U1.5 are done — the inspector landed the moment S3a/S3b's data
+existed, as this note argued it should. U2 is next, gated on S4b.
 
 ---
 

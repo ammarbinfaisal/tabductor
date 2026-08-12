@@ -1,3 +1,4 @@
+import { endpointRouter } from "./routers/endpoint.js";
 import { eventRouter } from "./routers/event.js";
 import { publicRouter } from "./routers/public.js";
 import { runRouter } from "./routers/run.js";
@@ -12,6 +13,8 @@ export const appRouter = router({
   run: runRouter,
   event: eventRouter,
   share: shareRouter,
+  /** cdp_endpoints health, ws_url filtered out at the query (U1.5). */
+  endpoint: endpointRouter,
   /** Unauthenticated, token-scoped reads (S2d). Everything under here filters in SQL. */
   public: publicRouter,
 });

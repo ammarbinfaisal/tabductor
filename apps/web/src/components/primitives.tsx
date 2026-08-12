@@ -66,6 +66,21 @@ export function VisibilityStamp({ isPublic }: { isPublic: boolean }) {
   );
 }
 
+/**
+ * Endpoint health (U1.5). Deliberately not `Stamp` with a `healthy`/`unhealthy` kind: those
+ * are run *outcomes*, and reusing that vocabulary for live infrastructure state would blur
+ * "this task succeeded" with "this endpoint is up" — two different questions. The color
+ * pair is the entity-family ink (ink-blue calm / amber draws-the-eye), same tokens
+ * `chip--event`/`badge--node` use, not the status ramp.
+ */
+export function HealthStamp({ healthy }: { healthy: boolean }) {
+  return (
+    <span className="stamp" style={{ color: healthy ? "var(--event-text)" : "var(--node-text)" }} role="status">
+      {healthy ? "HEALTHY" : "UNHEALTHY"}
+    </span>
+  );
+}
+
 function LockGlyph() {
   return (
     <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden style={{ marginRight: 2 }}>

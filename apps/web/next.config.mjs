@@ -8,6 +8,9 @@ const config = {
     "@tabductor/bus",
     "@tabductor/engine",
     "@tabductor/telemetry",
+    // Only the "./blob-store" subpath is ever imported (U1.5) — the package barrel pulls in
+    // playwright-core, which is why it stays off this list's neighbours' import graph.
+    "@tabductor/browser",
   ],
 
   // `pg` loads its native/optional pieces by dynamic require, and the OTel SDK monkey-patches

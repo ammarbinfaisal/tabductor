@@ -48,6 +48,8 @@ export type RunView = {
   error: string | null;
   triggerHref: string | null;
   cancellable: boolean;
+  /** The run inspector (U1.5), owner-only — the public side has no inspector route. */
+  inspectHref: string | null;
 };
 
 export type RunsSource = {
@@ -125,7 +127,7 @@ export function RunsTable({ source }: { source: RunsSource }) {
           {state.items.map((run) => (
             <tr key={run.key}>
               <td>
-                {run.taskName}
+                {run.inspectHref ? <Link href={run.inspectHref}>{run.taskName}</Link> : run.taskName}
                 <div className="mono muted">{run.key.slice(0, 12)}</div>
               </td>
               <td>
@@ -174,6 +176,7 @@ export function WorkflowRuns({ workflowId }: { workflowId: string }) {
       ? `/workflows/${workflowId}/events?event=${run.triggerEventId}`
       : null,
     cancellable: run.status === "queued" || run.status === "running",
+    inspectHref: `/workflows/${workflowId}/runs/${run.id}`,
   });
 
   return (
@@ -215,6 +218,7 @@ export function SharedRuns({ token }: { token: string }) {
     error: run.errorClass,
     triggerHref: `/s/${encodeURIComponent(token)}/runs/${encodeURIComponent(run.ref)}`,
     cancellable: false,
+    inspectHref: null,
   });
 
   return (

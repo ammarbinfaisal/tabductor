@@ -145,6 +145,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@tabductor/browser':
+        specifier: workspace:*
+        version: link:../../packages/browser
       '@tabductor/bus':
         specifier: workspace:*
         version: link:../../packages/bus

@@ -806,6 +806,63 @@ table.ledger td {
   animation-delay: inherit;
 }
 
+/* ---------- The run inspector (U1.5) ---------- */
+
+.trace-timeline {
+  gap: 0;
+}
+
+.trace-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
+  border-bottom: var(--rule);
+  border-left: 3px solid transparent;
+}
+
+/* The security-signal row (§16 Threat 1/2): a denial gets the one border color in the
+   product that means "look here," never reused for an ordinary failed action. */
+.trace-row--denied {
+  border-left-color: var(--status-failed);
+  background: var(--banner-error-bg);
+}
+
+.trace-row-seq {
+  min-width: 3ch;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.trace-row-kind {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.trace-row-kind--denied {
+  background: transparent;
+  border-color: var(--status-failed);
+  color: var(--status-failed);
+}
+
+.trace-row-time {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+}
+
+.trace-row-raw-summary {
+  cursor: pointer;
+  font-size: var(--text-xs);
+}
+
+.trace-screenshot {
+  max-width: 360px;
+  border: var(--rule-strong);
+  border-radius: var(--radius-1);
+}
+
 /* ---------- Legacy helpers still referenced by feed/lineage/public detail ---------- */
 
 .packet {
