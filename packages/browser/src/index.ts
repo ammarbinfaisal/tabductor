@@ -1,16 +1,21 @@
 export type {
+  Anchor,
+  AnchoredElement,
   BrowserConn,
   CreatePageOptions,
   Driver,
   ExtractedRecord,
   ExtractSpec,
   FieldSpec,
+  LocatorStrategy,
   NavigationHook,
   NavigationRequest,
   NetworkBody,
   NetworkHooks,
   NetworkRecord,
   Page,
+  PerceiveOptions,
+  Perception,
 } from "./driver.js";
 export { playwrightDriver } from "./playwright-driver.js";
 export {

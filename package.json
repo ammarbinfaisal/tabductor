@@ -13,6 +13,7 @@
     "dev:engine": "tsx watch apps/engine/src/main.ts"
   },
   "devDependencies": {
+    "@tabductor/agent": "workspace:*",
     "@tabductor/browser": "workspace:*",
     "@tabductor/bus": "workspace:*",
     "@tabductor/core": "workspace:*",

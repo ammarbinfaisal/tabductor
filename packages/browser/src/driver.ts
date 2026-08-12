@@ -35,12 +35,59 @@ export type ExtractSpec = Record<string, FieldSpec>;
 
 export type ExtractedRecord = Record<string, string | null>;
 
+/**
+ * A stable id (`e1`, `e2`, …) assigned to a perceived element in document order — how the
+ * agent (S4b) refers to something on the page without ever holding a selector itself.
+ */
+export type Anchor = string;
+
+/**
+ * Which family of identity a locator was built from, most durable first — recorded per
+ * element so a later reader (the S6 compiler) knows how much to trust it surviving a layout
+ * change. Describes provenance, not the concrete selector syntax `locator` ended up using.
+ */
+export type LocatorStrategy = "testid" | "role" | "text" | "css-path";
+
+export type AnchoredElement = {
+  anchor: Anchor;
+  tag: string;
+  /** ARIA role, explicit or inferred from tag/type — null when neither is determinable. */
+  role: string | null;
+  /** Best-effort accessible name (aria-label/alt/placeholder/value) or trimmed text. */
+  name: string | null;
+  /** Trimmed, truncated text content — never raw HTML (§16 Threat 1). */
+  text: string | null;
+  strategy: LocatorStrategy;
+  /**
+   * The selector `Page` methods accept. Never hand this to the model — it sees only the
+   * anchor; resolve one back to this through `RunSession.resolveAnchor` (session.ts).
+   */
+  locator: string;
+};
+
+export type Perception = {
+  url: string;
+  title: string;
+  elements: AnchoredElement[];
+  /** Main-page text, budgeted to `PerceiveOptions.maxChars` — no raw HTML ever appears here. */
+  text: string;
+};
+
+export type PerceiveOptions = {
+  /** Character budget for `text` — tokens are provider-specific, chars are not (default 8000). */
+  maxChars?: number;
+};
+
 export type Page = {
   goto: (url: string) => Promise<void>;
   click: (selector: string) => Promise<void>;
   type: (selector: string, text: string) => Promise<void>;
   waitFor: (selector: string, opts?: { timeout?: number }) => Promise<void>;
   queryAll: (selector: string, fields: ExtractSpec) => Promise<ExtractedRecord[]>;
+  /** The perception builder (S4a §8): salient elements anchored in document order, plus
+   * budgeted main text. One `evaluate`-style call, kept inside this driver rather than issued
+   * as arbitrary page-JS from agent/generated code (§12's rule constrains *that*, not us). */
+  perceive: (opts?: PerceiveOptions) => Promise<Perception>;
   screenshot: () => Promise<Buffer>;
   title: () => Promise<string>;
   url: () => string;

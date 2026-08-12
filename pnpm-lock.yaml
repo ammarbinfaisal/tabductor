@@ -8,6 +8,9 @@ importers:
 
   .:
     devDependencies:
+      '@tabductor/agent':
+        specifier: workspace:*
+        version: link:packages/agent
       '@tabductor/browser':
         specifier: workspace:*
         version: link:packages/browser
@@ -209,6 +212,34 @@ importers:
       eslint:
         specifier: ^9.0.0
         version: 9.39.5
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
+  packages/agent:
+    dependencies:
+      '@ai-sdk/anthropic':
+        specifier: ^4.0.37
+        version: 4.0.37(zod@3.25.76)
+      '@ai-sdk/openai':
+        specifier: ^4.0.37
+        version: 4.0.37(zod@3.25.76)
+      '@tabductor/browser':
+        specifier: workspace:*
+        version: link:../browser
+      '@tabductor/core':
+        specifier: workspace:*
+        version: link:../core
+      ai:
+        specifier: ^7.0.59
+        version: 7.0.59(zod@3.25.76)
+      zod:
+        specifier: ^3.25.0
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.13.3
       typescript:
         specifier: ^5.7.0
         version: 5.9.3

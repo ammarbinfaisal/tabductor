@@ -7,15 +7,19 @@ import {
   type Route,
 } from "playwright-core";
 import type {
+  AnchoredElement,
   BrowserConn,
   CreatePageOptions,
   Driver,
   ExtractedRecord,
   ExtractSpec,
+  LocatorStrategy,
   NavigationHook,
   NetworkHooks,
   NetworkRecord,
   Page,
+  Perception,
+  PerceiveOptions,
 } from "./driver.js";
 import type { NavCause } from "@tabductor/policy";
 
@@ -57,15 +61,24 @@ import type { NavCause } from "@tabductor/policy";
  * attribution on purpose and severed must not mean unguarded.
  */
 
-// The page-side extraction callback runs in the browser, where these globals exist. The
-// workspace does not load TypeScript's DOM lib (this is a Node package), so the two shapes
-// the callback touches are declared here rather than pulling in `lib.dom` for one function.
+// The page-side callbacks (`extract`, `perceive`) run in the browser, where these globals
+// exist. The workspace does not load TypeScript's DOM lib (this is a Node package), so the
+// shapes they touch are declared here rather than pulling in `lib.dom` for two functions.
 type DomNode = {
+  tagName: string;
   textContent: string | null;
   getAttribute: (name: string) => string | null;
   querySelector: (sel: string) => DomNode | null;
+  querySelectorAll: (sel: string) => ArrayLike<DomNode>;
+  parentElement: DomNode | null;
+  children: ArrayLike<DomNode>;
 };
-declare const document: { querySelectorAll: (sel: string) => ArrayLike<DomNode> };
+declare const document: {
+  querySelectorAll: (sel: string) => ArrayLike<DomNode>;
+  title: string;
+  body: { innerText: string };
+};
+declare const location: { href: string };
 
 /** The slice of `Fetch.requestPaused` this file uses. */
 type RequestPaused = {
@@ -413,6 +426,8 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
 
     queryAll: (selector, fields) => extract(pwPage, selector, fields),
 
+    perceive: (opts) => perceive(pwPage, opts),
+
     screenshot: () => pwPage.screenshot({ type: "png" }),
 
     title: () => pwPage.title(),
@@ -460,17 +475,26 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
   };
 }
 
+/**
+ * Resolved through `pwPage.locator(selector)`, not a raw `document.querySelectorAll` inside
+ * `evaluate` — Playwright's selector engine understands its own extended pseudo-classes
+ * (`:text-is()`, `:nth-match()`), and `perceive()` below hands out exactly those in the
+ * `text`/disambiguated tiers. A `queryAll` that only understood plain CSS would reject an
+ * anchor's own locator, which is the one thing "resolves back to a locator `queryAll`
+ * accepts" (S4a) rules out.
+ */
 async function extract(
   pwPage: PwPage,
   selector: string,
   fields: ExtractSpec,
 ): Promise<ExtractedRecord[]> {
-  return pwPage.evaluate(
-    ({ root, spec }: { root: string; spec: [string, { selector?: string; attr?: string }][] }) => {
+  return pwPage.locator(selector).evaluateAll(
+    (
+      els: DomNode[],
+      spec: [string, { selector?: string; attr?: string }][],
+    ) => {
       const out: Record<string, string | null>[] = [];
-      const nodes = document.querySelectorAll(root);
-      for (let i = 0; i < nodes.length; i++) {
-        const el = nodes[i]!;
+      for (const el of els) {
         const record: Record<string, string | null> = {};
         for (const [name, field] of spec) {
           const target = field.selector ? el.querySelector(field.selector) : el;
@@ -488,6 +512,164 @@ async function extract(
     },
     // Entries rather than the object itself: the argument crosses into the page as JSON, and
     // an entry list keeps field order stable, which keeps extracted records diffable.
-    { root: selector, spec: Object.entries(fields) },
+    Object.entries(fields),
   );
+}
+
+/** Character budget for `perceive()`'s `text` when the caller doesn't set one (§8: ~8k chars). */
+const DEFAULT_PERCEIVE_MAX_CHARS = 8000;
+
+/** Hard cap on how many salient elements one snapshot anchors — a defensive bound against a
+ * pathological page, not a tuning knob a caller is expected to reach for. */
+const MAX_PERCEIVE_ELEMENTS = 300;
+
+/**
+ * The perception builder (S4a §8), run as one in-page callback like `extract`. Every locator
+ * it emits is either plain CSS (an attribute selector, or a full `:nth-of-type()` ancestor
+ * path) or Playwright's own extended CSS (`:text-is()`, `:nth-match()`) — never a selector
+ * this file's own `document.querySelectorAll` calls (used only to *count* matches for
+ * disambiguation) could not parse itself; see the tier-by-tier comments below.
+ */
+function perceiveInPage(args: { maxChars: number; maxElements: number }): Perception {
+  const { maxChars, maxElements } = args;
+  const norm = (s: string | null): string => (s ?? "").replace(/\s+/g, " ").trim();
+  // CSS attribute-value / text-argument escaping — the two characters that would otherwise
+  // end the quoted string early.
+  const escapeCss = (s: string): string => s.replace(/["\\]/g, "\\$&");
+
+  const roleOf = (el: DomNode): string | null => {
+    const explicit = el.getAttribute("role");
+    if (explicit) return explicit;
+    const tag = el.tagName.toLowerCase();
+    if (tag === "a") return el.getAttribute("href") !== null ? "link" : null;
+    if (tag === "button") return "button";
+    if (tag === "input") {
+      const type = (el.getAttribute("type") ?? "text").toLowerCase();
+      if (type === "submit" || type === "button" || type === "reset") return "button";
+      if (type === "checkbox") return "checkbox";
+      if (type === "radio") return "radio";
+      return "textbox";
+    }
+    if (tag === "textarea") return "textbox";
+    if (tag === "select") return "combobox";
+    if (/^h[1-6]$/.test(tag)) return "heading";
+    if (tag === "article") return "article";
+    return null;
+  };
+
+  /** The one ARIA-ish attribute that gives an element an explicit name, cheapest first. */
+  const accessibleAttr = (el: DomNode): { attr: string; value: string } | null => {
+    const aria = el.getAttribute("aria-label");
+    if (aria) return { attr: "aria-label", value: norm(aria) };
+    const alt = el.getAttribute("alt");
+    if (alt) return { attr: "alt", value: norm(alt) };
+    const placeholder = el.getAttribute("placeholder");
+    if (placeholder) return { attr: "placeholder", value: norm(placeholder) };
+    if (el.tagName === "INPUT" || el.tagName === "BUTTON") {
+      const value = el.getAttribute("value");
+      if (value) return { attr: "value", value: norm(value) };
+    }
+    return null;
+  };
+
+  /** Fallback tier: a full `:nth-of-type()` ancestor path, standard CSS, always unique. */
+  const cssPath = (start: DomNode): string => {
+    const parts: string[] = [];
+    let node: DomNode | null = start;
+    while (node !== null && node.tagName.toLowerCase() !== "html") {
+      const current: DomNode = node;
+      const parent: DomNode | null = current.parentElement;
+      let part = current.tagName.toLowerCase();
+      if (parent) {
+        const siblings: DomNode[] = Array.from(parent.children).filter(
+          (c: DomNode) => c.tagName === current.tagName,
+        );
+        if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(current) + 1})`;
+      }
+      parts.unshift(part);
+      node = parent;
+    }
+    return parts.join(" > ");
+  };
+
+  /** Position (1-based) and count of `el` among `document.querySelectorAll(nativeSelector)` —
+   * `nativeSelector` must be real CSS the DOM's own engine can parse. */
+  const position = (nativeSelector: string, el: DomNode): { index: number; total: number } => {
+    const all = Array.from(document.querySelectorAll(nativeSelector));
+    return { index: all.indexOf(el) + 1, total: all.length };
+  };
+
+  /** `base` alone if it already picks out one element; otherwise Playwright's `:nth-match()`
+   * (resolved later by the driver's own selector engine, never by this in-page code). */
+  const uniqueLocator = (base: string, pos: { index: number; total: number }): string =>
+    pos.index > 0 && pos.total > 1 ? `:nth-match(${base}, ${pos.index})` : base;
+
+  // Interactive controls, anything the page author marked with a test id, headings, and
+  // article containers — document order, so anchor numbers (`e1`, `e2`, …) fall out
+  // deterministic across identical snapshots. Inlined rather than a module-level constant:
+  // `evaluate` serializes only this function's own source text into the page, so an outer
+  // `const` this body referenced would arrive as a `ReferenceError`, not a closure.
+  const salientSelector =
+    'a[href], button, input, textarea, select, [role], [data-testid], h1, h2, h3, h4, h5, h6, article';
+  const nodes = Array.from(document.querySelectorAll(salientSelector)).slice(0, maxElements);
+
+  const elements: AnchoredElement[] = [];
+  let n = 0;
+  for (const el of nodes) {
+    n++;
+    const anchor = `e${n}`;
+    const tag = el.tagName.toLowerCase();
+    const testId = el.getAttribute("data-testid");
+    const text = norm(el.textContent);
+    const acc = accessibleAttr(el);
+
+    let strategy: LocatorStrategy;
+    let locator: string;
+    if (testId) {
+      strategy = "testid";
+      const base = `[data-testid="${escapeCss(testId)}"]`;
+      locator = uniqueLocator(base, position(base, el));
+    } else if (acc) {
+      strategy = "role";
+      const base = `[${acc.attr}="${escapeCss(acc.value)}"]`;
+      locator = uniqueLocator(base, position(base, el));
+    } else if (text) {
+      strategy = "text";
+      const base = `${tag}:text-is("${escapeCss(text)}")`;
+      // `:text-is` is Playwright-only — the DOM's own `querySelectorAll` cannot parse it, so
+      // the match count for disambiguation is computed by hand instead of via `position()`.
+      const sameTag = Array.from(document.querySelectorAll(tag)).filter(
+        (n2) => norm(n2.textContent) === text,
+      );
+      locator = uniqueLocator(base, { index: sameTag.indexOf(el) + 1, total: sameTag.length });
+    } else {
+      strategy = "css-path";
+      locator = cssPath(el);
+    }
+
+    elements.push({
+      anchor,
+      tag,
+      role: roleOf(el),
+      name: testId ?? acc?.value ?? (text ? text.slice(0, 80) : null),
+      text: text ? text.slice(0, 200) : null,
+      strategy,
+      locator,
+    });
+  }
+
+  const full = norm(document.body.innerText);
+  const text =
+    full.length > maxChars
+      ? `${full.slice(0, maxChars)} … [truncated, showing ${maxChars} of ${full.length} chars]`
+      : full;
+
+  return { url: location.href, title: document.title, elements, text };
+}
+
+async function perceive(pwPage: PwPage, opts: PerceiveOptions = {}): Promise<Perception> {
+  return pwPage.evaluate(perceiveInPage, {
+    maxChars: opts.maxChars ?? DEFAULT_PERCEIVE_MAX_CHARS,
+    maxElements: MAX_PERCEIVE_ELEMENTS,
+  });
 }

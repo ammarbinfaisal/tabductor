@@ -1,5 +1,39 @@
 # S4a — LLM adapter (live/record/replay) + perception builder
 
+> **Built, with deviations from the deliverable below, each argued at its site.**
+> (1) **The adapter runs on the Vercel AI SDK (`ai` + `@ai-sdk/anthropic` + `@ai-sdk/openai`),
+> not `@anthropic-ai/sdk`, and speaks two providers, not one — orchestrator-mandated,
+> mirroring `packages/engine`'s schema compiler (`schema-generator-ai.ts`, commit `60ce054`).
+> Reasons: (a) this machine and the deployment it targets carry only `OPENAI_API_KEY` — an
+> Anthropic-only adapter could never run live or record a transcript here, and this subphase's
+> own verification step asks for exactly that; (b) `ai`/`@ai-sdk/{anthropic,openai}` are
+> already workspace dependencies as of `60ce054`, so building on them adds no
+> provider-abstraction layer of our own — the spec's "no abstraction for hypothetical
+> non-Anthropic models" rule is honoured by not writing one, which using an SDK the repo
+> already depends on satisfies more directly than refusing it would. `liveLlm({provider,
+> apiKey, model})` is one small function (`llm-live.ts`) with a `providerFromEnv` companion
+> identical in shape to the schema compiler's; defaults are `claude-sonnet-5`
+> (Anthropic, the spec's own choice) and `gpt-5.2` (mirroring the schema compiler's OpenAI
+> default rather than inventing a second one). Tools cross the SDK boundary with no `execute`,
+> so `generateText` always hands tool calls back unexecuted — the S4b loop runs them, this
+> adapter never does. (2) **`queryAll`'s extraction now resolves through `pwPage.locator(…)
+> .evaluateAll(…)` instead of a raw `document.querySelectorAll` inside `evaluate`** — not
+> asked for by this subphase, but required by it: `perceive()`'s locators use Playwright's own
+> extended CSS (`:text-is()`, `:nth-match()`) to disambiguate repeated `data-testid`s and
+> identical link text, and the DOM's native selector engine cannot parse those pseudo-classes
+> at all. Routing `queryAll` through the same Locator engine `click`/`type`/`waitFor` already
+> use is what makes "an anchor resolves back to a locator `queryAll` accepts" (this doc's own
+> system-test bullet) true rather than true-for-three-of-four-methods; `extract()`'s behaviour
+> for a plain CSS selector (the only kind anything used before this subphase) is unchanged,
+> since Playwright's engine is a superset of standard CSS for that case. (3) **Locator
+> strategy is per-element, not just per-tier-name**: `testid`/`role` selectors are wrapped in
+> `:nth-match()` only when the base attribute selector is ambiguous (matches more than one
+> element); `text` always needs it, since `fake-tweets`' three permalinks share the literal
+> string "permalink". The disambiguating match index is computed by hand against a
+> native-CSS-parseable selector (never by asking `document.querySelectorAll` to resolve a
+> Playwright-only pseudo-class itself) — see the comments in `perceiveInPage`
+> (`playwright-driver.ts`). No open items.
+
 You are implementing subphase S4a. Read, in order:
 1. This file (authoritative).
 2. `docs/impl-phases.md` — Phase 4 (perception builder, LLM adapter bullets) + the

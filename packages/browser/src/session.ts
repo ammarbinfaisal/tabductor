@@ -2,6 +2,7 @@ import { AppError } from "@tabductor/core";
 import type { PolicyGate, TaskCtx } from "@tabductor/policy";
 import type { Metrics } from "@tabductor/telemetry";
 import type {
+  Anchor,
   BrowserConn,
   ExtractSpec,
   NavigationRequest,
@@ -27,6 +28,14 @@ export type RunSession = {
   network: NetworkApi;
   /** A second guarded+traced page on the same connection (§8 `max_tabs`). */
   openTab: () => Promise<Page>;
+  /**
+   * Resolves an anchor (`e1`, `e2`, …) from the most recent `perceive()` call on any page in
+   * this session back to the locator `Page` methods accept — S4b's loop calls this once per
+   * tool call rather than holding a selector itself, and the resolved string is what lands in
+   * the action's trace entry (S4a §8: "the trace records the resolved locator"). `undefined`
+   * for an anchor that was never perceived, or one from a snapshot since superseded.
+   */
+  resolveAnchor: (anchor: Anchor) => string | undefined;
   close: () => Promise<void>;
 };
 
@@ -107,6 +116,12 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
 
   const wallClockExceeded = (): boolean =>
     limits?.maxWallMs !== undefined && Date.now() - openedAt > limits.maxWallMs;
+
+  // ---- perception (S4a §8): the most recent snapshot's anchor→locator map. Overwritten by
+  // every `perceive()` call, on whichever page it was taken on — an anchor answers to "the
+  // last thing the agent looked at", the same one-snapshot-at-a-time model the agent loop
+  // itself uses (perceive, then act on what it just saw). ----
+  let anchorMap = new Map<Anchor, string>();
 
   // ---- network observation (§9 step 1): one shared store for every page this session opens
   // (the initial page, any `openTab()` pages, and popups either spawns), so indices stay
@@ -338,6 +353,21 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
         // the page, and §14 makes page content an opt-in category rather than a default.
         { detail: (records) => ({ count: records.length }) },
       ),
+    perceive: (opts) =>
+      act(
+        "perceive",
+        { maxChars: opts?.maxChars },
+        () => raw.perceive(opts),
+        {
+          // Counts only, never the elements or the text themselves — the same rule
+          // `queryAll` follows above, for the same reason (§14 opt-in page content).
+          detail: (result) => ({ elementCount: result.elements.length, textChars: result.text.length }),
+        },
+      ).then((result) => {
+        anchorMap = new Map(result.elements.map((e) => [e.anchor, e.locator]));
+        return result;
+      }),
+
     screenshot: () =>
       act("screenshot", {}, () => raw.screenshot(), {
         blob: (bytes) => ({ kind: "screenshots", bytes, mime: "image/png" }),
@@ -370,6 +400,7 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
     page,
     network: { list: networkList, body: networkBody },
     openTab,
+    resolveAnchor: (anchor) => anchorMap.get(anchor),
     async close() {
       await Promise.all(openPages.map((p) => p.close().catch(() => undefined)));
       await trace.close();

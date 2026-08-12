@@ -63,7 +63,7 @@ Environment deviations from `impl-phases.md`:
 | S3a | Browser driver interface + Playwright CDP impl + navigation guard + trace recorder | impl Phase 3, §8 | **done** (migration `0008`) |
 | S3b | Endpoint pool/leases + per-endpoint queue + network observer + resource limits + ScriptedBrowserExecutor | impl Phase 3, §9 | **done** (migration `0009`) |
 | U1.5 | Run inspector: per-run trace timeline (navigations/actions/network/policy denials), screenshots via `blob_ref`, resource-limit/disconnect failure detail, endpoint health panel over `cdp_endpoints` (ws_url never selected) | impl UI track U1.5, techical_plan §16 T5/T15 | **done** |
-| S4a | LLM adapter (live/record/replay) + perception builder | impl Phase 4 | prompt written |
+| S4a | LLM adapter (live/record/replay) + perception builder | impl Phase 4 | **done** |
 | S4b | Agent loop + tool registry + structured emit + AgentExecutor + e2e milestone | impl Phase 4 | |
 | S5a | `tasks.kind` discriminant + AssetExecutor skeleton + kind constraints | impl Phase 5, §4 | |
 | S5b | Secrets broker: envelope encryption, KMS wrapping, fill/inject, origin binding | impl Phase 5, §16 T4 | |
