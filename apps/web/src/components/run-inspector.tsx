@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { createStore } from "zustand/vanilla";
-import { Stamp } from "./primitives.js";
+import { EventChip, Stamp } from "./primitives.js";
 import { api, asApiError, type RouterOutputs } from "../lib/api.js";
 import { usePolling, useStoreBridge, type Store } from "../lib/store.js";
 
@@ -105,6 +105,46 @@ function findFailureDetail(trace: TraceItem[]): Record<string, unknown> | null {
   return null;
 }
 
+/**
+ * U2: what `withTrace` (`packages/agent/src/llm.ts`) actually writes for `kind: "llm"` —
+ * `{prompt_hash, usage:{in,out}, tool_calls:[names]}`. No prompt text, no model name — the
+ * doc correction this slice records (see U2-agent-visibility.md): impl-phases's "prompts" in
+ * the U2 row meant the call's identity (the hash), never the text. Cost is therefore not
+ * computable here — `packages/agent/src/pricing.ts` prices by model, and no trace row carries
+ * one; token totals are rendered instead.
+ */
+type LlmTracePayload = { prompt_hash: string; usage: { in: number; out: number }; tool_calls: string[] };
+
+/** `executor.ts`'s `makeEmitFn` — the three shapes an `action:"emit"` row takes. */
+type EmitTracePayload = {
+  action: "emit";
+  type: string;
+  dedupeKey: string | null;
+  ok: boolean;
+  eventId?: string;
+  error?: string;
+  deduped?: boolean;
+};
+
+/** Cumulative token totals + step count over the trace pages loaded so far (client-side sum,
+ * per the spec's explicit permission — no server aggregation needed for numbers this cheap
+ * to fold over rows the client already fetched for the timeline). Same "as loaded" honesty as
+ * `findFailureDetail`: a run whose LLM calls haven't all been paged in yet under-reports until
+ * "Load more" is clicked. */
+function llmStats(trace: TraceItem[]): { steps: number; tokensIn: number; tokensOut: number } {
+  let steps = 0;
+  let tokensIn = 0;
+  let tokensOut = 0;
+  for (const entry of trace) {
+    if (entry.kind !== "llm") continue;
+    const payload = entry.payloadJson as Partial<LlmTracePayload>;
+    steps += 1;
+    tokensIn += payload.usage?.in ?? 0;
+    tokensOut += payload.usage?.out ?? 0;
+  }
+  return { steps, tokensIn, tokensOut };
+}
+
 export function RunInspector({ workflowId, runId }: { workflowId: string; runId: string }) {
   const store = storeFor(runId);
   const state = useStoreBridge(store);
@@ -121,6 +161,7 @@ export function RunInspector({ workflowId, runId }: { workflowId: string; runId:
   const { run, task, trigger } = state.detail;
   const showFailureDetail = run.error !== null && FAILURE_CODES.has(run.error);
   const failure = showFailureDetail ? findFailureDetail(state.trace) : null;
+  const stats = run.modeUsed === "ai" ? llmStats(state.trace) : null;
 
   return (
     <>
@@ -143,6 +184,13 @@ export function RunInspector({ workflowId, runId }: { workflowId: string; runId:
           </span>
           {run.endedAt ? <span className="mono muted">ended {run.endedAt.toLocaleString()}</span> : null}
         </div>
+
+        {stats ? (
+          <p className="mono muted">
+            {stats.steps} llm step{stats.steps === 1 ? "" : "s"} loaded · {stats.tokensIn}→{stats.tokensOut} tokens
+            in→out
+          </p>
+        ) : null}
 
         {run.error ? (
           <div className="banner banner--error">
@@ -179,7 +227,7 @@ export function RunInspector({ workflowId, runId }: { workflowId: string; runId:
       ) : (
         <div className="stack trace-timeline">
           {state.trace.map((entry) => (
-            <TraceRow key={entry.seq} entry={entry} />
+            <TraceRow key={entry.seq} entry={entry} workflowId={workflowId} />
           ))}
         </div>
       )}
@@ -188,17 +236,22 @@ export function RunInspector({ workflowId, runId }: { workflowId: string; runId:
   );
 }
 
-function TraceRow({ entry }: { entry: TraceItem }) {
+function TraceRow({ entry, workflowId }: { entry: TraceItem; workflowId: string }) {
   const payload = entry.payloadJson as Record<string, unknown>;
   const denied = entry.kind === "policy_denied";
+  const isLlm = entry.kind === "llm";
   const screenshotRef = entry.kind === "action" && payload.action === "screenshot" ? entry.blobRef : null;
 
   return (
-    <div className={`trace-row${denied ? " trace-row--denied" : ""}`}>
+    <div className={`trace-row${denied ? " trace-row--denied" : ""}${isLlm ? " trace-row--llm" : ""}`}>
       <span className="mono muted trace-row-seq">{entry.seq}</span>
-      <span className={`chip trace-row-kind${denied ? " trace-row-kind--denied" : ""}`}>{entry.kind}</span>
+      <span
+        className={`chip trace-row-kind${denied ? " trace-row-kind--denied" : ""}${isLlm ? " trace-row-kind--llm" : ""}`}
+      >
+        {entry.kind}
+      </span>
       <div className="stack" style={{ gap: "var(--space-1)", flex: 1, minWidth: 0 }}>
-        <TraceSummary kind={entry.kind} payload={payload} />
+        <TraceSummary kind={entry.kind} payload={payload} workflowId={workflowId} />
         {screenshotRef ? (
           <img
             src={`/api/blobs/${encodeURIComponent(screenshotRef)}`}
@@ -216,7 +269,15 @@ function TraceRow({ entry }: { entry: TraceItem }) {
   );
 }
 
-function TraceSummary({ kind, payload }: { kind: TraceItem["kind"]; payload: Record<string, unknown> }) {
+function TraceSummary({
+  kind,
+  payload,
+  workflowId,
+}: {
+  kind: TraceItem["kind"];
+  payload: Record<string, unknown>;
+  workflowId: string;
+}) {
   switch (kind) {
     case "navigation":
       return (
@@ -225,6 +286,9 @@ function TraceSummary({ kind, payload }: { kind: TraceItem["kind"]; payload: Rec
         </span>
       );
     case "action":
+      if (payload.action === "emit") {
+        return <EmitSummary payload={payload as unknown as EmitTracePayload} workflowId={workflowId} />;
+      }
       return (
         <span className="mono">
           {String(payload.action)}{" "}
@@ -248,8 +312,70 @@ function TraceSummary({ kind, payload }: { kind: TraceItem["kind"]; payload: Rec
         </span>
       );
     case "llm":
-      return <span className="mono muted">llm call</span>;
+      return <LlmSummary payload={payload as unknown as Partial<LlmTracePayload>} />;
     default:
       return null;
   }
+}
+
+/**
+ * "The model thought here" (U2 deliverable 1): the LLM call's identity is a hash, never the
+ * prompt text (see `LlmTracePayload`'s comment) — a truncated `prompt_hash`, `in→out` token
+ * counts, and the tool-call sequence as chips in call order. The full hash is one `<details>`
+ * click away, in the row's raw-payload dump every kind already gets.
+ */
+function LlmSummary({ payload }: { payload: Partial<LlmTracePayload> }) {
+  const hash = typeof payload.prompt_hash === "string" ? payload.prompt_hash : "";
+  const usage = payload.usage;
+  const calls = Array.isArray(payload.tool_calls)
+    ? payload.tool_calls.filter((c): c is string => typeof c === "string")
+    : [];
+  return (
+    <span className="stack" style={{ gap: "var(--space-1)" }}>
+      <span className="mono">
+        <span className="muted">hash</span> {hash ? `${hash.slice(0, 12)}…` : "?"}
+        <span className="muted"> · </span>
+        {usage?.in ?? 0}→{usage?.out ?? 0} tokens
+      </span>
+      {calls.length > 0 ? (
+        <span className="row" style={{ gap: "var(--space-1)", flexWrap: "wrap" }}>
+          {calls.map((name, i) => (
+            <span key={i} className="chip chip--tool">
+              {name}
+            </span>
+          ))}
+        </span>
+      ) : (
+        <span className="mono muted">no tool calls</span>
+      )}
+    </span>
+  );
+}
+
+/**
+ * The emitted-packet view (U2 deliverable 2): event type, dedupe state, ok/error, and a link
+ * to the event detail page when `eventId` is present — reusing `event-feed.tsx`'s existing
+ * `?event=` linking convention, the same one the trigger link above already uses. A rejected
+ * emit (`ok:false`) renders `payload.error` — `packet-schema.ts`'s `ajv.errorsText(...)`
+ * output, already human-readable text, not a structure this view needs to reformat — plainly,
+ * so the "watch the model correct itself" story reads: this row, then the next `llm` row.
+ */
+function EmitSummary({ payload, workflowId }: { payload: EmitTracePayload; workflowId: string }) {
+  return (
+    <span className="row" style={{ gap: "var(--space-2)", flexWrap: "wrap", alignItems: "center" }}>
+      <span className="mono muted">emit</span>
+      <EventChip type={payload.type} />
+      {payload.deduped ? (
+        <span className="mono muted">deduped — not republished</span>
+      ) : payload.ok && payload.eventId ? (
+        <Link className="mono" href={`/workflows/${workflowId}/events?event=${payload.eventId}`}>
+          → {payload.eventId.slice(0, 12)}
+        </Link>
+      ) : payload.ok ? (
+        <span className="mono muted">ok</span>
+      ) : (
+        <span className="mono trace-emit-error">{payload.error ?? "rejected"}</span>
+      )}
+    </span>
+  );
 }

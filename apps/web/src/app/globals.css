@@ -857,6 +857,36 @@ table.ledger td {
   font-size: var(--text-xs);
 }
 
+/* ---------- Agent visibility (U2) ---------- */
+
+/* The "the model thought here" row (deliverable 1): the accent family, not the error family
+   `trace-row--denied` reserves for "look here" — a calm highlight that marks a turn as the
+   model's, distinct from an ordinary action row without competing with a denial. */
+.trace-row--llm {
+  border-left-color: var(--accent-solid);
+  background: var(--accent-bg-subtle);
+}
+
+.trace-row-kind--llm {
+  background: transparent;
+  border-color: var(--accent-solid);
+  color: var(--accent-text);
+}
+
+/* Tool-call chips inside an `llm` row's summary — neutral, matching `chip--schedule`'s
+   surface/border pair, since a tool call is neither an event nor a node entity. */
+.chip--tool {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+/* The rejected-emit validation error (deliverable 2) — the one place in the timeline an
+   `action` row's text itself, not just a border, carries the failed-status ink. */
+.trace-emit-error {
+  color: var(--status-failed);
+}
+
 .trace-screenshot {
   max-width: 360px;
   border: var(--rule-strong);
