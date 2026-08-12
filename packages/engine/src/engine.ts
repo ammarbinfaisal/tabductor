@@ -224,7 +224,7 @@ export function createEngine(deps: EngineDeps): Engine {
       run: ctx.run,
       task: ctx.task,
       trigger: ctx.trigger,
-      emit: (type, packet) => emitFromRun(db, ctx, type, packet),
+      emit: (type, packet, opts) => emitFromRun(db, ctx, type, packet, opts),
       declaredEmits: () => declaredEmitsOf(db, ctx.task),
     };
     try {
@@ -325,19 +325,21 @@ async function emitFromRun(
   ctx: { run: RunRow; task: TaskRow; trigger: EventRow | null },
   type: string,
   packet: unknown,
+  opts?: { withTx?: (trx: Db) => Promise<void> },
 ): Promise<EventRow> {
   const check = await validatePacket(db, ctx.task.id, type, packet);
   if (!check.ok) throw new Error(check.error);
 
-  return db.transaction((trx) =>
-    publish(trx, {
+  return db.transaction(async (trx) => {
+    if (opts?.withTx) await opts.withTx(trx);
+    return publish(trx, {
       type,
       sourceTaskId: ctx.task.id,
       sourceRunId: ctx.run.id,
       causationId: ctx.trigger?.eventId ?? null,
       packet,
-    }),
-  );
+    });
+  });
 }
 
 /**

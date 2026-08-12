@@ -128,3 +128,10 @@ export {
   type PublicRunDetail,
 } from "./public-read.js";
 export { seedWorkflow, seedSchedule, type SeedSpec, type SeededWorkflow } from "./seed-workflow.js";
+export {
+  publishStoreSchema,
+  STORE_SCHEMA_INVALID,
+  STORE_MIGRATION_DESTRUCTIVE,
+  type PublishStoreSchemaInput,
+  type PublishStoreSchemaResult,
+} from "./store-schema.js";

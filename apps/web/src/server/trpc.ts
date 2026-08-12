@@ -1,3 +1,4 @@
+import type { Pool } from "pg";
 import { AppError } from "@tabductor/core";
 import type { Db } from "@tabductor/db";
 import {
@@ -11,12 +12,17 @@ import type { Metrics } from "@tabductor/telemetry";
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import { z } from "zod";
-import { db } from "./db.js";
+import { db, pool } from "./db.js";
 import { createRateLimiter } from "./rate-limit.js";
 import { schemaGenerator } from "./schema-generator.js";
 
 export type Context = {
   db: Db;
+  /** S5g: `workflow.publishStoreSchema`'s migrator/fence connection — see `db.ts`'s `pool()`.
+   * Optional so every existing caller that never touches the store schema path (most system
+   * tests, `share.create`, every public read) keeps compiling without a pool to hand it — the
+   * mutation itself is what requires one, not the context shape. */
+  pool?: Pool;
   /** The publish-time schema compiler — injected so tests publish deterministically. */
   schemaGenerator: SchemaGenerator;
   /**
@@ -30,7 +36,7 @@ export type Context = {
 };
 
 export function createContext(): Context {
-  return { db: db(), schemaGenerator: schemaGenerator() };
+  return { db: db(), pool: pool(), schemaGenerator: schemaGenerator() };
 }
 
 /**

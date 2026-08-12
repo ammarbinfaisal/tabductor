@@ -1,4 +1,4 @@
-import { createAgentExecutor, createAssetExecutor, createLlm, providerFromEnv } from "@tabductor/agent";
+import { createAgentExecutor, createAssetExecutor, createDecisionExecutor, createLlm, providerFromEnv } from "@tabductor/agent";
 import { createEndpointPool, createMinioBlobStore, playwrightDriver } from "@tabductor/browser";
 import { createDispatcher } from "@tabductor/bus";
 import { loadConfig } from "@tabductor/core";
@@ -8,6 +8,7 @@ import { AllowAllGate } from "@tabductor/policy";
 import { createSecretsBroker, fileKeyWrapper } from "@tabductor/secrets";
 import { initTelemetry } from "@tabductor/telemetry/init";
 import { asc } from "drizzle-orm";
+import type { Pool } from "pg";
 
 /**
  * The engine process: the composition root that wires the packages together and runs them
@@ -116,7 +117,7 @@ const secretsBroker = createSecretsBroker({
  * above: an asset run acquires no browser session and no CDP endpoint at all (§4), so there
  * is nothing here to check a `cdp_endpoints` row for.
  */
-function assetExecutorEntry(db: Db): ReturnType<typeof createAssetExecutor> | undefined {
+function assetExecutorEntry(db: Db, pool: Pool): ReturnType<typeof createAssetExecutor> | undefined {
   const live = providerFromEnv({ ANTHROPIC_API_KEY: config.ANTHROPIC_API_KEY, OPENAI_API_KEY: config.OPENAI_API_KEY });
   if (!live) {
     log.info("no ANTHROPIC_API_KEY/OPENAI_API_KEY configured — (asset, ai) has no executor", {});
@@ -134,6 +135,7 @@ function assetExecutorEntry(db: Db): ReturnType<typeof createAssetExecutor> | un
     gate,
     blobs,
     db,
+    pool,
     metrics: telemetry.metrics,
     secrets: secretsBroker,
     llmFor: ({ trace }) =>
@@ -147,8 +149,45 @@ function assetExecutorEntry(db: Db): ReturnType<typeof createAssetExecutor> | un
   });
 }
 
+// -----------------------------------------------------------------------------------------
+// S5g: `(decision, ai)` — the planner kind's executor. Same live-key gate as the other two
+// `*Entry` functions above (nothing to run a live LLM call against without one); no CDP
+// endpoint or MCP-server check, because a decision run acquires neither (§2.1: `store.query`
+// + `emit` only).
+// -----------------------------------------------------------------------------------------
+function decisionExecutorEntry(db: Db, pool: Pool): ReturnType<typeof createDecisionExecutor> | undefined {
+  const live = providerFromEnv({ ANTHROPIC_API_KEY: config.ANTHROPIC_API_KEY, OPENAI_API_KEY: config.OPENAI_API_KEY });
+  if (!live) {
+    log.info("no ANTHROPIC_API_KEY/OPENAI_API_KEY configured — (decision, ai) has no executor", {});
+    return undefined;
+  }
+  const blobs = createMinioBlobStore({
+    endpoint: config.BLOB_ENDPOINT,
+    accessKey: config.BLOB_ACCESS_KEY,
+    secretKey: config.BLOB_SECRET_KEY,
+    bucket: config.BLOB_BUCKET,
+  });
+
+  return createDecisionExecutor({
+    db,
+    pool,
+    blobs,
+    metrics: telemetry.metrics,
+    llmFor: ({ trace }) =>
+      createLlm("live", {
+        provider: live.provider,
+        apiKey: live.apiKey,
+        trace,
+        metrics: telemetry.metrics,
+        costLabels: { kind: "decision", mode: "ai" },
+      }),
+  });
+}
+// -----------------------------------------------------------------------------------------
+
 const agentExecutor = await agentExecutorEntry(handle.db);
-const assetExecutor = assetExecutorEntry(handle.db);
+const assetExecutor = assetExecutorEntry(handle.db, handle.pool);
+const decisionExecutor = decisionExecutorEntry(handle.db, handle.pool);
 const executors: ExecutorRegistry = {
   [executorKey("browser", "stub")]: StubExecutor,
   // The S5a scripted-behavior skeleton, now at mode `stub` — S5c's real `(asset, ai)`
@@ -158,6 +197,11 @@ const executors: ExecutorRegistry = {
   [executorKey("asset", "stub")]: AssetExecutor,
   ...(agentExecutor ? { [executorKey("browser", "ai")]: agentExecutor } : {}),
   ...(assetExecutor ? { [executorKey("asset", "ai")]: assetExecutor } : {}),
+  // S5g: no stub-mode decision registration — a decision task has no scripted-behavior
+  // skeleton to fall back to (nothing analogous to `AssetExecutor`'s S5a-era stand-in was
+  // ever needed for it, since `store.query` + `emit` had no MCP/LaTeX gap to bridge before
+  // being buildable for real).
+  ...(decisionExecutor ? { [executorKey("decision", "ai")]: decisionExecutor } : {}),
 };
 
 const dispatcher = createDispatcher(handle, {
@@ -187,6 +231,7 @@ log.info("engine started", {
   telemetry: telemetry.enabled ? "exporting" : "disabled",
   aiExecutor: agentExecutor ? "registered" : "not registered",
   assetAiExecutor: assetExecutor ? "registered" : "not registered",
+  decisionAiExecutor: decisionExecutor ? "registered" : "not registered",
 });
 
 /**

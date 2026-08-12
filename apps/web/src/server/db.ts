@@ -15,3 +15,11 @@ export function db(): Db {
   store.__tabductorDb ??= createDb(loadConfig().DATABASE_URL, { max: 5 });
   return store.__tabductorDb.db;
 }
+
+/** S5g: `workflow.publishStoreSchema`'s connection to the fenced/migrator paths
+ * (`@tabductor/store`), which need a raw `pg.Pool` — same handle `db()` already parks on
+ * `globalThis`, not a second pool. */
+export function pool(): DbHandle["pool"] {
+  store.__tabductorDb ??= createDb(loadConfig().DATABASE_URL, { max: 5 });
+  return store.__tabductorDb.pool;
+}

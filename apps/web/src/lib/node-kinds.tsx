@@ -25,8 +25,13 @@ export const NODE_KINDS: Record<NodeKind, NodeKindSpec> = {
   },
   asset: {
     label: "Asset",
-    hint: "mcp.* · assets.* · emit — event-triggered only",
+    hint: "mcp.* · assets.* · store.query/insert/upsert · emit — event-triggered only",
     schedulable: false,
+  },
+  decision: {
+    label: "Decision",
+    hint: "store.query · emit — the smallest registry in the system",
+    schedulable: true,
   },
 };
 

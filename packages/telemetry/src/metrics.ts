@@ -145,6 +145,21 @@ export type Metrics = {
    * for. */
   renderSandboxKills: { add: (labels: { reason: RenderSandboxKillReason }) => void };
   // -------------------------------------------------------------------------------------------
+  // --- S5g: workflow data store (§17.2 binding names, impl-phases §0.5) ------------------
+  /** One `store.query` call, wherever it started resolving (the parse gate) or finished
+   * (Postgres) — `outcome="ok"` is only recorded once the query actually ran. No SQL text,
+   * no row values, no table names as labels (§17.2 content rule: identifiers/durations/
+   * outcomes only). */
+  storeQueryDuration: { record: (seconds: number, labels: { outcome: "ok" | "error" }) => void };
+  /**
+   * Every parse-gate rejection (§3.5): "a series that should sit at zero... a nonzero rate is
+   * either a prompting bug or an injection attempt probing the fence." `reason` is the fence's
+   * own closed label set (`FenceReason`) — never the rejected SQL text itself.
+   */
+  storeSqlRejected: {
+    add: (labels: { reason: "parse_error" | "multi_statement" | "not_select" | "locking_clause" }) => void;
+  };
+  // -----------------------------------------------------------------------------------------
 };
 
 export function createMetrics(meter: Meter): Metrics {
@@ -179,6 +194,10 @@ export function createMetrics(meter: Meter): Metrics {
   const renderDuration = meter.createHistogram("render_duration_seconds", { unit: "s" });
   const renderSandboxKills = meter.createCounter("render_sandbox_kills_total");
   // -------------------------------------------------------------------------------------------
+  // --- S5g: workflow data store ------------------------------------------------------------
+  const storeQueryDuration = meter.createHistogram("store_query_duration_seconds", { unit: "s" });
+  const storeSqlRejected = meter.createCounter("store_sql_rejected_total");
+  // -----------------------------------------------------------------------------------------
 
   return {
     outboxDispatchLag: { record: (seconds) => outboxDispatchLag.record(seconds) },
@@ -237,5 +256,9 @@ export function createMetrics(meter: Meter): Metrics {
     renderDuration: { record: (seconds, labels) => renderDuration.record(seconds, { ...labels }) },
     renderSandboxKills: { add: (labels) => renderSandboxKills.add(1, { ...labels }) },
     // -------------------------------------------------------------------------------------------
+    // --- S5g: workflow data store ------------------------------------------------------------
+    storeQueryDuration: { record: (seconds, labels) => storeQueryDuration.record(seconds, { ...labels }) },
+    storeSqlRejected: { add: (labels) => storeSqlRejected.add(1, { ...labels }) },
+    // -----------------------------------------------------------------------------------------
   };
 }

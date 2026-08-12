@@ -1,6 +1,6 @@
 import { headers } from "next/headers";
 import { createCaller } from "./router.js";
-import { db } from "./db.js";
+import { db, pool } from "./db.js";
 import { metricsNow } from "./metrics.js";
 import { schemaGenerator } from "./schema-generator.js";
 
@@ -17,6 +17,7 @@ export async function shareCaller(): Promise<ReturnType<typeof createCaller>> {
   const metrics = metricsNow();
   return createCaller({
     db: db(),
+    pool: pool(),
     schemaGenerator: schemaGenerator(),
     clientKey: clientKeyOf(h),
     ...(metrics ? { metrics } : {}),

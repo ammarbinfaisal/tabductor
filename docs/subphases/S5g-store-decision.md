@@ -103,3 +103,85 @@ decision kind. Run the triangle e2e twice — second run must be a no-op (dedupe
 
 ## Report back
 What you built, deviations + why, commands + outcomes, flakiness noticed. Do NOT git commit.
+
+> **Built, with deviations.**
+>
+> **Built as specified:**
+> - `packages/store` (new): `ids.ts` (schema/role names derived by hashing `workflowId`, never
+>   interpolated); `fence.ts` (`fenceQuery` — `pgsql-ast-parser`, single statement, SELECT-shaped
+>   only including through `WITH`/`UNION` recursion, locking clauses rejected); `query.ts`
+>   (`runStoreQuery` — reader role, `READ ONLY` txn, pinned `search_path`, `statement_timeout`,
+>   N+1 row cap via an outer `LIMIT` wrapper sent over the extended protocol); `ddl.ts`
+>   (`checkDdlShape`/`checkTablesSpecBijective` — allowlisted column types, one PK per table, no
+>   FKs/schema-qualification, DDL ↔ spec bijection); `migration.ts` (`classifyMigration` —
+>   none/additive/destructive, SQL generated for both additive *and* destructive so a rejected
+>   destructive diff already shows the confirmed retry's exact statements); `provision.ts`
+>   (`provision`/`deprovision`/`validateDdlApplies`/`applyMigration`/`currentSchemaVersion` — raw
+>   `pg.Pool`, not Drizzle, because the DDL blocks here are genuinely multi-statement and
+>   Drizzle's node-postgres session always sends the extended protocol); `write.ts`
+>   (`validateRow` via ajv against `tables_spec_json`, `checkStoreWriteGrant` — the exact
+>   `asset_write_grants` pattern applied to tables); `tools.ts` (`store.query`/`insert`/`upsert`
+>   as `StoreTool`s, structurally identical to `AgentTool` per `asset-tools.ts`'s own
+>   `assetToolToAgentTool` precedent).
+> - `kind='decision'`: `TASK_KINDS`/`tasks_kind_check` extended (migration `0014`,
+>   `store_schemas`/`store_write_grants` platform tables alongside it); `SCHEDULABLE` in
+>   `graph.ts` gained `decision` — the S5a schedule-deny trigger was already written
+>   deny-on-`asset` (its own comment: "the day `decision` lands, this function's body needs no
+>   edit"), so no DB-level change was needed there at all. `packages/agent/src/decision-tools.ts`
+>   (new) + `decision-executor.ts` (new): `buildDecisionToolRegistry` = `store.query` + `emit` +
+>   `done`/`fail`, nothing else, ever — `decision-registry-isolation.test.ts` proves it with a
+>   positive control. Registered at `(decision, ai)` in `apps/engine/src/main.ts` and the test
+>   rigs; no `(decision, stub)` — there was never an MCP/LaTeX-shaped external gap for a
+>   scripted-behavior stand-in to bridge the way S5a's `AssetExecutor` needed one.
+> - Telemetry: `store_query_duration_seconds{outcome}`, `store_sql_rejected_total{reason}`, both
+>   delimited S5g blocks in `packages/telemetry/src/metrics.ts`.
+> - System tests: `store-fence.test.ts` (parse-gate corpus, table-driven, plus the DB-layer role
+>   fence proven with the parse gate *deliberately bypassed* — `executeAsReader` — against both
+>   another workflow's schema and a platform table); `store-write.test.ts` (row validation, write
+>   grants, DDL/bijection validation, additive/destructive/none classification and application);
+>   `decision-registry-isolation.test.ts`; `decision-store-triangle.test.ts` (the canonical
+>   plan/act/record e2e with a real `store.query` fence answering a real, data-driven fake-LLM
+>   decision loop, plus a focused crash-inject integration test against the atomic-write
+>   mechanism itself).
+>
+> **Deviations:**
+> 1. **Atomic "store write + emit" needed a new primitive that isn't spelled out above.** A
+>    tool call is not a transaction boundary, so `store.insert`/`upsert` **stage** a write
+>    (`packages/store`'s `createWriteStager`) instead of executing it; `RunHandle.emit`
+>    (`packages/engine/src/executor.ts`) grew an optional `opts.withTx` hook that runs inside the
+>    *same* `db.transaction` as the publish, before it; `packages/agent/src/executor-shared.ts`'s
+>    `makeEmitFn` drains whatever is staged into that hook on every emit, and
+>    `flushRemainingWrites` catches a run that staged a write and then finished without ever
+>    emitting again. This is the mechanism the crash-inject test drives directly.
+> 2. **Store tools are not inside `asset-tools.ts`.** Territory: that file (and `tools.ts`) is
+>    S5f's. `store.query`/`insert`/`upsert` are built in `packages/store` and concatenated onto
+>    the array `buildAssetToolRegistry` returns, inside `asset-executor.ts` (not on the
+>    forbidden-file list) — the LLM sees one merged registry either way; only the assembly site
+>    differs from a single-file implementation. `AssetExecutorDeps.pool` is optional so every
+>    pre-S5g rig keeps compiling with no `store.*` tools at all.
+> 3. **`publishVersion` was not extended to accept the store-schema artifact inline.** There is
+>    no S8 compiler yet producing one combined request, and graph-compilation-llm §4.2 itself
+>    says the two halves "land at different moments." Instead: `packages/engine/src/store-schema.ts`
+>    (`publishStoreSchema`) is a **separate** control-plane entry point — validate → classify →
+>    apply → record, in that order — wired to a new `workflow.publishStoreSchema` tRPC mutation.
+>    The existing generic `AppError` → `TRPCError` middleware in `apps/web/src/server/trpc.ts`
+>    already surfaces `STORE_SCHEMA_INVALID`/`STORE_MIGRATION_DESTRUCTIVE` (and the decision-kind
+>    `GRAPH_INVALID` constraints) as typed errors with zero new plumbing — confirmed, not added.
+> 4. **A `none` diff writes no new `store_schemas` row.** `(workflow_id, version)` is unique and
+>    there is genuinely no new version when nothing changed — the schema-compiler precedent
+>    (EC1: an unchanged event costs zero generator calls) extended to "zero row-writes" too.
+> 5. **Foreign keys are rejected from store DDL outright (v1).** Not explicitly required, but
+>    consistent with "no v1 use case" (§3.4's own reasoning for deferring `store.delete`) and it
+>    keeps the migrator from needing FK-aware statement ordering it has no other reason to grow.
+> 6. **A new NOT NULL column with no default classifies destructive but generates no SQL** — an
+>    automatic backfill value is a design decision no migrator should make silently, even under
+>    the confirmation flag; the diff still reports it, applying it is left manual (v1).
+> 7. **Role cleanup, found the hard way.** Roles are cluster-global; dropping a test *database*
+>    does not drop the `wfd_<id>_r`/`_w` roles it granted privileges to. First full suite run
+>    leaked 88 roles into the shared Postgres instance. Fixed by `deprovision`-ing every
+>    workflow a test provisioned a store for, tracked per file and run in `afterEach` before the
+>    database closes — confirmed clean (`select count(*) from pg_roles where rolname like
+>    'wfd_%'` → 0) after two full suite runs.
+> 8. **`_meta.schema_version`** is a one-row table (`id boolean primary key default true, check
+>    (id)`) rather than a bare scalar — Postgres has no "exactly one row" constraint otherwise,
+>    and the boolean-PK singleton is the standard idiom for it.

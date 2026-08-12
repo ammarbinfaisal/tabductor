@@ -16,16 +16,19 @@
     "@tabductor/bus": "workspace:*",
     "@tabductor/core": "workspace:*",
     "@tabductor/db": "workspace:*",
+    "@tabductor/store": "workspace:*",
     "@tabductor/telemetry": "workspace:*",
     "ai": "^7.0.59",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",
     "croner": "^9.0.0",
     "drizzle-orm": "^0.44.0",
+    "pg": "^8.13.0",
     "zod": "^3.25.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/pg": "^8.11.0",
     "typescript": "^5.7.0"
   }
 }

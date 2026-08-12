@@ -1,5 +1,5 @@
 {
-  "name": "@tabductor/agent",
+  "name": "@tabductor/store",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,21 +10,13 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^4.0.37",
-    "@ai-sdk/openai": "^4.0.37",
-    "@tabductor/assets": "workspace:*",
-    "@tabductor/browser": "workspace:*",
     "@tabductor/core": "workspace:*",
     "@tabductor/db": "workspace:*",
-    "@tabductor/engine": "workspace:*",
-    "@tabductor/mcp": "workspace:*",
-    "@tabductor/policy": "workspace:*",
-    "@tabductor/secrets": "workspace:*",
-    "@tabductor/store": "workspace:*",
     "@tabductor/telemetry": "workspace:*",
-    "ai": "^7.0.59",
+    "ajv": "^8.17.0",
     "drizzle-orm": "^0.44.0",
     "pg": "^8.13.0",
+    "pgsql-ast-parser": "^12.0.1",
     "zod": "^3.25.0"
   },
   "devDependencies": {

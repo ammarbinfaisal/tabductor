@@ -1,6 +1,6 @@
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { appRouter } from "../../../../server/router.js";
-import { db } from "../../../../server/db.js";
+import { db, pool } from "../../../../server/db.js";
 import { metricsNow } from "../../../../server/metrics.js";
 import { schemaGenerator } from "../../../../server/schema-generator.js";
 import type { Context } from "../../../../server/trpc.js";
@@ -20,6 +20,7 @@ const handler = (req: Request): Promise<Response> =>
       const metrics = metricsNow();
       return {
         db: db(),
+        pool: pool(),
         schemaGenerator: schemaGenerator(),
         clientKey: clientKeyOf(req),
         ...(metrics ? { metrics } : {}),

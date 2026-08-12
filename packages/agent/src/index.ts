@@ -48,3 +48,8 @@ export {
   createAssetExecutor,
   type AssetExecutorDeps,
 } from "./asset-executor.js";
+export { buildDecisionToolRegistry, type DecisionToolRegistryDeps } from "./decision-tools.js";
+export {
+  createDecisionExecutor,
+  type DecisionExecutorDeps,
+} from "./decision-executor.js";

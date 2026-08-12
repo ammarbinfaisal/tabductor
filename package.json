@@ -14,6 +14,7 @@
     "dev:engine": "tsx watch apps/engine/src/main.ts"
   },
   "devDependencies": {
+    "@opentelemetry/api": "^1.9.0",
     "@tabductor/agent": "workspace:*",
     "@tabductor/assets": "workspace:*",
     "@tabductor/browser": "workspace:*",
@@ -24,6 +25,7 @@
     "@tabductor/mcp": "workspace:*",
     "@tabductor/policy": "workspace:*",
     "@tabductor/secrets": "workspace:*",
+    "@tabductor/store": "workspace:*",
     "@tabductor/telemetry": "workspace:*",
     "@tabductor/testkit": "workspace:*",
     "@trpc/server": "^11.0.0",

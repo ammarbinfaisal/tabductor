@@ -51,9 +51,12 @@ export type OverlapPolicy = (typeof OVERLAP_POLICIES)[number];
  * discriminant, orthogonal to `mode` (*how* it executes). Declared here, not in
  * `packages/engine`, so the graph document's zod enum and the `tasks_kind_check` constraint
  * below read from the same list instead of restating it on each side of the publish boundary.
- * -- S5g adds 'decision'
+ *
+ * `decision` (S5g, graph-compilation-llm §2.1): the planner kind — `store.query` + `emit`
+ * only, the smallest registry in the system. Unlike `asset`, a schedule *may* bind to it
+ * (§2.1's kind table) — see `SCHEDULABLE` in `packages/engine/src/graph.ts`.
  */
-export const TASK_KINDS = ["browser", "asset"] as const;
+export const TASK_KINDS = ["browser", "asset", "decision"] as const;
 export type TaskKind = (typeof TASK_KINDS)[number];
 
 export const workflows = pgTable("workflows", {
@@ -97,7 +100,7 @@ export const tasks = pgTable(
   },
   (t) => [
     uniqueIndex("tasks_version_name_key").on(t.workflowVersionId, t.name),
-    check("tasks_kind_check", sql`${t.kind} in ('browser','asset')`),
+    check("tasks_kind_check", sql`${t.kind} in ('browser','asset','decision')`),
     // §11: asset tasks are never compiled — MCP results and LLM prose have no stable
     // structure for the script compiler's guards to assert on. Named so S5h can extend it
     // (`mode='python'` requires `kind='asset'`) with a single drop-and-re-add ALTER.
@@ -633,6 +636,66 @@ export const mcpServers = pgTable(
 );
 // ---------------------------------------------------------------------------------------
 
+// -- S5g: workflow data store (graph-compilation-llm §3, §9) --------------------------
+//
+// The *platform* half of the store — the artifact and the write-grant table. The workflow's
+// actual data tables (`wfdata_<id>.*`) are never Drizzle models (style constraint: "no ORM
+// inside wfdata_* schemas") — they are runtime objects `packages/store`'s migrator creates
+// with hand-issued DDL, the only code path allowed to. `store_schemas` is this artifact's
+// history, immutable per version (§6.2): each publish that touches the store schema writes a
+// new row here and the migrator applies the classified diff, it never rewrites one in place.
+
+export const STORE_MIGRATION_CLASSES = ["none", "additive", "destructive"] as const;
+export type StoreMigrationClass = (typeof STORE_MIGRATION_CLASSES)[number];
+
+export const storeSchemas = pgTable(
+  "store_schemas",
+  {
+    id: text("id").primaryKey(),
+    workflowId: text("workflow_id")
+      .notNull()
+      .references(() => workflows.id, { onDelete: "cascade" }),
+    /** Monotonic per workflow (§6.2's `schema_version`) — matches the counter the migrator
+     * also stamps on the runtime `wfdata_<id>._meta` row, so a compiled decision script can
+     * guard on either and get the same number. */
+    version: integer("version").notNull(),
+    descriptionText: text("description_text").notNull().default(""),
+    ddl: text("ddl").notNull(),
+    tablesSpecJson: jsonb("tables_spec_json").notNull().default({}),
+    /** Empty for `version` 1 (nothing to diff against) or class `none`. */
+    migrationSql: text("migration_sql").notNull().default(""),
+    migrationClass: text("migration_class").$type<StoreMigrationClass>().notNull().default("none"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("store_schemas_workflow_version_key").on(t.workflowId, t.version),
+    check(
+      "store_schemas_migration_class_check",
+      sql`${t.migrationClass} in ('none','additive','destructive')`,
+    ),
+  ],
+);
+
+/**
+ * Per-task write scope into the store — the exact `asset_write_grants` pattern (S5d) applied
+ * to `store.insert`/`store.upsert` instead of the blob namespace: a task with at least one row
+ * here may write only the named tables; a task with none may write any table the workflow's
+ * store schema declares (the `AllowAllGate`-era default every ungranted write table follows
+ * pre-Phase-7). Reads are never grant-scoped — `store.query` is open within the workflow, per
+ * the reader role itself (§3.3), so this table has nothing to say about it.
+ */
+export const storeWriteGrants = pgTable(
+  "store_write_grants",
+  {
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    tableName: text("table_name").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.taskId, t.tableName] })],
+);
+// ---------------------------------------------------------------------------------------
+
 export type TraceEntryRow = typeof traceEntries.$inferSelect;
 export type ArtifactRow = typeof artifacts.$inferSelect;
 export type EventRow = typeof events.$inferSelect;
@@ -660,3 +723,6 @@ export type AssetVersionRow = typeof assetVersions.$inferSelect;
 export type AssetWriteGrantRow = typeof assetWriteGrants.$inferSelect;
 export type McpServerRow = typeof mcpServers.$inferSelect;
 export type NewMcpServer = typeof mcpServers.$inferInsert;
+export type StoreSchemaRow = typeof storeSchemas.$inferSelect;
+export type NewStoreSchema = typeof storeSchemas.$inferInsert;
+export type StoreWriteGrantRow = typeof storeWriteGrants.$inferSelect;

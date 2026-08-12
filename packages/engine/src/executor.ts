@@ -1,4 +1,4 @@
-import type { EventRow, RunRow, TaskRow } from "@tabductor/db";
+import type { Db, EventRow, RunRow, TaskRow } from "@tabductor/db";
 
 /**
  * The one executor contract (impl-phases Phase 2). `StubExecutor` implements it now;
@@ -28,8 +28,17 @@ export type RunHandle = {
    * a schema violation — the executor is expected to let that failure end the run (§4: "a
    * packet that fails validation should fail the emit rather than silently propagating
    * malformed data").
+   *
+   * `opts.withTx` (S5g, graph-compilation-llm §7's ordering rule): runs *inside the same
+   * transaction* as the publish, before it — the hook that lets a `kind=asset` executor
+   * commit a staged `store.insert`/`upsert` atomically with the `emit` that follows it
+   * ("the store write + THIS emit commit atomically", `packages/store`'s own doc comment).
+   * `undefined` for every executor that has no side effect to fold in, which is every
+   * executor before S5g and every browser/decision run after it — `emitFromRun`'s own
+   * implementation is a no-op wrapper when this is absent, so nothing about the plain emit
+   * path changes shape or cost.
    */
-  emit: (type: string, packet: unknown) => Promise<EventRow>;
+  emit: (type: string, packet: unknown, opts?: { withTx?: (trx: Db) => Promise<void> }) => Promise<EventRow>;
   /**
    * The task's declared emit types with their compiled schemas, for executors that
    * synthesize output — the StubExecutor's scriptless mode emits one valid sample of each.

@@ -85,12 +85,33 @@ export async function triggerInfoOf(db: Db, handle: RunHandle): Promise<TriggerI
  * can still emit under that key — claiming before a validation outcome is known would
  * otherwise burn the key on a packet that was never actually sent.
  */
-export function makeEmitFn(opts: { db: Db; taskId: string; handleEmit: RunHandle["emit"]; trace: TraceRecorder }): EmitFn {
+export function makeEmitFn(opts: {
+  db: Db;
+  taskId: string;
+  handleEmit: RunHandle["emit"];
+  trace: TraceRecorder;
+  /**
+   * S5g: a store write staged by `store.insert`/`upsert` since the last emit has nowhere to
+   * commit on its own — a tool call is not a transaction boundary. Draining here (rather
+   * than at the call site) means every emit this run makes, dedupe-deduped or not, gets a
+   * chance to fold in whatever is pending: the exact ordering rule graph-compilation-llm §7
+   * spells out ("visited is upserted... in the same transaction as its emit"), made to hold
+   * for *whichever* emit call happens to be next rather than only a specifically-named one.
+   * Absent for a browser run — a browser task has no store tools to have staged anything.
+   */
+  drainPendingWrites?: () => Array<(trx: Db) => Promise<void>>;
+  /** Wraps the drained writes into one `RunHandle.emit` `withTx` hook — the writer-role
+   * switch belongs to `packages/store` (`flushStagedWrites`), not this file, which only
+   * knows *that* something is pending, never how to execute it under the right role. */
+  wrapPendingWrites?: (writes: Array<(trx: Db) => Promise<void>>) => (trx: Db) => Promise<void>;
+}): EmitFn {
   const { db, taskId, handleEmit, trace } = opts;
 
   const publish = async (type: string, packet: unknown, dedupeKey: string | undefined): Promise<EmitOutcome> => {
     try {
-      const event = await handleEmit(type, packet);
+      const pending = opts.drainPendingWrites?.() ?? [];
+      const withTx = pending.length > 0 && opts.wrapPendingWrites ? opts.wrapPendingWrites(pending) : undefined;
+      const event = await handleEmit(type, packet, withTx ? { withTx } : undefined);
       await trace.record("action", { action: "emit", type, dedupeKey: dedupeKey ?? null, ok: true, eventId: event.eventId });
       return { outcome: "published", eventId: event.eventId };
     } catch (err) {
@@ -120,6 +141,25 @@ export function makeEmitFn(opts: { db: Db; taskId: string; handleEmit: RunHandle
     }
     return result;
   };
+}
+
+/**
+ * The safety net `makeEmitFn`'s drain-on-emit cannot cover: a run that staged a store write
+ * (`store.insert`/`upsert`) and then finished — `done`/`fail`, step-budget exhaustion, a
+ * thrown error — without ever calling `emit` again. Nothing about §7's ordering rule requires
+ * *every* store write to ride an emit; it only requires that when one does accompany an emit,
+ * the two are atomic. A write with no emit downstream at all still has to land somewhere, so
+ * the executor calls this once, after the loop returns, in its own bare transaction.
+ */
+export async function flushRemainingWrites(opts: {
+  db: Db;
+  drainPendingWrites?: () => Array<(trx: Db) => Promise<void>>;
+  wrapPendingWrites?: (writes: Array<(trx: Db) => Promise<void>>) => (trx: Db) => Promise<void>;
+}): Promise<void> {
+  const pending = opts.drainPendingWrites?.() ?? [];
+  if (pending.length === 0 || !opts.wrapPendingWrites) return;
+  const withTx = opts.wrapPendingWrites(pending);
+  await opts.db.transaction((trx) => withTx(trx));
 }
 
 export function toRunResult(result: AgentLoopResult): RunResult {

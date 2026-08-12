@@ -59,8 +59,10 @@ export const graphEventSchema = z.object({
 export const NODE_KINDS = TASK_KINDS;
 export type NodeKind = TaskKind;
 
-/** `asset` nodes are event-triggered only (§4); `browser` may hold a schedule. */
-const SCHEDULABLE: readonly NodeKind[] = ["browser"];
+/** `asset` nodes are event-triggered only (§4); `browser` and `decision` (S5g,
+ * graph-compilation-llm §2.1) may hold a schedule — a decision node is the planner that a
+ * cron tick drives with an empty packet (§2.2). */
+const SCHEDULABLE: readonly NodeKind[] = ["browser", "decision"];
 
 /** `asset` tasks are never compiled (§11: MCP results and LLM prose have no stable structure
  * for the script compiler's guards to assert on). Re-asserted by the named DB check

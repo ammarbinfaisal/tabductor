@@ -19,6 +19,8 @@ const EXPECTED_TABLES = [
   "secret_access_log",
   "secret_grants",
   "secrets",
+  "store_schemas",
+  "store_write_grants",
   "task_consumes",
   "task_emits",
   "task_state",

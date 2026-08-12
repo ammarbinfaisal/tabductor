@@ -27,7 +27,7 @@ const TEST_SCHEMAS = {
 
 beforeAll(async () => {
   handle = await createMigratedTestDb();
-  api = createCaller({ db: handle.db, schemaGenerator: staticSchemaGenerator(TEST_SCHEMAS) });
+  api = createCaller({ db: handle.db, pool: handle.pool, schemaGenerator: staticSchemaGenerator(TEST_SCHEMAS) });
 });
 
 afterAll(async () => {
@@ -122,6 +122,7 @@ describe("workflow", () => {
     const workflowId = await api.workflow.create({ name: "bad schema" });
     const failing = createCaller({
       db: handle.db,
+      pool: handle.pool,
       schemaGenerator: { generate: () => Promise.resolve({ ok: false, error: "generator says no" }) },
     });
     const graph = {
@@ -155,6 +156,7 @@ describe("workflow", () => {
     const workflowId = await api.workflow.create({ name: "bad generated schema" });
     const hostile = createCaller({
       db: handle.db,
+      pool: handle.pool,
       schemaGenerator: {
         generate: () => Promise.resolve({ ok: true, schema: { type: "not-a-json-schema-type" } }),
       },

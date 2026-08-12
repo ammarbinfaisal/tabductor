@@ -54,10 +54,11 @@ inspector's scope or prerequisites changes.
 | S5c | MCP client + asset-node tool registry + asset agent loop/executor (`packages/mcp`) | **done** — migration `0013` |
 | S5e | LaTeX renderer: `apps/renderer` sandbox (`FROM scratch` + `docker run` isolation), `assets.render` | **done** — no migration |
 | S5f | Two-kind e2e: browser → asset (MCP + LaTeX) → browser `page.upload`, real render, byte-match | **done** — Phase 5 exit criterion met |
-| S5g, S5h, S6–S8 | store+decision, python compute, compiler, policy, graph compiler | not started |
+| S5g | Workflow store (`wfdata` schema + `_r`/`_w` role pair, fenced `store.query`, staged writes) + `kind=decision` (`packages/store`) | **done** — migration `0014` |
+| S5h, S6–S8 | python compute, compiler, policy, graph compiler | not started |
 
 What exists as code: `packages/{core,db,bus,engine,policy,telemetry,browser}` +
-`apps/{engine,web,testkit}` + `tests/system` — 242 tests in 55 files (one live-mode LLM
+`apps/{engine,web,testkit}` + `tests/system` — 270 tests in 59 files (one live-mode LLM
 smoke skips itself when no API key is set — CI never calls live; a separate `tests/live-eval`
 suite runs outside the CI vitest projects, live-only, outcome assertions only). The whole workspace typechecks clean (`tsc`) and lints
 clean (`pnpm lint`). `docker compose up -d` brings up Postgres, applies migrations, and runs both
