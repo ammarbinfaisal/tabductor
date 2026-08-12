@@ -1,0 +1,18 @@
+% Pre-warm target for the article + common-packages path (build-time only, network allowed —
+% apps/renderer/sandbox/Dockerfile's builder stage runs this once so the final, network-less
+% image already has everything a typical `assets.render(format: "pdf")` call needs cached).
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage[margin=1in]{geometry}
+\usepackage{xcolor}
+\begin{document}
+\title{Warmup}
+\author{tabductor}
+\maketitle
+\section{Warmup}
+$E = mc^2$ \textcolor{blue}{colored text} \href{https://example.com}{a link}.
+\end{document}

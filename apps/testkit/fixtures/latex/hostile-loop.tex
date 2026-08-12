@@ -1,0 +1,11 @@
+\documentclass{article}
+\begin{document}
+% A constant-memory TeX infinite loop: macro expansion is substitution, not a call stack, and
+% incrementing a \count register (rather than typesetting growing text into the current
+% paragraph, which would itself slowly become a memory bomb) keeps memory flat while this
+% spins the wall clock forever. Only the wall-clock cap can stop it.
+\newcount\tabductorspin
+\tabductorspin=0
+\def\loopforever{\advance\tabductorspin by 1 \loopforever}
+\loopforever
+\end{document}

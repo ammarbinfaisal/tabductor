@@ -169,3 +169,94 @@ What you built, deviations + why (including the container mechanism you chose fo
 4 and why), commands + outcomes, flakiness noticed. Confirm which sandbox controls are
 structural (shell escape absent) versus runtime-enforced (wall clock, memory) and list every
 one, the same way S5h's report must list every guest-host channel. Do NOT git commit.
+
+> **Built, with deviations.**
+>
+> **Container mechanism (deliverable 4).** No env-gate fallback was needed — the full
+> mechanism was de-risked and proven live before any TypeScript was written. Two images,
+> deliberately separate:
+> - `apps/renderer/sandbox/Dockerfile`: the actual security boundary. A two-stage build —
+>   an Alpine builder stage (network access, build time only) downloads the pinned
+>   `tectonic` musl static binary and pre-warms its package cache by compiling two warm-up
+>   documents (`sandbox/warmup/warm-article.tex`, `warm-beamer.tex`) covering the article +
+>   common-package path and the beamer/deck path — then a `FROM scratch` final stage that
+>   holds *only* the tectonic binary and the warmed cache. No shell, no coreutils, no
+>   `/etc/passwd`, nothing to `\input` by accident and nothing to exec even if some future
+>   engine bug reopened shell-escape.
+> - `apps/renderer` itself (`src/main.ts`/`server.ts`/`sandbox.ts`) is a plain Node HTTP
+>   composition root — calls `initTelemetry`, same shape as `apps/engine` — that shells out
+>   to `docker run` once per render against the sandbox image, with `--network none
+>   --read-only --cap-drop=ALL --security-opt no-new-privileges:true --pids-limit
+>   --memory/--memory-swap` and a single bind-mounted, freshly-created, world-writable
+>   scratch dir (`-v scratchDir:/work:rw`, `--user 65534:65534`). Not run via
+>   `docker-compose.yml` in this subphase: it needs the `docker` CLI and a reachable daemon
+>   to spawn per-render containers, and nothing in the workspace calls it live yet (S5c/S5f
+>   wire `assets.render` into a real loop) — compose-izing it today would mean mounting the
+>   host's docker socket into a container for zero live callers. It runs as a plain host
+>   process in tests (`tests/system/latex-support.ts` starts it in-process via
+>   `startRendererServer`) and would in a real deployment (`node --import tsx
+>   apps/renderer/src/main.ts`, same invocation shape `apps/engine` already uses).
+> - The hostile corpus (`tests/system/latex-hostile-corpus.test.ts`) runs **live**, every
+>   time, against the real containerised image — `ensureSandboxImage` builds it from the
+>   Dockerfile if `docker image inspect` doesn't already find it cached (a few minutes cold,
+>   milliseconds once Docker's own layer cache is warm). No `RENDERER_ENABLED`-style gate
+>   was added: Docker is already a baseline requirement of this test environment (Postgres
+>   and MinIO run as containers), unlike S5h's `/dev/kvm` gate, which guards a genuinely
+>   optional piece of hardware.
+>
+> **Deviation — `-Z deterministic-mode`.** Confirmed empirically (two live renders of the
+> identical fixture, diffed byte for byte) that tectonic's output is otherwise
+> byte-identical except for the trailer's random `/ID` pair *and* a font-subsetter artifact
+> buried inside a compressed `Type1C` font stream — not practically normalizable by
+> pattern-matching bytes the way `/ID`/`/CreationDate` are. Passing tectonic's own `-Z
+> deterministic-mode` flag (undocumented as a security control, purely a reproducibility
+> one) eliminates both sources of variance outright; the happy-path fixture test compares
+> normalized bytes and passes with genuine byte-for-byte equality. `--synctex` — the one
+> feature that flag is documented to break — is never used.
+> **Deviation — `openin_any=p`/`openout_any=p` do not exist in tectonic.** Those are
+> classic TeX Live/kpathsea `texmf.cnf` knobs; tectonic (a from-scratch Rust engine) has no
+> equivalent CLI flag or config surface, confirmed by testing `\input{/etc/passwd}` and an
+> absolute-path `\openout` locally, unsandboxed, with `--untrusted` — both succeeded in
+> reading/writing the *host* filesystem, proving tectonic itself enforces no such policy.
+> The "engine's own path policy" defense-in-depth layer the spec asks for is instead
+> `FROM scratch` (no `/etc/passwd` to read, no writable path but the one bind mount to
+> write) plus `--read-only`/`--network none` at `docker run` — a container-level control
+> doing the job the spec assumed an engine-level flag would, confirmed by the hostile
+> corpus actually running these two cases against the real image and getting the exact
+> failure the spec predicts.
+>
+> **Sandbox controls, structural vs. runtime:**
+> - **Structural** (nothing to kill; confirmed by the hostile corpus, each asserted via
+>   `render_sandbox_kills_total` *not* incrementing): shell escape (`\write18`) — tectonic's
+>   `runsystem()` is disabled unconditionally under `TECTONIC_UNTRUSTED_MODE=1` (baked into
+>   the image) and `--untrusted` (passed again at every `docker run`, belt-and-suspenders);
+>   host file reads (`\input{/etc/passwd}`, an `\includegraphics` naming a host path
+>   directly) — the sandbox image has no such file, full stop; writes outside scratch — the
+>   container's read-only rootfs plus the single `/work` bind mount, not any TeX-engine
+>   config.
+> - **Runtime** (an active kill, `render_sandbox_kills_total{reason}` incrementing):
+>   wall-clock (`Date`-timer in `sandbox.ts`, `docker kill` on expiry) and memory
+>   (`--memory`/`--memory-swap`, detected via `docker inspect`'s `.State.OOMKilled`). A
+>   wall-clock kill takes attribution priority over an OOM check when both could apply
+>   (`sandbox.ts`'s own comment explains why: a `docker kill` also often exits 137, the same
+>   code an OOM-kill produces).
+>
+> **Other deviations:** `packages/assets/src/render-client.ts` uses `z.union` rather than
+> `z.discriminatedUnion("ok", ...)` for the renderer's HTTP response — two of the three
+> response shapes share `ok: false`, distinguished by a second-level `kind` field zod's
+> discriminated union cannot express with a single top-level key. `assets.render`'s test
+> fixtures needed a memory-cap distinct from the wall-clock loop's: tectonic's own
+> bookkeeping grows measurably even for a loop that neither typesets nor accumulates a
+> value, so the loop fixture and hostile corpus use a generous memory cap with a short wall
+> clock, and the dedicated memory-bomb fixture (exponential `\edef` doubling) uses a tight
+> cap with a generous wall clock — this is why two configs exist in the hostile-corpus test
+> file rather than one shared one.
+>
+> **Verification:** `pnpm install && pnpm build && pnpm lint && pnpm test` green, twice
+> (232 tests in 51 files: the 219/49 baseline plus 7 in `latex-renderer.test.ts` and 6 in
+> `latex-hostile-corpus.test.ts`, 1 skipped keyless as before); `pnpm -F web build` (Next.js)
+> green. No leaked renderer containers (`docker ps -a --filter name=tabductor-render-`
+> empty after every run) or scratch directories (`sandbox.ts` removes its per-render
+> subdirectory in a `finally`; `latex-support.ts`/the hostile-corpus test remove their
+> mkdtemp root on teardown). No flakiness observed across three consecutive full suite
+> runs.

@@ -120,7 +120,15 @@ function pathError(err: unknown): AssetToolResult {
  * content-addressed store and the old `asset_versions` row still points at it; this falls
  * out of `BlobStore.put`'s content-addressing, not from anything this function does.
  */
-async function putVersion(
+/**
+ * Exported (only this one function — everything else in this file stays private) so
+ * `render.ts` (S5e) can write its compiled PDF bytes through the exact same
+ * versioning/grant path `assets.write` uses, rather than re-deriving the
+ * insert/onConflict/asset_versions dance a second time. `render.ts`'s output is binary and
+ * outside `ALLOWED_WRITE_MIME` on purpose — that allowlist belongs to the `assets.write`
+ * tool's own zod schema, not to this function, which has always taken `mime` as given.
+ */
+export async function putVersion(
   deps: AssetToolDeps,
   input: { path: string; bytes: Buffer; mime: string },
 ): Promise<AssetToolResult> {

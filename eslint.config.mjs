@@ -10,7 +10,7 @@ import parser from "@typescript-eslint/parser";
  */
 export default [
   {
-    files: ["packages/**/*.ts", "apps/engine/**/*.ts"],
+    files: ["packages/**/*.ts", "apps/engine/**/*.ts", "apps/renderer/**/*.ts"],
     ignores: [
       "**/*.test.ts",
       // The testkit is developer-facing tooling whose output IS the console, and core's

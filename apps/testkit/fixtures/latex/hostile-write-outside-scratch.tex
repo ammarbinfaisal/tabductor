@@ -1,0 +1,9 @@
+\documentclass{article}
+\begin{document}
+\newwrite\tabductorout
+\immediate\openout\tabductorout=/tmp/tabductor-escaped.txt
+\immediate\write\tabductorout{pwned}
+\immediate\closeout\tabductorout
+A write attempt outside the per-render scratch dir — the read-only container filesystem, not
+any TeX-engine config, is what has to block this.
+\end{document}

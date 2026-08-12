@@ -1,0 +1,14 @@
+\documentclass{article}
+\newcount\tabductorn
+\def\tabductorgrow{%
+  \edef\tabductorblob{\tabductorblob\tabductorblob}%
+  \advance\tabductorn by 1
+  \ifnum\tabductorn<40 \tabductorgrow \fi
+}
+\def\tabductorblob{X}
+\tabductorn=0
+\begin{document}
+% Doubles \tabductorblob's expansion every iteration — exponential, so this blows well past
+% any reasonable per-render memory cap long before reaching the loop bound.
+\tabductorgrow
+\end{document}

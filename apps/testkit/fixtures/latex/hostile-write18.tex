@@ -1,0 +1,6 @@
+\documentclass{article}
+\begin{document}
+\immediate\write18{touch /tmp/tabductor-write18-pwned}
+Shell escape must be structurally absent -- tectonic ignores the write18 primitive rather
+than merely refusing it at runtime.
+\end{document}

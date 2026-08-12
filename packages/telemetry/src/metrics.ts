@@ -38,6 +38,19 @@ export type SecretFillOutcome = "filled" | "denied_origin" | "denied_target" | "
  * need a new value the day the real evaluator lands. */
 export type McpCallOutcome = "ok" | "error" | "denied" | "timeout" | "budget_exceeded";
 // -----------------------------------------------------------------------------------------
+// --- S5e: LaTeX renderer (§17.2 binding names, reserved by the catalogue, first call site
+// here). ----------------------------------------------------------------------------------
+/** `assets.render`'s own outcome set. `killed` covers both wall-clock and memory kills —
+ * `renderSandboxKills` below is where the *reason* for a kill is the label, so this one stays
+ * within §17.2's bounded-label-set rule. */
+export type RenderOutcome = "ok" | "compile_error" | "killed" | "write_error";
+/** A render the sandbox itself stopped before tectonic finished on its own — a resource-cap
+ * breach, not a document defect. Distinguished from a structural block (e.g. shell-escape
+ * being unconditionally absent, or `openin`/`openout` having nothing outside scratch to
+ * reach) precisely because a kill is a *runtime* intervention and a structural control never
+ * needs one — `docs/subphases/S5e-latex-renderer.md`'s own test-naming rule. */
+export type RenderSandboxKillReason = "wall_clock" | "memory";
+// -------------------------------------------------------------------------------------------
 
 export type Metrics = {
   /** How long an event waited in the outbox before a dispatcher delivered it. */
@@ -121,6 +134,17 @@ export type Metrics = {
   mcpCalls: { add: (labels: { server: string; outcome: McpCallOutcome }) => void };
   mcpCallDuration: { record: (seconds: number, labels: { server: string; outcome: McpCallOutcome }) => void };
   // -----------------------------------------------------------------------------------------
+  // --- S5e: LaTeX renderer -----------------------------------------------------------------
+  /** Wall-clock time of one `assets.render` call, host side (queueing + sandbox + asset
+   * write) — not tectonic's own internal timing, which never leaves the container. No
+   * `.tex` source, no TeX log, no rendered filename — content never becomes a label
+   * (§17.2, S5e deliverable 5). */
+  renderDuration: { record: (seconds: number, labels: { outcome: RenderOutcome }) => void };
+  /** A render the sandbox killed rather than let finish — lands on the security-signals
+   * dashboard beside the isolate (§12) and Python (S5h) kill rows it already reserves space
+   * for. */
+  renderSandboxKills: { add: (labels: { reason: RenderSandboxKillReason }) => void };
+  // -------------------------------------------------------------------------------------------
 };
 
 export function createMetrics(meter: Meter): Metrics {
@@ -151,6 +175,10 @@ export function createMetrics(meter: Meter): Metrics {
   const mcpCalls = meter.createCounter("mcp_calls_total");
   const mcpCallDuration = meter.createHistogram("mcp_call_duration_seconds", { unit: "s" });
   // -----------------------------------------------------------------------------------------
+  // --- S5e: LaTeX renderer --------------------------------------------------------------
+  const renderDuration = meter.createHistogram("render_duration_seconds", { unit: "s" });
+  const renderSandboxKills = meter.createCounter("render_sandbox_kills_total");
+  // -------------------------------------------------------------------------------------------
 
   return {
     outboxDispatchLag: { record: (seconds) => outboxDispatchLag.record(seconds) },
@@ -205,5 +233,9 @@ export function createMetrics(meter: Meter): Metrics {
     mcpCalls: { add: (labels) => mcpCalls.add(1, { ...labels }) },
     mcpCallDuration: { record: (seconds, labels) => mcpCallDuration.record(seconds, { ...labels }) },
     // ---------------------------------------------------------------------------------------
+    // --- S5e: LaTeX renderer ---------------------------------------------------------------
+    renderDuration: { record: (seconds, labels) => renderDuration.record(seconds, { ...labels }) },
+    renderSandboxKills: { add: (labels) => renderSandboxKills.add(1, { ...labels }) },
+    // -------------------------------------------------------------------------------------------
   };
 }

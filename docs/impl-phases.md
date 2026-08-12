@@ -52,10 +52,11 @@ inspector's scope or prerequisites changes.
 | S5b | Secrets broker: envelope encryption, `fill`/`injectIntoMcpArg`, origin binding, no `get()` | **done** — migration `0011` |
 | S5d | Asset store + versions + write grants + public asset route (`packages/assets`) | **done** — migration `0012` |
 | S5c | MCP client + asset-node tool registry + asset agent loop/executor (`packages/mcp`) | **done** — migration `0013` |
-| S5e–S7, S5g, S5h, S8 | LaTeX, python compute, store+decision, compiler, policy, graph compiler | not started |
+| S5e | LaTeX renderer: `apps/renderer` sandbox (`FROM scratch` + `docker run` isolation), `assets.render` | **done** — no migration |
+| S5f–S7, S5g, S5h, S8 | two-kind e2e, python compute, store+decision, compiler, policy, graph compiler | not started |
 
 What exists as code: `packages/{core,db,bus,engine,policy,telemetry,browser}` +
-`apps/{engine,web,testkit}` + `tests/system` — 226 tests in 52 files (one live-mode LLM
+`apps/{engine,web,testkit}` + `tests/system` — 239 tests in 54 files (one live-mode LLM
 smoke skips itself when no API key is set — CI never calls live; a separate `tests/live-eval`
 suite runs outside the CI vitest projects, live-only, outcome assertions only). The whole workspace typechecks clean (`tsc`) and lints
 clean (`pnpm lint`). `docker compose up -d` brings up Postgres, applies migrations, and runs both
