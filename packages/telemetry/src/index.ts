@@ -16,6 +16,7 @@ export {
   type PolicyCheck,
   type ResourceLimit,
   type RunStatus,
+  type SecretFillOutcome,
   type ShareAssetOutcome,
   type ShareViewResult,
 } from "./metrics.js";

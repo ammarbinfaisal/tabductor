@@ -2,6 +2,7 @@ import { AppError } from "@tabductor/core";
 import {
   chromium,
   type Frame,
+  type Locator,
   type Page as PwPage,
   type Request as PwRequest,
   type Route,
@@ -21,6 +22,7 @@ import type {
   Page,
   Perception,
   PerceiveOptions,
+  TargetProbe,
 } from "./driver.js";
 import type { NavCause } from "@tabductor/policy";
 
@@ -90,6 +92,38 @@ type RequestPaused = {
 };
 
 const DEFAULT_TIMEOUT_MS = 15_000;
+
+/**
+ * Resolves `selector` against the page's own frame tree for `probeTarget`/`insertTextRaw`
+ * (S5b) — main frame first, then children in `page.frames()` order. Playwright's own
+ * `page.locator()` never crosses into an iframe on its own (only `frame.locator()`, called on
+ * that specific frame, does), so checking each frame explicitly is what makes a same-origin
+ * iframe field reachable at all while still being able to name *which* frame matched — a
+ * plain `page.locator()` could never distinguish "found in the main frame" from "found nowhere"
+ * for a selector that only exists inside a child frame.
+ *
+ * Ambiguous is refused, not guessed: a frame where `selector` matches more than one element,
+ * or a selector matching in more than one frame, returns `null` — the secrets broker treats
+ * `null` the same as "not found" (`S5b-secrets-broker.md`: target validation gives no
+ * selector the benefit of the doubt).
+ */
+async function resolveAcrossFrames(
+  pwPage: PwPage,
+  selector: string,
+): Promise<{ locator: Locator; frame: Frame } | null> {
+  const candidates: { locator: Locator; frame: Frame }[] = [];
+  for (const frame of pwPage.frames()) {
+    const loc = frame.locator(selector);
+    const count = await loc.count();
+    if (count === 1) candidates.push({ locator: loc.first(), frame });
+    else if (count > 1) return null;
+  }
+  return candidates.length === 1 ? candidates[0]! : null;
+}
+
+/** In-page shape `probeTarget`'s `evaluate` reads off the matched element — attributes only,
+ * never a value. */
+type ProbedAttrs = { tag: string; type: string | null; contentEditable: boolean };
 
 /** What a popup is born holding instead of its real document; see `routeGuard`. */
 const BIRTH_STUB = "<!doctype html><title></title>";
@@ -443,6 +477,30 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
         state: "attached",
         timeout: opts?.timeout ?? DEFAULT_TIMEOUT_MS,
       });
+    },
+
+    async probeTarget(selector): Promise<TargetProbe | null> {
+      const hit = await resolveAcrossFrames(pwPage, selector);
+      if (!hit) return null;
+      const attrs = await hit.locator.evaluate(
+        (el: { tagName: string; getAttribute: (name: string) => string | null }): ProbedAttrs => ({
+          tag: el.tagName.toLowerCase(),
+          type: el.getAttribute("type")?.toLowerCase() ?? null,
+          contentEditable: (() => {
+            const v = el.getAttribute("contenteditable");
+            return v === "true" || v === "";
+          })(),
+        }),
+      );
+      return { ...attrs, frameOrigin: new URL(hit.frame.url()).origin };
+    },
+
+    async insertTextRaw(selector, text) {
+      const hit = await resolveAcrossFrames(pwPage, selector);
+      if (!hit) {
+        throw new AppError("secrets_target_unresolved", `no unambiguous target for "${selector}"`);
+      }
+      await hit.locator.fill(text, { timeout: DEFAULT_TIMEOUT_MS });
     },
 
     queryAll: (selector, fields) => extract(pwPage, selector, fields),

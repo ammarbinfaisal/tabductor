@@ -461,6 +461,12 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
       act("type", { selector, length: text.length }, () => raw.type(selector, text)),
     waitFor: (selector, opts) =>
       act("waitFor", { selector, timeout: opts?.timeout }, () => raw.waitFor(selector, opts)),
+    // Untraced passthroughs, deliberately outside `act()`: no policy check, no trace entry —
+    // the secrets broker (S5b) writes its own `action`/`policy_denied` rows with the outcome
+    // it decided, and `insertTextRaw`'s whole point is a call site that leaves nothing in the
+    // trace for its `text` argument to leak into (`packages/secrets/src/broker.ts`).
+    probeTarget: (selector) => raw.probeTarget(selector),
+    insertTextRaw: (selector, text) => raw.insertTextRaw(selector, text),
     queryAll: (selector, fields: ExtractSpec) =>
       act(
         "queryAll",

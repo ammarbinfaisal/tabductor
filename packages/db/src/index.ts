@@ -17,8 +17,19 @@ export {
   artifacts,
   cdpEndpoints,
   endpointLeases,
+  secrets,
+  secretGrants,
+  secretAccessLog,
 } from "./schema.js";
-export { RUN_STATUSES, MISSED_POLICIES, OVERLAP_POLICIES, TRACE_KINDS, TASK_KINDS } from "./schema.js";
+export {
+  RUN_STATUSES,
+  MISSED_POLICIES,
+  OVERLAP_POLICIES,
+  TRACE_KINDS,
+  TASK_KINDS,
+  SECRET_TIERS,
+  SECRET_ACCESS_ACTIONS,
+} from "./schema.js";
 export type {
   RunStatus,
   MissedPolicy,
@@ -43,6 +54,12 @@ export type {
   CdpEndpointRow,
   NewCdpEndpoint,
   EndpointLeaseRow,
+  SecretTier,
+  SecretRow,
+  NewSecret,
+  SecretGrantRow,
+  SecretAccessAction,
+  SecretAccessLogRow,
 } from "./schema.js";
 // test-db is deliberately NOT re-exported here: it imports @tabductor/testkit, which
 // imports playwright-core, and this barrel is what `apps/web` bundles — the chain broke

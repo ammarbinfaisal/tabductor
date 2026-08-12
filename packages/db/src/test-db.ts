@@ -1,10 +1,28 @@
+import { createHash } from "node:crypto";
+import { readdirSync } from "node:fs";
 import { createTestDb, prepareTemplate } from "@tabductor/testkit";
-import { createDb, migrateDb, type DbHandle } from "./client.js";
+import { createDb, migrateDb, migrationsFolder, type DbHandle } from "./client.js";
 
 export type MigratedTestDb = DbHandle & { url: string };
 
-/** Its own template, so suites using a different schema never clobber this one. */
-const TEMPLATE = "tabductor_migrated_template";
+/**
+ * The template name is suffixed with a hash of the migrations directory's own file list, not
+ * a fixed string. Parallel-worktree development hits a case a fixed name does not handle: two
+ * checkouts with *different, both-valid* migration sets (e.g. two subphases landing side by
+ * side, each in its own worktree) share this one Postgres container (`ROADMAP.md`'s
+ * `localhost:5434`), and `prepareTemplate` unconditionally drops and rebuilds whatever
+ * database this name points at. A fixed name means whichever worktree's test run prepares the
+ * template *last* silently wins, and the other worktree's next `INSERT` fails against tables
+ * that were never dropped from the schema — they were dropped from a *different* checkout's
+ * template. Hashing the migration file list keeps the cache's whole point (repeat runs in the
+ * same checkout still clone instead of re-migrating) while giving two divergent migration
+ * sets two different databases instead of one contested one.
+ */
+const migrationSetHash = createHash("sha256")
+  .update(readdirSync(migrationsFolder).sort().join(","))
+  .digest("hex")
+  .slice(0, 12);
+const TEMPLATE = `tabductor_migrated_template_${migrationSetHash}`;
 
 let template: Promise<void> | undefined;
 

@@ -95,6 +95,10 @@ function mutatorPage(tweets: Tweet[], layout: string): string {
   return page("Mutator", `<h1>Timeline</h1><div id="timeline">${items}</div>`);
 }
 
+// Element order here is anchor order for every `perceive()` snapshot of this page — S5b's
+// recorded transcripts (`tests/system/fixtures/transcripts/*.jsonl`) hardcode anchors like
+// `e5`/`e7` against the login/create-post forms above, so anything added to this page goes
+// *after* them (the hidden field below), never between or before.
 const FAKE_GRAM_PAGE = page(
   "FakeGram",
   `<h1>FakeGram</h1>
@@ -107,8 +111,19 @@ const FAKE_GRAM_PAGE = page(
   <input name="caption" placeholder="caption">
   <input name="image_url" placeholder="image url">
   <button type="submit">Create post</button>
-</form>`,
+</form>
+<!-- S5b target-validation fixture: a hidden field the secrets broker must refuse to fill. -->
+<input type="hidden" name="csrf_token" data-testid="csrfHidden">`,
 );
+
+/**
+ * S5b target-validation fixture: an iframe embedding `src` (typically another fixture
+ * instance's origin) so a test can hand the broker a locator that only resolves *inside* a
+ * cross-origin child frame — the shape `probeTarget`'s frame-origin check exists to catch.
+ */
+function iframeWrapPage(src: string): string {
+  return page("Iframe wrap", `<h1>Iframe wrap</h1><iframe src="${src}"></iframe>`);
+}
 
 /**
  * The two ways a navigation happens without anyone calling `goto` — a server redirect and a
@@ -178,6 +193,9 @@ export async function startFixtures(port = 0): Promise<Fixtures> {
       return sendHtml(res, page("FakeGram", `<h1 data-testid="result">${kind} ok</h1>`));
     }
     if (route === "GET /fake-gram/admin/submissions") return sendJson(res, { submissions });
+    if (route === "GET /iframe-wrap") {
+      return sendHtml(res, iframeWrapPage(url.searchParams.get("src") ?? `${url.origin}/fake-gram`));
+    }
 
     // mutator (same in-memory timeline as fake-tweets, server-rendered)
     if (route === "GET /mutator") return sendHtml(res, mutatorPage(tweets, url.searchParams.get("layout") ?? "v1"));

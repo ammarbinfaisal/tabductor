@@ -431,6 +431,100 @@ export const taskState = pgTable(
   (t) => [primaryKey({ columns: [t.taskId, t.key] })],
 );
 
+// ---------------------------------------------------------------------------------------
+// S5b — secrets broker (§14, §16 Threat 4). A clearly separated block: S5b and S5d land in
+// parallel worktrees and both touch this file, so everything the secrets broker owns lives
+// here, after S3b's endpoint tables, rather than interleaved with them.
+// ---------------------------------------------------------------------------------------
+
+/** Tier 1 is server-decryptable (this subphase); Tier 2 additionally wraps the DEK with a
+ * user-held key and is Phase 7 — the column exists now so no later migration has to widen it. */
+export const SECRET_TIERS = ["server", "user_wrapped"] as const;
+export type SecretTier = (typeof SECRET_TIERS)[number];
+
+/**
+ * Envelope-encrypted secret (§16 Threat 4): `ciphertext`/`nonce` are the value sealed under a
+ * per-secret DEK (`packages/secrets/src/crypto.ts`); `dek_wrapped`/`kek_ref` are that DEK
+ * wrapped by a KEK a `KeyWrapper` resolves by `kek_ref` — never a plaintext DEK or value at
+ * rest. `allowed_origins` is the origin-binding control (§16): a property of the secret
+ * itself, checked at fill time against the page's live origin, not a task grant — which is
+ * why it lives here and not on `secret_grants`.
+ */
+export const secrets = pgTable(
+  "secrets",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    name: text("name").notNull(),
+    description: text("description").notNull().default(""),
+    tier: text("tier").$type<SecretTier>().notNull().default("server"),
+    ciphertext: text("ciphertext").notNull(),
+    nonce: text("nonce").notNull(),
+    dekWrapped: text("dek_wrapped").notNull(),
+    kekRef: text("kek_ref").notNull(),
+    allowedOrigins: jsonb("allowed_origins").$type<string[]>().notNull().default([]),
+    createdAt: createdAt(),
+    rotatedAt: ts("rotated_at"),
+  },
+  (t) => [
+    uniqueIndex("secrets_user_name_key").on(t.userId, t.name),
+    check("secrets_tier_check", sql`${t.tier} in ('server','user_wrapped')`),
+  ],
+);
+
+/**
+ * Which task may use which secret. Declared now, per techical_plan §14; *enforcement* is
+ * Phase 7 (S7's grant/redaction sweep) — the broker in this subphase checks origin binding,
+ * target validity and the per-run rate limit only, not this table.
+ */
+export const secretGrants = pgTable(
+  "secret_grants",
+  {
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    secretName: text("secret_name").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.taskId, t.secretName] })],
+);
+
+/**
+ * Every fill attempt, success or refusal (§16 Threat 4) — action, anchor and outcome only.
+ * There is deliberately no value or value-length column: unlike `secret_grants`, which is a
+ * table this subphase declares without enforcing, this table is written on every `fill` call
+ * starting now, so "nothing to accidentally write a value into" has to be true from the
+ * first row, not from Phase 7.
+ */
+export const SECRET_ACCESS_ACTIONS = [
+  "filled",
+  "injected",
+  "denied_origin",
+  "denied_tier",
+  "denied_target_not_found",
+  "denied_target_hidden",
+  "denied_target_type",
+  "denied_target_contenteditable",
+  "denied_target_cross_origin_frame",
+  "insert_failed",
+  "rate_limited",
+] as const;
+export type SecretAccessAction = (typeof SECRET_ACCESS_ACTIONS)[number];
+
+export const secretAccessLog = pgTable(
+  "secret_access_log",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    runId: text("run_id")
+      .notNull()
+      .references(() => runs.id, { onDelete: "cascade" }),
+    secretName: text("secret_name").notNull(),
+    action: text("action").$type<SecretAccessAction>().notNull(),
+    anchor: text("anchor"),
+    ts: ts("ts").notNull().defaultNow(),
+  },
+  (t) => [index("secret_access_log_run_idx").on(t.runId)],
+);
+
 export type TraceEntryRow = typeof traceEntries.$inferSelect;
 export type ArtifactRow = typeof artifacts.$inferSelect;
 export type EventRow = typeof events.$inferSelect;
@@ -449,3 +543,7 @@ export type WorkflowShareRow = typeof workflowShares.$inferSelect;
 export type CdpEndpointRow = typeof cdpEndpoints.$inferSelect;
 export type NewCdpEndpoint = typeof cdpEndpoints.$inferInsert;
 export type EndpointLeaseRow = typeof endpointLeases.$inferSelect;
+export type SecretRow = typeof secrets.$inferSelect;
+export type NewSecret = typeof secrets.$inferInsert;
+export type SecretGrantRow = typeof secretGrants.$inferSelect;
+export type SecretAccessLogRow = typeof secretAccessLog.$inferSelect;

@@ -78,6 +78,13 @@
       "when": 1786499690795,
       "tag": "0010_parallel_killraven",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1786501599511,
+      "tag": "0011_quiet_chat",
+      "breakpoints": true
     }
   ]
 }

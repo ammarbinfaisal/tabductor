@@ -78,12 +78,43 @@ export type PerceiveOptions = {
   maxChars?: number;
 };
 
+/**
+ * What `probeTarget` (S5b) reports about a resolved locator — never its value. `frameOrigin`
+ * is the origin of whichever frame the selector actually matched in (main frame checked
+ * first, then children), which is what lets the secrets broker's target validation tell a
+ * same-origin field from one planted in a cross-origin iframe (§16 Threat 4).
+ */
+export type TargetProbe = {
+  tag: string;
+  /** The element's `type` attribute, lowercased; `null` when absent (an `<input>` with no
+   * `type` is a text field by HTML's own default, so callers should treat `null` as `"text"`). */
+  type: string | null;
+  contentEditable: boolean;
+  frameOrigin: string;
+};
+
 export type Page = {
   goto: (url: string) => Promise<void>;
   click: (selector: string) => Promise<void>;
   type: (selector: string, text: string) => Promise<void>;
   waitFor: (selector: string, opts?: { timeout?: number }) => Promise<void>;
   queryAll: (selector: string, fields: ExtractSpec) => Promise<ExtractedRecord[]>;
+  /**
+   * Resolves `selector` across the page's own frame tree (main frame, then children — never
+   * an arbitrary cross-document reach) and reports tag/type/contentEditable/frame origin,
+   * `null` when the selector is absent or ambiguous (matches zero, or more than one element,
+   * in every frame checked). The secrets broker's target validation (S5b) is the only caller;
+   * no agent tool wraps this — it is deliberately outside `buildToolRegistry`'s surface.
+   */
+  probeTarget: (selector: string) => Promise<TargetProbe | null>;
+  /**
+   * Raw keystroke insertion: no policy check, no trace entry, no `type`-tool wrapping.
+   * Resolves `selector` exactly the way `probeTarget` does, so a caller that validated with
+   * `probeTarget` first fills the same element it inspected. The secrets broker (S5b) is the
+   * only caller — see `packages/secrets/src/broker.ts`'s doc comment for why this must never
+   * gain a second one. Rejects if `selector` no longer resolves unambiguously.
+   */
+  insertTextRaw: (selector: string, text: string) => Promise<void>;
   /** The perception builder (S4a §8): salient elements anchored in document order, plus
    * budgeted main text. One `evaluate`-style call, kept inside this driver rather than issued
    * as arbitrary page-JS from agent/generated code (§12's rule constrains *that*, not us). */

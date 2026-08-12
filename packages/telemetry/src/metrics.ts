@@ -22,6 +22,10 @@ export type PolicyCheck = "navigation" | "action" | "network_read" | "mcp_call";
 export type ResourceLimit = "max_tabs" | "max_visits" | "max_wall_ms";
 /** Which side of one `Llm.complete` call a token count belongs to (§17.2 catalogue). */
 export type LlmDirection = "in" | "out";
+/** The secrets broker's own outcome set (§17.2, S5b) — coarser than `secret_access_log.action`
+ * on purpose: the metric is the security-signals board's flat-zero row, the log is the
+ * per-attempt audit trail, and a label needs far fewer values than a log column does. */
+export type SecretFillOutcome = "filled" | "denied_origin" | "denied_target" | "rate_limited";
 
 export type Metrics = {
   /** How long an event waited in the outbox before a dispatcher delivered it. */
@@ -90,6 +94,10 @@ export type Metrics = {
    * passed through rather than invented (mirrors `engine.ts`'s `recordOutcome` precedent).
    */
   llmCostUsd: { add: (usd: number, labels: { model: string; kind: string; mode: string }) => void };
+  /** Every `fill` attempt the secrets broker makes, success or refusal (S5b, §16 Threat 4).
+   * No `secretName` label — the bounded-label-set rule (§17.2) and the fact that a secret name
+   * is exactly the kind of identifier that does not belong on a metric. */
+  secretFills: { add: (labels: { outcome: SecretFillOutcome }) => void };
 };
 
 export function createMetrics(meter: Meter): Metrics {
@@ -113,6 +121,7 @@ export function createMetrics(meter: Meter): Metrics {
   const resourceLimitAborts = meter.createCounter("resource_limit_aborts_total");
   const llmTokens = meter.createCounter("llm_tokens_total");
   const llmCostUsd = meter.createCounter("llm_cost_usd_total", { unit: "USD" });
+  const secretFills = meter.createCounter("secret_fills_total");
 
   return {
     outboxDispatchLag: { record: (seconds) => outboxDispatchLag.record(seconds) },
@@ -160,5 +169,6 @@ export function createMetrics(meter: Meter): Metrics {
     resourceLimitAborts: { add: (labels) => resourceLimitAborts.add(1, { ...labels }) },
     llmTokens: { add: (count, labels) => llmTokens.add(count, { ...labels }) },
     llmCostUsd: { add: (usd, labels) => llmCostUsd.add(usd, { ...labels }) },
+    secretFills: { add: (labels) => secretFills.add(1, { ...labels }) },
   };
 }

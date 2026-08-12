@@ -18,6 +18,7 @@ export type {
   Page,
   PerceiveOptions,
   Perception,
+  TargetProbe,
 } from "./driver.js";
 export { playwrightDriver } from "./playwright-driver.js";
 export {
