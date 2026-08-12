@@ -14,7 +14,7 @@ import {
 import { context, inSpan, trace, type Metrics, type Tracer } from "@tabductor/telemetry";
 import { and, asc, eq } from "drizzle-orm";
 import { dispatchEvent } from "./dispatch.js";
-import type { ExecutorRegistry, RunHandle, RunResult } from "./executor.js";
+import { executorKey, type ExecutorRegistry, type RunHandle, type RunResult } from "./executor.js";
 import { validatePacket } from "./packet-schema.js";
 import { scheduleRetry } from "./retry.js";
 import {
@@ -31,7 +31,7 @@ import { StubExecutor } from "./stub-executor.js";
 export type EngineDeps = {
   db: Db;
   dispatcher: Dispatcher;
-  /** Keyed by `tasks.mode`; defaults to `{ stub: StubExecutor }`. */
+  /** Keyed by `executorKey(kind, mode)`; defaults to `{ "browser:stub": StubExecutor }`. */
   executors?: ExecutorRegistry;
   /** Watchdog sweep interval; also how often queued runs due to start are picked up. */
   watchdogIntervalMs?: number;
@@ -73,7 +73,7 @@ export type Engine = {
  */
 export function createEngine(deps: EngineDeps): Engine {
   const { db, dispatcher } = deps;
-  const executors: ExecutorRegistry = deps.executors ?? { stub: StubExecutor };
+  const executors: ExecutorRegistry = deps.executors ?? { [executorKey("browser", "stub")]: StubExecutor };
   const watchdogIntervalMs = deps.watchdogIntervalMs ?? 250;
   const shutdownGraceMs = deps.shutdownGraceMs ?? 5_000;
   const heartbeatIntervalMs = deps.heartbeatIntervalMs ?? 2_000;
@@ -163,13 +163,15 @@ export function createEngine(deps: EngineDeps): Engine {
     const trigger = delivered ?? (await triggerEvent(db, row.run));
     const causationId = trigger?.eventId ?? null;
 
-    const executor = executors[task.mode];
+    const executor = executors[executorKey(task.kind, task.mode)];
     if (!executor) {
-      // Permanent: retrying a task whose mode has no executor registered just burns the
-      // policy on the same missing registration.
+      // Permanent: retrying a task whose (kind, mode) has no executor registered just burns
+      // the policy on the same missing registration. The message keeps the "no executor
+      // registered" prefix `public-read.ts`'s `ERROR_CLASS` matches on, with the typed
+      // `no_executor_for(kind, mode)` identifier the S5a spec names appended after it.
       const started = await startRun(db, runId, undefined);
       if (!started) return;
-      const error = `no executor registered for mode "${task.mode}"`;
+      const error = `no executor registered: no_executor_for(${task.kind}, ${task.mode})`;
       await settle(started, task, { ok: false, error, permanent: true }, causationId);
       return;
     }
@@ -232,13 +234,8 @@ export function createEngine(deps: EngineDeps): Engine {
     }
   };
 
-  /**
-   * `kind` is constant `browser` until S5a adds the column (impl-phases §0.5) — passed
-   * through rather than invented, so the label starts reporting reality the day the column
-   * lands without the dashboards changing.
-   */
   const recordOutcome = (run: RunRow, task: TaskRow, status: "succeeded" | "failed" | "timed_out"): void => {
-    const labels = { kind: "browser", mode: task.mode };
+    const labels = { kind: task.kind, mode: task.mode };
     metrics?.runs.add({ ...labels, status });
     if (run.startedAt) {
       metrics?.runDuration.record((Date.now() - run.startedAt.getTime()) / 1000, labels);

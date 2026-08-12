@@ -12,7 +12,9 @@ import {
   workflows,
   MISSED_POLICIES,
   OVERLAP_POLICIES,
+  TASK_KINDS,
   type Db,
+  type TaskKind,
 } from "@tabductor/db";
 import { eq, inArray } from "drizzle-orm";
 import { z } from "zod";
@@ -50,16 +52,20 @@ export const graphEventSchema = z.object({
 });
 
 /**
- * Node kinds (§4). The column that will carry this (`tasks.kind`) arrives in S5a; until
- * then the graph document is its only home, which is enough for the two things that need
- * it today: the editor palette and the "a schedule may not bind to an asset node"
- * constraint below. S5a moves the constraint to a DB check and this stays its front door.
+ * Node kinds (§4). Re-exported rather than restated: `tasks.kind` (S5a) is the column this
+ * document projects to at publish, so the document's zod enum and the DB check constraint
+ * must read from the same list or the two could drift.
  */
-export const NODE_KINDS = ["browser", "asset"] as const;
-export type NodeKind = (typeof NODE_KINDS)[number];
+export const NODE_KINDS = TASK_KINDS;
+export type NodeKind = TaskKind;
 
-/** `asset` nodes are event-triggered only (impl-phases S5a); `browser` may hold a schedule. */
+/** `asset` nodes are event-triggered only (§4); `browser` may hold a schedule. */
 const SCHEDULABLE: readonly NodeKind[] = ["browser"];
+
+/** `asset` tasks are never compiled (§11: MCP results and LLM prose have no stable structure
+ * for the script compiler's guards to assert on). Re-asserted by the named DB check
+ * `tasks_kind_mode_check` for a write that bypasses this save-time reject. */
+const NOT_COMPILABLE: readonly NodeKind[] = ["asset"];
 
 export const graphScheduleSchema = z.object({
   cron: z.string().min(1),
@@ -143,6 +149,14 @@ export function checkGraph(graph: Graph): void {
       throw invalid(`a schedule may not bind to a "${task.kind}" task`, {
         task: task.name,
         kind: task.kind,
+      });
+    }
+
+    if (task.mode === "compiled" && NOT_COMPILABLE.includes(task.kind)) {
+      throw invalid(`a "${task.kind}" task may not use mode "compiled"`, {
+        task: task.name,
+        kind: task.kind,
+        mode: task.mode,
       });
     }
 
@@ -344,6 +358,7 @@ export async function publishVersion(
         workflowVersionId: versionId,
         name: task.name,
         prompt: task.prompt,
+        kind: task.kind,
         mode: task.mode,
         limitsJson: task.limits,
       });
@@ -411,13 +426,17 @@ export async function updateTask(
  *
  * Rebuilt from the rows rather than served straight from `graph_json`, because the rows
  * are what the engine actually routes on and `task.update` writes to them. `graph_json`
- * is consulted for one thing only — node positions and kinds, which no row carries and
- * losing which would reshuffle the canvas on every reload. (Versions published under the
- * old edge-shaped document fail that parse and degrade to defaults; their routing rows
- * still read fine.)
+ * is consulted for one thing only now — node positions, which no row carries and losing
+ * which would reshuffle the canvas on every reload. (Versions published under the old
+ * edge-shaped document fail that parse and degrade to a null position; their routing rows,
+ * including `kind`, read from `tasks` regardless.)
  *
  * Event descriptions and visibility come back; the compiled schemas deliberately do not —
  * they are not part of the authored document. `readEventSchemas` serves them read-only.
+ *
+ * `kind` (S5a) reads from the `tasks.kind` column, not from `graph_json` — the projection
+ * `publishVersion` writes is the source of truth for what routing and dispatch actually see.
+ * `position` still comes from the document; no row carries it.
  */
 export async function readGraph(db: Db, versionId: string): Promise<Graph> {
   const [version] = await db.select().from(workflowVersions).where(eq(workflowVersions.id, versionId));
@@ -430,7 +449,7 @@ export async function readGraph(db: Db, versionId: string): Promise<Graph> {
   const taskRows = await db.select().from(tasks).where(eq(tasks.workflowVersionId, versionId));
   const stored = graphSchema.safeParse(version.graphJson);
   const decoration = new Map(
-    (stored.success ? stored.data.tasks : []).map((t) => [t.name, { kind: t.kind, position: t.position }]),
+    (stored.success ? stored.data.tasks : []).map((t) => [t.name, { position: t.position }]),
   );
 
   const emitRows = await db.select().from(taskEmits).where(eq(taskEmits.workflowVersionId, versionId));
@@ -451,7 +470,7 @@ export async function readGraph(db: Db, versionId: string): Promise<Graph> {
       const schedule = scheduleOf.get(row.id);
       return {
         name: row.name,
-        kind: decoration.get(row.name)?.kind ?? "browser",
+        kind: row.kind,
         mode: row.mode,
         prompt: row.prompt,
         limits: asRecord(row.limitsJson),

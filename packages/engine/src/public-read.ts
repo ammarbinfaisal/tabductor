@@ -14,7 +14,7 @@ import {
   type RunStatus,
 } from "@tabductor/db";
 import { and, asc, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
-import { NODE_KINDS, type NodeKind } from "./graph.js";
+import type { NodeKind } from "./graph.js";
 import { decodeCursor, eventOfWorkflow, pageOf, PAGE_LIMIT, type Page } from "./queries.js";
 import type { RefCodec } from "./shares.js";
 
@@ -129,15 +129,16 @@ export type PublicGraph = {
  * The graph as a viewer sees it: shape, kinds, modes, schedules and which events are
  * shared. Not `readGraph` with fields removed — that would select prompts and limits.
  *
- * `kind` and `position` have no columns yet (they arrive with S5a), so they come from
- * `graph_json`. That document also holds prompts and stub scripts, so it is projected
- * **in Postgres** down to the two keys this needs rather than parsed here and picked over.
+ * `kind` reads straight from `tasks.kind` (S5a). `position` still has no column, so it
+ * comes from `graph_json` — projected **in Postgres** down to the one key this needs
+ * rather than parsed here and picked over (that document also holds prompts and stub
+ * scripts, neither of which belongs in a public read model).
  */
 export async function publicGraph(db: Db, input: { versionId: string }): Promise<PublicGraph> {
-  const decorationRows = await db.execute<{ decoration: Record<string, { kind?: string; position?: unknown }> }>(sql`
+  const decorationRows = await db.execute<{ decoration: Record<string, { position?: unknown }> }>(sql`
     select coalesce(
       (
-        select jsonb_object_agg(t->>'name', jsonb_build_object('kind', t->'kind', 'position', t->'position'))
+        select jsonb_object_agg(t->>'name', jsonb_build_object('position', t->'position'))
         from jsonb_array_elements(${workflowVersions.graphJson} -> 'tasks') t
         where jsonb_typeof(t->'name') = 'string'
       ),
@@ -149,7 +150,7 @@ export async function publicGraph(db: Db, input: { versionId: string }): Promise
   const decoration = decorationRows.rows[0]?.decoration ?? {};
 
   const taskRows = await db
-    .select({ id: tasks.id, name: tasks.name, mode: tasks.mode })
+    .select({ id: tasks.id, name: tasks.name, kind: tasks.kind, mode: tasks.mode })
     .from(tasks)
     .where(eq(tasks.workflowVersionId, input.versionId))
     .orderBy(asc(tasks.name));
@@ -215,7 +216,7 @@ export async function publicGraph(db: Db, input: { versionId: string }): Promise
       const decorated = decoration[row.name];
       return {
         name: row.name,
-        kind: isNodeKind(decorated?.kind) ? decorated.kind : "browser",
+        kind: row.kind,
         mode: row.mode,
         position: isPosition(decorated?.position) ? decorated.position : null,
         emits: emitRows
@@ -527,10 +528,6 @@ function clampLimit(limit: number | undefined): number {
 
 /** Lower than the owner's ceiling: this path serves unauthenticated callers. */
 export const PUBLIC_PAGE_MAX = 50;
-
-function isNodeKind(value: unknown): value is NodeKind {
-  return typeof value === "string" && (NODE_KINDS as readonly string[]).includes(value);
-}
 
 function isPosition(value: unknown): value is { x: number; y: number } {
   return isRecord(value) && typeof value.x === "number" && typeof value.y === "number";

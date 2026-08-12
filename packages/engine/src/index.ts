@@ -1,11 +1,13 @@
 export { createEngine, type Engine, type EngineDeps } from "./engine.js";
 export {
+  executorKey,
   type ExecutorRegistry,
   type RunHandle,
   type RunResult,
   type TaskExecutor,
 } from "./executor.js";
-export { StubExecutor, parseStub, type StubScript } from "./stub-executor.js";
+export { StubExecutor, parseStub, runStubScript, type StubScript } from "./stub-executor.js";
+export { AssetExecutor } from "./asset-executor.js";
 export {
   dispatchEvent,
   dispatchToTask,

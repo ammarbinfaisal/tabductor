@@ -1,5 +1,5 @@
 import { createDispatcher, publish, type Dispatcher } from "@tabductor/bus";
-import { createEngine, type Engine, type EngineDeps } from "@tabductor/engine";
+import { createEngine, type Engine, type EngineDeps, type ExecutorRegistry } from "@tabductor/engine";
 import { events, outbox, runs, type EventRow, type RunRow } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import { asc, eq, inArray } from "drizzle-orm";
@@ -26,6 +26,9 @@ export type RigOptions = {
   scheduler?: EngineDeps["scheduler"];
   /** Reuse an already-migrated DB instead of creating one — how a restart is simulated. */
   handle?: MigratedTestDb;
+  /** Defaults to `createEngine`'s own default (`{ "browser:stub": StubExecutor }`) — pass
+   * this to also exercise `AssetExecutor` or another `(kind, mode)` registration. */
+  executors?: ExecutorRegistry;
 };
 
 export async function startRig(opts: RigOptions = {}): Promise<Rig> {
@@ -34,6 +37,7 @@ export async function startRig(opts: RigOptions = {}): Promise<Rig> {
   const engine = createEngine({
     db: handle.db,
     dispatcher,
+    ...(opts.executors ? { executors: opts.executors } : {}),
     watchdogIntervalMs: opts.watchdogIntervalMs ?? 50,
     // A deliberately hanging stub must not hold teardown open; the timeout test relies on it.
     shutdownGraceMs: opts.shutdownGraceMs ?? 250,

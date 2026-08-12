@@ -37,5 +37,15 @@ export type RunHandle = {
   declaredEmits: () => Promise<Array<{ type: string; schema: Record<string, unknown> }>>;
 };
 
-/** Registry is a plain object on purpose: no factory, no DI container. */
+/** Registry is a plain object on purpose: no factory, no DI container. Keyed by `executorKey`. */
 export type ExecutorRegistry = Record<string, TaskExecutor>;
+
+/**
+ * The registry's lookup key (S5a, techical_plan §4: "the tool registry is a function of
+ * `(kind, mode)`, not of `kind` alone"). One function so every registration site and the
+ * one dispatch site agree on the same string — `":"` is not legal in either `kind` (a
+ * closed domain) or `mode` (open, but always a bare identifier), so it cannot collide.
+ */
+export function executorKey(kind: string, mode: string): string {
+  return `${kind}:${mode}`;
+}

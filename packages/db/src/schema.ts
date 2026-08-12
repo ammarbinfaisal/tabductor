@@ -1,6 +1,7 @@
 import {
   bigserial,
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -45,6 +46,16 @@ export type MissedPolicy = (typeof MISSED_POLICIES)[number];
 export const OVERLAP_POLICIES = ["skip", "queue"] as const;
 export type OverlapPolicy = (typeof OVERLAP_POLICIES)[number];
 
+/**
+ * `tasks.kind` (§4, S5a): what a task may *do* — the tool registry and executor
+ * discriminant, orthogonal to `mode` (*how* it executes). Declared here, not in
+ * `packages/engine`, so the graph document's zod enum and the `tasks_kind_check` constraint
+ * below read from the same list instead of restating it on each side of the publish boundary.
+ * -- S5g adds 'decision'
+ */
+export const TASK_KINDS = ["browser", "asset"] as const;
+export type TaskKind = (typeof TASK_KINDS)[number];
+
 export const workflows = pgTable("workflows", {
   id: text("id").primaryKey(),
   userId: text("user_id").notNull(),
@@ -77,11 +88,21 @@ export const tasks = pgTable(
       .references(() => workflowVersions.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     prompt: text("prompt"),
+    /** What the task may do (§4) — see `TASK_KINDS`. Backfilled `browser` on existing rows:
+     * every task before S5a drove a page, so that is the only honest default. */
+    kind: text("kind").$type<TaskKind>().notNull().default("browser"),
     mode: text("mode").notNull().default("stub"),
     limitsJson: jsonb("limits_json").notNull().default({}),
     createdAt: createdAt(),
   },
-  (t) => [uniqueIndex("tasks_version_name_key").on(t.workflowVersionId, t.name)],
+  (t) => [
+    uniqueIndex("tasks_version_name_key").on(t.workflowVersionId, t.name),
+    check("tasks_kind_check", sql`${t.kind} in ('browser','asset')`),
+    // §11: asset tasks are never compiled — MCP results and LLM prose have no stable
+    // structure for the script compiler's guards to assert on. Named so S5h can extend it
+    // (`mode='python'` requires `kind='asset'`) with a single drop-and-re-add ALTER.
+    check("tasks_kind_mode_check", sql`not (${t.kind} = 'asset' and ${t.mode} = 'compiled')`),
+  ],
 );
 
 /**

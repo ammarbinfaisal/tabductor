@@ -14,7 +14,7 @@ import { createDispatcher, type Dispatcher } from "@tabductor/bus";
 import { newId } from "@tabductor/core";
 import { cdpEndpoints, traceEntries, type TaskRow, type TraceEntryRow } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import { createEngine, StubExecutor, type Engine } from "@tabductor/engine";
+import { createEngine, executorKey, StubExecutor, type Engine } from "@tabductor/engine";
 import { AllowAllGate, type PolicyGate } from "@tabductor/policy";
 import {
   createTestBlobStore,
@@ -123,7 +123,7 @@ export async function startAgentRig(opts: StartAgentRigOptions): Promise<AgentRi
   const engine = createEngine({
     db: handle.db,
     dispatcher,
-    executors: { stub: StubExecutor, ai: executor },
+    executors: { [executorKey("browser", "stub")]: StubExecutor, [executorKey("browser", "ai")]: executor },
     watchdogIntervalMs: 50,
     // A real page load and a real form POST are slower than a stub; long enough that
     // teardown never races a run still mid-navigation.

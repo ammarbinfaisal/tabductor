@@ -47,10 +47,12 @@ inspector's scope or prerequisites changes.
 | U1.5 | Run inspector: trace timeline + screenshots + endpoint health (`/endpoints`) | **done** |
 | S4a | LLM adapter (live/record/replay over the AI SDK, two providers) + perception builder (`packages/agent`) | **done** |
 | S4b | Agent loop + tool registry + structured emit + AgentExecutor wired in `apps/engine` + e2e milestone | **done** |
-| S5a–S7, S5g, S5h, S8 | asset, python compute, store+decision, compiler, policy, graph compiler | not started |
+| U2 | Agent visibility in the inspector: llm rows, emit rows, token totals | **done** |
+| S5a | `tasks.kind` + `(kind, mode)` executor registry + AssetExecutor skeleton + constraints | **done** — migration `0010` |
+| S5b–S7, S5g, S5h, S8 | secrets, MCP, assets, LaTeX, python compute, store+decision, compiler, policy, graph compiler | not started |
 
 What exists as code: `packages/{core,db,bus,engine,policy,telemetry,browser}` +
-`apps/{engine,web,testkit}` + `tests/system` — 168 tests in 43 files (one live-mode LLM
+`apps/{engine,web,testkit}` + `tests/system` — 175 tests in 44 files (one live-mode LLM
 smoke skips itself when no API key is set — CI never calls live; a separate `tests/live-eval`
 suite runs outside the CI vitest projects, live-only, outcome assertions only). The whole workspace typechecks clean (`tsc`) and lints
 clean (`pnpm lint`). `docker compose up -d` brings up Postgres, applies migrations, and runs both

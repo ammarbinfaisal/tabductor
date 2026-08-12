@@ -8,7 +8,7 @@ import {
 } from "@tabductor/browser";
 import { cdpEndpoints, traceEntries, type TraceEntryRow } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import { createEngine, type Engine } from "@tabductor/engine";
+import { createEngine, executorKey, type Engine } from "@tabductor/engine";
 import { AllowAllGate, type PolicyGate } from "@tabductor/policy";
 import {
   createScriptedBrowserExecutor,
@@ -70,7 +70,7 @@ export async function startScriptedRig(opts: { chrome?: Chrome; gate?: PolicyGat
   const engine = createEngine({
     db: handle.db,
     dispatcher,
-    executors: { scripted: executor },
+    executors: { [executorKey("browser", "scripted")]: executor },
     watchdogIntervalMs: 50,
     // A real page load is slower than a stub; long enough that teardown never races a run
     // that is still mid-navigation, short enough that a genuinely wedged run doesn't hang

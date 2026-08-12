@@ -1,7 +1,7 @@
 import { schedules, workflows, type Db, type ScheduleRow } from "@tabductor/db";
 import { newId } from "@tabductor/core";
 import { eq } from "drizzle-orm";
-import { createWorkflow, publishVersion, type Graph, type GraphEvent } from "./graph.js";
+import { createWorkflow, publishVersion, type Graph, type GraphEvent, type NodeKind } from "./graph.js";
 import { staticSchemaGenerator } from "./schema-generator.js";
 
 /**
@@ -30,6 +30,8 @@ import { staticSchemaGenerator } from "./schema-generator.js";
  */
 
 export type SeedTask = {
+  /** Defaults to `browser` — every task before S5a drove a page, and most tests still do. */
+  kind?: NodeKind;
   mode?: string;
   prompt?: string;
   /** Scripted StubExecutor behavior; lands in `limits_json.stub`. */
@@ -126,7 +128,7 @@ export async function seedWorkflow(db: Db, spec: SeedSpec): Promise<SeededWorkfl
   const graph: Graph = {
     tasks: Object.entries(spec.tasks).map(([name, task]) => ({
       name,
-      kind: "browser",
+      kind: task.kind ?? "browser",
       mode: task.mode ?? "stub",
       prompt: task.prompt ?? null,
       limits: {

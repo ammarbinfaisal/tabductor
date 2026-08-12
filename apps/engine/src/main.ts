@@ -3,7 +3,7 @@ import { createEndpointPool, createMinioBlobStore, playwrightDriver } from "@tab
 import { createDispatcher } from "@tabductor/bus";
 import { loadConfig } from "@tabductor/core";
 import { cdpEndpoints, createDb, type Db } from "@tabductor/db";
-import { createEngine, StubExecutor, type ExecutorRegistry } from "@tabductor/engine";
+import { AssetExecutor, createEngine, executorKey, StubExecutor, type ExecutorRegistry } from "@tabductor/engine";
 import { AllowAllGate } from "@tabductor/policy";
 import { initTelemetry } from "@tabductor/telemetry/init";
 import { asc } from "drizzle-orm";
@@ -46,15 +46,15 @@ const handle = createDb(config.DATABASE_URL);
  *    talks to" until a later subphase gives tasks their own; with zero rows the executor is
  *    withheld for the identical reason as a missing key — nothing to run it against.
  */
-async function agentExecutorEntry(db: Db): Promise<[mode: string, executor: ReturnType<typeof createAgentExecutor>] | undefined> {
+async function agentExecutorEntry(db: Db): Promise<ReturnType<typeof createAgentExecutor> | undefined> {
   const live = providerFromEnv({ ANTHROPIC_API_KEY: config.ANTHROPIC_API_KEY, OPENAI_API_KEY: config.OPENAI_API_KEY });
   if (!live) {
-    log.info("no ANTHROPIC_API_KEY/OPENAI_API_KEY configured — mode 'ai' has no executor", {});
+    log.info("no ANTHROPIC_API_KEY/OPENAI_API_KEY configured — (browser, ai) has no executor", {});
     return undefined;
   }
   const [endpointRow] = await db.select({ id: cdpEndpoints.id }).from(cdpEndpoints).orderBy(asc(cdpEndpoints.createdAt)).limit(1);
   if (!endpointRow) {
-    log.info("no cdp_endpoints row configured — mode 'ai' has no executor", {});
+    log.info("no cdp_endpoints row configured — (browser, ai) has no executor", {});
     return undefined;
   }
 
@@ -88,13 +88,17 @@ async function agentExecutorEntry(db: Db): Promise<[mode: string, executor: Retu
         costLabels: { kind: "browser", mode: "ai" },
       }),
   });
-  return ["ai", executor];
+  return executor;
 }
 
-const agentEntry = await agentExecutorEntry(handle.db);
+const agentExecutor = await agentExecutorEntry(handle.db);
 const executors: ExecutorRegistry = {
-  stub: StubExecutor,
-  ...(agentEntry ? { [agentEntry[0]]: agentEntry[1] } : {}),
+  [executorKey("browser", "stub")]: StubExecutor,
+  // The asset skeleton (S5a): no live key or endpoint to gate on, unlike `(browser, ai)`
+  // below, since it runs no LLM and drives no page yet — same reason `StubExecutor` needs
+  // no gate.
+  [executorKey("asset", "ai")]: AssetExecutor,
+  ...(agentExecutor ? { [executorKey("browser", "ai")]: agentExecutor } : {}),
 };
 
 const dispatcher = createDispatcher(handle, {
@@ -122,7 +126,7 @@ await dispatcher.start();
 log.info("engine started", {
   database: config.DATABASE_URL.replace(/\/\/[^@]*@/, "//"),
   telemetry: telemetry.enabled ? "exporting" : "disabled",
-  aiExecutor: agentEntry ? "registered" : "not registered",
+  aiExecutor: agentExecutor ? "registered" : "not registered",
 });
 
 /**
