@@ -1,14 +1,7 @@
 import { createDispatcher, publish, type Dispatcher } from "@tabductor/bus";
 import { createEngine, type Engine, type EngineDeps } from "@tabductor/engine";
-import {
-  createMigratedTestDb,
-  events,
-  outbox,
-  runs,
-  type EventRow,
-  type MigratedTestDb,
-  type RunRow,
-} from "@tabductor/db";
+import { events, outbox, runs, type EventRow, type RunRow } from "@tabductor/db";
+import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import { asc, eq, inArray } from "drizzle-orm";
 
 /**

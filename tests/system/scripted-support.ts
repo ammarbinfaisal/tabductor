@@ -6,7 +6,8 @@ import {
   type BlobStore,
   type EndpointPool,
 } from "@tabductor/browser";
-import { cdpEndpoints, createMigratedTestDb, traceEntries, type MigratedTestDb, type TraceEntryRow } from "@tabductor/db";
+import { cdpEndpoints, traceEntries, type TraceEntryRow } from "@tabductor/db";
+import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import { createEngine, type Engine } from "@tabductor/engine";
 import { AllowAllGate, type PolicyGate } from "@tabductor/policy";
 import {

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { chainDepth, publish } from "@tabductor/bus";
-import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db";
+import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 
 let handle: MigratedTestDb;
 

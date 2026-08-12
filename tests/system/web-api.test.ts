@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createMigratedTestDb, runs, type MigratedTestDb } from "@tabductor/db";
+import { runs } from "@tabductor/db";
+import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import { finishRun, startRun, staticSchemaGenerator } from "@tabductor/engine";
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";

@@ -3,12 +3,11 @@ import { createEndpointPool, playwrightDriver, type EndpointPool } from "@tabduc
 import { newId } from "@tabductor/core";
 import {
   cdpEndpoints,
-  createMigratedTestDb,
   endpointLeases,
   events,
   runs,
-  type MigratedTestDb,
 } from "@tabductor/db";
+import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import { seedWorkflow } from "@tabductor/engine";
 import { launchChrome, type Chrome } from "@tabductor/testkit";
 import { eq } from "drizzle-orm";

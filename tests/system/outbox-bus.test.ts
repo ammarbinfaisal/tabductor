@@ -7,7 +7,8 @@ import {
   publish,
   type Dispatcher,
 } from "@tabductor/bus";
-import { createMigratedTestDb, events, outbox, type EventRow, type MigratedTestDb } from "@tabductor/db";
+import { events, outbox, type EventRow } from "@tabductor/db";
+import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 
 let handle: MigratedTestDb;
 const running: Dispatcher[] = [];

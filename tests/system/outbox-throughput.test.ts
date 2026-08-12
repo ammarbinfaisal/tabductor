@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { count, eq } from "drizzle-orm";
 import { createDispatcher } from "@tabductor/bus";
-import { createMigratedTestDb, events, outbox, type MigratedTestDb } from "@tabductor/db";
+import { events, outbox } from "@tabductor/db";
+import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 
 const TOTAL = 10_000;
 const BUDGET_MS = 60_000;

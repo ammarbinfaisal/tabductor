@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { createMigratedTestDb, workflows, type MigratedTestDb } from "@tabductor/db";
+import { workflows } from "@tabductor/db";
+import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import {
   createWorkflow,
   publishVersion,

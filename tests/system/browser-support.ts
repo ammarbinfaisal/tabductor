@@ -14,13 +14,12 @@ import {
 import { newId } from "@tabductor/core";
 import {
   artifacts,
-  createMigratedTestDb,
   runs,
   traceEntries,
   type ArtifactRow,
-  type MigratedTestDb,
   type TraceEntryRow,
 } from "@tabductor/db";
+import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import { seedWorkflow } from "@tabductor/engine";
 import { AllowAllGate, type PolicyGate } from "@tabductor/policy";
 import {

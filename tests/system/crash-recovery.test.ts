@@ -1,7 +1,8 @@
 import { afterEach, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { newId } from "@tabductor/core";
-import { createMigratedTestDb, runs, type MigratedTestDb } from "@tabductor/db";
+import { runs } from "@tabductor/db";
+import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import { ENGINE_RESTART, RUN_FAILED, seedWorkflow } from "@tabductor/engine";
 import {
   eventsOfType,
