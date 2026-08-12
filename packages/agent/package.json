@@ -14,7 +14,12 @@
     "@ai-sdk/openai": "^4.0.37",
     "@tabductor/browser": "workspace:*",
     "@tabductor/core": "workspace:*",
+    "@tabductor/db": "workspace:*",
+    "@tabductor/engine": "workspace:*",
+    "@tabductor/policy": "workspace:*",
+    "@tabductor/telemetry": "workspace:*",
     "ai": "^7.0.59",
+    "drizzle-orm": "^0.44.0",
     "zod": "^3.25.0"
   },
   "devDependencies": {

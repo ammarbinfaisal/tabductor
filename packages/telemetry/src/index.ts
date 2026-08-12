@@ -11,6 +11,7 @@ export type { Telemetry, TelemetryConfig } from "./init.js";
 export {
   createMetrics,
   type FireResult,
+  type LlmDirection,
   type Metrics,
   type PolicyCheck,
   type ResourceLimit,

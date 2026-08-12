@@ -1,5 +1,51 @@
 # S4b — Agent loop, tool registry, AgentExecutor (the browser node goes live)
 
+> **Built, with deviations from the deliverable below, each argued at its site.**
+> (1) **The AI SDK rejects an empty `messages` array even with a populated `system`** —
+> discovered live, not in replay (replay never inspects the array's content, only its
+> length). `loop.ts` now seeds `messages` with one synthetic `{role:"user", content:"Begin."}`
+> kickoff turn instead of `[]`; every transcript's per-turn message count is `1 + 2*step`
+> rather than `2*step`. Argued in `loop.ts`'s own header comment. (2) **Tool names cross the
+> wire sanitized, not as designed** — both providers' function-name field is constrained to
+> `^[a-zA-Z0-9_-]+$` and rejects the dotted convention this whole design doc uses
+> (`page.goto`, `mcp.imagegen.create`, …); another live-only discovery (replay never touches a
+> provider's schema validator). `llm-live.ts` now maps `.` ↔ `__` at exactly the one place a
+> name crosses into a provider tool definition and back on the way out — the registry's own
+> names in `tools.ts` are untouched, and every trace/doc/system-test string still reads
+> `page.goto`. (3) **`emitIfNew` dedupe is a host-side mechanism built here, not borrowed** —
+> `ctx.emitIfNew` (§12) does not exist before S6c, so `emit(type, packet, {dedupeKey})`'s
+> host half (`executor.ts`'s `makeEmitFn`) claims the key in `task_state` (already-migrated,
+> unused until now) via an atomic unique insert *before* publishing and releases the claim if
+> publishing then fails validation — a corrected retry within the same run's step budget can
+> still emit under that key, and a genuinely duplicate attempt (a scheduler re-fire, S6's own
+> future compiled loop) never gets past the claim. (4) **`AgentExecutor` takes an `llmFor`
+> factory, not a prebuilt `Llm`** — tracing is per-run (S4a's `withTrace` needs *that* run's
+> recorder) and replay position is per-run in tests, so a single shared client can't do either;
+> `llmFor({trace, task})` builds one per run, and the `task` parameter (unused by
+> `apps/engine/src/main.ts`, which serves every task from the one live provider) exists so a
+> test rig can route two different agent tasks to two different fixtures — the milestone
+> test's Scrape and Poster. (5) **The composition root resolves its endpoint by reading the
+> oldest `cdp_endpoints` row at boot**, not from a declared id — there is no per-task/per-user
+> endpoint model yet (same gap S3b's `ScriptedBrowserExecutor` doc note names), and production
+> wiring, unlike a test rig, has no config file to declare one in; zero rows withholds the `ai`
+> executor for the same reason a missing key does (`apps/engine/src/main.ts`'s own comment
+> argues this in place). (6) **Live testing changed which canonical-flow fixture is
+> recorded vs. hand-authored, per-flow, exactly per this doc's own escape clause** — see
+> `tests/system/fixtures/transcripts/README.md` for the full table; short version: both
+> `canonical-fake-tweets` and `network-tools` were recorded live against OpenAI (`gpt-5.2`)
+> and both runs succeeded end-to-end, but the canonical recording called `page.extract`
+> immediately after `page.goto` with no `page.waitFor` between them — safe live (the model's
+> own round-trip latency gives the page's async XHR time to settle) but a real race under
+> `replayLlm`'s near-zero latency, so it was hand-authored instead (with an explicit
+> `page.waitFor` the live model didn't need but a replay does); `network-tools`'s recording
+> included its own `page.waitFor` and replays cleanly, so it stayed exactly as recorded.
+> `emit-validation-retry`, `step-budget`, and the two `milestone-*` fixtures were hand-authored
+> by design, not as a fallback — each names a scenario (submit a packet known-bad on purpose;
+> never call `done`; two runs of the identical script, byte-for-byte, so `emitIfNew` is what's
+> under test and not the model's creativity) that a live prompt cannot produce without
+> prompting the model to sabotage its own task, which tests the prompt, not the loop. No open
+> items.
+
 You are implementing subphase S4b. Read, in order:
 1. This file (authoritative).
 2. `docs/impl-phases.md` — Phase 4 (tool registry, agent loop, structured emit bullets) and

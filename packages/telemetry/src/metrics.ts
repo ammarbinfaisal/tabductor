@@ -20,6 +20,8 @@ export type ShareViewResult = "ok" | "unknown" | "revoked" | "rate_limited";
 export type ShareAssetOutcome = "ok" | "denied" | "not_found";
 export type PolicyCheck = "navigation" | "action" | "network_read" | "mcp_call";
 export type ResourceLimit = "max_tabs" | "max_visits" | "max_wall_ms";
+/** Which side of one `Llm.complete` call a token count belongs to (§17.2 catalogue). */
+export type LlmDirection = "in" | "out";
 
 export type Metrics = {
   /** How long an event waited in the outbox before a dispatcher delivered it. */
@@ -76,6 +78,18 @@ export type Metrics = {
    * fire from the same `session.ts` call sites.
    */
   resourceLimitAborts: { add: (labels: { limit: ResourceLimit }) => void };
+  /**
+   * S4b: every `Llm.complete` call, live or recorded (never replay — replay touches no
+   * provider and spends nothing). `model` and `direction` are the only labels, per §17.2's
+   * bounded-label-set rule; token counts themselves carry no prompt/completion content.
+   */
+  llmTokens: { add: (count: number, labels: { model: string; direction: LlmDirection }) => void };
+  /**
+   * Priced from the same call, via the adapter's own model→price table (packages/agent) —
+   * `kind`/`mode` are the task's, constant `browser`/`ai` until S5a's discriminants land,
+   * passed through rather than invented (mirrors `engine.ts`'s `recordOutcome` precedent).
+   */
+  llmCostUsd: { add: (usd: number, labels: { model: string; kind: string; mode: string }) => void };
 };
 
 export function createMetrics(meter: Meter): Metrics {
@@ -97,6 +111,8 @@ export function createMetrics(meter: Meter): Metrics {
   const browserQueueWait = meter.createHistogram("browser_queue_wait_seconds", { unit: "s" });
   const browserQueueRejected = meter.createCounter("browser_queue_rejected_total");
   const resourceLimitAborts = meter.createCounter("resource_limit_aborts_total");
+  const llmTokens = meter.createCounter("llm_tokens_total");
+  const llmCostUsd = meter.createCounter("llm_cost_usd_total", { unit: "USD" });
 
   return {
     outboxDispatchLag: { record: (seconds) => outboxDispatchLag.record(seconds) },
@@ -142,5 +158,7 @@ export function createMetrics(meter: Meter): Metrics {
       add: ({ endpointId }) => browserQueueRejected.add(1, { endpoint_id: endpointId }),
     },
     resourceLimitAborts: { add: (labels) => resourceLimitAborts.add(1, { ...labels }) },
+    llmTokens: { add: (count, labels) => llmTokens.add(count, { ...labels }) },
+    llmCostUsd: { add: (usd, labels) => llmCostUsd.add(usd, { ...labels }) },
   };
 }

@@ -7,7 +7,9 @@ import type {
   ExtractSpec,
   NavigationRequest,
   NetworkBody,
+  NetworkHeaders,
   NetworkHooks,
+  NetworkParts,
   NetworkRecord,
   Page,
 } from "./driver.js";
@@ -44,6 +46,24 @@ export type NetworkListRecord = NetworkRecord & { index: number };
 
 export type NetworkListResult = { records: NetworkListRecord[]; total: number };
 
+/** §9 step 3's four readable parts of one network record. */
+export const NETWORK_READ_PARTS = [
+  "request_body",
+  "response_body",
+  "request_headers",
+  "response_headers",
+] as const;
+export type NetworkReadPart = (typeof NETWORK_READ_PARTS)[number];
+
+/** One key per part actually requested — `network.read` never invents a key the caller did
+ * not ask for, so a partial-parts request reads as a partial-keys result. */
+export type NetworkReadResult = {
+  request_body?: NetworkBody | null;
+  response_body?: NetworkBody;
+  request_headers?: NetworkHeaders;
+  response_headers?: NetworkHeaders;
+};
+
 export type NetworkApi = {
   /**
    * Filtered by substring match on `url` — not glob — because a substring check is the one
@@ -53,6 +73,14 @@ export type NetworkApi = {
    */
   list: (opts?: { urlPattern?: string; limit?: number }) => Promise<NetworkListResult>;
   body: (index: number) => Promise<Buffer>;
+  /**
+   * §9 step 3: each requested part is gated through `PolicyGate.checkNetworkRead`
+   * individually (not once for the whole call) — the permissive verdict today is a formality,
+   * but the per-part call site is what lets S7 turn "headers denied by default" into a policy
+   * change instead of a tool-shape change. Header values cross `gate.redact` before they
+   * leave this function (identity today, same reason).
+   */
+  read: (index: number, parts: NetworkReadPart[]) => Promise<NetworkReadResult>;
 };
 
 export type ResourceLimits = {
@@ -127,7 +155,7 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
   // (the initial page, any `openTab()` pages, and popups either spawns), so indices stay
   // dense and continuing across all of them rather than resetting per tab. ----
   const networkRecords: NetworkListRecord[] = [];
-  const bodyFetchers = new Map<number, () => Promise<NetworkBody>>();
+  const partsOf = new Map<number, NetworkParts>();
   /** Connects a driver-level record (identity, no index) to the slot this session gave it. */
   const indexOf = new WeakMap<NetworkRecord, number>();
 
@@ -141,13 +169,13 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
       // gets one row per request, written once there is something worth more than a request
       // line to persist.
     },
-    async onSettled(record, body) {
+    async onSettled(record, parts) {
       const index = indexOf.get(record);
       if (index === undefined) return; // Cannot happen — `onStart` always precedes `onSettled`.
       const entry = networkRecords[index]!;
       entry.status = record.status;
       entry.timings = record.timings;
-      bodyFetchers.set(index, body);
+      partsOf.set(index, parts);
       await trace.record("network", {
         index,
         method: entry.method,
@@ -206,8 +234,8 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
       });
     }
 
-    const fetcher = bodyFetchers.get(index);
-    if (!fetcher) {
+    const parts = partsOf.get(index);
+    if (!parts) {
       throw new AppError("network_body_unavailable", `no response body for network record ${index}`, {
         details: { index },
       });
@@ -215,7 +243,7 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
 
     const started = Date.now();
     try {
-      const { bytes, mime } = await fetcher();
+      const { bytes, mime } = await parts.responseBody();
       await trace.record(
         "action",
         {
@@ -237,6 +265,95 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
         action: "network.body",
         index,
         url: record.url,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+        duration_ms: Date.now() - started,
+      });
+      throw err;
+    }
+  };
+
+  /**
+   * §9 step 3, S4b's `network.read` tool. One `checkNetworkRead` per requested part — never
+   * one verdict for the whole call — so a future policy (S7: "headers denied by default")
+   * changes which parts a task gets, not the tool's shape or call pattern. Header values pass
+   * through `gate.redact` before they leave this function; body bytes do not (redaction's
+   * documented job is credential-shaped header values, §9 step 4), but the call site exists
+   * for both so a Phase 7 body-redaction rule needs no new plumbing either.
+   */
+  const networkRead = async (
+    index: number,
+    parts: NetworkReadPart[],
+  ): Promise<NetworkReadResult> => {
+    const record = networkRecords[index];
+    if (!record) {
+      throw new AppError("network_index_invalid", `no network record at index ${index}`, {
+        details: { index },
+      });
+    }
+    const bag = partsOf.get(index);
+    if (!bag) {
+      throw new AppError("network_body_unavailable", `no parts available for network record ${index}`, {
+        details: { index },
+      });
+    }
+
+    const result: NetworkReadResult = {};
+    const started = Date.now();
+    try {
+      for (const part of parts) {
+        const headerPart = part === "request_headers" || part === "response_headers";
+        const verdict = await gate.checkNetworkRead(
+          taskCtx,
+          { index, url: record.url },
+          headerPart ? { headers: true } : { body: true },
+        );
+        metrics?.policyVerdicts.add({ check: "network_read", result: verdict.allow ? "allow" : "deny" });
+        if (!verdict.allow) {
+          await trace.record("policy_denied", {
+            check: "network_read",
+            index,
+            url: record.url,
+            part,
+            rule: verdict.rule,
+          });
+          throw new AppError("action_denied", `network.read(${part}) denied by ${verdict.rule}`, {
+            details: { action: "network.read", index, part, rule: verdict.rule },
+          });
+        }
+
+        switch (part) {
+          case "request_headers":
+            result.request_headers = gate.redact(taskCtx, { headers: await bag.requestHeaders() }).headers;
+            break;
+          case "response_headers":
+            result.response_headers = gate.redact(taskCtx, { headers: await bag.responseHeaders() }).headers;
+            break;
+          case "request_body":
+            result.request_body = await bag.requestBody();
+            break;
+          case "response_body":
+            result.response_body = await bag.responseBody();
+            break;
+        }
+      }
+
+      await trace.record(
+        "action",
+        { action: "network.read", index, url: record.url, parts, ok: true, duration_ms: Date.now() - started },
+        // Response body bytes ride the `network` storage category, same as `network.body`'s —
+        // headers stay inline in the action row, small enough that a blob would be overkill.
+        result.response_body
+          ? { kind: "network", bytes: result.response_body.bytes, mime: result.response_body.mime }
+          : undefined,
+      );
+      return result;
+    } catch (err) {
+      await trace.record("action", {
+        action: "network.read",
+        index,
+        url: record.url,
+        parts,
         ok: false,
         error: err instanceof Error ? err.message : String(err),
         duration_ms: Date.now() - started,
@@ -368,6 +485,7 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
         return result;
       }),
 
+    scroll: (direction) => act("scroll", { direction }, () => raw.scroll(direction)),
     screenshot: () =>
       act("screenshot", {}, () => raw.screenshot(), {
         blob: (bytes) => ({ kind: "screenshots", bytes, mime: "image/png" }),
@@ -398,7 +516,7 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
 
   return {
     page,
-    network: { list: networkList, body: networkBody },
+    network: { list: networkList, body: networkBody, read: networkRead },
     openTab,
     resolveAnchor: (anchor) => anchorMap.get(anchor),
     async close() {

@@ -1,8 +1,12 @@
+import { createAgentExecutor, createLlm, providerFromEnv } from "@tabductor/agent";
+import { createEndpointPool, createMinioBlobStore, playwrightDriver } from "@tabductor/browser";
 import { createDispatcher } from "@tabductor/bus";
 import { loadConfig } from "@tabductor/core";
-import { createDb } from "@tabductor/db";
-import { createEngine } from "@tabductor/engine";
+import { cdpEndpoints, createDb, type Db } from "@tabductor/db";
+import { createEngine, StubExecutor, type ExecutorRegistry } from "@tabductor/engine";
+import { AllowAllGate } from "@tabductor/policy";
 import { initTelemetry } from "@tabductor/telemetry/init";
+import { asc } from "drizzle-orm";
 
 /**
  * The engine process: the composition root that wires the packages together and runs them
@@ -22,6 +26,77 @@ const telemetry = await initTelemetry({ service: "tabductor-engine" });
 const log = telemetry.logger;
 const handle = createDb(config.DATABASE_URL);
 
+/**
+ * The first browser node executor this process can run (S4b): `AgentExecutor` under mode
+ * `ai`. Two things gate whether it gets registered at all, both checked once at boot rather
+ * than per run:
+ *
+ * 1. **A live LLM key.** `providerFromEnv` is the same selection rule the schema compiler
+ *    uses (`schema-generator-ai.ts`) — Anthropic wins if both are set. With neither set,
+ *    registering the executor anyway would hand the engine a mode it can dispatch runs to but
+ *    can never actually call a model for; every one of those runs would fail deep inside the
+ *    loop's first `llm.complete`, indistinguishably from a real outage. A run failing
+ *    `no_executor` up front (the engine's own existing behaviour for an unregistered mode) is
+ *    the honest failure — it says "not configured," not "broke."
+ * 2. **A CDP endpoint to drive.** There is no per-task or per-user endpoint assignment model
+ *    yet (S3b's `ScriptedBrowserExecutor` doc note says the same thing) — a real deployment
+ *    manages `cdp_endpoints` rows through the control plane, not through engine config, so
+ *    the *composition root* has no endpoint to declare up front the way a test rig does.
+ *    Reading the oldest row at boot is a stopgap for "the endpoint this single-user install
+ *    talks to" until a later subphase gives tasks their own; with zero rows the executor is
+ *    withheld for the identical reason as a missing key — nothing to run it against.
+ */
+async function agentExecutorEntry(db: Db): Promise<[mode: string, executor: ReturnType<typeof createAgentExecutor>] | undefined> {
+  const live = providerFromEnv({ ANTHROPIC_API_KEY: config.ANTHROPIC_API_KEY, OPENAI_API_KEY: config.OPENAI_API_KEY });
+  if (!live) {
+    log.info("no ANTHROPIC_API_KEY/OPENAI_API_KEY configured — mode 'ai' has no executor", {});
+    return undefined;
+  }
+  const [endpointRow] = await db.select({ id: cdpEndpoints.id }).from(cdpEndpoints).orderBy(asc(cdpEndpoints.createdAt)).limit(1);
+  if (!endpointRow) {
+    log.info("no cdp_endpoints row configured — mode 'ai' has no executor", {});
+    return undefined;
+  }
+
+  const pool = createEndpointPool({ db, driver: playwrightDriver, metrics: telemetry.metrics, logger: log });
+  const blobs = createMinioBlobStore({
+    endpoint: config.BLOB_ENDPOINT,
+    accessKey: config.BLOB_ACCESS_KEY,
+    secretKey: config.BLOB_SECRET_KEY,
+    bucket: config.BLOB_BUCKET,
+  });
+  // `AllowAllGate` reads `HARNESS_NAV_ALLOWLIST` from config itself when no allowlist is
+  // passed (impl-phases §0.1) — the real evaluator (Phase 7) replaces this construction, not
+  // this call site.
+  const gate = new AllowAllGate();
+
+  const executor = createAgentExecutor({
+    pool,
+    gate,
+    blobs,
+    db,
+    defaultEndpointId: endpointRow.id,
+    metrics: telemetry.metrics,
+    // One live provider serves every task — `task` is here for the test rig's benefit, not
+    // this composition root's; see `AgentExecutorDeps.llmFor`.
+    llmFor: ({ trace }) =>
+      createLlm("live", {
+        provider: live.provider,
+        apiKey: live.apiKey,
+        trace,
+        metrics: telemetry.metrics,
+        costLabels: { kind: "browser", mode: "ai" },
+      }),
+  });
+  return ["ai", executor];
+}
+
+const agentEntry = await agentExecutorEntry(handle.db);
+const executors: ExecutorRegistry = {
+  stub: StubExecutor,
+  ...(agentEntry ? { [agentEntry[0]]: agentEntry[1] } : {}),
+};
+
 const dispatcher = createDispatcher(handle, {
   logger: log,
   tracer: telemetry.tracer,
@@ -30,6 +105,7 @@ const dispatcher = createDispatcher(handle, {
 const engine = createEngine({
   db: handle.db,
   dispatcher,
+  executors,
   logger: log,
   tracer: telemetry.tracer,
   metrics: telemetry.metrics,
@@ -46,6 +122,7 @@ await dispatcher.start();
 log.info("engine started", {
   database: config.DATABASE_URL.replace(/\/\/[^@]*@/, "//"),
   telemetry: telemetry.enabled ? "exporting" : "disabled",
+  aiExecutor: agentEntry ? "registered" : "not registered",
 });
 
 /**

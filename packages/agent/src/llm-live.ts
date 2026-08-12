@@ -39,12 +39,33 @@ export type LiveLlmOptions = {
 
 const toolCallArgsSchema = z.record(z.string(), z.unknown());
 
+/**
+ * Every S4b tool is named `page.goto`/`network.read`/… — the dotted convention the whole
+ * design doc uses (`mcp.imagegen.create`, `assets.write`, …) — but both providers' function-
+ * name field is constrained to `^[a-zA-Z0-9_-]+$` and rejects a literal `.` outright (a live-
+ * only failure: replay never sends a name through either provider's validator, so nothing
+ * before this caught it). The registry's names stay exactly as designed; only the wire
+ * encoding changes, and only in this file, which is the one place a name crosses into a
+ * provider's schema. `__` is the substitution because no tool in this codebase's registries
+ * uses it, so the mapping is unambiguously reversible in both directions.
+ */
+const WIRE_SEP = "__";
+const toWireName = (name: string): string => name.replaceAll(".", WIRE_SEP);
+const fromWireName = (name: string): string => name.replaceAll(WIRE_SEP, ".");
+
 function toAiTools(tools: ToolDef[]): ToolSet {
   const out: ToolSet = {};
   for (const t of tools) {
-    out[t.name] = tool({ description: t.description, inputSchema: t.parameters });
+    out[toWireName(t.name)] = tool({ description: t.description, inputSchema: t.parameters });
   }
   return out;
+}
+
+/** The model id a call will actually hit — `opts.model` if given, else the provider's
+ * default. Exposed so callers that only know `{provider, model?}` (the metrics label, the
+ * price table) don't have to duplicate `DEFAULT_MODEL`'s lookup themselves. */
+export function resolveModelId(opts: { provider: LlmProvider; model?: string | undefined }): string {
+  return opts.model ?? DEFAULT_MODEL[opts.provider];
 }
 
 export function liveLlm(opts: LiveLlmOptions): Llm {
@@ -60,15 +81,16 @@ export function liveLlm(opts: LiveLlmOptions): Llm {
       });
 
       const toolCalls = result.toolCalls.map((tc) => {
+        const name = fromWireName(tc.toolName);
         const parsed = toolCallArgsSchema.safeParse(tc.input);
         if (!parsed.success) {
           throw new AppError(
             "llm_tool_call_invalid",
-            `tool call "${tc.toolName}" returned non-object arguments`,
-            { details: { tool: tc.toolName, issues: parsed.error.issues } },
+            `tool call "${name}" returned non-object arguments`,
+            { details: { tool: name, issues: parsed.error.issues } },
           );
         }
-        return { id: tc.toolCallId, name: tc.toolName, args: parsed.data };
+        return { id: tc.toolCallId, name, args: parsed.data };
       });
 
       return {
@@ -83,7 +105,7 @@ export function liveLlm(opts: LiveLlmOptions): Llm {
 }
 
 function languageModel(opts: LiveLlmOptions): LanguageModel {
-  const id = opts.model ?? DEFAULT_MODEL[opts.provider];
+  const id = resolveModelId(opts);
   switch (opts.provider) {
     case "anthropic":
       return createAnthropic({ apiKey: opts.apiKey })(id);

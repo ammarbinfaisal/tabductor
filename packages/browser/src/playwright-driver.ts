@@ -15,6 +15,7 @@ import type {
   ExtractSpec,
   LocatorStrategy,
   NavigationHook,
+  NetworkBody,
   NetworkHooks,
   NetworkRecord,
   Page,
@@ -214,6 +215,14 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
   const attachNetwork = (page: PwPage, hooks: NetworkHooks): void => {
     const pending = new WeakMap<PwRequest, NetworkRecord>();
 
+    // A GET (or any request Chromium sent with no body) has nothing for `postDataBuffer` to
+    // return — `null` there is "no body", not "not read yet", so it maps straight through.
+    const requestBodyOf = async (req: PwRequest): Promise<NetworkBody | null> => {
+      const data = req.postDataBuffer();
+      if (!data) return null;
+      return { bytes: data, mime: req.headers()["content-type"] ?? "application/octet-stream" };
+    };
+
     page.on("request", (req) => {
       const record: NetworkRecord = {
         method: req.method(),
@@ -239,10 +248,15 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
       record.timings.endedAt = Date.now();
       record.timings.durationMs = record.timings.endedAt - record.timings.startedAt;
       Promise.resolve(
-        hooks.onSettled?.(record, async () => ({
-          bytes: await res.body(),
-          mime: res.headers()["content-type"] ?? "application/octet-stream",
-        })),
+        hooks.onSettled?.(record, {
+          requestHeaders: () => req.allHeaders(),
+          requestBody: () => requestBodyOf(req),
+          responseHeaders: () => res.allHeaders(),
+          responseBody: async () => ({
+            bytes: await res.body(),
+            mime: res.headers()["content-type"] ?? "application/octet-stream",
+          }),
+        }),
       ).catch(() => undefined);
     });
 
@@ -251,14 +265,21 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
       if (!record) return;
       record.timings.endedAt = Date.now();
       record.timings.durationMs = record.timings.endedAt - record.timings.startedAt;
+      // Request-side accessors still answer for a failed request (the request itself went
+      // out); only the response half has nothing to read, ever.
+      const noResponse = <T>(): Promise<T> =>
+        Promise.reject(
+          new AppError("network_body_unavailable", `request to ${record.url} failed, no response body`, {
+            details: { url: record.url },
+          }),
+        );
       Promise.resolve(
-        hooks.onSettled?.(record, () =>
-          Promise.reject(
-            new AppError("network_body_unavailable", `request to ${record.url} failed, no response body`, {
-              details: { url: record.url },
-            }),
-          ),
-        ),
+        hooks.onSettled?.(record, {
+          requestHeaders: () => req.allHeaders(),
+          requestBody: () => requestBodyOf(req),
+          responseHeaders: noResponse,
+          responseBody: noResponse,
+        }),
       ).catch(() => undefined);
     });
   };
@@ -427,6 +448,10 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
     queryAll: (selector, fields) => extract(pwPage, selector, fields),
 
     perceive: (opts) => perceive(pwPage, opts),
+
+    async scroll(direction) {
+      await pwPage.keyboard.press(direction === "down" ? "PageDown" : "PageUp");
+    },
 
     screenshot: () => pwPage.screenshot({ type: "png" }),
 

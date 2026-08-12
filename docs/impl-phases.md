@@ -46,11 +46,13 @@ inspector's scope or prerequisites changes.
 | S3b | Endpoint pool + DB leases, network observer, resource limits, ScriptedBrowserExecutor | **done** — migration `0009` |
 | U1.5 | Run inspector: trace timeline + screenshots + endpoint health (`/endpoints`) | **done** |
 | S4a | LLM adapter (live/record/replay over the AI SDK, two providers) + perception builder (`packages/agent`) | **done** |
-| S4b–S7, S5g, S5h, S8 | agent loop, asset, python compute, store+decision, compiler, policy, graph compiler | not started |
+| S4b | Agent loop + tool registry + structured emit + AgentExecutor wired in `apps/engine` + e2e milestone | **done** |
+| S5a–S7, S5g, S5h, S8 | asset, python compute, store+decision, compiler, policy, graph compiler | not started |
 
 What exists as code: `packages/{core,db,bus,engine,policy,telemetry,browser}` +
-`apps/{engine,web,testkit}` + `tests/system` — 163 tests in 38 files (one live-mode LLM
-smoke skips itself when no API key is set — CI never calls live). The whole workspace typechecks clean (`tsc`) and lints
+`apps/{engine,web,testkit}` + `tests/system` — 168 tests in 43 files (one live-mode LLM
+smoke skips itself when no API key is set — CI never calls live; a separate `tests/live-eval`
+suite runs outside the CI vitest projects, live-only, outcome assertions only). The whole workspace typechecks clean (`tsc`) and lints
 clean (`pnpm lint`). `docker compose up -d` brings up Postgres, applies migrations, and runs both
 the engine and the control plane on :3000; `docker compose up -d postgres` is the tests-only
 subset. Credentials are compiled in as defaults, so a clean checkout needs no environment. If

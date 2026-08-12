@@ -9,12 +9,15 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@tabductor/agent": "workspace:*",
+    "@tabductor/browser": "workspace:*",
     "@tabductor/bus": "workspace:*",
     "@tabductor/core": "workspace:*",
     "@tabductor/db": "workspace:*",
     "@tabductor/engine": "workspace:*",
     "@tabductor/policy": "workspace:*",
     "@tabductor/telemetry": "workspace:*",
+    "drizzle-orm": "^0.44.0",
     "tsx": "^4.19.0"
   },
   "devDependencies": {

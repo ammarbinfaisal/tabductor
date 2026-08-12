@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import { AppError } from "@tabductor/core";
 import type { TraceRecorder } from "@tabductor/browser";
+import type { Metrics } from "@tabductor/telemetry";
 import type { z } from "zod";
-import { liveLlm, providerFromEnv, type LlmProvider } from "./llm-live.js";
+import { liveLlm, providerFromEnv, resolveModelId, type LlmProvider } from "./llm-live.js";
+import { costUsd } from "./pricing.js";
 import { recordLlm, replayLlm } from "./transcript.js";
 
 /**
@@ -71,6 +73,37 @@ function withTrace(llm: Llm, trace: TraceRecorder | undefined): Llm {
   };
 }
 
+/**
+ * §17.2's `llm_tokens_total`/`llm_cost_usd_total` rows, counted here so every caller of
+ * `createLlm` gets them for free — the injected-meter shape every other package in this repo
+ * follows (`PolicyGate`, `TraceRecorder`). Replay is deliberately excluded: it spends nothing
+ * and calls no provider, so a dollar figure recorded against it would be a real number in a
+ * metric that means "money we spent" — worse than a metric with a hole in it for replay runs,
+ * which CI runs constantly. Live and record both metered identically, in `model`'s pricing.
+ */
+function withMetrics(
+  llm: Llm,
+  opts: { metrics: Metrics | undefined; model: string; costLabels: { kind: string; mode: string } | undefined },
+): Llm {
+  const { metrics, model, costLabels } = opts;
+  if (!metrics) return llm;
+  return {
+    async complete(req) {
+      const res = await llm.complete(req);
+      metrics.llmTokens.add(res.usage.in, { model, direction: "in" });
+      metrics.llmTokens.add(res.usage.out, { model, direction: "out" });
+      if (costLabels) {
+        metrics.llmCostUsd.add(costUsd(model, res.usage), {
+          model,
+          kind: costLabels.kind,
+          mode: costLabels.mode,
+        });
+      }
+      return res;
+    },
+  };
+}
+
 export type LlmMode = "live" | "record" | "replay";
 
 export type CreateLlmOptions = {
@@ -82,11 +115,17 @@ export type CreateLlmOptions = {
   fixturePath?: string;
   /** Injected like everywhere else in this codebase; absent means untraced, not broken. */
   trace?: TraceRecorder;
+  /** Injected like `trace`; absent means unmetered, not broken. */
+  metrics?: Metrics;
+  /** `llm_cost_usd_total`'s `{kind, mode}` labels — the calling task's, not this adapter's
+   * concern to know on its own. Omit to still get `llm_tokens_total` with no cost row. */
+  costLabels?: { kind: string; mode: string };
 };
 
 /** live/record share the transport; replay never touches the network at all. */
 export function createLlm(mode: LlmMode, opts: CreateLlmOptions): Llm {
   let base: Llm;
+  let model = opts.model ?? "";
   switch (mode) {
     case "live":
     case "record": {
@@ -95,6 +134,7 @@ export function createLlm(mode: LlmMode, opts: CreateLlmOptions): Llm {
           details: { mode },
         });
       }
+      model = resolveModelId({ provider: opts.provider, model: opts.model });
       const live = liveLlm({ provider: opts.provider, apiKey: opts.apiKey, model: opts.model });
       if (mode === "live") {
         base = live;
@@ -118,7 +158,9 @@ export function createLlm(mode: LlmMode, opts: CreateLlmOptions): Llm {
       break;
     }
   }
-  return withTrace(base, opts.trace);
+  const metered =
+    mode === "replay" ? base : withMetrics(base, { metrics: opts.metrics, model, costLabels: opts.costLabels });
+  return withTrace(metered, opts.trace);
 }
 
 export { liveLlm, providerFromEnv, type LlmProvider } from "./llm-live.js";

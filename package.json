@@ -10,6 +10,7 @@
     "lint": "eslint packages apps/engine && pnpm -F web lint",
     "test": "vitest run",
     "test:system": "vitest run --project system",
+    "test:live-eval": "vitest run -c vitest.live-eval.config.ts",
     "dev:engine": "tsx watch apps/engine/src/main.ts"
   },
   "devDependencies": {

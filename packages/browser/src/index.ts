@@ -11,7 +11,9 @@ export type {
   NavigationHook,
   NavigationRequest,
   NetworkBody,
+  NetworkHeaders,
   NetworkHooks,
+  NetworkParts,
   NetworkRecord,
   Page,
   PerceiveOptions,
@@ -32,9 +34,12 @@ export {
 } from "./trace.js";
 export {
   openRunSession,
+  NETWORK_READ_PARTS,
   type NetworkApi,
   type NetworkListRecord,
   type NetworkListResult,
+  type NetworkReadPart,
+  type NetworkReadResult,
   type ResourceLimits,
   type RunSession,
   type SessionDeps,

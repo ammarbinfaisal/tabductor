@@ -20,7 +20,8 @@
     "apps/*/src/**/*.ts",
     "apps/*/sites/**/*.ts",
     "tests/**/*.ts",
-    "vitest.config.ts"
+    "vitest.config.ts",
+    "vitest.live-eval.config.ts"
   ],
   // `apps/web` is a Next.js app: JSX, DOM lib, bundler resolution. It carries its own
   // tsconfig and is typechecked by `pnpm -F web typecheck`, which the root build runs.

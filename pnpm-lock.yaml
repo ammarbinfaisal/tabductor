@@ -74,6 +74,12 @@ importers:
 
   apps/engine:
     dependencies:
+      '@tabductor/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent
+      '@tabductor/browser':
+        specifier: workspace:*
+        version: link:../../packages/browser
       '@tabductor/bus':
         specifier: workspace:*
         version: link:../../packages/bus
@@ -92,6 +98,9 @@ importers:
       '@tabductor/telemetry':
         specifier: workspace:*
         version: link:../../packages/telemetry
+      drizzle-orm:
+        specifier: ^0.44.0
+        version: 0.44.7(@opentelemetry/api@1.9.1)(@types/pg@8.20.3)(pg@8.22.0)
       tsx:
         specifier: ^4.19.0
         version: 4.23.5
@@ -230,9 +239,24 @@ importers:
       '@tabductor/core':
         specifier: workspace:*
         version: link:../core
+      '@tabductor/db':
+        specifier: workspace:*
+        version: link:../db
+      '@tabductor/engine':
+        specifier: workspace:*
+        version: link:../engine
+      '@tabductor/policy':
+        specifier: workspace:*
+        version: link:../policy
+      '@tabductor/telemetry':
+        specifier: workspace:*
+        version: link:../telemetry
       ai:
         specifier: ^7.0.59
         version: 7.0.59(zod@3.25.76)
+      drizzle-orm:
+        specifier: ^0.44.0
+        version: 0.44.7(@opentelemetry/api@1.9.1)(@types/pg@8.20.3)(pg@8.22.0)
       zod:
         specifier: ^3.25.0
         version: 3.25.76

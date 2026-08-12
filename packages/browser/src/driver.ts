@@ -88,6 +88,9 @@ export type Page = {
    * budgeted main text. One `evaluate`-style call, kept inside this driver rather than issued
    * as arbitrary page-JS from agent/generated code (§12's rule constrains *that*, not us). */
   perceive: (opts?: PerceiveOptions) => Promise<Perception>;
+  /** `page.scroll` (S4b): a keypress, not a JS scroll — `Page.PageDown/PageUp` moves the
+   * viewport the way a real user's keyboard would and needs no in-page `evaluate` at all. */
+  scroll: (direction: "up" | "down") => Promise<void>;
   screenshot: () => Promise<Buffer>;
   title: () => Promise<string>;
   url: () => string;
@@ -108,21 +111,38 @@ export type NetworkRecord = {
   timings: { startedAt: number; endedAt: number | null; durationMs: number | null };
 };
 
-/** What `NetworkHooks.onSettled` hands back for a request that got a response. */
+/** What a body-bearing accessor in `NetworkParts` hands back. */
 export type NetworkBody = { bytes: Buffer; mime: string };
+
+/** One header set, flattened to one value per name — good enough for the redaction and
+ * `network.read` use cases (§9 step 3); a page sending the same header twice is not a case
+ * worth a richer shape here. */
+export type NetworkHeaders = Record<string, string>;
+
+/**
+ * The four lazy accessors §9 step 3's `network.read(index, parts)` reads from — nothing here
+ * is fetched until asked, which is what keeps `network.list()` (§9 step 2) header/body-free.
+ * `requestBody` is `null` for a GET or any request with no body. Response accessors reject
+ * for a request that failed before a response existed (see `onSettled` below).
+ */
+export type NetworkParts = {
+  requestHeaders: () => Promise<NetworkHeaders>;
+  requestBody: () => Promise<NetworkBody | null>;
+  responseHeaders: () => Promise<NetworkHeaders>;
+  responseBody: () => Promise<NetworkBody>;
+};
 
 /**
  * Fired twice for a request that gets a response, once for one that doesn't. `onStart` fires
  * first, with `status: null` — §9 step 2 requires a pending request to already be listable,
  * so the record has to exist before its outcome does. `onSettled` fires once more, with the
  * *same* `record` reference now mutated in place (status/timings filled in), so a caller that
- * kept the reference from `onStart` sees the update without a second lookup. `body` resolves
- * the response body lazily — nothing here has read it yet — and rejects for a failed request,
- * which never gets one.
+ * kept the reference from `onStart` sees the update without a second lookup. `parts` resolves
+ * request/response headers and bodies lazily — nothing here has read any of them yet.
  */
 export type NetworkHooks = {
   onStart?: (record: NetworkRecord) => void | Promise<void>;
-  onSettled?: (record: NetworkRecord, body: () => Promise<NetworkBody>) => void | Promise<void>;
+  onSettled?: (record: NetworkRecord, parts: NetworkParts) => void | Promise<void>;
 };
 
 export type CreatePageOptions = {
