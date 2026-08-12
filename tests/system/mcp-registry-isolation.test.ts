@@ -41,6 +41,7 @@ const fakePage: Page = {
   probeTarget: async () => unused("page.probeTarget"),
   insertTextRaw: async () => unused("page.insertTextRaw"),
   perceive: async () => unused("page.perceive"),
+  upload: async () => unused("page.upload"),
   scroll: async () => unused("page.scroll"),
   screenshot: async () => unused("page.screenshot"),
   title: async () => unused("page.title"),
@@ -77,7 +78,16 @@ it("the browser (kind=browser) registry has no mcp.* tool", () => {
   // The positive control: every tool §4 says a browser node gets, present by name — a suite
   // that only ever checked the negative could pass against an accidentally-empty registry.
   expect(names).toEqual(
-    expect.arrayContaining(["page.goto", "page.click", "network.list", "network.read", "emit", "done", "fail"]),
+    expect.arrayContaining([
+      "page.goto",
+      "page.click",
+      "page.upload",
+      "network.list",
+      "network.read",
+      "emit",
+      "done",
+      "fail",
+    ]),
   );
 });
 
@@ -100,6 +110,6 @@ it("the asset (kind=asset) registry has no page.*/network.*/secrets.* tool", asy
   expect(names.some((n) => n.startsWith("secrets."))).toBe(false);
   // The positive control, mirroring the browser test above.
   expect(names).toEqual(
-    expect.arrayContaining(["assets.write", "assets.read", "mcp.fake.echo", "emit", "done", "fail"]),
+    expect.arrayContaining(["assets.write", "assets.read", "assets.render", "mcp.fake.echo", "emit", "done", "fail"]),
   );
 });

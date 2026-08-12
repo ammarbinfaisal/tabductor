@@ -1,3 +1,4 @@
+import { readAssetById } from "@tabductor/assets";
 import {
   createTraceRecorder,
   openRunSession,
@@ -14,10 +15,19 @@ import type { Db, TaskRow } from "@tabductor/db";
 import type { RunHandle, RunResult, TaskExecutor } from "@tabductor/engine";
 import type { PolicyGate } from "@tabductor/policy";
 import type { Metrics } from "@tabductor/telemetry";
-import { asNumber, asRecord, makeEmitFn, maxStepsOf, storageFlagsOf as defaultStorageFlagsOf, toRunResult, triggerInfoOf } from "./executor-shared.js";
+import {
+  asNumber,
+  asRecord,
+  makeEmitFn,
+  maxStepsOf,
+  storageFlagsOf as defaultStorageFlagsOf,
+  toRunResult,
+  triggerInfoOf,
+  userIdForTask,
+} from "./executor-shared.js";
 import type { Llm } from "./llm.js";
 import { runAgentLoop } from "./loop.js";
-import { buildToolRegistry } from "./tools.js";
+import { buildToolRegistry, type ReadAssetFn } from "./tools.js";
 
 /**
  * `AgentExecutor`: composes the tool registry + loop behind the engine's executor contract
@@ -117,7 +127,15 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
         const [emits, trigger] = await Promise.all([handle.declaredEmits(), triggerInfoOf(db, handle)]);
         const emit = makeEmitFn({ db, taskId: handle.task.id, handleEmit: handle.emit, trace });
         const llm = llmFor({ trace, task: handle.task });
-        const tools = buildToolRegistry({ session, emit });
+        // Lazy, memoized: most browser runs never call `page.upload`, so the `userIdForTask`
+        // join only happens for the runs that actually need it — unlike the asset executor,
+        // which always needs the join anyway (its MCP server lookup).
+        let userIdPromise: Promise<string> | undefined;
+        const readAsset: ReadAssetFn = async (assetId) => {
+          userIdPromise ??= userIdForTask(db, handle.task.workflowVersionId);
+          return readAssetById({ db, blobs }, await userIdPromise, assetId);
+        };
+        const tools = buildToolRegistry({ session, emit, readAsset });
 
         const result = await runAgentLoop({
           llm,

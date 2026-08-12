@@ -507,6 +507,18 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
 
     perceive: (opts) => perceive(pwPage, opts),
 
+    // `setInputFiles({name, mimeType, buffer})` — Playwright's own in-memory upload path, no
+    // temp file created or cleaned up by this driver (S5f deliverable 1).
+    async upload(selector, file) {
+      await pwPage
+        .locator(selector)
+        .first()
+        .setInputFiles(
+          { name: file.name, mimeType: file.mimeType, buffer: file.bytes },
+          { timeout: DEFAULT_TIMEOUT_MS },
+        );
+    },
+
     async scroll(direction) {
       await pwPage.keyboard.press(direction === "down" ? "PageDown" : "PageUp");
     },

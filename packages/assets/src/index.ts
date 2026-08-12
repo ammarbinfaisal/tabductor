@@ -1,5 +1,8 @@
 export { ASSET_PATH_INVALID, normalizeAssetPath } from "./paths.js";
 export { checkWriteGrant } from "./grants.js";
+// S5f: the non-tool-shaped read path `page.upload` needs — an asset ref (`{asset_id, path,
+// mime, sha256}`) in, raw bytes out, no LLM-facing truncation or wrapping.
+export { readAssetById, type ReadAssetDeps, type ResolvedAsset } from "./read.js";
 export {
   buildAssetToolRegistry,
   type AssetTool,

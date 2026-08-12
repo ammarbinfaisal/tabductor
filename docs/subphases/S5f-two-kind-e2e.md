@@ -1,5 +1,73 @@
 # S5f — Two-kind e2e: browser → asset (MCP + LaTeX) → browser upload (Phase 5 exit)
 
+> **Built, with deviations.** `page.upload(anchor, assetRef)` on the browser tool registry
+> (`packages/agent/src/tools.ts`), backed by a new `Page.upload` driver primitive
+> (`packages/browser/src/driver.ts`/`playwright-driver.ts`, Playwright's `setInputFiles` with
+> an in-memory buffer — no temp file) traced by name/mime/size only (`session.ts`, the same
+> "count or length, not content" rule `type`/`queryAll` already follow). `assets.render` is
+> now wired into `buildAssetToolRegistry` (`packages/agent/src/asset-tools.ts`), the one place
+> this subphase touches the asset registry, per the spec. `fake-gram`
+> (`apps/testkit/sites/server.ts`) gained a file-upload form and a hand-rolled
+> `multipart/form-data` parser (no new dependency) that records the uploaded bytes' sha256
+> alongside `login`/`post` in the existing submissions log. The e2e itself is
+> `tests/system/two-kind-e2e.test.ts` (3 tests) + `tests/system/two-kind-e2e-support.ts` (a
+> new rig — neither `agent-support.ts` nor `mcp-support.ts` composes a browser *and* an asset
+> executor on one engine, and bending either's single-kind contract seemed worse than one more
+> file) + three hand-authored transcripts (`two-kind-scrape/report/upload.jsonl`, no live LLM
+> key in this environment, documented in `fixtures/transcripts/README.md`).
+>
+> **A real S5a–S5e gap, fixed at its source:** `page.upload` needs to resolve an asset ref
+> (`{asset_id, path, mime, sha256}`, a packet field) to raw bytes, and no such read path
+> existed — `packages/assets/src/tools.ts`'s `assets.read` is LLM-facing (text-only,
+> truncated, wrapped as untrusted-data) and `render.ts`'s `readCurrentAssetBytes` is private
+> and path-keyed, not ref-keyed. Added `readAssetById` (`packages/assets/src/read.ts`,
+> exported from the package index) — id-scoped by `(userId, assetId)`, untruncated, binary.
+> Also moved `userIdForTask` out of `asset-executor.ts` (private, S5c) into
+> `executor-shared.ts` (shared) — the browser executor now needs the identical
+> `workflow_version_id → user_id` join to scope `page.upload`'s asset lookup, and duplicating
+> a five-line query per executor was the wrong direction to go given the file already exists
+> to hold exactly this kind of "both kinds need this" logic.
+>
+> **Deviations:**
+> - **Every existing browser/asset transcript fixture needed a mechanical patch.**
+>   `replayLlm` checks the recorded and requested tool-name *sets* for exact equality (sorted,
+>   compared as JSON) — adding `page.upload` to the browser registry and `assets.render` to
+>   the asset registry meant every transcript recorded before this subphase (`canonical-fake-
+>   tweets.jsonl`, `emit-validation-retry.jsonl`, `milestone-poster.jsonl`, `milestone-
+>   scrape.jsonl`, `network-tools.jsonl`, `step-budget.jsonl`, `mcp-echo.jsonl`, `mcp-
+>   budget.jsonl`, `mcp-timeout.jsonl`, `mcp-credential.jsonl`) would otherwise fail replay
+>   with `llm_replay_diverged` the instant this subphase's tool landed. Patched all ten with a
+>   script that appends the placeholder tool entry to every recorded turn's `tools` array —
+>   content-neutral (no `messages`/`toolCalls`/`args` touched), verified by re-running the
+>   full S4/S5 regression suite green.
+> - **Replay-determinism is checked on *normalized* PDF content, not raw `sha256`.**
+>   `apps/renderer/src/sandbox.ts`'s own comment on `-Z deterministic-mode` says plainly that
+>   tectonic still mints a fresh document `/ID` per compile even with it on — S5e's own
+>   `latex-renderer.test.ts` happy-path test already asserts byte-stability only after
+>   `normalizePdfBytes` for exactly this reason. Two independent full runs of this e2e
+>   therefore have **different** raw asset `sha256`s (expected S5e behavior, not a bug) and
+>   **identical** `normalizePdfBytes`-normalized content; the test asserts the latter and
+>   documents the former rather than silently weakening "byte-identical" to something it never
+>   was. The single-run byte-match assertion (fake-gram's recorded sha256 equals the asset's
+>   own, real, un-normalized sha256) is unaffected — that comparison is within one render, not
+>   across two.
+> - **"The PDF is a valid PDF, non-zero page count" is a hand-rolled heuristic, not a PDF
+>   library** (house rule: no new deps, and none of this workspace's existing dependencies
+>   parse PDF). Verified empirically against a real render from this subphase's own renderer
+>   rig that tectonic's page objects live inside compressed `/Type/ObjStm` streams — `/Type
+>   /Page` never appears as plain text — so `isValidPdfWithPages`/`countPdfPages`
+>   (`two-kind-e2e-support.ts`) inflate every `stream`…`endstream` region with Node's built-in
+>   `zlib` and search the concatenated result. A count heuristic, not a structural parse (no
+>   xref/object-graph walk) — proportionate to what the test needs to prove.
+> - **This file's own "Do NOT git commit" instruction (below) was superseded by the run's
+>   orchestrator instructions, which asked for a commit on this worktree branch.** Followed
+>   the orchestrator; noting the conflict plainly rather than silently picking one.
+>
+> Registries stayed disjoint through the whole flow: no `mcp.*`/`assets.*` was added to the
+> browser registry, no `page.*`/`network.*` to the asset registry —
+> `mcp-registry-isolation.test.ts` (extended with `page.upload`/`assets.render` in its
+> positive-control assertions) is the proof.
+
 You are implementing subphase S5f. Read, in order:
 1. This file (authoritative).
 2. `docs/impl-phases.md` — Phase 5, S5f section (the phase's exit criterion).

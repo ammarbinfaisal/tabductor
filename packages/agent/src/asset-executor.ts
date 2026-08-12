@@ -1,14 +1,23 @@
+import type { RenderClient } from "@tabductor/assets";
 import { createTraceRecorder, type BlobStore, type StorageFlags, type TraceRecorder } from "@tabductor/browser";
 import { AppError } from "@tabductor/core";
-import { workflowVersions, workflows, type Db, type TaskRow } from "@tabductor/db";
+import type { Db, TaskRow } from "@tabductor/db";
 import type { RunHandle, RunResult, TaskExecutor } from "@tabductor/engine";
 import { createMcpRunClient, loadMcpServers, type McpToolInfo } from "@tabductor/mcp";
 import type { PolicyGate } from "@tabductor/policy";
 import type { SecretsBrokerHandle } from "@tabductor/secrets";
 import type { Metrics } from "@tabductor/telemetry";
-import { eq } from "drizzle-orm";
 import { buildAssetToolRegistry } from "./asset-tools.js";
-import { asNumber, asRecord, makeEmitFn, maxStepsOf, storageFlagsOf as defaultStorageFlagsOf, toRunResult, triggerInfoOf } from "./executor-shared.js";
+import {
+  asNumber,
+  asRecord,
+  makeEmitFn,
+  maxStepsOf,
+  storageFlagsOf as defaultStorageFlagsOf,
+  toRunResult,
+  triggerInfoOf,
+  userIdForTask,
+} from "./executor-shared.js";
 import type { Llm } from "./llm.js";
 import { runAgentLoop } from "./loop.js";
 
@@ -45,6 +54,13 @@ export type AssetExecutorDeps = {
    * caller of.
    */
   secrets?: Pick<SecretsBrokerHandle, "injectIntoMcpArg" | "redeemMcpHandle">;
+  /**
+   * S5f wiring: `assets.render`'s HTTP client to `apps/renderer` (S5e), passed straight
+   * through to `buildAssetToolRegistry`. Optional for the same reason it is optional there —
+   * a rig that never calls `assets.render` (most of S5c's own suite) needs no change here;
+   * `apps/engine/src/main.ts` is where production wiring supplies a real one.
+   */
+  render?: RenderClient;
 };
 
 /** `limits_json.mcp` (§13: "per-run call budget... and per-call timeout"). Absent fields let
@@ -61,36 +77,13 @@ function mcpLimitsOf(task: TaskRow): { maxCalls?: number; callTimeoutMs?: number
   };
 }
 
-/**
- * A `RunHandle` carries `task.workflow_version_id`, not `user_id` directly — asset tools and
- * the MCP server lookup are both scoped by user (§13.5, §13: "MCP servers... configured per
- * user"), so this is the one join every other per-user lookup in this codebase already makes
- * (`packages/secrets/src/broker.ts`'s `resolveSecretForRun`, same shape, one hop shorter here
- * since a task already carries its `workflow_version_id`).
- */
-async function userIdForTask(db: Db, workflowVersionId: string): Promise<string> {
-  const rows = await db
-    .select({ userId: workflows.userId })
-    .from(workflowVersions)
-    .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId))
-    .where(eq(workflowVersions.id, workflowVersionId))
-    .limit(1);
-  const row = rows[0];
-  if (!row) {
-    throw new AppError("asset_task_workflow_not_found", `no workflow found for workflow_version ${workflowVersionId}`, {
-      details: { workflowVersionId },
-    });
-  }
-  return row.userId;
-}
-
 function mapAssetError(err: unknown): RunResult {
   if (err instanceof AppError) return { ok: false, error: err.message };
   return { ok: false, error: err instanceof Error ? err.message : String(err) };
 }
 
 export function createAssetExecutor(deps: AssetExecutorDeps): TaskExecutor {
-  const { gate, blobs, db, llmFor, metrics, secrets } = deps;
+  const { gate, blobs, db, llmFor, metrics, secrets, render } = deps;
   const storageFlagsOf = deps.storageFlagsOf ?? defaultStorageFlagsOf;
 
   return {
@@ -134,6 +127,7 @@ export function createAssetExecutor(deps: AssetExecutorDeps): TaskExecutor {
         const tools = buildAssetToolRegistry({
           emit,
           assets: { db, blobs, userId, taskId: handle.task.id, runId: handle.run.id, ...(metrics ? { metrics } : {}) },
+          ...(render ? { render } : {}),
           mcp,
           grantedMcpTools,
         });

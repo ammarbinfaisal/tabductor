@@ -1,11 +1,11 @@
 import http from "node:http";
 import { once } from "node:events";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import type { AddressInfo } from "node:net";
 
 type Tweet = { id: string; text: string; createdAt: string };
-type Submission = { kind: "login" | "post"; fields: Record<string, string>; at: string };
+type Submission = { kind: "login" | "post" | "upload"; fields: Record<string, string>; at: string };
 
 export type Fixtures = { port: number; url: string; close: () => Promise<void> };
 
@@ -25,14 +25,77 @@ function sendJson(res: http.ServerResponse, data: unknown, status = 200): void {
   res.end(JSON.stringify(data));
 }
 
-async function readBody(req: http.IncomingMessage): Promise<Record<string, string>> {
+async function readRawBody(req: http.IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(chunk as Buffer);
-  const raw = Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks);
+}
+
+async function readBody(req: http.IncomingMessage): Promise<Record<string, string>> {
+  const raw = (await readRawBody(req)).toString("utf8");
   if (raw === "") return {};
   const type = req.headers["content-type"] ?? "";
   if (type.includes("application/json")) return JSON.parse(raw) as Record<string, string>;
   return Object.fromEntries(new URLSearchParams(raw));
+}
+
+/** One `multipart/form-data` file part — S5f deliverable 3. Hand-rolled rather than a new
+ * dependency (house rule: no new deps for this fixture): the browser's own multipart encoder
+ * (whichever engine — Playwright's `setInputFiles` + a real form submit, same as a user's own
+ * browser) is well-formed enough that a boundary-split plus a `Content-Disposition` regex is
+ * all a *test fixture* needs — this is not a general-purpose multipart parser, the same "crude
+ * is fine, this is a fixture" posture `apps/testkit`'s other hand-rolled bits take. */
+type MultipartFile = { fieldName: string; filename: string; contentType: string; data: Buffer };
+
+const CRLFCRLF = Buffer.from("\r\n\r\n");
+const DISPOSITION_RE = /Content-Disposition:\s*form-data;\s*name="([^"]*)"(?:;\s*filename="([^"]*)")?/i;
+const CONTENT_TYPE_RE = /Content-Type:\s*([^\r\n]+)/i;
+
+/** Splits a multipart body on `--<boundary>` markers and pulls each part's headers/body apart
+ * on the first blank line — bytes past that point are never touched as text, so a binary
+ * (PDF) part survives round-trip untouched. */
+function parseMultipart(body: Buffer, boundary: string): { fields: Record<string, string>; files: MultipartFile[] } {
+  const marker = Buffer.from(`--${boundary}`);
+  const fields: Record<string, string> = {};
+  const files: MultipartFile[] = [];
+
+  let cursor = body.indexOf(marker);
+  while (cursor !== -1) {
+    const next = body.indexOf(marker, cursor + marker.length);
+    if (next === -1) break;
+
+    let start = cursor + marker.length;
+    if (body[start] === 0x0d && body[start + 1] === 0x0a) start += 2; // leading CRLF
+    let end = next;
+    if (body[end - 2] === 0x0d && body[end - 1] === 0x0a) end -= 2; // trailing CRLF before next marker
+
+    if (end > start) {
+      const part = body.subarray(start, end);
+      const headerEnd = part.indexOf(CRLFCRLF);
+      if (headerEnd !== -1) {
+        const headerText = part.subarray(0, headerEnd).toString("utf8");
+        const data = part.subarray(headerEnd + CRLFCRLF.length);
+        const disposition = DISPOSITION_RE.exec(headerText);
+        if (disposition) {
+          const [, name, filename] = disposition;
+          if (filename !== undefined) {
+            const contentType = CONTENT_TYPE_RE.exec(headerText)?.[1]?.trim() ?? "application/octet-stream";
+            files.push({ fieldName: name!, filename, contentType, data });
+          } else {
+            fields[name!] = data.toString("utf8");
+          }
+        }
+      }
+    }
+    cursor = next;
+  }
+  return { fields, files };
+}
+
+function multipartBoundary(req: http.IncomingMessage): string | undefined {
+  const contentType = req.headers["content-type"] ?? "";
+  const match = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType);
+  return match ? (match[1] ?? match[2])?.trim() : undefined;
 }
 
 // --- page renderers ---------------------------------------------------------
@@ -113,7 +176,12 @@ const FAKE_GRAM_PAGE = page(
   <button type="submit">Create post</button>
 </form>
 <!-- S5b target-validation fixture: a hidden field the secrets broker must refuse to fill. -->
-<input type="hidden" name="csrf_token" data-testid="csrfHidden">`,
+<input type="hidden" name="csrf_token" data-testid="csrfHidden">
+<!-- S5f deliverable 1/3: the page.upload fixture. Must stay last — see the comment above. -->
+<form id="upload" method="post" action="/fake-gram/upload" enctype="multipart/form-data">
+  <input type="file" name="file" data-testid="uploadFile">
+  <button type="submit" data-testid="uploadSubmit">Upload</button>
+</form>`,
 );
 
 /**
@@ -191,6 +259,21 @@ export async function startFixtures(port = 0): Promise<Fixtures> {
       const kind = url.pathname === "/fake-gram/login" ? "login" : "post";
       submissions.push({ kind, fields: await readBody(req), at: new Date().toISOString() });
       return sendHtml(res, page("FakeGram", `<h1 data-testid="result">${kind} ok</h1>`));
+    }
+    if (route === "POST /fake-gram/upload") {
+      const boundary = multipartBoundary(req);
+      if (!boundary) return sendJson(res, { error: "missing multipart boundary" }, 400);
+      const raw = await readRawBody(req);
+      const { files } = parseMultipart(raw, boundary);
+      const file = files.find((f) => f.fieldName === "file");
+      if (!file) return sendJson(res, { error: "no file field" }, 400);
+      const sha256 = createHash("sha256").update(file.data).digest("hex");
+      submissions.push({
+        kind: "upload",
+        fields: { filename: file.filename, mime: file.contentType, sha256, size: String(file.data.byteLength) },
+        at: new Date().toISOString(),
+      });
+      return sendHtml(res, page("FakeGram", `<h1 data-testid="result">upload ok</h1>`));
     }
     if (route === "GET /fake-gram/admin/submissions") return sendJson(res, { submissions });
     if (route === "GET /iframe-wrap") {

@@ -1,7 +1,9 @@
 import {
   buildAssetToolRegistry as buildAssetsOnlyRegistry,
+  buildRenderTool,
   type AssetTool,
   type AssetToolDeps,
+  type RenderClient,
 } from "@tabductor/assets";
 import type { McpRunClient, McpToolInfo } from "@tabductor/mcp";
 import { z } from "zod";
@@ -97,10 +99,27 @@ function mcpTool(server: string, info: McpToolInfo, mcp: McpRunClient): AgentToo
   };
 }
 
+/** `assets.render` (S5e) came back `{ok:false, kind:"unavailable"}` before any renderer call
+ * could exist — the same "not configured" shape `render-client.ts`'s own client returns for a
+ * real one that is merely unreachable, so a caller that never wired a renderer sees the
+ * ordinary "assets.render failed" tool-error path rather than a construction-time throw. Every
+ * rig that never calls `assets.render` (S5c's own suite) needs no changes for this tool's
+ * mere *presence* on the registry — only S5f's rig, which actually calls it, supplies `render`. */
+const RENDERER_NOT_CONFIGURED: RenderClient = {
+  render: async () => ({ ok: false, kind: "unavailable", log: "no renderer configured for this run" }),
+};
+
 export type AssetToolRegistryDeps = {
   emit: EmitFn;
   /** `@tabductor/assets`'s own deps — `db`, `blobs`, `userId`, `taskId`, `runId`, `metrics?`. */
   assets: AssetToolDeps;
+  /**
+   * S5f wiring: `assets.render`'s HTTP client to `apps/renderer` (S5e). Optional because most
+   * of this registry's existing callers never render anything — omitting it still puts
+   * `assets.render` on the list (this file always adds it now), it just fails closed with
+   * `RENDERER_NOT_CONFIGURED` if a task ever calls it without one wired.
+   */
+  render?: RenderClient;
   mcp: McpRunClient;
   /**
    * Every `mcp.<server>.<tool>` this run may call, resolved once before the loop starts
@@ -115,7 +134,12 @@ export type AssetToolRegistryDeps = {
 
 export function buildAssetToolRegistry(deps: AssetToolRegistryDeps): AgentTool[] {
   const assetTools = buildAssetsOnlyRegistry(deps.assets).map(assetToolToAgentTool);
+  // S5f deliverable 2: the one place this subphase touches the asset registry.
+  // `buildAssetToolRegistry` (S5c) omitted `assets.render` because it did not exist yet
+  // (S5e landed after); it exists now, so it belongs on the list the asset node's loop
+  // actually gets, the same way `assets.write`/`assets.append`/`assets.read`/`assets.list` do.
+  const renderTool = assetToolToAgentTool(buildRenderTool({ ...deps.assets, render: deps.render ?? RENDERER_NOT_CONFIGURED }));
   const mcpTools = deps.grantedMcpTools.map(({ server, tool }) => mcpTool(server, tool, deps.mcp));
 
-  return [...assetTools, ...mcpTools, emitTool(deps.emit), doneTool(), failTool()];
+  return [...assetTools, renderTool, ...mcpTools, emitTool(deps.emit), doneTool(), failTool()];
 }

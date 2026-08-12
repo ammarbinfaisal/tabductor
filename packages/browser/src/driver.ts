@@ -119,6 +119,14 @@ export type Page = {
    * budgeted main text. One `evaluate`-style call, kept inside this driver rather than issued
    * as arbitrary page-JS from agent/generated code (§12's rule constrains *that*, not us). */
   perceive: (opts?: PerceiveOptions) => Promise<Perception>;
+  /**
+   * `page.upload` (S5f, techical_plan §13.5/§13.5's "assets and the browser node"): sets
+   * `selector`'s file input to `file.bytes`, in memory — no temp file ever touches disk, no
+   * matter how this ends up implemented underneath. The bytes cross from the asset store
+   * straight into the browser process; nothing about this method knows or cares that its
+   * caller resolved them from an asset ref first.
+   */
+  upload: (selector: string, file: { name: string; mimeType: string; bytes: Buffer }) => Promise<void>;
   /** `page.scroll` (S4b): a keypress, not a JS scroll — `Page.PageDown/PageUp` moves the
    * viewport the way a real user's keyboard would and needs no in-page `evaluate` at all. */
   scroll: (direction: "up" | "down") => Promise<void>;

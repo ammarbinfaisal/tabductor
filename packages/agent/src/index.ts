@@ -34,6 +34,8 @@ export {
   type AgentToolDeps,
   type EmitFn,
   type EmitOutcome,
+  type ReadAssetFn,
+  type ResolvedAssetFile,
   type ToolResult,
 } from "./tools.js";
 export { buildAssetToolRegistry, type AssetToolRegistryDeps } from "./asset-tools.js";

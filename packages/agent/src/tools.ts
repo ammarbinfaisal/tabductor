@@ -39,10 +39,46 @@ export type EmitOutcome =
 
 export type EmitFn = (type: string, packet: unknown, dedupeKey?: string) => Promise<EmitOutcome>;
 
+/** What `page.upload` needs back from the asset store — a structural echo of
+ * `@tabductor/assets`'s `ResolvedAsset`, duplicated rather than imported for the same reason
+ * `packages/assets/src/tools.ts`'s own doc comment gives for duplicating `AgentTool`: this file
+ * stays free of an `@tabductor/assets` dependency, so "no `assets.*` tool name is ever added
+ * here" (this file's own header comment) stays true of the whole file, not just its tool list. */
+export type ResolvedAssetFile = { bytes: Buffer; mime: string; path: string; sha256: string };
+
+/** `undefined` for "no such asset in this task's namespace" — `page.upload` turns that into an
+ * ordinary tool error, the same "recoverable, not a crash" contract every other lookup in this
+ * file follows (`mustResolve`, `defineTool`'s own zod failure path). */
+export type ReadAssetFn = (assetId: string) => Promise<ResolvedAssetFile | undefined>;
+
 export type AgentToolDeps = {
   session: RunSession;
   emit: EmitFn;
+  /**
+   * S5f wiring: resolves an asset ref's `asset_id` (from a trigger/consumed packet, §13.5) to
+   * bytes for `page.upload`, via `@tabductor/assets`'s `readAssetById` — `executor.ts` is the
+   * only place this file's caller actually builds one, closed over that run's own `userId`.
+   * Optional for the same reason `AssetToolRegistryDeps.render` is: a rig with nothing wired
+   * (most of S4b's own suite, which never calls `page.upload`) still gets the tool, it just
+   * fails closed with `NO_ASSET_STORE_CONFIGURED` if a task ever calls it without one.
+   */
+  readAsset?: ReadAssetFn;
 };
+
+/** See `AgentToolDeps.readAsset`'s doc comment — the same "present but unconfigured fails
+ * closed" shape `asset-tools.ts`'s `RENDERER_NOT_CONFIGURED` uses for `assets.render`. */
+const NO_ASSET_STORE_CONFIGURED: ReadAssetFn = async () => undefined;
+
+/** `{asset_id, path, mime, sha256}` — the wire shape of `@tabductor/core`'s `ASSET_REF_SCHEMA`
+ * (§13.5), restated in zod rather than imported: the JSON-Schema fragment is for packet
+ * *validation* (ajv, at emit/publish time); this is for *this tool's own argument shape*, the
+ * same "each file owns its own zod" rule every other `defineTool` call in this registry follows. */
+const assetRefSchema = z.object({
+  asset_id: z.string().min(1),
+  path: z.string().min(1),
+  mime: z.string().min(1),
+  sha256: z.string().min(1),
+});
 
 /** Labelled marker around page/network-derived content (§16 Threat 1d). A string, not an
  * object wrapper, because tool results eventually flatten into `LlmMessage.content` text
@@ -205,7 +241,7 @@ export function failTool(): AgentTool {
 }
 
 export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
-  const { session, emit } = deps;
+  const { session, emit, readAsset = NO_ASSET_STORE_CONFIGURED } = deps;
 
   return [
     defineTool({
@@ -300,6 +336,40 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
         }
         const records = await session.page.queryAll(root, args.fields);
         return { ok: true, value: untrustedBlock("page.extract", { records }) };
+      },
+    }),
+
+    defineTool({
+      name: "page.upload",
+      description:
+        "Upload an asset onto the file-input element at `anchor`, using an asset ref you read " +
+        "from an event packet ({asset_id, path, mime, sha256} — §13.5). Sets the input's file; " +
+        "does not submit any surrounding form — follow with page.click on the submit control, " +
+        "the same two-step shape page.type/page.click already use.",
+      parameters: z.object({ anchor: z.string().min(1), assetRef: assetRefSchema }),
+      async execute({ anchor, assetRef }) {
+        const locator = mustResolve(session, anchor);
+        if (typeof locator !== "string") return locator;
+
+        const resolved = await readAsset(assetRef.asset_id);
+        if (!resolved) {
+          return { ok: false, error: `no asset "${assetRef.asset_id}" readable by this task` };
+        }
+        // Belt-and-suspenders (§16): the ref is untrusted-adjacent (it rode in on an event
+        // packet another task emitted), and the store is the ground truth — a mismatch means
+        // the ref is stale or was tampered with, either way not something to upload silently.
+        if (resolved.sha256 !== assetRef.sha256) {
+          return {
+            ok: false,
+            error:
+              `asset ref sha256 mismatch for "${assetRef.asset_id}": the ref says ` +
+              `${assetRef.sha256}, the store has ${resolved.sha256} — refusing a stale upload`,
+          };
+        }
+
+        const filename = resolved.path.split("/").pop() || resolved.path;
+        await session.page.upload(locator, { name: filename, mimeType: resolved.mime, bytes: resolved.bytes });
+        return perceptionResult(session);
       },
     }),
 

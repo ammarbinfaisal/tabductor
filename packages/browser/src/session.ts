@@ -467,6 +467,14 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
     // trace for its `text` argument to leak into (`packages/secrets/src/broker.ts`).
     probeTarget: (selector) => raw.probeTarget(selector),
     insertTextRaw: (selector, text) => raw.insertTextRaw(selector, text),
+    // Traced by name/mime/size only, never the bytes — the same "count or length, not
+    // content" rule `type`/`queryAll`/`perceive` already follow. The bytes' own provenance
+    // and integrity live in the asset store (`sha256`, content-addressed); a second copy in
+    // the trace would be redundant exhaust, not evidence.
+    upload: (selector, file) =>
+      act("upload", { selector, name: file.name, mime: file.mimeType, size: file.bytes.byteLength }, () =>
+        raw.upload(selector, file),
+      ),
     queryAll: (selector, fields: ExtractSpec) =>
       act(
         "queryAll",
