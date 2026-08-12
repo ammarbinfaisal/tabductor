@@ -14,6 +14,7 @@ export {
   type AssetWriteOutcome,
   type FireResult,
   type LlmDirection,
+  type McpCallOutcome,
   type Metrics,
   type PolicyCheck,
   type ResourceLimit,

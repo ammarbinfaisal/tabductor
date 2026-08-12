@@ -11,6 +11,7 @@ const EXPECTED_TABLES = [
   "endpoint_leases",
   "event_defs",
   "events",
+  "mcp_servers",
   "outbox",
   "run_dedupe",
   "runs",

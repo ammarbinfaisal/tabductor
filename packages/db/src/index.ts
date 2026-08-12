@@ -23,6 +23,7 @@ export {
   assets,
   assetVersions,
   assetWriteGrants,
+  mcpServers,
 } from "./schema.js";
 export {
   RUN_STATUSES,
@@ -32,6 +33,7 @@ export {
   TASK_KINDS,
   SECRET_TIERS,
   SECRET_ACCESS_ACTIONS,
+  MCP_TRANSPORTS,
 } from "./schema.js";
 export type {
   RunStatus,
@@ -66,6 +68,9 @@ export type {
   AssetRow,
   AssetVersionRow,
   AssetWriteGrantRow,
+  McpTransport,
+  McpServerRow,
+  NewMcpServer,
 } from "./schema.js";
 // test-db is deliberately NOT re-exported here: it imports @tabductor/testkit, which
 // imports playwright-core, and this barrel is what `apps/web` bundles — the chain broke

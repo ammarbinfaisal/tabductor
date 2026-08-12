@@ -21,6 +21,7 @@
     "@tabductor/core": "workspace:*",
     "@tabductor/db": "workspace:*",
     "@tabductor/engine": "workspace:*",
+    "@tabductor/mcp": "workspace:*",
     "@tabductor/policy": "workspace:*",
     "@tabductor/secrets": "workspace:*",
     "@tabductor/telemetry": "workspace:*",

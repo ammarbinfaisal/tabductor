@@ -31,6 +31,11 @@ const envSchema = z.object({
   ANTHROPIC_API_KEY: optionalSetting,
   OPENAI_API_KEY: optionalSetting,
   SCHEMA_MODEL: optionalSetting,
+  // S5c: the secrets broker's KEK-wrapping key store (`fileKeyWrapper`, dev/test — a KMS
+  // implementation is a later swap behind the same `KeyWrapper` interface, per S5b's own
+  // doc). A clean checkout needs no environment (impl-phases §0's own rule for every other
+  // credential here) — `fileKeyWrapper` self-initializes on first use if the file is absent.
+  SECRETS_KEK_FILE_PATH: z.string().min(1).default("./data/secrets-kek.json"),
 });
 
 export type Config = z.output<typeof envSchema>;

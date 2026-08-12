@@ -32,6 +32,12 @@ export type LlmDirection = "in" | "out";
  * on purpose: the metric is the security-signals board's flat-zero row, the log is the
  * per-attempt audit trail, and a label needs far fewer values than a log column does. */
 export type SecretFillOutcome = "filled" | "denied_origin" | "denied_target" | "rate_limited";
+// -- S5c: MCP client (§17.2 catalogue, `mcp_calls_total`/`mcp_call_duration_seconds`) ----
+/** `packages/mcp`'s own outcome set for one `callTool` attempt. `denied` never actually
+ * fires under `AllowAllGate` (S7's business) but the label exists so the metric doesn't
+ * need a new value the day the real evaluator lands. */
+export type McpCallOutcome = "ok" | "error" | "denied" | "timeout" | "budget_exceeded";
+// -----------------------------------------------------------------------------------------
 
 export type Metrics = {
   /** How long an event waited in the outbox before a dispatcher delivered it. */
@@ -109,6 +115,12 @@ export type Metrics = {
    * No `secretName` label — the bounded-label-set rule (§17.2) and the fact that a secret name
    * is exactly the kind of identifier that does not belong on a metric. */
   secretFills: { add: (labels: { outcome: SecretFillOutcome }) => void };
+  // -- S5c: MCP client (§17.2 catalogue) -------------------------------------------------
+  /** Every `callTool` attempt the MCP client makes (S5c, §13). `server` is the configured
+   * label, never the tool's own name or arguments — the bounded-label-set rule (§17.2). */
+  mcpCalls: { add: (labels: { server: string; outcome: McpCallOutcome }) => void };
+  mcpCallDuration: { record: (seconds: number, labels: { server: string; outcome: McpCallOutcome }) => void };
+  // -----------------------------------------------------------------------------------------
 };
 
 export function createMetrics(meter: Meter): Metrics {
@@ -135,6 +147,10 @@ export function createMetrics(meter: Meter): Metrics {
   const llmTokens = meter.createCounter("llm_tokens_total");
   const llmCostUsd = meter.createCounter("llm_cost_usd_total", { unit: "USD" });
   const secretFills = meter.createCounter("secret_fills_total");
+  // -- S5c: MCP client --------------------------------------------------------------------
+  const mcpCalls = meter.createCounter("mcp_calls_total");
+  const mcpCallDuration = meter.createHistogram("mcp_call_duration_seconds", { unit: "s" });
+  // -----------------------------------------------------------------------------------------
 
   return {
     outboxDispatchLag: { record: (seconds) => outboxDispatchLag.record(seconds) },
@@ -185,5 +201,9 @@ export function createMetrics(meter: Meter): Metrics {
     llmTokens: { add: (count, labels) => llmTokens.add(count, { ...labels }) },
     llmCostUsd: { add: (usd, labels) => llmCostUsd.add(usd, { ...labels }) },
     secretFills: { add: (labels) => secretFills.add(1, { ...labels }) },
+    // -- S5c: MCP client ------------------------------------------------------------------
+    mcpCalls: { add: (labels) => mcpCalls.add(1, { ...labels }) },
+    mcpCallDuration: { record: (seconds, labels) => mcpCallDuration.record(seconds, { ...labels }) },
+    // ---------------------------------------------------------------------------------------
   };
 }

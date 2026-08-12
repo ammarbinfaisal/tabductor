@@ -1,10 +1,11 @@
-import { createAgentExecutor, createLlm, providerFromEnv } from "@tabductor/agent";
+import { createAgentExecutor, createAssetExecutor, createLlm, providerFromEnv } from "@tabductor/agent";
 import { createEndpointPool, createMinioBlobStore, playwrightDriver } from "@tabductor/browser";
 import { createDispatcher } from "@tabductor/bus";
 import { loadConfig } from "@tabductor/core";
 import { cdpEndpoints, createDb, type Db } from "@tabductor/db";
 import { AssetExecutor, createEngine, executorKey, StubExecutor, type ExecutorRegistry } from "@tabductor/engine";
 import { AllowAllGate } from "@tabductor/policy";
+import { createSecretsBroker, fileKeyWrapper } from "@tabductor/secrets";
 import { initTelemetry } from "@tabductor/telemetry/init";
 import { asc } from "drizzle-orm";
 
@@ -91,14 +92,72 @@ async function agentExecutorEntry(db: Db): Promise<ReturnType<typeof createAgent
   return executor;
 }
 
+/**
+ * The MCP client's credential path (S5c, §13): `injectIntoMcpArg`/`redeemMcpHandle` only —
+ * never the full `SecretsBroker` (`fill` is browser-only and unreachable from an asset run
+ * regardless). `resolveRun` always answers "no live session," honestly: nothing in this
+ * process registers a browser session with the broker yet (`secrets.fill` is not wired into
+ * the browser registry as of S5c either — a later subphase's business), and
+ * `injectIntoMcpArg`/`redeemMcpHandle` never call `resolveRun` at all (`broker.ts`'s own
+ * comment: "an asset-node run has no page to bind an origin to"), so this is not a stub
+ * standing in for missing wiring — it is the correct, permanent answer for this call site.
+ */
+const secretsBroker = createSecretsBroker({
+  db: handle.db,
+  keyWrapper: fileKeyWrapper(config.SECRETS_KEK_FILE_PATH),
+  resolveRun: () => undefined,
+  metrics: telemetry.metrics,
+});
+
+/**
+ * The first asset-node executor this process can run for real (S5c): `createAssetExecutor`
+ * under mode `ai` — the mode techical_plan's diagram calls "always ai mode" for this kind.
+ * Gated on a live LLM key only, the honest half of `agentExecutorEntry`'s two-part gate
+ * above: an asset run acquires no browser session and no CDP endpoint at all (§4), so there
+ * is nothing here to check a `cdp_endpoints` row for.
+ */
+function assetExecutorEntry(db: Db): ReturnType<typeof createAssetExecutor> | undefined {
+  const live = providerFromEnv({ ANTHROPIC_API_KEY: config.ANTHROPIC_API_KEY, OPENAI_API_KEY: config.OPENAI_API_KEY });
+  if (!live) {
+    log.info("no ANTHROPIC_API_KEY/OPENAI_API_KEY configured — (asset, ai) has no executor", {});
+    return undefined;
+  }
+  const blobs = createMinioBlobStore({
+    endpoint: config.BLOB_ENDPOINT,
+    accessKey: config.BLOB_ACCESS_KEY,
+    secretKey: config.BLOB_SECRET_KEY,
+    bucket: config.BLOB_BUCKET,
+  });
+  const gate = new AllowAllGate();
+
+  return createAssetExecutor({
+    gate,
+    blobs,
+    db,
+    metrics: telemetry.metrics,
+    secrets: secretsBroker,
+    llmFor: ({ trace }) =>
+      createLlm("live", {
+        provider: live.provider,
+        apiKey: live.apiKey,
+        trace,
+        metrics: telemetry.metrics,
+        costLabels: { kind: "asset", mode: "ai" },
+      }),
+  });
+}
+
 const agentExecutor = await agentExecutorEntry(handle.db);
+const assetExecutor = assetExecutorEntry(handle.db);
 const executors: ExecutorRegistry = {
   [executorKey("browser", "stub")]: StubExecutor,
-  // The asset skeleton (S5a): no live key or endpoint to gate on, unlike `(browser, ai)`
-  // below, since it runs no LLM and drives no page yet — same reason `StubExecutor` needs
-  // no gate.
-  [executorKey("asset", "ai")]: AssetExecutor,
+  // The S5a scripted-behavior skeleton, now at mode `stub` — S5c's real `(asset, ai)`
+  // executor (below) takes over the mode an asset task actually runs in production;
+  // `AssetExecutor` stays registered here for the graph-testing/stub-mode harness the same
+  // way `StubExecutor` does for `(browser, stub)`.
+  [executorKey("asset", "stub")]: AssetExecutor,
   ...(agentExecutor ? { [executorKey("browser", "ai")]: agentExecutor } : {}),
+  ...(assetExecutor ? { [executorKey("asset", "ai")]: assetExecutor } : {}),
 };
 
 const dispatcher = createDispatcher(handle, {
@@ -127,6 +186,7 @@ log.info("engine started", {
   database: config.DATABASE_URL.replace(/\/\/[^@]*@/, "//"),
   telemetry: telemetry.enabled ? "exporting" : "disabled",
   aiExecutor: agentExecutor ? "registered" : "not registered",
+  assetAiExecutor: assetExecutor ? "registered" : "not registered",
 });
 
 /**

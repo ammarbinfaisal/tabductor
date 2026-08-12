@@ -68,7 +68,7 @@ Environment deviations from `impl-phases.md`:
 | U2 | Agent visibility: `llm` trace rows (prompt hash, `in→out` tokens, tool-call chips) rendered distinct from action rows; emitted-packet views (dedupe/ok/error, link to the event); run header step count + cumulative tokens for mode `ai` runs | impl UI track U2 | **done** |
 | S5a | `tasks.kind` discriminant + AssetExecutor skeleton + kind constraints | impl Phase 5, §4 | **done** (migration `0010`) |
 | S5b | Secrets broker: envelope encryption, KMS wrapping, fill/inject, origin binding | impl Phase 5, §16 T4 | **done** (migration `0011`) |
-| S5c | MCP client (asset node only) + registry isolation test | impl Phase 5, §13 | |
+| S5c | MCP client (asset node only) + registry isolation test | impl Phase 5, §13 | **done** (migration `0013`) |
 | S5d | Asset store: paths, versions, write grants, asset refs in packets | impl Phase 5, §13.5 | **done** (migration `0012`) |
 | S5e | LaTeX renderer worker (sandboxed container, tectonic, beamer decks) | impl Phase 5, §13.5, §16 T7 | |
 | S5f | Two-kind e2e: browser → asset (MCP + LaTeX) → browser upload | impl Phase 5 | |

@@ -26,12 +26,23 @@ export {
 } from "./perception.js";
 export {
   buildToolRegistry,
+  doneTool,
+  emitTool,
+  failTool,
+  untrustedBlock,
   type AgentTool,
   type AgentToolDeps,
+  type EmitFn,
+  type EmitOutcome,
   type ToolResult,
 } from "./tools.js";
-export { runAgentLoop, type AgentLoopResult, type RunAgentLoopOptions } from "./loop.js";
+export { buildAssetToolRegistry, type AssetToolRegistryDeps } from "./asset-tools.js";
+export { runAgentLoop, type AgentLoopResult, type RunAgentLoopOptions, type EmitDecl, type TriggerInfo } from "./loop.js";
 export {
   createAgentExecutor,
   type AgentExecutorDeps,
 } from "./executor.js";
+export {
+  createAssetExecutor,
+  type AssetExecutorDeps,
+} from "./asset-executor.js";

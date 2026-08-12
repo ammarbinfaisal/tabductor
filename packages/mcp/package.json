@@ -1,5 +1,5 @@
 {
-  "name": "@tabductor/testkit",
+  "name": "@tabductor/mcp",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -7,25 +7,21 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "fixtures": "tsx sites/server.ts"
+    "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@tabductor/browser": "workspace:*",
     "@tabductor/core": "workspace:*",
     "@tabductor/db": "workspace:*",
-    "@tabductor/engine": "workspace:*",
     "@tabductor/policy": "workspace:*",
+    "@tabductor/secrets": "workspace:*",
     "@tabductor/telemetry": "workspace:*",
-    "minio": "^8.0.0",
-    "pg": "^8.13.0",
+    "drizzle-orm": "^0.44.0",
     "zod": "^3.25.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "@types/pg": "^8.11.0",
-    "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }
 }

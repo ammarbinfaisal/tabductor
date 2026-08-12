@@ -600,6 +600,39 @@ export const assetWriteGrants = pgTable(
 );
 // ---------------------------------------------------------------------------------------
 
+// -- S5c: MCP servers (techical_plan §13, §14) ----------------------------------------
+//
+// One row per user-configured MCP server. `config_json` is zod-validated per `transport`
+// in `packages/mcp` (stdio: command/args/env names; http: url) and **never carries a
+// credential value** — a server that needs one names the env var or header it should land
+// in, and the value comes from `secret_name` (nullable: most servers need no credential at
+// all), resolved through the S5b broker at connect/call time. That is a schema-level
+// property (there is no column here shaped to hold a secret), not a convention this table
+// has to be trusted to honour.
+
+export const MCP_TRANSPORTS = ["stdio", "http"] as const;
+export type McpTransport = (typeof MCP_TRANSPORTS)[number];
+
+export const mcpServers = pgTable(
+  "mcp_servers",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    label: text("label").notNull(),
+    transport: text("transport").$type<McpTransport>().notNull(),
+    configJson: jsonb("config_json").notNull(),
+    /** Names a row in `secrets` (S5b) — the credential *value* lives there, encrypted, and
+     * never here. `null` for a server that needs no credential. */
+    secretName: text("secret_name"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("mcp_servers_user_label_key").on(t.userId, t.label),
+    check("mcp_servers_transport_check", sql`${t.transport} in ('stdio','http')`),
+  ],
+);
+// ---------------------------------------------------------------------------------------
+
 export type TraceEntryRow = typeof traceEntries.$inferSelect;
 export type ArtifactRow = typeof artifacts.$inferSelect;
 export type EventRow = typeof events.$inferSelect;
@@ -625,3 +658,5 @@ export type SecretAccessLogRow = typeof secretAccessLog.$inferSelect;
 export type AssetRow = typeof assets.$inferSelect;
 export type AssetVersionRow = typeof assetVersions.$inferSelect;
 export type AssetWriteGrantRow = typeof assetWriteGrants.$inferSelect;
+export type McpServerRow = typeof mcpServers.$inferSelect;
+export type NewMcpServer = typeof mcpServers.$inferInsert;

@@ -10,14 +10,14 @@ import {
   type TraceRecorder,
 } from "@tabductor/browser";
 import { AppError } from "@tabductor/core";
-import { taskState, type Db, type TaskRow } from "@tabductor/db";
-import { readEventSchemas, type RunHandle, type RunResult, type TaskExecutor } from "@tabductor/engine";
+import type { Db, TaskRow } from "@tabductor/db";
+import type { RunHandle, RunResult, TaskExecutor } from "@tabductor/engine";
 import type { PolicyGate } from "@tabductor/policy";
 import type { Metrics } from "@tabductor/telemetry";
-import { and, eq } from "drizzle-orm";
+import { asNumber, asRecord, makeEmitFn, maxStepsOf, storageFlagsOf as defaultStorageFlagsOf, toRunResult, triggerInfoOf } from "./executor-shared.js";
 import type { Llm } from "./llm.js";
-import { runAgentLoop, type AgentLoopResult, type TriggerInfo } from "./loop.js";
-import type { EmitFn, EmitOutcome } from "./tools.js";
+import { runAgentLoop } from "./loop.js";
+import { buildToolRegistry } from "./tools.js";
 
 /**
  * `AgentExecutor`: composes the tool registry + loop behind the engine's executor contract
@@ -52,23 +52,6 @@ export type AgentExecutorDeps = {
   storageFlagsOf?: (task: TaskRow) => StorageFlags;
 };
 
-const defaultStorageFlagsOf = (task: TaskRow): StorageFlags => asStorageFlags(task.limitsJson);
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-function asStorageFlags(limitsJson: unknown): StorageFlags {
-  const storage = asRecord(asRecord(limitsJson)?.storage);
-  return storage ?? {};
-}
-
-function asNumber(value: unknown): number | undefined {
-  return typeof value === "number" ? value : undefined;
-}
-
 /** `limits_json.browser` — same shape and reasoning `ScriptedBrowserExecutor` reads its own
  * copy of (S3b). Absent field = unlimited, matching every other optional cap in this codebase. */
 function browserLimitsOf(task: TaskRow): ResourceLimits | undefined {
@@ -79,85 +62,6 @@ function browserLimitsOf(task: TaskRow): ResourceLimits | undefined {
     ...(asNumber(browser.max_visits) !== undefined ? { maxVisits: asNumber(browser.max_visits) } : {}),
     ...(asNumber(browser.max_wall_ms) !== undefined ? { maxWallMs: asNumber(browser.max_wall_ms) } : {}),
   };
-}
-
-/** `limits_json.agent.max_steps` — `undefined` lets `runAgentLoop` apply its own default
- * (§ spec: "Step budget from `limits_json.agent.max_steps` (default 30)"), one default kept
- * in one place rather than restated here. */
-function maxStepsOf(task: TaskRow): number | undefined {
-  const agent = asRecord(asRecord(task.limitsJson)?.agent);
-  const maxSteps = agent ? asNumber(agent.max_steps) : undefined;
-  return maxSteps !== undefined && maxSteps > 0 ? maxSteps : undefined;
-}
-
-async function triggerInfoOf(db: Db, handle: RunHandle): Promise<TriggerInfo | null> {
-  if (!handle.trigger) return null;
-  // One `event_defs` row per (workflow_version_id, event_type) — the run's *pinned* version,
-  // exactly like every other schema lookup in this codebase (packet-schema.ts's own query).
-  const schemas = await readEventSchemas(db, handle.task.workflowVersionId);
-  return { type: handle.trigger.type, packet: handle.trigger.packet, schema: schemas[handle.trigger.type] ?? {} };
-}
-
-/**
- * `emit(type, packet, {dedupeKey})`'s host half (deliverable 3): the tool only decides *what*
- * to publish, this decides *whether* — claim the dedupe key first (an atomic unique insert,
- * the same `claim`-then-act shape `packages/bus/src/dedupe.ts` uses for inbound redelivery,
- * applied here to outbound side effects instead), then publish. A publish that fails
- * validation releases the claim, so a corrected retry within the same run's step budget can
- * still emit under that key — claiming before a validation outcome is known would otherwise
- * burn the key on a packet that was never actually sent.
- */
-function makeEmitFn(opts: { db: Db; taskId: string; handleEmit: RunHandle["emit"]; trace: TraceRecorder }): EmitFn {
-  const { db, taskId, handleEmit, trace } = opts;
-
-  const publish = async (type: string, packet: unknown, dedupeKey: string | undefined): Promise<EmitOutcome> => {
-    try {
-      const event = await handleEmit(type, packet);
-      await trace.record("action", { action: "emit", type, dedupeKey: dedupeKey ?? null, ok: true, eventId: event.eventId });
-      return { outcome: "published", eventId: event.eventId };
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      await trace.record("action", { action: "emit", type, dedupeKey: dedupeKey ?? null, ok: false, error });
-      return { outcome: "rejected", error };
-    }
-  };
-
-  return async (type, packet, dedupeKey) => {
-    if (dedupeKey === undefined) return publish(type, packet, undefined);
-
-    const key = `emit:${type}:${dedupeKey}`;
-    const claimed = await db
-      .insert(taskState)
-      .values({ taskId, key, value: {} })
-      .onConflictDoNothing()
-      .returning({ taskId: taskState.taskId });
-    if (claimed.length === 0) {
-      await trace.record("action", { action: "emit", type, dedupeKey, ok: true, deduped: true });
-      return { outcome: "deduped" };
-    }
-
-    const result = await publish(type, packet, dedupeKey);
-    if (result.outcome === "rejected") {
-      await db.delete(taskState).where(and(eq(taskState.taskId, taskId), eq(taskState.key, key))).catch(() => undefined);
-    }
-    return result;
-  };
-}
-
-function toRunResult(result: AgentLoopResult): RunResult {
-  switch (result.outcome) {
-    case "done":
-      return { ok: true };
-    case "fail":
-      return { ok: false, error: result.reason };
-    case "step_budget_exceeded":
-      // Retryable, not permanent — the deviation from S3b's `resource_limit_exceeded`
-      // precedent, argued in the S4b subphase doc: a script hitting a fixed resource cap
-      // replays into the identical wall on retry, but an LLM's sampling differs attempt to
-      // attempt, so a retried run can plausibly finish inside the same step budget where the
-      // first one didn't. Same class as `browser.disconnected`/`endpoint_queue_full`.
-      return { ok: false, error: "step_budget_exceeded" };
-  }
 }
 
 /**
@@ -213,14 +117,14 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
         const [emits, trigger] = await Promise.all([handle.declaredEmits(), triggerInfoOf(db, handle)]);
         const emit = makeEmitFn({ db, taskId: handle.task.id, handleEmit: handle.emit, trace });
         const llm = llmFor({ trace, task: handle.task });
+        const tools = buildToolRegistry({ session, emit });
 
         const result = await runAgentLoop({
           llm,
-          session,
+          tools,
           task: { prompt: handle.task.prompt },
           trigger,
           emits,
-          emit,
           trace,
           maxSteps: maxStepsOf(handle.task),
         });

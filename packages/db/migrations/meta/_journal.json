@@ -92,6 +92,13 @@
       "when": 1786503218187,
       "tag": "0012_cheerful_morbius",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1786504195996,
+      "tag": "0013_mcp_servers",
+      "breakpoints": true
     }
   ]
 }

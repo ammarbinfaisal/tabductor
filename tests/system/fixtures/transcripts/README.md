@@ -16,3 +16,12 @@ themselves never bake in a port.
 All six fixtures are also each independently valid tool-call sequences a real model would
 plausibly issue — a hand-authored fixture is not a fake one, it is a deterministic control
 input to the loop, on the same principle `ScriptedBrowserExecutor` (S3b) uses for the engine.
+
+## S5c: asset-node fixtures (`mcp-*.jsonl`)
+
+| File | Provenance |
+|---|---|
+| `mcp-echo.jsonl` | Hand-authored. No `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` was available in this environment to record against, so this is a control input, not a fallback — but the scenario ("call the one configured MCP tool, then finish") is also exactly the kind `network-tools.jsonl` shows a live model reaches for naturally when recording is available. |
+| `mcp-budget.jsonl` | Hand-authored by design, `step-budget.jsonl`'s precedent: the scenario is "call the same tool more times than the budget allows, on purpose" — not a task a live model can be prompted into without the prompt giving away the answer, which would test the prompt, not the budget check. |
+| `mcp-timeout.jsonl` | Hand-authored by design: the scenario needs the fake server's `sleep` tool to run longer than a short, test-configured `call_timeout_ms` — a live model has no way to know that number, so nothing about "wait for a tool that's too slow" is naturally promptable. |
+| `mcp-credential.jsonl` | Hand-authored: a harmless `echo` call plus `done`, reused verbatim by both the credential-hygiene test and its negative control — the fixture asserts nothing about credentials itself, only the server-side gate and the broker wiring around it do. |

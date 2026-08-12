@@ -152,6 +152,58 @@ function encodeNetworkRead(result: NetworkReadResult): Record<string, unknown> {
 
 const fieldSpecSchema = z.object({ selector: z.string().optional(), attr: z.string().optional() });
 
+/**
+ * `emit`/`done`/`fail` (S5c): pulled out to standalone builders because both node kinds carry
+ * them verbatim — neither reads a page or a session, so there was never a browser-specific
+ * reason for them to live only inside `buildToolRegistry`. `buildAssetToolRegistry`
+ * (`asset-tools.ts`) calls these three directly instead of restating the same `emit`
+ * dedupe-outcome switch and `done`/`fail` wrappers a second time.
+ */
+export function emitTool(emit: EmitFn): AgentTool {
+  return defineTool({
+    name: "emit",
+    description:
+      "Publish an event of a type this task declares emitting. `packet` is validated against " +
+      "that event's schema before publishing — an invalid packet comes back as a tool error to " +
+      "correct and retry. `dedupeKey`, when given, makes a repeated emit under the same key a " +
+      "no-op (emitIfNew semantics) — use it for anything that must not double-fire across retries.",
+    parameters: z.object({ type: z.string().min(1), packet: z.unknown(), dedupeKey: z.string().min(1).optional() }),
+    async execute(args) {
+      const outcome = await emit(args.type, args.packet, args.dedupeKey);
+      switch (outcome.outcome) {
+        case "published":
+          return { ok: true, value: { emitted: true, type: args.type, eventId: outcome.eventId } };
+        case "deduped":
+          return { ok: true, value: { emitted: false, type: args.type, reason: "dedupeKey already emitted" } };
+        case "rejected":
+          return { ok: false, error: outcome.error };
+      }
+    },
+  });
+}
+
+export function doneTool(): AgentTool {
+  return defineTool({
+    name: "done",
+    description: "Finish the run successfully with an optional result.",
+    parameters: z.object({ result: z.unknown().optional() }),
+    async execute(args) {
+      return { ok: true, value: args.result ?? null };
+    },
+  });
+}
+
+export function failTool(): AgentTool {
+  return defineTool({
+    name: "fail",
+    description: "Finish the run as failed, with a reason.",
+    parameters: z.object({ reason: z.string().min(1) }),
+    async execute(args) {
+      return { ok: true, value: args.reason };
+    },
+  });
+}
+
 export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
   const { session, emit } = deps;
 
@@ -281,43 +333,8 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
       },
     }),
 
-    defineTool({
-      name: "emit",
-      description:
-        "Publish an event of a type this task declares emitting. `packet` is validated against " +
-        "that event's schema before publishing — an invalid packet comes back as a tool error to " +
-        "correct and retry. `dedupeKey`, when given, makes a repeated emit under the same key a " +
-        "no-op (emitIfNew semantics) — use it for anything that must not double-fire across retries.",
-      parameters: z.object({ type: z.string().min(1), packet: z.unknown(), dedupeKey: z.string().min(1).optional() }),
-      async execute(args) {
-        const outcome = await emit(args.type, args.packet, args.dedupeKey);
-        switch (outcome.outcome) {
-          case "published":
-            return { ok: true, value: { emitted: true, type: args.type, eventId: outcome.eventId } };
-          case "deduped":
-            return { ok: true, value: { emitted: false, type: args.type, reason: "dedupeKey already emitted" } };
-          case "rejected":
-            return { ok: false, error: outcome.error };
-        }
-      },
-    }),
-
-    defineTool({
-      name: "done",
-      description: "Finish the run successfully with an optional result.",
-      parameters: z.object({ result: z.unknown().optional() }),
-      async execute(args) {
-        return { ok: true, value: args.result ?? null };
-      },
-    }),
-
-    defineTool({
-      name: "fail",
-      description: "Finish the run as failed, with a reason.",
-      parameters: z.object({ reason: z.string().min(1) }),
-      async execute(args) {
-        return { ok: true, value: args.reason };
-      },
-    }),
+    emitTool(emit),
+    doneTool(),
+    failTool(),
   ];
 }
