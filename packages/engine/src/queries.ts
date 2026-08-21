@@ -1,3 +1,4 @@
+import { AppError } from "@tabductor/core";
 import { chainOf } from "@tabductor/bus";
 import {
   cdpEndpoints,
@@ -335,4 +336,34 @@ export async function listCdpEndpoints(db: Db): Promise<CdpEndpointSummary[]> {
     })
     .from(cdpEndpoints)
     .orderBy(desc(cdpEndpoints.createdAt));
+}
+
+/**
+ * A `RunHandle` carries `task.workflow_version_id`, not `user_id` directly — every per-user
+ * lookup a `mode=ai` executor needs (the MCP server list for `AssetExecutor`, the asset-store
+ * namespace `page.upload` resolves an asset ref against for `AgentExecutor`, S5f) makes this
+ * exact join, so it lives here once rather than once per executor (`asset-executor.ts` was
+ * S5c's only caller before S5f gave the browser executor a second reason to need it).
+ * `packages/secrets/src/broker.ts`'s `resolveSecretForRun` makes the identical join for the
+ * identical reason.
+ *
+ * Lives here rather than in `packages/agent` because S5h's `PythonExecutor` needs it too and
+ * `packages/engine` cannot import `packages/agent` — agent already imports engine. Moving it
+ * down leaves one copy, not two; `executor-shared.ts` re-exports it so every existing call
+ * site is unchanged.
+ */
+export async function userIdForTask(db: Db, workflowVersionId: string): Promise<string> {
+  const rows = await db
+    .select({ userId: workflows.userId })
+    .from(workflowVersions)
+    .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId))
+    .where(eq(workflowVersions.id, workflowVersionId))
+    .limit(1);
+  const row = rows[0];
+  if (!row) {
+    throw new AppError("task_workflow_not_found", `no workflow found for workflow_version ${workflowVersionId}`, {
+      details: { workflowVersionId },
+    });
+  }
+  return row.userId;
 }

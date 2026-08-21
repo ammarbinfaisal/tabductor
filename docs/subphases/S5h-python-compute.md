@@ -158,3 +158,60 @@ What you built, deviations + why, commands + outcomes, flakiness noticed. State 
 which backend the sandbox suite ran on and whether any hostile-corpus case was skipped.
 List every channel that exists between guest and host — the expected answer is one block
 device. Do NOT git commit.
+
+---
+
+## As built (S5h, migration `0015_python_compute`)
+
+This spec was written against the microVM design. The project became open-source and
+self-hosted before it was implemented, which removed the threat model the isolation half was
+built for — see the 0.2 changelog at the top of `docs/python-compute.md` for the full list of
+what that withdrew. What actually shipped:
+
+**`apps/pyrunner`** — an ordinary compose service on an internal `compute` network, no
+published ports, no docker socket, no route off the host. A job is written to a temp directory
+and run as a subprocess (`python -s -B code/main.py`) with `cwd` at the job root; the container
+is the isolation unit and a wall-clock kill is the only runtime control. Files: `main.ts`
+(composition root, app-local zod env), `server.ts` (`POST /run`, `GET /status` for the compose
+healthcheck, concurrency semaphore), `job.ts` (directory, subprocess, collection).
+
+**`PythonExecutor`** (`packages/engine/src/python-executor.ts`, exported via the
+`@tabductor/engine/python` subpath so `minimatch` stays out of `apps/web`'s import of the
+engine barrel) — registered for `(asset, python)`, withheld with a log line when `PYRUNNER_URL`
+is unset, the same posture the AI executors take without a key. It resolves declared inputs,
+calls pyrunner, then does every privileged act host-side: validating **all** output paths
+before writing **any** of them, writing through `putVersion` (so grants, content addressing and
+version rows are the ones `assets.write` already uses), and publishing emits through
+`RunHandle.emit` so the compiled packet schema, the `task_emits` gate, the loop budget, dedupe
+and the outbox all still apply.
+
+**`{"$asset": "<relative output path>"}`** — a substitution neither this spec nor the design doc
+named, and the canonical flow needs it: the program writes `emits.jsonl` before any `asset_id`
+exists, and has no channel to ask for one. It names an output by the path it wrote; the executor
+swaps in the real ref. An unresolvable placeholder fails the run rather than publishing an event
+that points at nothing.
+
+**Outcome mapping** — `program_error` retryable (a correctable defect), `killed` /
+`output_cap` / path rejection permanent (a wall-clock breach reproduces).
+
+### Deviations from this document, and why
+
+| Spec said | Shipped | Why |
+|---|---|---|
+| Firecracker microVM, jailer, vendored kernel, `/dev/kvm` gate, dual backend | A plain subprocess inside the pyrunner container | No untrusted tenant once the project is self-hosted open source |
+| Hostile corpus asserting network/`subprocess`/fork-bomb/memory-bomb are blocked | Corpus withdrawn; wall clock, caps, symlinks and determinism kept | Those programs now succeed by design — the tests would be asserting a falsehood |
+| `mode IN ('ai','compiled','python')` in the check constraint | Two exclusions; `mode` stays open | `mode` is `z.string()` so test-only executors can claim values; `scripted-browser.test.ts` publishes `mode='scripted'` in five places and a closed domain breaks the whole S3b suite |
+| `python -I` with `PYTHONHASHSEED=0` | `python -s -B` with an explicit env | `-I` implies `-E`, which ignores `PYTHONHASHSEED` — the pair cancels itself and makes byte-stability flaky. Verified empirically |
+| Absolute `/job/...` paths | `cwd`-relative, plus `TABDUCTOR_JOB_DIR` | No per-job chroot, so a literal `/job` would force single concurrency |
+| `pyrun_sandbox_kills_total`, `pyrun_vm_boot_seconds` | `pyrun_kills_total`; boot metric dropped | No sandbox to name, no VM to boot. §17.2 names are binding, so the rename is recorded rather than made silently |
+
+### Tests
+
+`python-compute.test.ts` (runner contract: wall clock incl. the process-group case, caps,
+symlink, determinism), `python-executor.test.ts` (host boundary, fake client — traversal,
+grants, duplicates, `$asset`, malformed emits, permanent-vs-retryable),
+`kind-constraints.test.ts` (publish gate + DB constraint, including the `mode='scripted'`
+regression guard), `python-manifest.test.ts` (manifest ↔ `requirements.txt`),
+`python-xlsx.test.ts` (byte-stable workbook; skips loudly without `xlsxwriter`),
+`python-e2e.test.ts` (stub → python → asset → downstream, real Python process),
+`python-registry-isolation.test.ts` (the empty registry).

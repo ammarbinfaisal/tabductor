@@ -11,6 +11,7 @@
       "@tabductor/browser": ["packages/browser/src/index.ts"],
       "@tabductor/browser/blob-store": ["packages/browser/src/blob-store.ts"],
       "@tabductor/engine": ["packages/engine/src/index.ts"],
+      "@tabductor/engine/python": ["packages/engine/src/python-executor.ts"],
       "@tabductor/mcp": ["packages/mcp/src/index.ts"],
       "@tabductor/policy": ["packages/policy/src/index.ts"],
       "@tabductor/secrets": ["packages/secrets/src/index.ts"],

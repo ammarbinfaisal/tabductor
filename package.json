@@ -7,7 +7,7 @@
     "build": "tsc -p tsconfig.json && pnpm -F web typecheck",
     "build:web": "pnpm -F web build",
     "dev:web": "pnpm -F web dev",
-    "lint": "eslint packages apps/engine apps/renderer && node packages/secrets/scripts/leak-lint.mjs && pnpm -F web lint",
+    "lint": "eslint packages apps/engine apps/renderer apps/pyrunner && node packages/secrets/scripts/leak-lint.mjs && pnpm -F web lint",
     "test": "vitest run",
     "test:system": "vitest run --project system",
     "test:live-eval": "vitest run -c vitest.live-eval.config.ts",

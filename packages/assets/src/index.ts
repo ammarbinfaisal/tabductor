@@ -5,6 +5,11 @@ export { checkWriteGrant } from "./grants.js";
 export { readAssetById, type ReadAssetDeps, type ResolvedAsset } from "./read.js";
 export {
   buildAssetToolRegistry,
+  // S5h: the non-tool write path, for a caller outside the LLM tool boundary — `putVersion`
+  // is what `assets.write` and `assets.render` already go through, so a Python job's outputs
+  // land through the same grant check, the same content addressing and the same version row
+  // rather than a second write path re-deriving all three.
+  putVersion,
   type AssetTool,
   type AssetToolDeps,
   type AssetToolResult,

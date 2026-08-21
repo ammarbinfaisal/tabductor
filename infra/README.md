@@ -18,6 +18,7 @@ That is the only command needed from a cold checkout. The first run builds the i
 | `migrate` | one-shot drizzle migrator | runs to completion; `engine` and `web` wait on its exit 0 |
 | `engine` | outbox dispatcher, run loop, cron scheduler, timeout watchdog, crash recovery | no ports |
 | `web` | Next.js + tRPC control plane | `127.0.0.1:3000` |
+| `pyrunner` | Python compute for `mode=python` asset nodes | no ports; internal `compute` network only |
 | `otel-lgtm` | Grafana LGTM | `--profile telemetry` only |
 
 ### Exposing it beyond this machine

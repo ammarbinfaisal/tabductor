@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./ai": "./src/schema-generator-ai.ts"
+    "./ai": "./src/schema-generator-ai.ts",
+    "./python": "./src/python-executor.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json"
@@ -13,6 +14,8 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.37",
     "@ai-sdk/openai": "^4.0.37",
+    "@tabductor/assets": "workspace:*",
+    "@tabductor/browser": "workspace:*",
     "@tabductor/bus": "workspace:*",
     "@tabductor/core": "workspace:*",
     "@tabductor/db": "workspace:*",

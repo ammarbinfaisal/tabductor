@@ -50,6 +50,28 @@ export type RenderOutcome = "ok" | "compile_error" | "killed" | "write_error";
  * reach) precisely because a kill is a *runtime* intervention and a structural control never
  * needs one — `docs/subphases/S5e-latex-renderer.md`'s own test-naming rule. */
 export type RenderSandboxKillReason = "wall_clock" | "memory";
+// -----------------------------------------------------------------------------------------
+// --- S5h: Python compute -------------------------------------------------------------------
+/** One Python job's terminal outcome, host side. `write_error` is the asset-store write
+ * failing *after* a job succeeded — a host fault, deliberately distinct from anything the
+ * program itself did. `unavailable` is pyrunner being unreachable, which is infrastructure. */
+export type PyrunOutcome =
+  | "ok"
+  | "program_error"
+  | "killed"
+  | "output_cap"
+  | "write_error"
+  | "unavailable";
+/**
+ * The only runtime control that survives the S5h reshape. Single-valued today and still a
+ * label rather than a bare counter, so a second control does not need a second metric.
+ *
+ * §17.2 names are binding, so two renames are recorded here rather than made silently: this
+ * is `python-compute.md` §10's `pyrun_sandbox_kills_total` (there is no sandbox left to name
+ * — the container is the isolation unit), and `pyrun_vm_boot_seconds` is dropped outright
+ * (there is no VM to boot).
+ */
+export type PyrunKillReason = "wall_clock";
 // -------------------------------------------------------------------------------------------
 
 export type Metrics = {
@@ -145,6 +167,22 @@ export type Metrics = {
    * for. */
   renderSandboxKills: { add: (labels: { reason: RenderSandboxKillReason }) => void };
   // -------------------------------------------------------------------------------------------
+  // --- S5h: Python compute -----------------------------------------------------------------
+  /** One job, by terminal outcome. Recorded host-side in `packages/engine`'s
+   * `python-executor.ts` and nowhere else — `apps/pyrunner` deliberately records nothing, the
+   * same split `render_duration_seconds` follows, because recording in both would double-count
+   * every job. */
+  pyrunJobs: { add: (labels: { outcome: PyrunOutcome }) => void };
+  /** Wall-clock time of one job, host side: resolving inputs, the HTTP hop, the program, and
+   * the asset writes. No source, no filenames, no output contents — content never becomes a
+   * label (§17.2). */
+  pyrunDuration: { record: (seconds: number, labels: { outcome: PyrunOutcome }) => void };
+  /** A job the wall clock stopped. Lands on the security-signals dashboard beside the
+   * renderer's kill row. */
+  pyrunKills: { add: (labels: { reason: PyrunKillReason }) => void };
+  /** Total bytes a job's outputs occupied, after the caps allowed them through. */
+  pyrunOutputBytes: { record: (bytes: number) => void };
+  // -------------------------------------------------------------------------------------------
   // --- S5g: workflow data store (§17.2 binding names, impl-phases §0.5) ------------------
   /** One `store.query` call, wherever it started resolving (the parse gate) or finished
    * (Postgres) — `outcome="ok"` is only recorded once the query actually ran. No SQL text,
@@ -193,6 +231,12 @@ export function createMetrics(meter: Meter): Metrics {
   // --- S5e: LaTeX renderer --------------------------------------------------------------
   const renderDuration = meter.createHistogram("render_duration_seconds", { unit: "s" });
   const renderSandboxKills = meter.createCounter("render_sandbox_kills_total");
+  // -------------------------------------------------------------------------------------------
+  // --- S5h: Python compute -------------------------------------------------------------------
+  const pyrunJobs = meter.createCounter("pyrun_jobs_total");
+  const pyrunDuration = meter.createHistogram("pyrun_duration_seconds", { unit: "s" });
+  const pyrunKills = meter.createCounter("pyrun_kills_total");
+  const pyrunOutputBytes = meter.createHistogram("pyrun_output_bytes", { unit: "By" });
   // -------------------------------------------------------------------------------------------
   // --- S5g: workflow data store ------------------------------------------------------------
   const storeQueryDuration = meter.createHistogram("store_query_duration_seconds", { unit: "s" });
@@ -255,6 +299,12 @@ export function createMetrics(meter: Meter): Metrics {
     // --- S5e: LaTeX renderer ---------------------------------------------------------------
     renderDuration: { record: (seconds, labels) => renderDuration.record(seconds, { ...labels }) },
     renderSandboxKills: { add: (labels) => renderSandboxKills.add(1, { ...labels }) },
+    // -------------------------------------------------------------------------------------------
+    // --- S5h: Python compute -------------------------------------------------------------------
+    pyrunJobs: { add: (labels) => pyrunJobs.add(1, { ...labels }) },
+    pyrunDuration: { record: (seconds, labels) => pyrunDuration.record(seconds, { ...labels }) },
+    pyrunKills: { add: (labels) => pyrunKills.add(1, { ...labels }) },
+    pyrunOutputBytes: { record: (bytes) => pyrunOutputBytes.record(bytes) },
     // -------------------------------------------------------------------------------------------
     // --- S5g: workflow data store ------------------------------------------------------------
     storeQueryDuration: { record: (seconds, labels) => storeQueryDuration.record(seconds, { ...labels }) },

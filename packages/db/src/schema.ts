@@ -96,15 +96,40 @@ export const tasks = pgTable(
     kind: text("kind").$type<TaskKind>().notNull().default("browser"),
     mode: text("mode").notNull().default("stub"),
     limitsJson: jsonb("limits_json").notNull().default({}),
+    // -- S5h: python compute mode (python-compute.md §3.5, §9) --------------------------
+    // Nullable: only `mode=python` tasks carry a program. Projected from the graph document
+    // by `publishVersion` only — never written by `updateTask` (code is structural history,
+    // not a knob you turn while watching a run; see `graph.ts`'s comment on that split).
+    codeSource: text("code_source"),
+    /** sha256 of `codeSource`, feeding the task content hash (graph-compilation-llm §6.3). */
+    codeSha256: text("code_sha256"),
+    /** `{image, packages: string[], inputs: {assets: string[], tables: string[]}}` — checked
+     * against the committed manifest at publish (`packages/engine/src/graph.ts`), never at run
+     * time: what a task may import is a reviewable fact in the repo, not a runtime lookup. */
+    runtimeJson: jsonb("runtime_json"),
+    // -------------------------------------------------------------------------------------
     createdAt: createdAt(),
   },
   (t) => [
     uniqueIndex("tasks_version_name_key").on(t.workflowVersionId, t.name),
     check("tasks_kind_check", sql`${t.kind} in ('browser','asset','decision')`),
     // §11: asset tasks are never compiled — MCP results and LLM prose have no stable
-    // structure for the script compiler's guards to assert on. Named so S5h can extend it
-    // (`mode='python'` requires `kind='asset'`) with a single drop-and-re-add ALTER.
-    check("tasks_kind_mode_check", sql`not (${t.kind} = 'asset' and ${t.mode} = 'compiled')`),
+    // structure for the script compiler's guards to assert on. S5h adds the mirror clause
+    // confining `python` to `kind='asset'` (§2.2).
+    //
+    // **Both clauses are exclusions; `mode` stays an open domain.** §9 asks for a closed
+    // `mode IN (...)` too, and this deliberately does not ship it — `mode` is a bare
+    // `z.string()` in `graphTaskSchema` precisely so a test-only executor can claim a value
+    // without a schema change, and `scripted-browser.test.ts` publishes `mode='scripted'`
+    // through the real publish path in five places. Closing the domain would reject every one
+    // of them, turning an additive migration into one that breaks the S3b suite. `runs.mode_used`
+    // states the same posture for its own column: "Open by design ... Not a closed domain."
+    // Recorded as a deviation in `docs/subphases/S5h-python-compute.md`.
+    check(
+      "tasks_kind_mode_check",
+      sql`not (${t.kind} = 'asset' and ${t.mode} = 'compiled')
+          and not (${t.kind} <> 'asset' and ${t.mode} = 'python')`,
+    ),
   ],
 );
 

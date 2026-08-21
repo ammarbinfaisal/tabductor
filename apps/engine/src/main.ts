@@ -3,7 +3,15 @@ import { createEndpointPool, createMinioBlobStore, playwrightDriver } from "@tab
 import { createDispatcher } from "@tabductor/bus";
 import { loadConfig } from "@tabductor/core";
 import { cdpEndpoints, createDb, type Db } from "@tabductor/db";
-import { AssetExecutor, createEngine, executorKey, StubExecutor, type ExecutorRegistry } from "@tabductor/engine";
+import {
+  AssetExecutor,
+  createEngine,
+  executorKey,
+  StubExecutor,
+  type ExecutorRegistry,
+  type TaskExecutor,
+} from "@tabductor/engine";
+import { createPyrunClient, createPythonExecutor } from "@tabductor/engine/python";
 import { AllowAllGate } from "@tabductor/policy";
 import { createSecretsBroker, fileKeyWrapper } from "@tabductor/secrets";
 import { initTelemetry } from "@tabductor/telemetry/init";
@@ -185,9 +193,33 @@ function decisionExecutorEntry(db: Db, pool: Pool): ReturnType<typeof createDeci
 }
 // -----------------------------------------------------------------------------------------
 
+/**
+ * S5h: `(asset, python)`. Withheld without a `PYRUNNER_URL` for the same reason the AI
+ * executors are withheld without a key — registering something that can only fail deep inside
+ * a run is worse than declining it at boot and saying so.
+ */
+function pythonExecutorEntry(db: typeof handle.db): TaskExecutor | undefined {
+  if (!config.PYRUNNER_URL) {
+    log.info("no PYRUNNER_URL configured — (asset, python) has no executor", {});
+    return undefined;
+  }
+  return createPythonExecutor({
+    db,
+    blobs: createMinioBlobStore({
+      endpoint: config.BLOB_ENDPOINT,
+      accessKey: config.BLOB_ACCESS_KEY,
+      secretKey: config.BLOB_SECRET_KEY,
+      bucket: config.BLOB_BUCKET,
+    }),
+    pyrun: createPyrunClient({ url: config.PYRUNNER_URL }),
+    metrics: telemetry.metrics,
+  });
+}
+
 const agentExecutor = await agentExecutorEntry(handle.db);
 const assetExecutor = assetExecutorEntry(handle.db, handle.pool);
 const decisionExecutor = decisionExecutorEntry(handle.db, handle.pool);
+const pythonExecutor = pythonExecutorEntry(handle.db);
 const executors: ExecutorRegistry = {
   [executorKey("browser", "stub")]: StubExecutor,
   // The S5a scripted-behavior skeleton, now at mode `stub` — S5c's real `(asset, ai)`
@@ -202,6 +234,9 @@ const executors: ExecutorRegistry = {
   // ever needed for it, since `store.query` + `emit` had no MCP/LaTeX gap to bridge before
   // being buildable for real).
   ...(decisionExecutor ? { [executorKey("decision", "ai")]: decisionExecutor } : {}),
+  // S5h: `mode=python` is confined to `kind=asset` by `checkGraph` and the check constraint,
+  // so this is the only pair it can ever resolve to.
+  ...(pythonExecutor ? { [executorKey("asset", "python")]: pythonExecutor } : {}),
 };
 
 const dispatcher = createDispatcher(handle, {
@@ -232,6 +267,7 @@ log.info("engine started", {
   aiExecutor: agentExecutor ? "registered" : "not registered",
   assetAiExecutor: assetExecutor ? "registered" : "not registered",
   decisionAiExecutor: decisionExecutor ? "registered" : "not registered",
+  pythonExecutor: pythonExecutor ? "registered" : "not registered",
 });
 
 /**

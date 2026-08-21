@@ -91,6 +91,19 @@ services:
   engine:
     <<: *app
     command: ["node", "--import", "tsx", "apps/engine/src/main.ts"]
+    environment:
+      <<: *app-env
+      PYRUNNER_URL: http://pyrunner:4200
+    # Restated in full, not extended: a YAML merge key replaces the mapping it merges into, so
+    # inheriting `x-app`'s depends_on and adding pyrunner means writing all three out.
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+      pyrunner:
+        condition: service_healthy
+    networks: [default, compute]
     # The secrets KEK (S5b) lives on a volume because `fileKeyWrapper` mints one on first use
     # if the file is absent. Left on the container's writable layer, every `--build` or
     # recreation would mint a *new* v1 KEK and orphan every already-wrapped `secrets` row —
@@ -115,6 +128,47 @@ services:
       timeout: 5s
       retries: 12
       start_period: 20s
+
+  # Python compute (S5h): `mode=python` asset nodes run here. The engine POSTs a job, this
+  # process writes it to a temp dir and runs `python` as a subprocess under a wall clock, then
+  # hands back the files and emit lines for the engine to validate and store.
+  #
+  # An ordinary service, with no docker socket, because after the S5h reshape a job is a
+  # subprocess of this process rather than a container it launches — this container *is* the
+  # isolation unit. `compute` is internal and nothing is published: hygiene, not a boundary.
+  # The wall clock in `apps/pyrunner/src/job.ts` is the only runtime control there is, and the
+  # program it runs is the operator's own code, published through their own control plane.
+  #
+  # `init: true` matters more here than elsewhere: a wall-clock kill takes out a process group,
+  # and PID 1 without an init leaks the zombies.
+  pyrunner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: pyrunner
+    image: tabductor-pyrunner:local
+    command: ["node", "--import", "tsx", "apps/pyrunner/src/main.ts"]
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      # 0.0.0.0 inside an unpublished container on an internal network: the engine has to reach
+      # it across the compose network, and nothing outside that network can.
+      PYRUNNER_HOST: 0.0.0.0
+      PYRUNNER_PORT: "4200"
+      PYRUNNER_WALL_CLOCK_MS: ${PYRUNNER_WALL_CLOCK_MS:-60000}
+    # `compute` only — deliberately not on `default` too. It needs no database, no blob store
+    # and no internet; the engine reaches it across `compute`, and being off `default` is what
+    # makes the "no route anywhere" claim below actually true rather than aspirational.
+    networks: [compute]
+    init: true
+    healthcheck:
+      test:
+        ["CMD", "node", "-e", "fetch('http://127.0.0.1:4200/status').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
 
   # The blob store: content-addressed screenshots today, response bodies and rendered assets
   # later (`packages/browser/src/blob-store.ts`). Speaking the S3 API rather than a bespoke
@@ -150,6 +204,15 @@ services:
       - "${BIND_ADDR:-127.0.0.1}:4318:4318" # OTLP HTTP
     volumes: ["lgtm:/data"]
     restart: unless-stopped
+
+networks:
+  default:
+  # Internal: no gateway, so nothing on it can route off the host. pyrunner sits here and
+  # nowhere else, so a job has no network to reach even though nothing stops it trying.
+  # Hygiene, not the isolation boundary — the container is that, and the wall clock is the
+  # only runtime control.
+  compute:
+    internal: true
 
 volumes:
   pgdata:

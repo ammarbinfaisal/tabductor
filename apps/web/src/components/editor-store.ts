@@ -83,6 +83,10 @@ const emptyTask = (name: string, kind: NodeKind): GraphTask => ({
   emits: [],
   consumes: [],
   schedule: null,
+  // S5h: a node the editor creates is never a python node — `code`/`runtime` arrive only
+  // through a publish that carries them, and the editor has no authoring surface for either.
+  code: null,
+  runtime: null,
   position: null,
 });
 

@@ -44,3 +44,29 @@ USER node
 EXPOSE 3000
 # Overridden per service in compose; this default makes a bare `docker run` do the useful thing.
 CMD ["pnpm", "-F", "web", "start"]
+
+# The Python compute runner (S5h). Everything the app image already has, plus a pinned CPython
+# and a pinned scientific stack — the HTTP surface is TypeScript like every other app here, so
+# this is the app image plus Python, not a second workspace build.
+#
+# A stage rather than its own Dockerfile: pyrunner is the same workspace, the same lockfile and
+# the same `tsx` as everything else, so a standalone file would have to repeat `deps` and
+# `build` over the same context and reopen exactly the drift this file's header argues against.
+# `FROM runtime` reuses the built /app layer byte for byte, and `runtime` itself never gains
+# Python — only this stage does. (`apps/renderer/sandbox/Dockerfile` is separate for the
+# opposite reason: it is FROM scratch and shares nothing.)
+FROM runtime AS pyrunner
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 python3-venv \
+ && rm -rf /var/lib/apt/lists/*
+COPY apps/pyrunner/requirements.txt /opt/pyrunner/requirements.txt
+# A venv rather than `pip install --break-system-packages`: Debian marks its system Python
+# externally-managed (PEP 668), and keeping our pinned set out of it means an apt upgrade and a
+# job's imports can never fight over the same site-packages.
+RUN python3 -m venv /opt/pyrunner/venv \
+ && /opt/pyrunner/venv/bin/pip install --no-cache-dir -r /opt/pyrunner/requirements.txt \
+ && chown -R node:node /opt/pyrunner
+USER node
+ENV PYRUNNER_PYTHON=/opt/pyrunner/venv/bin/python3
+CMD ["node", "--import", "tsx", "apps/pyrunner/src/main.ts"]

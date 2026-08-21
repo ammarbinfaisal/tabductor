@@ -79,8 +79,11 @@ the trace — navigations, actions, network reads, policy denials, model calls w
 Share a workflow with an unguessable link and anyone can watch it live, seeing packets only for
 the event types you marked shared.
 
-Still ahead: Python compute nodes, the compiled-script runtime and its deopt loop, the real
-policy evaluator, and one-prompt-to-a-graph compilation. See
+Asset nodes can also run an authored Python program (`mode=python`) against a pinned
+scientific stack, producing spreadsheets and other computed deliverables.
+
+Still ahead: the compiled-script runtime and its deopt loop, the real policy evaluator, and
+one-prompt-to-a-graph compilation. See
 [`docs/subphases/ROADMAP.md`](docs/subphases/ROADMAP.md) for status.
 
 ## Design docs
@@ -94,8 +97,8 @@ Companion designs, each extending the main one:
 authoring surface), [`graph-compilation-llm.md`](docs/graph-compilation-llm.md) (the decision
 node, the per-workflow data store, one prompt to a graph),
 [`sharing.md`](docs/sharing.md) (watch a workflow run, with visibility opt-in per event type),
-[`python-compute.md`](docs/python-compute.md) (`mode=python` — an authored program, for the
-numbers).
+[`python-compute.md`](docs/python-compute.md) (`mode=python` — an authored Python program, for
+the numbers).
 
 ## Working on it
 

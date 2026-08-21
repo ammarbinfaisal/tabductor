@@ -31,6 +31,10 @@ const envSchema = z.object({
   ANTHROPIC_API_KEY: optionalSetting,
   OPENAI_API_KEY: optionalSetting,
   SCHEMA_MODEL: optionalSetting,
+  /** S5h: `apps/pyrunner`'s base URL. Unset withholds the `(asset, python)` executor, the same
+   * posture the AI executors take without a key — a mode with nowhere to run is declined at
+   * boot with a log line, not registered to fail deep inside a run. */
+  PYRUNNER_URL: optionalSetting,
   // S5c: the secrets broker's KEK-wrapping key store (`fileKeyWrapper`, dev/test — a KMS
   // implementation is a later swap behind the same `KeyWrapper` interface, per S5b's own
   // doc). A clean checkout needs no environment (impl-phases §0's own rule for every other

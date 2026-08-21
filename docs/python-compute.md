@@ -1,9 +1,59 @@
 # Python Compute — `mode=python` on the Asset Node
 
-**Version:** 0.1 (extends `techical_plan.md` 0.5)
-**Status:** Specifies a third execution mode for asset nodes: a Python program, authored by an LLM or a human, run on our infrastructure inside a Firecracker microVM with a fixed dependency set, consuming a trigger packet and declared inputs and producing files, notably `.xlsx`. Covers the job contract, the dependency manifest, the sandbox, determinism, and Threats 18–22.
+**Version:** 0.2 (extends `techical_plan.md` 0.5)
+**Status:** Specifies a third execution mode for asset nodes: a Python program, authored by an LLM or a human, run on our infrastructure with a fixed dependency set, consuming a trigger packet and declared inputs and producing files, notably `.xlsx`. Covers the job contract, the dependency manifest, determinism, and the host-side trust boundary.
 
-Decisions incorporated from review: Python is a **mode on `kind=asset`**, not a fourth kind; isolation is a **Firecracker microVM per job**, not a subprocess and not a shared container.
+Decisions incorporated from review: Python is a **mode on `kind=asset`**, not a fourth kind.
+
+---
+
+## Changelog — 0.2 (as built)
+
+Sections below are **superseded where they describe a microVM**. tabductor became an
+open-source, self-hosted application, which removes the threat model the isolation design was
+built for: a `mode=python` program is the operator's own code, published through their own
+control plane, on their own machine. There is no untrusted tenant.
+
+What changed:
+
+- **§5 (the sandbox) is withdrawn in full.** No Firecracker, no jailer, no vendored `vmlinux`,
+  no `/dev/kvm`, no ext4 scratch drive built with `mke2fs` and read back with `debugfs`, no
+  dual firecracker/subprocess backend and no `PYRUNNER_ALLOW_UNSAFE_BACKEND`. `apps/pyrunner`
+  is an ordinary compose service that runs `python` as a subprocess of itself; the **container
+  is the isolation unit**, and a wall-clock kill is the only runtime control. It needs no
+  docker socket, which is why it can be a compose service at all.
+- **The hostile corpus is withdrawn with it.** Network access, `subprocess`, fork bombs and
+  memory bombs now *succeed*. Asserting they are blocked would be writing failing tests;
+  asserting they succeed would be testing CPython. `python-compute.test.ts` keeps only what is
+  still a contract: the wall clock, the output caps, symlinks not followed, and determinism.
+- **§2.2's closed `mode IN (...)` domain is withdrawn.** `tasks_kind_mode_check` ships as a
+  pair of exclusions instead. `mode` is a bare `z.string()` by design so a test-only executor
+  can claim a value without a schema change, and `scripted-browser.test.ts` publishes
+  `mode='scripted'` through the real publish path; closing the domain would reject all of them.
+- **§6's `python -I` is corrected to `-s -B`.** `-I` implies `-E`, which ignores every
+  `PYTHON*` variable — including `PYTHONHASHSEED`. `-I` together with `PYTHONHASHSEED=0`
+  therefore cancels itself: hash randomization stays on and set iteration order varies between
+  runs, which would make every byte-stability guarantee here flaky by construction. Verified
+  empirically. `-E`'s remaining value is obtained structurally instead, by passing an explicit
+  environment with no inherited `PYTHONPATH`/`PYTHONHOME`.
+- **§3.1's absolute `/job` prefix is relaxed to `cwd`-relative paths.** Without a per-job
+  chroot there is nothing to make `/job` mean two directories for two concurrent jobs, and
+  pinning it would force single concurrency. The job root is `cwd`; `TABDUCTOR_JOB_DIR` carries
+  the absolute path for a program that wants it.
+- **§10's `pyrun_sandbox_kills_total` is renamed `pyrun_kills_total`** (there is no sandbox
+  left to name) and **`pyrun_vm_boot_seconds` is dropped** (there is no VM to boot).
+- **`runtime.inputs.tables` is still rejected**, but not because S5g is missing — it shipped.
+  The field names tables, and §3.1 wants a declared SELECT run under the workflow's reader
+  role; the graph document has nowhere to put that SELECT, so honouring it needs a schema
+  change and a materializer. Tracked as future work, not part of S5h.
+
+**What did not change, and is worth stating plainly:** a Python job still has no host bridge.
+Its inputs are resolved and written before it starts, its outputs are collected after it exits,
+and in between it can call nothing — which is why `(asset, python)`'s tool registry is empty
+rather than filtered. That argument was never a property of the microVM. Likewise the host
+still validates every output path against `normalizeAssetPath` and the task's write grants
+before anything reaches the asset store: that is host integrity, not tenant isolation, and
+`apps/pyrunner` is a network peer whose response is untrusted input like any other.
 
 ---
 

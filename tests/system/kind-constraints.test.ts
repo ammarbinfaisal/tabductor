@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
 import { AppError, newId } from "@tabductor/core";
 import { events, schedules, tasks, workflows } from "@tabductor/db";
@@ -54,6 +55,8 @@ const emptyGraph = (task: Partial<Graph["tasks"][number]> & { kind: "browser" | 
       emits: [],
       consumes: [],
       schedule: null,
+      code: null,
+      runtime: null,
       position: null,
       ...task,
     },
@@ -184,4 +187,114 @@ it("a task seeded without an explicit kind reads back as kind=browser", async ()
   const wf = await seedWorkflow(handle.db, { tasks: { Plain: {} } });
   const [row] = await handle.db.select().from(tasks).where(eq(tasks.id, wf.taskIds.Plain!));
   expect(row?.kind).toBe("browser");
+});
+
+// -- S5h: mode=python is confined to kind=asset, and its declaration is gated at publish ----
+
+const PY_RUNTIME = { image: "py-2026.08", packages: ["pandas"], inputs: { assets: [], tables: [] } };
+const PY_CODE = { language: "python" as const, source: "print('hi')" };
+
+async function publishError(handle: MigratedTestDb, graph: Graph): Promise<AppError> {
+  const workflowId = await freshWorkflow(handle);
+  const err = await publishVersion(handle.db, { workflowId, graph }, { schemaGenerator: noGenerator }).catch(
+    (e: unknown) => e,
+  );
+  expect(err).toBeInstanceOf(AppError);
+  expect((err as AppError).code).toBe(GRAPH_INVALID);
+  return err as AppError;
+}
+
+it("publishVersion rejects mode=python on a browser task", async () => {
+  handle = await createMigratedTestDb();
+  const err = await publishError(
+    handle,
+    emptyGraph({ kind: "browser", mode: "python", code: PY_CODE, runtime: PY_RUNTIME }),
+  );
+  expect(err.message).toContain('may not use mode "python"');
+});
+
+it.each([
+  [
+    "a package outside the image's manifest",
+    { packages: ["requests"] },
+    /not in the "py-2026.08" manifest/,
+  ],
+  ["an unknown runtime image", { image: "py-1999.01" }, /unknown runtime image/],
+  ["a reserved store-table input", { inputs: { assets: [], tables: ["visited"] } }, /not wired yet/],
+])("publishVersion rejects %s", async (_label, patch, matcher) => {
+  handle = await createMigratedTestDb();
+  const err = await publishError(
+    handle,
+    emptyGraph({
+      kind: "asset",
+      mode: "python",
+      code: PY_CODE,
+      runtime: { ...PY_RUNTIME, ...patch },
+    }),
+  );
+  expect(err.message).toMatch(matcher);
+});
+
+it.each([
+  ["no code", { code: null, runtime: PY_RUNTIME }, /has mode "python" but no code/],
+  ["no runtime declaration", { code: PY_CODE, runtime: null }, /no runtime declaration/],
+])("publishVersion rejects a python task with %s", async (_label, patch, matcher) => {
+  handle = await createMigratedTestDb();
+  const err = await publishError(handle, emptyGraph({ kind: "asset", mode: "python", ...patch }));
+  expect(err.message).toMatch(matcher);
+});
+
+it("publishVersion rejects code declared on a mode that is not python", async () => {
+  handle = await createMigratedTestDb();
+  const err = await publishError(handle, emptyGraph({ kind: "asset", mode: "ai", code: PY_CODE }));
+  expect(err.message).toContain("declares code but has mode");
+});
+
+it("a python task publishes, and its program lands on the task row hashed", async () => {
+  handle = await createMigratedTestDb();
+  const workflowId = await freshWorkflow(handle);
+  const graph = emptyGraph({ kind: "asset", mode: "python", code: PY_CODE, runtime: PY_RUNTIME });
+  const { taskIds } = await publishVersion(handle.db, { workflowId, graph }, { schemaGenerator: noGenerator });
+
+  const [row] = await handle.db.select().from(tasks).where(eq(tasks.id, taskIds.T!));
+  expect(row?.codeSource).toBe(PY_CODE.source);
+  expect(row?.codeSha256).toBe(createHash("sha256").update(PY_CODE.source, "utf8").digest("hex"));
+  expect(row?.runtimeJson).toMatchObject({ image: "py-2026.08" });
+});
+
+it("a direct update flipping a browser task to mode=python is rejected by the check constraint", async () => {
+  handle = await createMigratedTestDb();
+  const workflowId = await freshWorkflow(handle);
+  const graph = emptyGraph({ kind: "browser", mode: "ai" });
+  const { taskIds } = await publishVersion(handle.db, { workflowId, graph }, { schemaGenerator: noGenerator });
+
+  const message = await causeMessage(
+    handle.db.update(tasks).set({ mode: "python" }).where(eq(tasks.id, taskIds.T!)),
+  );
+  expect(message).toContain("tasks_kind_mode_check");
+});
+
+/**
+ * The constraint is a pair of exclusions, not a whitelist, and these two cases are what say
+ * so. `mode` is a bare `z.string()` by design so a test-only executor can claim a value
+ * without a schema change — `scripted-browser.test.ts` publishes `mode='scripted'` through the
+ * real publish path in five places. An earlier draft of this migration closed the domain to
+ * `('stub','ai','compiled','python')`, which would have rejected every one of them and taken
+ * the whole S3b suite down with it. This is the assertion that would have caught that.
+ */
+it.each([
+  ["an asset task flipped to python", "asset" as const, "python"],
+  ["a browser task on a test-only mode", "browser" as const, "scripted"],
+])("the constraint permits %s", async (_label, kind, mode) => {
+  handle = await createMigratedTestDb();
+  const workflowId = await freshWorkflow(handle);
+  const { taskIds } = await publishVersion(
+    handle.db,
+    { workflowId, graph: emptyGraph({ kind, mode: "ai" }) },
+    { schemaGenerator: noGenerator },
+  );
+
+  await handle.db.update(tasks).set({ mode }).where(eq(tasks.id, taskIds.T!));
+  const [row] = await handle.db.select().from(tasks).where(eq(tasks.id, taskIds.T!));
+  expect(row?.mode).toBe(mode);
 });

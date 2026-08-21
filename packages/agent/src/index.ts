@@ -49,6 +49,7 @@ export {
   type AssetExecutorDeps,
 } from "./asset-executor.js";
 export { buildDecisionToolRegistry, type DecisionToolRegistryDeps } from "./decision-tools.js";
+export { buildPythonToolRegistry } from "./python-tools.js";
 export {
   createDecisionExecutor,
   type DecisionExecutorDeps,

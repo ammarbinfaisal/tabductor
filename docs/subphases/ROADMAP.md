@@ -20,13 +20,14 @@ Environment deviations from `impl-phases.md`:
   simulator, and running it in-process keeps the connect path identical to production's.
 - Fixture sites: served in-process by the testkit, not as a compose service.
 - Blob storage: MinIO (S3 API) behind a `BlobStore` interface.
-- Firecracker (S5h): needs `/dev/kvm` passed through to the `pyrunner` container — not
-  `--privileged`, and never the docker socket. This machine qualifies (`/dev/kvm` present,
-  CPU reports `svm`); the `firecracker` and `jailer` binaries are not installed and are
-  vendored, pinned by hash, into the runner image. Where KVM is absent the runner falls back
-  to a subprocess backend that is **not** a security boundary, says so, and requires
-  `PYRUNNER_ALLOW_UNSAFE_BACKEND=1`; the sandbox suite skips loudly rather than running
-  against it.
+- Python compute (S5h): **an ordinary compose service, no microVM.** tabductor is open-source
+  and self-hosted, so a `mode=python` program is the operator's own code and there is no
+  untrusted tenant to isolate from. Firecracker, the jailer, the vendored kernel, the
+  `/dev/kvm` requirement and the ext4 block-device job protocol are all withdrawn. `pyrunner`
+  runs `python` as a subprocess of itself under a wall clock — that container *is* the
+  isolation unit — and needs no docker socket, which is why it can be in `docker-compose.yml`
+  at all (contrast `apps/renderer`, which cannot). It sits alone on an internal `compute`
+  network with no published ports and no route off the host.
 
 ## Stack decisions (user-mandated, binding for all subphases)
 - **Next.js + tRPC + zod** for the control plane (`apps/web`). Backend logic stays in
@@ -74,7 +75,7 @@ Environment deviations from `impl-phases.md`:
 | S5f | Two-kind e2e: browser → asset (MCP + LaTeX) → browser upload | impl Phase 5 | **done** |
 | S5g | Workflow store (`wfdata` schema + role pair, `store.*` tools, fenced SQL) + `kind=decision` + plan/act/record e2e | graph-compilation-llm §2–3, §10 | **done** (migration `0014`) |
 | U3.5 | Decision node's kind badge (third entity family) + workflow store browser (tables/row-counts/schema per version) + read-only query console over S5g's own fenced read path + schema-diff-at-publish preview | graph-compilation-llm §3, impl UI track U3.5 | **done** |
-| S5h | Python compute: `mode=python` on `kind=asset`, `(kind, mode)` tool registry, `apps/pyrunner` + Firecracker microVM, host-side emits, hostile corpus | python-compute §2–7, §13.6, §16 T18–22 | needs S5a + S5d |
+| S5h | Python compute: `mode=python` on `kind=asset`, empty `(asset, python)` tool registry, `apps/pyrunner` as a plain compose service, host-side path validation + emits | python-compute §2–7 (v0.2), §13.6 | **done** (migration `0015`) |
 | S6a | Static runtime sandbox + script registry + lint gate | impl Phase 6, §12 | |
 | S6b | Trace consistency checker + compiler agent | impl Phase 6, §11 | |
 | S6c | CompiledExecutor + deopt handoff + promotion/demotion + flagship e2e | impl Phase 6 | |
@@ -93,14 +94,17 @@ beyond `store.query`+`emit` to a decision task without a design-doc change. Sche
 **The tool registry keys on `(kind, mode)`, not `kind` (§4, from S5h):** for every mode that
 existed before, this changes nothing — `(browser, ai)` and `(browser, compiled)` share the browser
 registry, as §12 requires. It exists for **`(asset, python)`, which has no tool registry at all**.
-A Python job has no host bridge: its inputs are resolved by the host before the sandbox starts,
-its outputs and emissions are collected by the host after it exits, and the only channel in
-between is a block device. That is why Python can live on the kind that owns `mcp.*` without
+A Python job has no host bridge: its inputs are resolved and written by the host before the
+process starts, its outputs and emissions are collected by the host after it exits, and in
+between it can call nothing. That is why Python can live on the kind that owns `mcp.*` without
 reopening the exfiltration chain — the chain is severed by the absence of a channel rather than by
-a rule about which names appear in a list. **Adding any host callable, network device or vsock to
-that sandbox requires a design-doc change** (§16 Threat 22). Mode constraints: `compiled` implies
-`browser`, `python` implies `asset`, both rejected at save time and re-asserted by S5a's named
-`tasks_kind_mode_check`.
+a rule about which names appear in a list. **That argument survived the S5h reshape unchanged**:
+it was never a property of the microVM, only of a job talking to the host through a directory and
+an exit code. Adding any host callable to that job still requires a design-doc change (§16 Threat
+22). Mode constraints: `compiled` implies `browser`, `python` implies `asset`, both rejected at
+save time and re-asserted by the named `tasks_kind_mode_check` — which stays a pair of
+**exclusions**, never a closed `mode IN (...)` domain, because `mode` is deliberately open so a
+test-only executor can claim a value without a schema change (`scripted-browser.test.ts`).
 
 **Share visibility is default-deny and versioned with the graph (from S2d):** each declared
 emitted event carries `public: boolean`, default `false`, in the graph document; `publishVersion`

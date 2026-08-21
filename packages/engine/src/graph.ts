@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import { Ajv } from "ajv";
 import addFormatsModule from "ajv-formats";
 const addFormats = addFormatsModule.default ?? addFormatsModule;
-import { AppError, ASSET_REF_SCHEMA, newId } from "@tabductor/core";
+import { AppError, ASSET_REF_SCHEMA, newId, PYTHON_RUNTIME_MANIFEST } from "@tabductor/core";
 import {
   eventDefs,
   schedules,
@@ -80,6 +81,34 @@ export const graphScheduleSchema = z.object({
   enabled: z.boolean().default(true),
 });
 
+/**
+ * S5h — the Python task's program (`python-compute.md` §3.5). `language` is a literal
+ * rather than an open string because it is the whole enum today: guest-side Python is the
+ * only compute mode this document specifies, and widening it is a schema change, not a
+ * new string value slipping through.
+ */
+export const graphCodeSchema = z.object({
+  language: z.literal("python"),
+  source: z.string().min(1).max(200_000),
+});
+
+/**
+ * S5h — declared inputs and the pinned image (`python-compute.md` §3.1, §4). `tables` is
+ * declared but not wired: it names tables, and resolving one needs a SELECT this document has
+ * no place for. `checkGraph` rejects a non-empty value rather than accept a declaration
+ * nothing can honour.
+ */
+export const graphRuntimeSchema = z.object({
+  image: z.string().min(1),
+  packages: z.array(z.string().min(1)).default([]),
+  inputs: z
+    .object({
+      assets: z.array(z.string().min(1)).default([]),
+      tables: z.array(z.string().min(1)).default([]),
+    })
+    .default({}),
+});
+
 export const graphTaskSchema = z.object({
   /** Identity across versions (`tasks.name`), so an edited graph still routes old events. */
   name: z.string().min(1).max(120),
@@ -93,6 +122,10 @@ export const graphTaskSchema = z.object({
   /** Event types that trigger this task — its subscriptions. Wiring is these lists. */
   consumes: z.array(z.string().min(1)).default([]),
   schedule: graphScheduleSchema.nullable().default(null),
+  /** S5h: the `mode=python` program. `null` for every other mode. */
+  code: graphCodeSchema.nullable().default(null),
+  /** S5h: the `mode=python` image/package/input declaration. `null` for every other mode. */
+  runtime: graphRuntimeSchema.nullable().default(null),
   /** Editor-only decoration, round-tripped through `graph_json` and ignored by the engine. */
   position: z.object({ x: z.number(), y: z.number() }).nullable().default(null),
 });
@@ -105,6 +138,8 @@ export const graphSchema = z.object({
 export type Graph = z.infer<typeof graphSchema>;
 export type GraphTask = z.infer<typeof graphTaskSchema>;
 export type GraphEvent = z.infer<typeof graphEventSchema>;
+export type GraphCode = z.infer<typeof graphCodeSchema>;
+export type GraphRuntime = z.infer<typeof graphRuntimeSchema>;
 
 export const GRAPH_INVALID = "graph_invalid";
 export const GRAPH_COMPILE_FAILED = "graph_compile_failed";
@@ -158,6 +193,59 @@ export function checkGraph(graph: Graph): void {
       throw invalid(`a "${task.kind}" task may not use mode "compiled"`, {
         task: task.name,
         kind: task.kind,
+        mode: task.mode,
+      });
+    }
+
+    // S5h: `mode=python` requires `kind=asset` (§2.2) — re-asserted here (the save-time
+    // reject, §5) even though `tasks_kind_mode_check` is the backstop for a write that
+    // bypasses this, per the same division of labour `NOT_COMPILABLE` follows above.
+    if (task.mode === "python" && task.kind !== "asset") {
+      throw invalid(`a "${task.kind}" task may not use mode "python"`, {
+        task: task.name,
+        kind: task.kind,
+        mode: task.mode,
+      });
+    }
+
+    // `tables` (python-compute.md §3.1) is declared but not wired. Not for want of a store —
+    // S5g shipped one — but because the field holds table *names*, and §3.1 wants "the declared
+    // SELECT [run] host-side under the workflow's reader role". There is nowhere in this
+    // document for that SELECT to live, so honouring `tables` needs a schema change giving each
+    // entry a query, the fenced-SQL gate pointed at that new authoring surface, and a
+    // materializer. Rejecting is better than accepting a declaration nothing can honour.
+    if (task.runtime && task.runtime.inputs.tables.length > 0) {
+      throw invalid(
+        `task "${task.name}" declares runtime.inputs.tables, which is not wired yet — it needs a ` +
+          `per-table declared SELECT in the graph document and a host-side materializer`,
+        { task: task.name },
+      );
+    }
+
+    if (task.mode === "python") {
+      if (!task.code) {
+        throw invalid(`task "${task.name}" has mode "python" but no code`, { task: task.name });
+      }
+      if (!task.runtime) {
+        throw invalid(`task "${task.name}" has mode "python" but no runtime declaration`, { task: task.name });
+      }
+      const manifest = PYTHON_RUNTIME_MANIFEST[task.runtime.image];
+      if (!manifest) {
+        throw invalid(`task "${task.name}" declares unknown runtime image "${task.runtime.image}"`, {
+          task: task.name,
+          image: task.runtime.image,
+        });
+      }
+      const unlisted = task.runtime.packages.filter((p) => !manifest.includes(p));
+      if (unlisted.length > 0) {
+        throw invalid(
+          `task "${task.name}" declares package(s) not in the "${task.runtime.image}" manifest: ${unlisted.join(", ")}`,
+          { task: task.name, image: task.runtime.image, packages: unlisted },
+        );
+      }
+    } else if (task.code) {
+      throw invalid(`task "${task.name}" declares code but has mode "${task.mode}", not "python"`, {
+        task: task.name,
         mode: task.mode,
       });
     }
@@ -367,6 +455,12 @@ export async function publishVersion(
         kind: task.kind,
         mode: task.mode,
         limitsJson: task.limits,
+        // S5h: projected here, at publish, and nowhere else — `updateTask` deliberately
+        // never touches these three columns (see its own doc comment: code is structural
+        // history, not a knob you turn while watching a run).
+        codeSource: task.code?.source ?? null,
+        codeSha256: task.code ? createHash("sha256").update(task.code.source, "utf8").digest("hex") : null,
+        runtimeJson: task.runtime ?? null,
       });
 
       for (const type of task.emits) {
@@ -498,6 +592,10 @@ export async function readGraph(db: Db, versionId: string): Promise<Graph> {
               enabled: schedule.enabled,
             }
           : null,
+        // S5h: read from the `tasks` columns `publishVersion` projected to, the same rule
+        // `kind` already follows — never from `graph_json`.
+        code: row.codeSource ? { language: "python", source: row.codeSource } : null,
+        runtime: graphRuntimeSchema.nullable().catch(null).parse(row.runtimeJson),
         position: decoration.get(row.name)?.position ?? null,
       };
     }),
