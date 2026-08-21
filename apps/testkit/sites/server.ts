@@ -198,6 +198,20 @@ function iframeWrapPage(src: string): string {
  * script-opened window. Both are S3a navigation-guard fixtures: a guard that only wrapped
  * `goto` would wave both of these straight through.
  */
+/**
+ * A page that puts up a modal on load. S6a's `ctx.guard.noDialog()` needs something that
+ * genuinely blocks a real browser — `alert()` is the smallest thing that does, and it is what
+ * the guard exists to detect: a compiled script driving a page that has stopped behaving the
+ * way the traces it was compiled from behaved.
+ */
+function dialogPage(): string {
+  return page(
+    "Dialog",
+    `<h1 data-testid="heading">Dialog page</h1>
+<script>window.alert("interrupting");</script>`,
+  );
+}
+
 function popupPage(to: string): string {
   // A listener rather than an inline `onclick`: the target is a URL, `JSON.stringify` quotes
   // it with `"`, and `"` inside a double-quoted HTML attribute ends the attribute.
@@ -291,6 +305,7 @@ export async function startFixtures(port = 0): Promise<Fixtures> {
       res.end();
       return;
     }
+    if (route === "GET /dialog") return sendHtml(res, dialogPage());
     if (route === "GET /popup") {
       return sendHtml(res, popupPage(url.searchParams.get("to") ?? "/fake-tweets"));
     }

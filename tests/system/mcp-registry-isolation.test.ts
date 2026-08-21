@@ -60,6 +60,7 @@ const fakeSession: RunSession = {
   network: fakeNetwork,
   openTab: async () => unused("session.openTab"),
   resolveAnchor: () => undefined,
+  dialogSeen: () => false,
   close: async () => {},
 };
 

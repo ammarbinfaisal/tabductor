@@ -134,6 +134,47 @@ export const tasks = pgTable(
 );
 
 /**
+ * S6a — one row per compiled script version for a task (§14). `guards_meta` is what the
+ * compiler recorded about the guards it generated; `from_runs` is the run ids the script was
+ * compiled from, so a script can always be traced back to the traces that produced it.
+ *
+ * The partial unique index is the load-bearing part: it makes "the active script for a task"
+ * a fact the **database** enforces, rather than an invariant S6c's activation swap has to get
+ * right under concurrent writes. That swap becomes one transaction — old row to `invalidated`,
+ * new row to `active` — which this index makes safe rather than merely usually-correct.
+ */
+export const COMPILED_SCRIPT_STATUSES = ["candidate", "active", "invalidated"] as const;
+export type CompiledScriptStatus = (typeof COMPILED_SCRIPT_STATUSES)[number];
+
+export const compiledScripts = pgTable(
+  "compiled_scripts",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    /** Prior max + 1 for the task, starting at 1. */
+    version: integer("version").notNull(),
+    source: text("source").notNull(),
+    guardsMeta: jsonb("guards_meta").notNull().default({}),
+    /** Run ids this script was compiled from (S6b's `from_runs` provenance). */
+    fromRuns: jsonb("from_runs").notNull().default([]),
+    status: text("status").$type<CompiledScriptStatus>().notNull().default("candidate"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("compiled_scripts_task_version_key").on(t.taskId, t.version),
+    // At most one active script per task, enforced where it cannot be raced.
+    uniqueIndex("compiled_scripts_active_task_key")
+      .on(t.taskId)
+      .where(sql`${t.status} = 'active'`),
+    check("compiled_scripts_status_check", sql`${t.status} in ('candidate','active','invalidated')`),
+  ],
+);
+
+export type CompiledScriptRow = typeof compiledScripts.$inferSelect;
+
+/**
  * The event as an entity of the graph, not a property of its emitter: one row per
  * (version, type), whoever emits it. The wiring model routes on event types, so this is
  * where everything about a type lives — the author's plain-language `description` (the

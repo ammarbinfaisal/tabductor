@@ -184,6 +184,17 @@ export type NetworkHooks = {
   onSettled?: (record: NetworkRecord, parts: NetworkParts) => void | Promise<void>;
 };
 
+/**
+ * A JS dialog (`alert`/`confirm`/`prompt`/`beforeunload`) fired on the page. S6a's
+ * `ctx.guard.noDialog()` is the only reader: a compiled script needs to assert that the page
+ * it is driving did not put up a modal, and there was no way to know before this.
+ *
+ * The hook is notification-only — the implementation dismisses the dialog itself, because an
+ * un-dismissed `alert()` blocks the page forever and every caller would have to remember to.
+ */
+export type DialogInfo = { type: string; message: string };
+export type DialogHook = (info: DialogInfo) => void;
+
 export type CreatePageOptions = {
   /**
    * Applies to this page *and to anything it opens*. A popup is the classic way around a
@@ -193,6 +204,12 @@ export type CreatePageOptions = {
   onNavigationRequest?: NavigationHook;
   /** Same popup attribution as `onNavigationRequest`; absent means this page is unobserved. */
   network?: NetworkHooks;
+  /**
+   * Same popup attribution again. Absent means dialogs are left to Playwright's own default
+   * (which is also to dismiss them) and nothing is recorded — so adding this hook changes no
+   * existing behaviour, it only makes the fact observable.
+   */
+  onDialog?: DialogHook;
 };
 
 export type BrowserConn = {

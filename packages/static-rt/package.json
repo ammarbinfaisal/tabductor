@@ -1,0 +1,20 @@
+{
+  "name": "@tabductor/static-rt",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "build": "tsc -p tsconfig.json" },
+  "dependencies": {
+    "@tabductor/browser": "workspace:*",
+    "@tabductor/core": "workspace:*",
+    "@tabductor/db": "workspace:*",
+    "@tabductor/telemetry": "workspace:*",
+    "drizzle-orm": "^0.44.0",
+    "isolated-vm": "7.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.0"
+  }
+}

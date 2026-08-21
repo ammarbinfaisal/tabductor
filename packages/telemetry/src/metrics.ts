@@ -72,6 +72,15 @@ export type PyrunOutcome =
  * (there is no VM to boot).
  */
 export type PyrunKillReason = "wall_clock";
+// -----------------------------------------------------------------------------------------
+// --- S6a: static runtime (added under §17.2's "every later subphase adds its own rows"
+// growth clause, same clause S3b's browserQueueRejected and S5g/S5h's rows came in under) ---
+/** How a compiled script's run ended. `deopt` is not a failure — it is the script handing
+ * back to the agent, which S6c turns into a mid-run handoff. */
+export type StaticRtOutcome = "completed" | "deopt" | "killed" | "error";
+/** A run the isolate itself stopped. Sits on the security-signals dashboard beside the
+ * renderer and Python kill rows, and should be near zero outside hostile-corpus runs. */
+export type StaticRtKillReason = "wall_clock" | "memory";
 // -------------------------------------------------------------------------------------------
 
 export type Metrics = {
@@ -183,6 +192,15 @@ export type Metrics = {
   /** Total bytes a job's outputs occupied, after the caps allowed them through. */
   pyrunOutputBytes: { record: (bytes: number) => void };
   // -------------------------------------------------------------------------------------------
+  // --- S6a: static runtime -------------------------------------------------------------------
+  /** Wall-clock time of one `runCompiledScript` call. Instrumented at the primitive because
+   * S6b's dry-run and S6c's real runs both go through it, and neither should have to add it. */
+  staticRtRunDuration: { record: (seconds: number, labels: { outcome: StaticRtOutcome }) => void };
+  staticRtKills: { add: (labels: { reason: StaticRtKillReason }) => void };
+  /** One rejected script, by the rule that rejected it — a bounded label set, the same
+   * naming precedent `store_sql_rejected_total` set. No source text ever becomes a label. */
+  scriptLintRejected: { add: (labels: { rule: string }) => void };
+  // -------------------------------------------------------------------------------------------
   // --- S5g: workflow data store (§17.2 binding names, impl-phases §0.5) ------------------
   /** One `store.query` call, wherever it started resolving (the parse gate) or finished
    * (Postgres) — `outcome="ok"` is only recorded once the query actually ran. No SQL text,
@@ -237,6 +255,11 @@ export function createMetrics(meter: Meter): Metrics {
   const pyrunDuration = meter.createHistogram("pyrun_duration_seconds", { unit: "s" });
   const pyrunKills = meter.createCounter("pyrun_kills_total");
   const pyrunOutputBytes = meter.createHistogram("pyrun_output_bytes", { unit: "By" });
+  // -------------------------------------------------------------------------------------------
+  // --- S6a: static runtime -------------------------------------------------------------------
+  const staticRtRunDuration = meter.createHistogram("static_rt_run_duration_seconds", { unit: "s" });
+  const staticRtKills = meter.createCounter("static_rt_kills_total");
+  const scriptLintRejected = meter.createCounter("script_lint_rejected_total");
   // -------------------------------------------------------------------------------------------
   // --- S5g: workflow data store ------------------------------------------------------------
   const storeQueryDuration = meter.createHistogram("store_query_duration_seconds", { unit: "s" });
@@ -305,6 +328,11 @@ export function createMetrics(meter: Meter): Metrics {
     pyrunDuration: { record: (seconds, labels) => pyrunDuration.record(seconds, { ...labels }) },
     pyrunKills: { add: (labels) => pyrunKills.add(1, { ...labels }) },
     pyrunOutputBytes: { record: (bytes) => pyrunOutputBytes.record(bytes) },
+    // -------------------------------------------------------------------------------------------
+    // --- S6a: static runtime -------------------------------------------------------------------
+    staticRtRunDuration: { record: (seconds, labels) => staticRtRunDuration.record(seconds, { ...labels }) },
+    staticRtKills: { add: (labels) => staticRtKills.add(1, { ...labels }) },
+    scriptLintRejected: { add: (labels) => scriptLintRejected.add(1, { ...labels }) },
     // -------------------------------------------------------------------------------------------
     // --- S5g: workflow data store ------------------------------------------------------------
     storeQueryDuration: { record: (seconds, labels) => storeQueryDuration.record(seconds, { ...labels }) },

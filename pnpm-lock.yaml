@@ -23,6 +23,9 @@ importers:
       '@tabductor/bus':
         specifier: workspace:*
         version: link:packages/bus
+      '@tabductor/compiler':
+        specifier: workspace:*
+        version: link:packages/compiler
       '@tabductor/core':
         specifier: workspace:*
         version: link:packages/core
@@ -41,6 +44,9 @@ importers:
       '@tabductor/secrets':
         specifier: workspace:*
         version: link:packages/secrets
+      '@tabductor/static-rt':
+        specifier: workspace:*
+        version: link:packages/static-rt
       '@tabductor/store':
         specifier: workspace:*
         version: link:packages/store
@@ -444,6 +450,28 @@ importers:
         specifier: ^5.7.0
         version: 5.9.3
 
+  packages/compiler:
+    dependencies:
+      '@tabductor/core':
+        specifier: workspace:*
+        version: link:../core
+      '@tabductor/db':
+        specifier: workspace:*
+        version: link:../db
+      '@tabductor/telemetry':
+        specifier: workspace:*
+        version: link:../telemetry
+      drizzle-orm:
+        specifier: ^0.44.0
+        version: 0.44.7(@opentelemetry/api@1.9.1)(@types/pg@8.20.3)(pg@8.22.0)
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.13.3
+
   packages/core:
     dependencies:
       zod:
@@ -619,6 +647,34 @@ importers:
       sodium-native:
         specifier: ^5.1.0
         version: 5.1.0(bare-events@2.9.1)
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.13.3
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
+  packages/static-rt:
+    dependencies:
+      '@tabductor/browser':
+        specifier: workspace:*
+        version: link:../browser
+      '@tabductor/core':
+        specifier: workspace:*
+        version: link:../core
+      '@tabductor/db':
+        specifier: workspace:*
+        version: link:../db
+      '@tabductor/telemetry':
+        specifier: workspace:*
+        version: link:../telemetry
+      drizzle-orm:
+        specifier: ^0.44.0
+        version: 0.44.7(@opentelemetry/api@1.9.1)(@types/pg@8.20.3)(pg@8.22.0)
+      isolated-vm:
+        specifier: 7.0.1
+        version: 7.0.1
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
@@ -2696,6 +2752,10 @@ packages:
   isexe@2.0.0:
     resolution: {integrity: sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw==}
 
+  isolated-vm@7.0.1:
+    resolution: {integrity: sha512-nBCQ1hXEaYKYJ79wwfhaF44ITOJC30Hw0wPEsFeNsdD3hdeKK7FW1SGMQYBUA+qasvkqdOazI+iBuq0lcbN/aw==}
+    engines: {node: '>=24.0.0'}
+
   jose@6.2.8:
     resolution: {integrity: sha512-Bsdjwm3Qsd/P0jR+BHDe3LytDfY7WBq2HmCCLIwuVRHMuEC9ae7/R474GIUdF1NgCyZjzVo/A9DOiOBtXq8ZoQ==}
 
@@ -2844,6 +2904,10 @@ packages:
         optional: true
       sass:
         optional: true
+
+  node-gyp-build@4.8.4:
+    resolution: {integrity: sha512-LA4ZjwlnUblHVgq0oBF3Jl/6h/Nvs5fzBLwdEF4nuxnFdsfajde4WfxtJr3CaiH+F6ewcIB/q4jQ4UzPyid+CQ==}
+    hasBin: true
 
   object-assign@4.1.1:
     resolution: {integrity: sha512-rJgTQnkUnH1sFw8yT6VSU3zD3sWmu6sZhIseY8VX+GRu3P6F7Fu+JNDoXfklElbLJSnc3FUQHVe4cU5hj+BcUg==}
@@ -5206,6 +5270,10 @@ snapshots:
 
   isexe@2.0.0: {}
 
+  isolated-vm@7.0.1:
+    dependencies:
+      node-gyp-build: 4.8.4
+
   jose@6.2.8: {}
 
   joycon@3.1.1: {}
@@ -5341,6 +5409,8 @@ snapshots:
     transitivePeerDependencies:
       - '@babel/core'
       - babel-plugin-macros
+
+  node-gyp-build@4.8.4: {}
 
   object-assign@4.1.1: {}
 

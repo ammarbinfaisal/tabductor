@@ -11,6 +11,7 @@ import type {
   AnchoredElement,
   BrowserConn,
   CreatePageOptions,
+  DialogHook,
   Driver,
   ExtractedRecord,
   ExtractSpec,
@@ -162,6 +163,21 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
 
   /** Which page's traffic goes where (S3b). A popup inherits its opener's, same as `hooks`. */
   const netHooks = new Map<PwPage, NetworkHooks>();
+
+  /** Which page's dialogs go where (S6a). Same popup inheritance as `netHooks`. */
+  const dialogHooks = new Map<PwPage, DialogHook>();
+
+  /**
+   * Playwright dismisses dialogs itself when nothing is listening; registering a listener
+   * makes that *our* job, so the dismissal is explicit here. Behaviour is therefore unchanged
+   * for every existing caller — the only difference is that the fact becomes observable.
+   */
+  const attachDialog = (page: PwPage, hook: DialogHook): void => {
+    page.on("dialog", (dialog) => {
+      hook({ type: dialog.type(), message: dialog.message() });
+      void dialog.dismiss().catch(() => undefined);
+    });
+  };
 
   /**
    * The hook an unattributable page answers to: every hook this connection holds must
@@ -318,12 +334,21 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
     });
   };
 
-  const adopt = async (page: PwPage, hook: NavigationHook, net?: NetworkHooks): Promise<void> => {
+  const adopt = async (
+    page: PwPage,
+    hook: NavigationHook,
+    net?: NetworkHooks,
+    dialog?: DialogHook,
+  ): Promise<void> => {
     hooks.set(page, hook);
     ourPages.add(page);
     if (net) {
       netHooks.set(page, net);
       attachNetwork(page, net);
+    }
+    if (dialog) {
+      dialogHooks.set(page, dialog);
+      attachDialog(page, dialog);
     }
     page.once("close", () => {
       hooks.delete(page);
@@ -334,6 +359,7 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
       birthing.delete(page);
       denials.delete(page);
       netHooks.delete(page);
+      dialogHooks.delete(page);
     });
     await attachGuard(page);
   };
@@ -412,7 +438,10 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
     // session's page tree, so it is not this session's traffic to observe — only a security
     // guard has to answer for a page it cannot identify, an observer does not.
     const net = opener ? netHooks.get(opener) : undefined;
-    if (hook && !hooks.has(page)) await adopt(page, hook, net);
+    // Same attribution as `net`: a popup inherits its opener's dialog hook, and an
+    // unattributable page has no session to report a dialog to.
+    const dialog = opener ? dialogHooks.get(opener) : undefined;
+    if (hook && !hooks.has(page)) await adopt(page, hook, net, dialog);
 
     if (!stubbed) return;
     if (hook) {
@@ -537,7 +566,7 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
       const pwPage = await context.newPage();
       if (opts.onNavigationRequest) {
         await ensureRouted();
-        await adopt(pwPage, opts.onNavigationRequest, opts.network);
+        await adopt(pwPage, opts.onNavigationRequest, opts.network, opts.onDialog);
       } else {
         // Network observation piggybacks on the navigation guard's adoption path — a session
         // always supplies both (`session.ts`), and a page with no guard has no owner to

@@ -4,6 +4,7 @@ import type { Metrics } from "@tabductor/telemetry";
 import type {
   Anchor,
   BrowserConn,
+  DialogHook,
   ExtractSpec,
   NavigationRequest,
   NetworkBody,
@@ -28,6 +29,13 @@ import type { BlobInput, TraceRecorder } from "./trace.js";
 export type RunSession = {
   page: Page;
   network: NetworkApi;
+  /**
+   * Whether any page in this session has put up a JS dialog since it was opened (S6a).
+   * Latching rather than since-last-check on purpose: once a modal has interrupted the run,
+   * a later "no dialog" answer would be true of the moment and misleading about the run, and
+   * `ctx.guard.noDialog()` exists to let a compiled script refuse exactly that situation.
+   */
+  dialogSeen: () => boolean;
   /** A second guarded+traced page on the same connection (§8 `max_tabs`). */
   openTab: () => Promise<Page>;
   /**
@@ -158,6 +166,16 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
   const partsOf = new Map<number, NetworkParts>();
   /** Connects a driver-level record (identity, no index) to the slot this session gave it. */
   const indexOf = new WeakMap<NetworkRecord, number>();
+
+  /**
+   * Latched for the life of the session, across every page it opens (S6a). A dialog on a
+   * popup is still a dialog that interrupted this run, and `ctx.guard.noDialog()` reads this
+   * to decide whether the page it is driving is in the state the script was compiled for.
+   */
+  let dialogFired = false;
+  const onDialog: DialogHook = () => {
+    dialogFired = true;
+  };
 
   const networkHooks: NetworkHooks = {
     onStart(record) {
@@ -513,7 +531,7 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
   const openPages: Page[] = [];
 
   const openPage = async (): Promise<Page> => {
-    const raw = await conn.createPage({ onNavigationRequest, network: networkHooks });
+    const raw = await conn.createPage({ onNavigationRequest, network: networkHooks, onDialog });
     openPages.push(raw);
     return makePage(raw);
   };
@@ -530,6 +548,7 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
 
   return {
     page,
+    dialogSeen: () => dialogFired,
     network: { list: networkList, body: networkBody, read: networkRead },
     openTab,
     resolveAnchor: (anchor) => anchorMap.get(anchor),
