@@ -108,6 +108,17 @@ export const tasks = pgTable(
      * time: what a task may import is a reviewable fact in the repo, not a runtime lookup. */
     runtimeJson: jsonb("runtime_json"),
     // -------------------------------------------------------------------------------------
+    // -- S6c: promotion / demotion counters (§11's binding numbers: K=2, 3-in-10) ----------
+    /** Consecutive `ai` runs that succeeded *and* agreed with their predecessor. Reset by any
+     * failure or divergence — "two clean consistent runs" has to mean consecutive, or a task
+     * that works one run in three would eventually promote on the strength of runs weeks
+     * apart. */
+    cleanAiRuns: integer("clean_ai_runs").notNull().default(0),
+    /** The last <=10 compiled runs as booleans, newest last: `true` = that run deopted. A
+     * column rather than a table (S6c style rule), and a *window* rather than a count because
+     * §11's rule is "3 within the last 10", which a bare counter cannot answer. */
+    recentDeopts: jsonb("recent_deopts").notNull().default([]),
+    // -------------------------------------------------------------------------------------
     createdAt: createdAt(),
   },
   (t) => [

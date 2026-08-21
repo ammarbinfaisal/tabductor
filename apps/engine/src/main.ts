@@ -1,4 +1,11 @@
-import { createAgentExecutor, createAssetExecutor, createDecisionExecutor, createLlm, providerFromEnv } from "@tabductor/agent";
+import {
+  createAgentExecutor,
+  createAssetExecutor,
+  createCompiledExecutor,
+  createDecisionExecutor,
+  createLlm,
+  providerFromEnv,
+} from "@tabductor/agent";
 import { createEndpointPool, createMinioBlobStore, playwrightDriver } from "@tabductor/browser";
 import { createDispatcher } from "@tabductor/bus";
 import { loadConfig } from "@tabductor/core";
@@ -216,10 +223,60 @@ function pythonExecutorEntry(db: typeof handle.db): TaskExecutor | undefined {
   });
 }
 
+/**
+ * S6c: `(browser, compiled)`. Gated on the same two things `(browser, ai)` is — an endpoint to
+ * drive and a model key — because a compiled run needs the first always and the second the
+ * moment its guards fail. A compiled task whose deopt had nowhere to go would fail runs that
+ * the agent could have finished.
+ */
+async function compiledExecutorEntry(db: Db): Promise<TaskExecutor | undefined> {
+  const live = providerFromEnv({ ANTHROPIC_API_KEY: config.ANTHROPIC_API_KEY, OPENAI_API_KEY: config.OPENAI_API_KEY });
+  if (!live) {
+    log.info("no ANTHROPIC_API_KEY/OPENAI_API_KEY configured — (browser, compiled) has no executor", {});
+    return undefined;
+  }
+  const [endpointRow] = await db
+    .select({ id: cdpEndpoints.id })
+    .from(cdpEndpoints)
+    .orderBy(asc(cdpEndpoints.createdAt))
+    .limit(1);
+  if (!endpointRow) {
+    log.info("no cdp_endpoints row configured — (browser, compiled) has no executor", {});
+    return undefined;
+  }
+
+  const pool = createEndpointPool({ db, driver: playwrightDriver, metrics: telemetry.metrics, logger: log });
+  const blobs = createMinioBlobStore({
+    endpoint: config.BLOB_ENDPOINT,
+    accessKey: config.BLOB_ACCESS_KEY,
+    secretKey: config.BLOB_SECRET_KEY,
+    bucket: config.BLOB_BUCKET,
+  });
+  return createCompiledExecutor({
+    pool,
+    gate: new AllowAllGate(),
+    blobs,
+    db,
+    defaultEndpointId: endpointRow.id,
+    metrics: telemetry.metrics,
+    llmFor: ({ trace }) =>
+      createLlm("live", {
+        provider: live.provider,
+        apiKey: live.apiKey,
+        trace,
+        metrics: telemetry.metrics,
+        // The deopt path is the only thing here that ever calls a model, so cost recorded
+        // under mode `compiled` is exactly the cost of guards that stopped holding.
+        costLabels: { kind: "browser", mode: "compiled" },
+      }),
+  });
+}
+
 const agentExecutor = await agentExecutorEntry(handle.db);
 const assetExecutor = assetExecutorEntry(handle.db, handle.pool);
 const decisionExecutor = decisionExecutorEntry(handle.db, handle.pool);
 const pythonExecutor = pythonExecutorEntry(handle.db);
+const compiledExecutor = await compiledExecutorEntry(handle.db);
 const executors: ExecutorRegistry = {
   [executorKey("browser", "stub")]: StubExecutor,
   // The S5a scripted-behavior skeleton, now at mode `stub` — S5c's real `(asset, ai)`
@@ -237,6 +294,7 @@ const executors: ExecutorRegistry = {
   // S5h: `mode=python` is confined to `kind=asset` by `checkGraph` and the check constraint,
   // so this is the only pair it can ever resolve to.
   ...(pythonExecutor ? { [executorKey("asset", "python")]: pythonExecutor } : {}),
+  ...(compiledExecutor ? { [executorKey("browser", "compiled")]: compiledExecutor } : {}),
 };
 
 const dispatcher = createDispatcher(handle, {
@@ -268,6 +326,7 @@ log.info("engine started", {
   assetAiExecutor: assetExecutor ? "registered" : "not registered",
   decisionAiExecutor: decisionExecutor ? "registered" : "not registered",
   pythonExecutor: pythonExecutor ? "registered" : "not registered",
+  compiledExecutor: compiledExecutor ? "registered" : "not registered",
 });
 
 /**

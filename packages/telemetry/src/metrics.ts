@@ -87,6 +87,15 @@ export type StaticRtKillReason = "wall_clock" | "memory";
  * distinction is the point: `consistency` means the task is not compilable yet, `lint` and
  * `dry_run` mean the model produced something the gates caught. */
 export type CompileOutcome = "ok" | "kind" | "consistency" | "llm" | "lint" | "dry_run";
+/** §11's deopt trigger classes. `guard_failure` is the in-script one; the rest are the
+ * executor's own detections. */
+export type DeoptTrigger =
+  | "guard_failure"
+  | "missing_element"
+  | "unexpected_dialog"
+  | "unexpected_url"
+  | "zero_extraction"
+  | "step_timeout";
 // -------------------------------------------------------------------------------------------
 
 export type Metrics = {
@@ -212,6 +221,13 @@ export type Metrics = {
   compileRuns: { add: (labels: { outcome: CompileOutcome }) => void };
   compileDuration: { record: (seconds: number, labels: { outcome: CompileOutcome }) => void };
   // -------------------------------------------------------------------------------------------
+  // --- S6c: compiled executor (§17.2 binding names) ------------------------------------------
+  /** One deopt, by what triggered it. `llm_cost_usd_total{mode}` splits ai from compiled, so
+   * these two together are what make the cost curve readable from stored data. */
+  deopts: { add: (labels: { trigger: DeoptTrigger }) => void };
+  promotions: { add: () => void };
+  demotions: { add: () => void };
+  // -------------------------------------------------------------------------------------------
   // --- S5g: workflow data store (§17.2 binding names, impl-phases §0.5) ------------------
   /** One `store.query` call, wherever it started resolving (the parse gate) or finished
    * (Postgres) — `outcome="ok"` is only recorded once the query actually ran. No SQL text,
@@ -275,6 +291,11 @@ export function createMetrics(meter: Meter): Metrics {
   // --- S6b: trace compiler -------------------------------------------------------------------
   const compileRuns = meter.createCounter("compile_runs_total");
   const compileDuration = meter.createHistogram("compile_duration_seconds", { unit: "s" });
+  // -------------------------------------------------------------------------------------------
+  // --- S6c: compiled executor ----------------------------------------------------------------
+  const deopts = meter.createCounter("deopts_total");
+  const promotions = meter.createCounter("promotions_total");
+  const demotions = meter.createCounter("demotions_total");
   // -------------------------------------------------------------------------------------------
   // --- S5g: workflow data store ------------------------------------------------------------
   const storeQueryDuration = meter.createHistogram("store_query_duration_seconds", { unit: "s" });
@@ -352,6 +373,11 @@ export function createMetrics(meter: Meter): Metrics {
     // --- S6b: trace compiler -------------------------------------------------------------------
     compileRuns: { add: (labels) => compileRuns.add(1, { ...labels }) },
     compileDuration: { record: (seconds, labels) => compileDuration.record(seconds, { ...labels }) },
+    // -------------------------------------------------------------------------------------------
+    // --- S6c: compiled executor ----------------------------------------------------------------
+    deopts: { add: (labels) => deopts.add(1, { ...labels }) },
+    promotions: { add: () => promotions.add(1) },
+    demotions: { add: () => demotions.add(1) },
     // -------------------------------------------------------------------------------------------
     // --- S5g: workflow data store ------------------------------------------------------------
     storeQueryDuration: { record: (seconds, labels) => storeQueryDuration.record(seconds, { ...labels }) },

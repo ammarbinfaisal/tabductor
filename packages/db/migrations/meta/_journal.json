@@ -120,6 +120,13 @@
       "when": 1787325861057,
       "tag": "0016_compiled_scripts",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1787327022361,
+      "tag": "0017_promotion_counters",
+      "breakpoints": true
     }
   ]
 }

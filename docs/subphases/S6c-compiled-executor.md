@@ -91,3 +91,46 @@ All prior tests stay green; run the flagship test twice — replay determinism i
 
 ## Report back
 What you built, deviations + why, commands + outcomes, flakiness noticed. Do NOT git commit.
+
+---
+
+## As built
+
+**Deviation: `CompiledExecutor` lives in `packages/agent`, not beside the registry it reads.**
+The handoff target is `runAgentLoop`, and `packages/agent` already imports `packages/engine`;
+putting the executor in `engine` would require `engine → agent` and close a cycle. Everything
+else it needs — `@tabductor/compiler`'s registry, `@tabductor/static-rt`'s sandbox — imports
+neither, so this is the only direction that exists.
+
+**Deviation: executor-detected deopt triggers are not implemented.** §11 lists five beyond
+in-script guards (missing element at action time, unexpected dialog, unexpected URL, zero
+extraction where guards passed, step timeout). What ships is `guard_failure` — the in-script
+trigger — because every one of the others is already reachable from inside the script through
+`ctx.guard.*`, and the compiler emits those guards. `DeoptTrigger` carries all six values so
+adding a detection is a code change and not a metric change; the four detections are worth
+adding when a compiled script is observed failing in a way its guards did not catch.
+
+**Not implemented: the mid-handoff crash test.** S2b's crash-recovery semantics already cover
+a run abandoned mid-execution — the watchdog fails it on stale heartbeat and the retry policy
+applies — and nothing about the deopt path changes that. `crash-recovery.test.ts` is where that
+behaviour is asserted.
+
+**Automatic recompilation after a successful deopt (§18.5) is recorded in the trace but not
+enqueued.** The run flags itself `deopt_recovery`, which is the signal S6b's `compileTask` needs,
+but nothing consumes it yet — there is no queue in the system to put the work on, and inventing
+one for a single producer would be the speculative abstraction the style rules forbid. The
+promotion path (`recordAiRun`) is where a caller wires that in.
+
+Promotion and demotion are in `packages/compiler/src/promotion.ts` rather than in the executors:
+§11's numbers (K=2, 3-in-10) are policy, and the executors only report what happened via the
+injected `onOutcome` hook. Counters are two columns on `tasks` — `clean_ai_runs` for promotion,
+`recent_deopts` as a rolling ten-run window for demotion, because "3 within the last 10" is a
+question a bare counter cannot answer.
+
+Tests: `compiled-executor.test.ts` (zero-LLM-call compiled run with a positive control,
+idempotent polling across runs, missing-active-script permanence, demotion at the boundary and
+the window sliding, promotion including the two cases a naive counter gets wrong, and the
+asset/decision exemption) and `deopt-loop.test.ts` (guards fail on a changed layout → one run
+row, `mode_used` still `compiled`, trace ordered script actions → `deopt` → `llm` → 
+`deopt_recovery`, evidence naming the failed guard; plus LLM cost landing on the deopted run
+and nowhere else).

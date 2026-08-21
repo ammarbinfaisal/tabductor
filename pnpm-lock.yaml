@@ -310,6 +310,9 @@ importers:
       '@tabductor/browser':
         specifier: workspace:*
         version: link:../browser
+      '@tabductor/compiler':
+        specifier: workspace:*
+        version: link:../compiler
       '@tabductor/core':
         specifier: workspace:*
         version: link:../core
@@ -328,6 +331,9 @@ importers:
       '@tabductor/secrets':
         specifier: workspace:*
         version: link:../secrets
+      '@tabductor/static-rt':
+        specifier: workspace:*
+        version: link:../static-rt
       '@tabductor/store':
         specifier: workspace:*
         version: link:../store

@@ -2,7 +2,13 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createAgentExecutor, createLlm, type Llm } from "@tabductor/agent";
+import {
+  createAgentExecutor,
+  createCompiledExecutor,
+  createLlm,
+  type CompiledExecutorDeps,
+  type Llm,
+} from "@tabductor/agent";
 import {
   createEndpointPool,
   playwrightDriver,
@@ -70,6 +76,13 @@ export type StartAgentRigOptions = {
    * (mode `live`) instead of resolving a checked-in transcript. When given, `fixtureFor` and
    * `wrapLlm` are ignored. */
   llmFor?: (opts: { trace: TraceRecorder; task: TaskRow }) => Llm;
+  /**
+   * S6c: also register `(browser, compiled)`. Off by default so every pre-S6c test keeps the
+   * exact registry it had — a task can only reach this executor by having `mode='compiled'`,
+   * but leaving it unregistered means an accidental flip fails loudly rather than quietly
+   * running.
+   */
+  compiled?: { onOutcome?: CompiledExecutorDeps["onOutcome"] };
 };
 
 function renderTranscript(name: string, fxUrl: string, cache: Map<string, string>, scratchDir: string): string {
@@ -119,11 +132,33 @@ export async function startAgentRig(opts: StartAgentRigOptions): Promise<AgentRi
     },
   });
 
+  const compiledExecutor = opts.compiled
+    ? createCompiledExecutor({
+        pool,
+        gate,
+        blobs,
+        db: handle.db,
+        defaultEndpointId: endpointId,
+        llmFor: ({ trace, task }) => {
+          if (opts.llmFor) return opts.llmFor({ trace, task });
+          if (!opts.fixtureFor) throw new Error("startAgentRig needs either `fixtureFor` or `llmFor`");
+          const fixturePath = renderTranscript(opts.fixtureFor(task), fx.url, rendered, scratchDir);
+          const llm = createLlm("replay", { fixturePath, trace });
+          return opts.wrapLlm ? opts.wrapLlm(llm, task) : llm;
+        },
+        ...(opts.compiled.onOutcome ? { onOutcome: opts.compiled.onOutcome } : {}),
+      })
+    : undefined;
+
   const dispatcher = createDispatcher(handle, { intervalMs: 25, backoffBaseMs: 10 });
   const engine = createEngine({
     db: handle.db,
     dispatcher,
-    executors: { [executorKey("browser", "stub")]: StubExecutor, [executorKey("browser", "ai")]: executor },
+    executors: {
+      [executorKey("browser", "stub")]: StubExecutor,
+      [executorKey("browser", "ai")]: executor,
+      ...(compiledExecutor ? { [executorKey("browser", "compiled")]: compiledExecutor } : {}),
+    },
     watchdogIntervalMs: 50,
     // A real page load and a real form POST are slower than a stub; long enough that
     // teardown never races a run still mid-navigation.

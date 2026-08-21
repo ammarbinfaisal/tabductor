@@ -78,7 +78,7 @@ Environment deviations from `impl-phases.md`:
 | S5h | Python compute: `mode=python` on `kind=asset`, empty `(asset, python)` tool registry, `apps/pyrunner` as a plain compose service, host-side path validation + emits | python-compute §2–7 (v0.2), §13.6 | **done** (migration `0015`) |
 | S6a | Static runtime sandbox + script registry + lint gate | impl Phase 6, §12 | **done** (migration `0016`) |
 | S6b | Trace consistency checker + compiler agent | impl Phase 6, §11 | **done** |
-| S6c | CompiledExecutor + deopt handoff + promotion/demotion + flagship e2e | impl Phase 6 | |
+| S6c | CompiledExecutor + deopt handoff + promotion/demotion + flagship e2e | impl Phase 6 | **done** (migration `0017`) |
 | S7 | Real policy evaluator + redaction + approvals + MCP/asset/secret grants + regression sweep | impl Phase 7, §10 | |
 | S8 | Graph compiler: passes P1–P5, deterministic gate, compile reports, proposed-grants flow, task content hashes | graph-compilation-llm §4–6, §10 | after S7 |
 
