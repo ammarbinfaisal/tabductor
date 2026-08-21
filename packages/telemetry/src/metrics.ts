@@ -81,6 +81,12 @@ export type StaticRtOutcome = "completed" | "deopt" | "killed" | "error";
 /** A run the isolate itself stopped. Sits on the security-signals dashboard beside the
  * renderer and Python kill rows, and should be near zero outside hostile-corpus runs. */
 export type StaticRtKillReason = "wall_clock" | "memory";
+// -----------------------------------------------------------------------------------------
+// --- S6b: trace compiler -------------------------------------------------------------------
+/** Where a compile stopped. Every value but `ok` is a refusal that wrote no row, and the
+ * distinction is the point: `consistency` means the task is not compilable yet, `lint` and
+ * `dry_run` mean the model produced something the gates caught. */
+export type CompileOutcome = "ok" | "kind" | "consistency" | "llm" | "lint" | "dry_run";
 // -------------------------------------------------------------------------------------------
 
 export type Metrics = {
@@ -201,6 +207,11 @@ export type Metrics = {
    * naming precedent `store_sql_rejected_total` set. No source text ever becomes a label. */
   scriptLintRejected: { add: (labels: { rule: string }) => void };
   // -------------------------------------------------------------------------------------------
+  // --- S6b: trace compiler -------------------------------------------------------------------
+  /** `compile_runs_total`, reserved by §17.2's catalogue; this is its first call site. */
+  compileRuns: { add: (labels: { outcome: CompileOutcome }) => void };
+  compileDuration: { record: (seconds: number, labels: { outcome: CompileOutcome }) => void };
+  // -------------------------------------------------------------------------------------------
   // --- S5g: workflow data store (§17.2 binding names, impl-phases §0.5) ------------------
   /** One `store.query` call, wherever it started resolving (the parse gate) or finished
    * (Postgres) — `outcome="ok"` is only recorded once the query actually ran. No SQL text,
@@ -260,6 +271,10 @@ export function createMetrics(meter: Meter): Metrics {
   const staticRtRunDuration = meter.createHistogram("static_rt_run_duration_seconds", { unit: "s" });
   const staticRtKills = meter.createCounter("static_rt_kills_total");
   const scriptLintRejected = meter.createCounter("script_lint_rejected_total");
+  // -------------------------------------------------------------------------------------------
+  // --- S6b: trace compiler -------------------------------------------------------------------
+  const compileRuns = meter.createCounter("compile_runs_total");
+  const compileDuration = meter.createHistogram("compile_duration_seconds", { unit: "s" });
   // -------------------------------------------------------------------------------------------
   // --- S5g: workflow data store ------------------------------------------------------------
   const storeQueryDuration = meter.createHistogram("store_query_duration_seconds", { unit: "s" });
@@ -333,6 +348,10 @@ export function createMetrics(meter: Meter): Metrics {
     staticRtRunDuration: { record: (seconds, labels) => staticRtRunDuration.record(seconds, { ...labels }) },
     staticRtKills: { add: (labels) => staticRtKills.add(1, { ...labels }) },
     scriptLintRejected: { add: (labels) => scriptLintRejected.add(1, { ...labels }) },
+    // -------------------------------------------------------------------------------------------
+    // --- S6b: trace compiler -------------------------------------------------------------------
+    compileRuns: { add: (labels) => compileRuns.add(1, { ...labels }) },
+    compileDuration: { record: (seconds, labels) => compileDuration.record(seconds, { ...labels }) },
     // -------------------------------------------------------------------------------------------
     // --- S5g: workflow data store ------------------------------------------------------------
     storeQueryDuration: { record: (seconds, labels) => storeQueryDuration.record(seconds, { ...labels }) },

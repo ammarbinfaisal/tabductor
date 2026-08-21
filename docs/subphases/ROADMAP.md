@@ -77,7 +77,7 @@ Environment deviations from `impl-phases.md`:
 | U3.5 | Decision node's kind badge (third entity family) + workflow store browser (tables/row-counts/schema per version) + read-only query console over S5g's own fenced read path + schema-diff-at-publish preview | graph-compilation-llm §3, impl UI track U3.5 | **done** |
 | S5h | Python compute: `mode=python` on `kind=asset`, empty `(asset, python)` tool registry, `apps/pyrunner` as a plain compose service, host-side path validation + emits | python-compute §2–7 (v0.2), §13.6 | **done** (migration `0015`) |
 | S6a | Static runtime sandbox + script registry + lint gate | impl Phase 6, §12 | **done** (migration `0016`) |
-| S6b | Trace consistency checker + compiler agent | impl Phase 6, §11 | |
+| S6b | Trace consistency checker + compiler agent | impl Phase 6, §11 | **done** |
 | S6c | CompiledExecutor + deopt handoff + promotion/demotion + flagship e2e | impl Phase 6 | |
 | S7 | Real policy evaluator + redaction + approvals + MCP/asset/secret grants + regression sweep | impl Phase 7, §10 | |
 | S8 | Graph compiler: passes P1–P5, deterministic gate, compile reports, proposed-grants flow, task content hashes | graph-compilation-llm §4–6, §10 | after S7 |

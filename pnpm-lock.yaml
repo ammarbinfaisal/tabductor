@@ -458,6 +458,9 @@ importers:
       '@tabductor/db':
         specifier: workspace:*
         version: link:../db
+      '@tabductor/static-rt':
+        specifier: workspace:*
+        version: link:../static-rt
       '@tabductor/telemetry':
         specifier: workspace:*
         version: link:../telemetry

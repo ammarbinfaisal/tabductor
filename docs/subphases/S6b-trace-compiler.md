@@ -94,3 +94,35 @@ All prior tests stay green; run twice (replay transcripts must be deterministic)
 
 ## Report back
 What you built, deviations + why, commands + outcomes, flakiness noticed. Do NOT git commit.
+
+---
+
+## As built
+
+**Deviation: consistency matches on the resolved selector, not "strategy + selector".** Strategy
+is not in the trace and never was — `LocatorStrategy` lives on `AnchoredElement` inside the
+agent's perception, `summarizePerception` strips it, and `RunSession` is handed an
+already-resolved selector string, so `act()` records `{selector}` and nothing about how it was
+chosen. Matching on the selector alone is also the right invariant: the compiled script uses
+the selector, so the selector is what has to be stable. Threading strategy down would mean
+changing S4b's tool surface to carry it into every session call, for information no emitted
+script ever reads.
+
+**Two additions the spec did not name, both small:**
+
+- *Failed actions are excluded from the path.* A trace entry with `ok: false` is the agent
+  recovering, not the plan; compiling the recovery attempt as if it were the path is how a
+  script learns to do the wrong thing reliably.
+- *Markdown fences are stripped rather than rejected.* Models wrap code in them however often
+  the prompt says not to, and a fence is not a defect in the script.
+
+**Self-repair** is the retry loop the spec asks for, with the gate's own output handed back
+verbatim — the same "return the failure unchanged" shape S5e uses for a TeX log. Default budget
+is 2 attempts.
+
+Tests: `trace-consistency.test.ts` (accept, order-independence, locator/step-count/emit-type
+divergence, K=2 threshold, failed-action exclusion) and `compiler-agent.test.ts` (golden
+compile against a real browser dry run, fence stripping, self-repair, budget exhaustion,
+dry-run throw, consistency-before-model, and the `asset`/`decision` kind filter). Every
+rejection case asserts both the descriptive error *and* the absence of a `compiled_scripts`
+row — a pipeline that errored but stored anyway would pass the first assertion alone.
