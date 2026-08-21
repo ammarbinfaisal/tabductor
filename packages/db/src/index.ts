@@ -82,4 +82,11 @@ export type {
 // test-db is deliberately NOT re-exported here: it imports @tabductor/testkit, which
 // imports playwright-core, and this barrel is what `apps/web` bundles — the chain broke
 // `next build`. Tests import `@tabductor/db/test-db` directly.
-export { createDb, migrateDb, migrationsFolder, type Db, type DbHandle } from "./client.js";
+export {
+  createDb,
+  migrateDb,
+  migrationsFolder,
+  MIGRATION_DRIFT,
+  type Db,
+  type DbHandle,
+} from "./client.js";

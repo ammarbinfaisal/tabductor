@@ -13,7 +13,7 @@
 # apps/renderer/src/sandbox.ts still applies those flags at `docker run`.
 FROM alpine:3.20 AS builder
 ARG TECTONIC_VERSION=0.17.0
-RUN apk add --no-cache curl tar
+RUN apk add --no-cache curl tar ca-certificates
 WORKDIR /build
 RUN curl -sL -o tectonic.tar.gz \
       "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%40${TECTONIC_VERSION}/tectonic-${TECTONIC_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
@@ -35,6 +35,14 @@ RUN mkdir -p /build/home /build/cache /build/warmup-out \
 FROM scratch
 COPY --from=builder /build/tectonic /tectonic
 COPY --from=builder /build/cache /cache
+# Tectonic builds a reqwest client during startup and panics outright when no system trust
+# store exists ("No CA certificates were loaded from the system") — before it ever notices
+# that `--only-cached` means it will not make a request. A `FROM scratch` image has no such
+# store, so the bundle has to be present for the binary to reach its own argument parsing.
+# It grants nothing: every call site runs this image with `--network none`, so there is no
+# route for a TLS client to use and nothing on the other end of one.
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 ENV XDG_CACHE_HOME=/cache
 ENV HOME=/cache
 # Belt-and-suspenders alongside the `--untrusted` flag apps/renderer always passes: shell

@@ -7,7 +7,7 @@ project claimed them first, and the suite should not lose that race.
 
 ```sh
 docker run -d --name tabductor-pg \
-  -p 5434:5432 \
+  -p 127.0.0.1:5434:5432 \
   -e POSTGRES_USER=tabductor \
   -e POSTGRES_PASSWORD=tabductor \
   -e POSTGRES_DB=postgres \

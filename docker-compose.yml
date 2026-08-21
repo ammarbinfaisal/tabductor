@@ -28,6 +28,20 @@ x-app: &app
     # Unset = telemetry is a no-op (techical_plan §17.2 rule 2). The telemetry profile
     # below sets it for the containers that should export.
     OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    # Both app processes need a key, for different reasons. `web` compiles each event's
+    # description into a packet schema at publish (docs/event-centric-model.md §3); `engine`
+    # runs the `(browser|asset|decision, ai)` executors, which is why the old "the engine
+    # never calls a model" carve-out stopped being true at S4b. Anthropic wins when both are
+    # present. `SCHEMA_MODEL` overrides that provider's default model id, so a deployment can
+    # pin one that outlives ours.
+    #
+    # Unset is a working mode for both, not a broken one: unchanged events carry their schema
+    # forward by hash, so a publish that adds no new event still succeeds, and the engine
+    # withholds the three AI executors and says so at boot. It is a publish needing a *new*
+    # schema, or a run of an `ai`-mode task, that fails.
+    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    SCHEMA_MODEL: ${SCHEMA_MODEL:-}
   depends_on:
     migrate:
       condition: service_completed_successfully
@@ -38,9 +52,10 @@ x-app: &app
 services:
   postgres:
     image: postgres:16-alpine
-    # 5434 because a dev box's 5432 belongs to whoever claimed it first. These credentials
-    # are trivial by design: throwaway test databases, published on loopback only.
-    ports: ["127.0.0.1:5434:5432"]
+    # 5434 because a dev box's 5432 belongs to whoever claimed it first. Loopback by default;
+    # `BIND_ADDR=0.0.0.0` opts into LAN exposure. The credentials below are trivial by design,
+    # so anything that can route here can read and write the database — opt in deliberately.
+    ports: ["${BIND_ADDR:-127.0.0.1}:5434:5432"]
     environment:
       POSTGRES_USER: tabductor
       POSTGRES_PASSWORD: tabductor
@@ -76,6 +91,12 @@ services:
   engine:
     <<: *app
     command: ["node", "--import", "tsx", "apps/engine/src/main.ts"]
+    # The secrets KEK (S5b) lives on a volume because `fileKeyWrapper` mints one on first use
+    # if the file is absent. Left on the container's writable layer, every `--build` or
+    # recreation would mint a *new* v1 KEK and orphan every already-wrapped `secrets` row —
+    # permanently, and with no error until a `fill` fails. `SECRETS_KEK_FILE_PATH` defaults to
+    # ./data/secrets-kek.json, which is what this mounts.
+    volumes: ["kek:/app/data"]
 
   # Control plane: Next.js + tRPC. Reads and writes definitions and run rows; never executes.
   # `next start` binds 0.0.0.0 and holds nothing that needs flushing, so it keeps the plain
@@ -83,22 +104,7 @@ services:
   web:
     <<: *app
     command: ["pnpm", "-F", "web", "start"]
-    environment:
-      <<: *app-env
-      # Publish compiles each event's description into a packet schema, and this is the only
-      # composition root that does it (docs/event-centric-model.md §3) — the engine executes
-      # published versions and never calls a model, so it does not get a key. Set either one;
-      # Anthropic wins when both are present. `SCHEMA_MODEL` overrides that provider's default
-      # model id, so a deployment can pin one that outlives ours.
-      #
-      # Unset is a working mode, not a broken one: unchanged events carry their schema forward
-      # by hash, so a publish that adds no new event and edits no prompt still succeeds. It is
-      # a publish needing a *new* schema that fails, atomically, naming the events it could
-      # not compile.
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      SCHEMA_MODEL: ${SCHEMA_MODEL:-}
-    ports: ["127.0.0.1:3000:3000"]
+    ports: ["${BIND_ADDR:-127.0.0.1}:3000:3000"]
     init: true
     healthcheck:
       # node rather than curl/wget — neither is in the slim base image, and adding one just
@@ -117,8 +123,9 @@ services:
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     command: ["server", "/data"]
     # 9002 for the same reason postgres is on 5434: a dev box's 9000 belongs to whoever
-    # claimed it first. Trivial creds by design — throwaway blobs, loopback only.
-    ports: ["127.0.0.1:9002:9000"]
+    # claimed it first. Loopback by default, `BIND_ADDR=0.0.0.0` to expose it — the creds
+    # below are trivial, so anything that can route here can read and write the blobs.
+    ports: ["${BIND_ADDR:-127.0.0.1}:9002:9000"]
     environment:
       MINIO_ROOT_USER: tabductor
       MINIO_ROOT_PASSWORD: tabductor # MinIO enforces an 8-char minimum; this clears it at 9.
@@ -138,9 +145,9 @@ services:
     image: grafana/otel-lgtm:latest
     profiles: ["telemetry"]
     ports:
-      - "127.0.0.1:3001:3000" # Grafana UI — 3001 to leave 3000 to the web app
-      - "127.0.0.1:4317:4317" # OTLP gRPC
-      - "127.0.0.1:4318:4318" # OTLP HTTP
+      - "${BIND_ADDR:-127.0.0.1}:3001:3000" # Grafana UI — 3001 to leave 3000 to the web app
+      - "${BIND_ADDR:-127.0.0.1}:4317:4317" # OTLP gRPC
+      - "${BIND_ADDR:-127.0.0.1}:4318:4318" # OTLP HTTP
     volumes: ["lgtm:/data"]
     restart: unless-stopped
 
@@ -148,3 +155,4 @@ volumes:
   pgdata:
   miniodata:
   lgtm:
+  kek:

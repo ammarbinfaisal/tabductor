@@ -13,12 +13,25 @@ That is the only command needed from a cold checkout. The first run builds the i
 
 | Service | What it is | Notes |
 |---|---|---|
-| `postgres` | Postgres 16 | published on `127.0.0.1:5434` for the test suite |
-| `minio` | MinIO (S3 API) blob store | published on `127.0.0.1:9002` for the test suite |
+| `postgres` | Postgres 16 | `127.0.0.1:5434` for the test suite (see `BIND_ADDR` below) |
+| `minio` | MinIO (S3 API) blob store | `127.0.0.1:9002` for the test suite |
 | `migrate` | one-shot drizzle migrator | runs to completion; `engine` and `web` wait on its exit 0 |
 | `engine` | outbox dispatcher, run loop, cron scheduler, timeout watchdog, crash recovery | no ports |
 | `web` | Next.js + tRPC control plane | `127.0.0.1:3000` |
 | `otel-lgtm` | Grafana LGTM | `--profile telemetry` only |
+
+### Exposing it beyond this machine
+
+Every published port binds `127.0.0.1` by default. `BIND_ADDR` moves them:
+
+```sh
+BIND_ADDR=0.0.0.0 docker compose up -d
+```
+
+Do that deliberately. The bundled credentials are `tabductor`/`tabductor` on both Postgres and
+MinIO, so anything that can route to the host can read and write the database and the blobs.
+There is no authentication in front of the control plane either. On anything but a trusted
+network, put a reverse proxy with real auth in front and leave these on loopback.
 
 ```sh
 docker compose logs -f engine        # what the run loop is doing
@@ -45,10 +58,39 @@ A `docker compose stop engine` now logs `shutting down` and exits 0.
 **A started container never needs the network.** Corepack's pnpm cache is baked into the
 image rather than downloaded on first use, so the app boots behind a firewall.
 
+**The secrets KEK lives on a volume.** `fileKeyWrapper` mints a key-encryption key on first
+use if the file is absent. Left on the container's writable layer, every `--build` or container
+recreation would mint a *new* one and orphan every already-wrapped `secrets` row — permanently,
+and with no error until a `fill` fails. The `kek` volume is mounted at `/app/data`, which is
+where `SECRETS_KEK_FILE_PATH` defaults. Back it up like the database; losing it loses every
+stored secret.
+
+**Both app processes get the model keys.** `web` needs one to compile an event description into
+a packet schema at publish; `engine` needs one to run the `ai`-mode executors. Neither requires
+it: with no key, publishing still carries unchanged schemas forward by hash, and the engine logs
+which executors it withheld at boot.
+
 **Chrome is not a service.** The testkit launches local Chrome per test on a throwaway
 `--user-data-dir`, and that locally-launched browser *is* the BYO-CDP simulator — connected
 to exactly the way production connects to a user's endpoint. See the environment deviations
 in `docs/subphases/ROADMAP.md`. Fixture sites are served in-process for the same reason.
+
+## When `migrate` fails with "migration drift"
+
+The migrator checks, after applying, that every migration this checkout ships is accounted for
+in the database's ledger — and exits non-zero when it is not, which holds `engine` and `web`
+back rather than letting them boot against a schema missing tables.
+
+It fires because drizzle tracks a single high-water mark rather than a per-migration ledger: it
+applies a migration only when the newest `created_at` in `drizzle.__drizzle_migrations` is older
+than that migration's journal `when`. A ledger row left by another checkout — a parallel
+worktree, a branch carrying its own `0015` — pushes that mark past ours, and every migration at
+or below it is skipped in silence. Without the check the migrator would exit 0 and the app would
+start against a half-built schema.
+
+The error names every unaccounted-for migration, its computed sha256, and the two remedies: for
+a development volume, `docker compose down -v && docker compose up -d`; for an instance whose
+data matters, apply each named file by hand and insert its ledger row.
 
 ## Local development without containers
 

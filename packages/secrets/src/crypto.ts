@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import * as sodium from "sodium-native";
+import sodium from "sodium-native";
 import { AppError } from "@tabductor/core";
 
 /**

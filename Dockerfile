@@ -36,6 +36,10 @@ FROM base AS runtime
 ENV NODE_ENV=production
 COPY --from=build --chown=node:node /opt/corepack /opt/corepack
 COPY --from=build --chown=node:node /app /app
+# The mount point for the secrets-KEK volume, created here rather than left to Docker: a
+# named volume inherits ownership from the image directory it covers, and if that directory
+# does not exist it mounts root-owned and `node` cannot write the KEK it needs to mint.
+RUN mkdir -p /app/data && chown node:node /app/data
 USER node
 EXPOSE 3000
 # Overridden per service in compose; this default makes a bare `docker run` do the useful thing.
