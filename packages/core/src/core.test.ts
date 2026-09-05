@@ -28,7 +28,9 @@ describe("loadConfig", () => {
     expect(cfg.DATABASE_URL).toContain("postgres://");
     expect(cfg.BLOB_ENDPOINT).toBe("http://localhost:9002");
     expect(cfg.BLOB_BUCKET).toBe("tabductor-blobs");
-    expect(cfg.HARNESS_NAV_ALLOWLIST).toEqual(["localhost", "127.0.0.1"]);
+    // Empty = allow all (`AllowAllGate.checkNavigation`). Confinement is opt-in; see the
+    // column's doc comment for why a localhost-only default was the wrong shape.
+    expect(cfg.HARNESS_NAV_ALLOWLIST).toEqual([]);
     expect(cfg.ANTHROPIC_API_KEY).toBeUndefined();
   });
 

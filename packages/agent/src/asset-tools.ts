@@ -7,6 +7,7 @@ import {
 } from "@tabductor/assets";
 import type { McpRunClient, McpToolInfo } from "@tabductor/mcp";
 import { z } from "zod";
+import { buildPythonTool, type PythonToolDeps } from "./python-tool.js";
 import { doneTool, emitTool, failTool, untrustedBlock, type AgentTool, type EmitFn, type ToolResult } from "./tools.js";
 
 /**
@@ -130,6 +131,12 @@ export type AssetToolRegistryDeps = {
    * where a real per-task grant narrows it, without this type changing shape.
    */
   grantedMcpTools: Array<{ server: string; tool: McpToolInfo }>;
+  /**
+   * `python.run`'s compute client and per-task wall-clock cap. Optional the same way
+   * `render` is: the tool is *always* on the registry (an asset node can compute, full
+   * stop), and without a client it fails closed with "not configured" as a tool result.
+   */
+  python?: Omit<PythonToolDeps, "assets"> | undefined;
 };
 
 export function buildAssetToolRegistry(deps: AssetToolRegistryDeps): AgentTool[] {
@@ -140,6 +147,7 @@ export function buildAssetToolRegistry(deps: AssetToolRegistryDeps): AgentTool[]
   // actually gets, the same way `assets.write`/`assets.append`/`assets.read`/`assets.list` do.
   const renderTool = assetToolToAgentTool(buildRenderTool({ ...deps.assets, render: deps.render ?? RENDERER_NOT_CONFIGURED }));
   const mcpTools = deps.grantedMcpTools.map(({ server, tool }) => mcpTool(server, tool, deps.mcp));
+  const pythonTool = buildPythonTool({ assets: deps.assets, ...(deps.python ?? {}) });
 
-  return [...assetTools, renderTool, ...mcpTools, emitTool(deps.emit), doneTool(), failTool()];
+  return [...assetTools, renderTool, pythonTool, ...mcpTools, emitTool(deps.emit), doneTool(), failTool()];
 }

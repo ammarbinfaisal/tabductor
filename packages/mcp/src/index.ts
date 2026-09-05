@@ -6,7 +6,15 @@ export {
   type McpServerConfig,
   type StdioConfig,
 } from "./config.js";
-export { loadMcpServers, type McpServerSpec } from "./servers.js";
+export {
+  createMcpServer,
+  deleteMcpServer,
+  listMcpServers,
+  loadMcpServers,
+  type CreateMcpServerInput,
+  type McpServerSpec,
+  type McpServerSummary,
+} from "./servers.js";
 export {
   createMcpRunClient,
   type McpRunClient,

@@ -100,6 +100,23 @@ export function untrustedBlock(source: string, data: unknown): string {
  * lands in an `AgentTool[]`), so the loop never needs to know one tool's shape from another's
  * — it calls `execute(args)` uniformly and reads back `ToolResult`.
  */
+/**
+ * Infrastructure failures, which stay exceptions.
+ *
+ * These are the four `mapError` (executor.ts) turns into run outcomes: the endpoint died, the
+ * run exhausted its budget, the pool is full, nothing is configured. None describes something
+ * the model did, so none is something it can react to — handing "the browser you were driving
+ * is gone" back as a tool result would just spend the remaining step budget re-asking a dead
+ * connection. Everything else is a fact about the *page*, and the model is exactly who should
+ * hear it.
+ */
+const TERMINAL_CODES = new Set([
+  "browser.disconnected",
+  "resource_limit_exceeded",
+  "endpoint_queue_full",
+  "no_endpoint_configured",
+]);
+
 function defineTool<S extends z.ZodTypeAny>(spec: {
   name: string;
   description: string;
@@ -118,7 +135,25 @@ function defineTool<S extends z.ZodTypeAny>(spec: {
           error: `invalid arguments for "${spec.name}": ${parsed.error.message}`,
         };
       }
-      return spec.execute(parsed.data);
+      try {
+        return await spec.execute(parsed.data);
+      } catch (err) {
+        // `AgentTool.execute` is documented "never throws", and until now that held only for
+        // the failures this file *authored* — a stale anchor, a bad emit packet. A driver
+        // call underneath could still throw, and one that did killed the run outright:
+        // `page.click` on a button that vanished mid-challenge threw Playwright's timeout
+        // straight through the loop, ending a run at step two with no usable trace.
+        //
+        // That is precisely backwards for `ai` mode, whose whole job is to explore a page it
+        // has not seen and accumulate the trace S6 compiles a script from. A click that timed
+        // out is an *observation* — the button is not there, re-perceive and try something
+        // else — and the step budget is what arbitrates how long the model keeps trying.
+        if (err instanceof Error && "code" in err && TERMINAL_CODES.has(String(err.code))) throw err;
+        const message = err instanceof Error ? err.message : String(err);
+        // Playwright's timeouts carry a multi-line "Call log:" that is mostly its own
+        // internals; the first line is the part that names what failed.
+        return { ok: false, error: `${spec.name} failed: ${message.split("\n")[0]!.trim()}` };
+      }
     },
   };
 }

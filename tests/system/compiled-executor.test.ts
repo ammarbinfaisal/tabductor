@@ -40,7 +40,7 @@ async function compiledTask(): Promise<{ taskId: string; scriptId: string }> {
   const wf = await seedWorkflow(rig!.handle.db, {
     tasks: {
       Scrape: {
-        mode: "compiled",
+        mode: "ai",
         prompt: "Watch the timeline and report new tweets.",
         emits: ["tweet.detected"],
       },
@@ -53,6 +53,9 @@ async function compiledTask(): Promise<{ taskId: string; scriptId: string }> {
     fromRuns: ["run_a", "run_b"],
   });
   await activateScript(rig!.handle.db, script.id);
+  // `compiled` is engine-assigned (`checkGraph` refuses it in a document), so the row is
+  // flipped the way promotion flips it rather than published that way.
+  await rig!.handle.db.update(tasks).set({ mode: "compiled" }).where(eq(tasks.id, taskId));
   return { taskId, scriptId: script.id };
 }
 
@@ -108,9 +111,10 @@ it("a second run against an unchanged page emits nothing — emitIfNew holds acr
 it("a task in compiled mode with no active script fails permanently rather than retrying", async () => {
   rig = await startAgentRig({ compiled: {}, fixtureFor: () => "compiled-tweets-script.jsonl" });
   const wf = await seedWorkflow(rig.handle.db, {
-    tasks: { Scrape: { mode: "compiled", retry: { max: 2, backoff_ms: 10 } } },
+    tasks: { Scrape: { mode: "ai", retry: { max: 2, backoff_ms: 10 } } },
   });
   const taskId = wf.taskIds.Scrape!;
+  await rig.handle.db.update(tasks).set({ mode: "compiled" }).where(eq(tasks.id, taskId));
 
   await triggerTask(rig.handle.db, { taskId });
   await waitForQuiet(rig as never);
@@ -169,22 +173,18 @@ it("deopts older than the window stop counting", async () => {
  * the cases worth asserting are the ones where a naive counter gets it wrong: a failure in
  * between, and two successes that did different things.
  */
-it("promotes after two consecutive clean consistent ai runs, activating the compiled script", async () => {
+it("promotes after the first clean ai run (K=1), activating the compiled script", async () => {
   rig = await startAgentRig({ compiled: {}, fixtureFor: () => "compiled-tweets-script.jsonl" });
   const db = rig.handle.db;
   const wf = await seedWorkflow(db, { tasks: { Scrape: { mode: "ai", emits: ["tweet.detected"] } } });
   const taskId = wf.taskIds.Scrape!;
   const taskRow = async () => (await db.select().from(tasks).where(eq(tasks.id, taskId)))[0]!;
 
-  const script = await insertCandidateScript(db, { taskId, source: "// compiled", fromRuns: ["a", "b"] });
+  const script = await insertCandidateScript(db, { taskId, source: "// compiled", fromRuns: ["a"] });
   const compile = async () => ({ ok: true as const, scriptId: script.id });
 
   const first = await recordAiRun({ db, compile }, await taskRow(), { ok: true, consistent: true });
-  expect(first).toEqual({ promoted: false, reason: "1/2 clean runs" });
-  expect((await taskRow()).mode).toBe("ai");
-
-  const second = await recordAiRun({ db, compile }, await taskRow(), { ok: true, consistent: true });
-  expect(second).toEqual({ promoted: true, scriptId: script.id });
+  expect(first).toEqual({ promoted: true, scriptId: script.id });
 
   const after = await taskRow();
   expect(after.mode).toBe("compiled");
@@ -197,8 +197,8 @@ it("promotes after two consecutive clean consistent ai runs, activating the comp
 
 it.each([
   ["a failed run", { ok: false, consistent: true }, "run failed"],
-  ["two runs that did different things", { ok: true, consistent: false }, "runs diverged"],
-])("%s resets the streak rather than counting toward promotion", async (_label, input, reason) => {
+  ["a run that diverged from its predecessor", { ok: true, consistent: false }, "runs diverged"],
+])("%s does not promote and leaves the task in ai", async (_label, input, reason) => {
   rig = await startAgentRig({ compiled: {}, fixtureFor: () => "compiled-tweets-script.jsonl" });
   const db = rig.handle.db;
   const wf = await seedWorkflow(db, { tasks: { Scrape: { mode: "ai" } } });
@@ -208,12 +208,23 @@ it.each([
     throw new Error("promotion must not have been attempted");
   };
 
-  await recordAiRun({ db, compile }, await taskRow(), { ok: true, consistent: true });
-  expect((await taskRow()).cleanAiRuns).toBe(1);
-
   const result = await recordAiRun({ db, compile }, await taskRow(), input);
   expect(result).toEqual({ promoted: false, reason });
   expect((await taskRow()).cleanAiRuns).toBe(0);
+  expect((await taskRow()).mode).toBe("ai");
+}, 120_000);
+
+/** A compile that refuses (inconsistent traces, lint, dry run) is a reason, not a promotion. */
+it("a compile refusal leaves the task in ai with the reason reported", async () => {
+  rig = await startAgentRig({ compiled: {}, fixtureFor: () => "compiled-tweets-script.jsonl" });
+  const db = rig.handle.db;
+  const wf = await seedWorkflow(db, { tasks: { Scrape: { mode: "ai" } } });
+  const taskId = wf.taskIds.Scrape!;
+  const taskRow = async () => (await db.select().from(tasks).where(eq(tasks.id, taskId)))[0]!;
+  const compile = async () => ({ ok: false as const, error: "lint: eval is forbidden" });
+
+  const result = await recordAiRun({ db, compile }, await taskRow(), { ok: true, consistent: true });
+  expect(result).toEqual({ promoted: false, reason: "lint: eval is forbidden" });
   expect((await taskRow()).mode).toBe("ai");
 }, 120_000);
 
@@ -228,7 +239,7 @@ it.each(["asset", "decision"] as const)("a %s task never advances the promotion 
     throw new Error("promotion must not have been attempted");
   };
 
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 2; i++) {
     const out = await recordAiRun({ db, compile }, await taskRow(), { ok: true, consistent: true });
     expect(out).toEqual({ promoted: false, reason: `kind ${kind} is never compiled` });
   }

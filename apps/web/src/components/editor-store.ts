@@ -3,6 +3,7 @@
 import type { CompileEntry, Graph, GraphEvent, GraphTask, NodeKind, TaskSummary } from "@tabductor/engine";
 import { createStore } from "zustand/vanilla";
 import { api, asApiError, type ApiError } from "../lib/api.js";
+import { NODE_KINDS } from "../lib/node-kinds.js";
 
 /**
  * The declarative editor's client state (U1). One vanilla store: the document being
@@ -43,6 +44,9 @@ export type EditorState = {
   graph: Graph;
   /** Task rows of the published version, by name — absent for a node not yet saved. */
   taskIds: Record<string, string>;
+  /** The published rows themselves: the engine-assigned mode (`compiled` after promotion)
+   * and the internal prompt publish compiled. Display-only; the document never carries them. */
+  publishedTasks: Record<string, TaskSummary>;
   /** Compiled packet schemas of the published version, by type. Display-only. */
   eventSchemas: Record<string, Record<string, unknown>>;
   selected: Selection;
@@ -52,6 +56,14 @@ export type EditorState = {
   notice: string | null;
   /** The last publish's per-event compile result — `failed` entries mark event cards. */
   compileReport: CompileEntry[] | null;
+  /**
+   * `executorKey` strings the engine registered at boot (U3a), or `null` while unknown.
+   * The Mode selector disables what is not in here; `null` disables nothing — an engine
+   * that has not reported yet should not grey the world out.
+   */
+  engineExecutors: string[] | null;
+  /** Tool-level abilities the engine reported (`python.run`), or `null` while unknown. */
+  engineCapabilities: string[] | null;
   /** Event types readable through a share link as of the last load or publish (S2d). */
   publishedPublic: string[];
   /**
@@ -77,16 +89,12 @@ export type EditorStore = ReturnType<typeof createEditorStore>;
 const emptyTask = (name: string, kind: NodeKind): GraphTask => ({
   name,
   kind,
-  mode: "stub",
+  mode: NODE_KINDS[kind].defaultMode,
   prompt: null,
   limits: {},
   emits: [],
   consumes: [],
   schedule: null,
-  // S5h: a node the editor creates is never a python node — `code`/`runtime` arrive only
-  // through a publish that carries them, and the editor has no authoring surface for either.
-  code: null,
-  runtime: null,
   position: null,
 });
 
@@ -102,6 +110,7 @@ export function createEditorStore(init: {
     versionId: init.versionId,
     graph: init.graph,
     taskIds: Object.fromEntries(init.tasks.map((t) => [t.name, t.id])),
+    publishedTasks: Object.fromEntries(init.tasks.map((t) => [t.name, t])),
     eventSchemas: init.eventSchemas,
     selected: init.graph.tasks[0] ? { kind: "node", id: init.graph.tasks[0].name } : null,
     dirty: false,
@@ -109,10 +118,19 @@ export function createEditorStore(init: {
     error: null,
     notice: null,
     compileReport: null,
+    engineExecutors: null,
+    engineCapabilities: null,
     publishedPublic: publicTypesOf(init.graph),
     confirmVisibility: null,
     ui: EMPTY_UI,
   }));
+
+  // U3a: one fire-and-forget read at store creation. Errors leave `null` — "unknown" renders
+  // as nothing disabled, never as a blocking failure of the editor itself.
+  void api.engine.status
+    .query()
+    .then((status) => store.setState({ engineExecutors: status.executors, engineCapabilities: status.capabilities }))
+    .catch(() => undefined);
 
   const edit = (fn: (graph: Graph) => Graph): void =>
     store.setState({ graph: fn(store.getState().graph), dirty: true, notice: null });
@@ -175,6 +193,9 @@ export function createEditorStore(init: {
     },
 
     patchNode: (name: string, patch: Partial<GraphTask>) => mapTask(name, (t) => ({ ...t, ...patch })),
+
+    /** `stub` or `ai` — the only two an author picks (`node-kinds.tsx`). */
+    setMode: (name: string, mode: string) => mapTask(name, (t) => ({ ...t, mode })),
 
     /**
      * Declare a new event entity. Born with an empty description on purpose — the editor
@@ -258,6 +279,7 @@ export function createEditorStore(init: {
         store.setState({
           versionId,
           taskIds,
+          publishedTasks: Object.fromEntries(got.tasks.map((t) => [t.name, t])),
           eventSchemas: got.eventSchemas,
           dirty: false,
           busy: false,
@@ -302,6 +324,7 @@ export function createEditorStore(init: {
         versionId: got.versionId,
         graph: got.graph,
         taskIds: Object.fromEntries(got.tasks.map((t) => [t.name, t.id])),
+        publishedTasks: Object.fromEntries(got.tasks.map((t) => [t.name, t])),
         eventSchemas: got.eventSchemas,
         dirty: false,
         error: null,

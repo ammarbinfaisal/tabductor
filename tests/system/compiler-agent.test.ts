@@ -40,7 +40,9 @@ afterAll(async () => {
 });
 
 afterEach(async () => {
-  await sess?.close();
+  // `compileTask` closes the host it borrowed; this is the safety net for the paths that
+  // never reach the dry run.
+  await sess?.close().catch(() => undefined);
   sess = undefined;
 });
 

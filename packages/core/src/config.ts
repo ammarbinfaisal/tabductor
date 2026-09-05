@@ -22,9 +22,21 @@ const envSchema = z.object({
   BLOB_ACCESS_KEY: z.string().min(1).default("tabductor"),
   BLOB_SECRET_KEY: z.string().min(1).default("tabductor"),
   BLOB_BUCKET: z.string().min(1).default("tabductor-blobs"),
+  /**
+   * Domains a browser node may navigate to, suffix-matched (`x.com` covers `api.x.com`,
+   * never `notx.com`). Empty is the default and means allow all — see
+   * `AllowAllGate.checkNavigation`, which short-circuits on an empty list.
+   *
+   * Empty rather than localhost-only so that the two launch paths agree: `docker-compose.yml`
+   * passes this through with an empty fallback, and a default of `localhost,127.0.0.1` here
+   * would mean a bare `node` run silently confined a browser the composed run did not. It is
+   * also the honest default for the phase — the gate is `AllowAllGate`, permissive by
+   * construction, and a lone allowlist that denies the first navigation of every real graph
+   * is a tripwire rather than a policy. Confinement is opt-in.
+   */
   HARNESS_NAV_ALLOWLIST: z
     .string()
-    .default("localhost,127.0.0.1")
+    .default("")
     .transform((s) => s.split(",").map((d) => d.trim()).filter(Boolean)),
   // Publish-time schema compilation picks a provider from whichever of these is set
   // (Anthropic first). SCHEMA_MODEL overrides that provider's default model id.

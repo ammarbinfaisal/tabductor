@@ -53,8 +53,6 @@ const graphOf = (opts: { promptA?: string; descB?: string } = {}): Graph => ({
       emits: ["a.done", "b.done"],
       consumes: [],
       schedule: null,
-      code: null,
-      runtime: null,
       position: null,
     },
     {
@@ -66,8 +64,6 @@ const graphOf = (opts: { promptA?: string; descB?: string } = {}): Graph => ({
       emits: [],
       consumes: ["a.done"],
       schedule: null,
-      code: null,
-      runtime: null,
       position: null,
     },
   ],

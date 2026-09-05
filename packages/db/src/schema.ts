@@ -94,19 +94,33 @@ export const tasks = pgTable(
     /** What the task may do (§4) — see `TASK_KINDS`. Backfilled `browser` on existing rows:
      * every task before S5a drove a page, so that is the only honest default. */
     kind: text("kind").$type<TaskKind>().notNull().default("browser"),
+    /**
+     * *How* the task executes. Authored as `stub` (graph testing) or `ai`; `compiled` is
+     * **engine-assigned** — S6c's promotion writes it after a clean `ai` run compiled, and
+     * demotion writes `ai` back. `publishVersion` carries a still-valid `compiled` forward by
+     * `content_hash`; the editor never offers it and `checkGraph` rejects it in a document.
+     */
     mode: text("mode").notNull().default("stub"),
     limitsJson: jsonb("limits_json").notNull().default({}),
-    // -- S5h: python compute mode (python-compute.md §3.5, §9) --------------------------
-    // Nullable: only `mode=python` tasks carry a program. Projected from the graph document
-    // by `publishVersion` only — never written by `updateTask` (code is structural history,
-    // not a knob you turn while watching a run; see `graph.ts`'s comment on that split).
-    codeSource: text("code_source"),
-    /** sha256 of `codeSource`, feeding the task content hash (graph-compilation-llm §6.3). */
-    codeSha256: text("code_sha256"),
-    /** `{image, packages: string[], inputs: {assets: string[], tables: string[]}}` — checked
-     * against the committed manifest at publish (`packages/engine/src/graph.ts`), never at run
-     * time: what a task may import is a reviewable fact in the repo, not a runtime lookup. */
-    runtimeJson: jsonb("runtime_json"),
+    // -- Publish-time prompt compilation --------------------------------------------------
+    /**
+     * The detailed operating instructions the AI actually runs under, compiled at publish
+     * from the *whole* graph context (`prompt-compiler.ts`): the author's `prompt`, the
+     * events this task consumes and emits with their compiled schemas, its neighbours, its
+     * kind's tool surface and the workflow store's tables. `prompt` stays what the author
+     * sees and edits; this is what the executors read. Never written by `updateTask`.
+     */
+    compiledPrompt: text("compiled_prompt"),
+    /** Carry-forward key for `compiled_prompt` (the `prompt_hash` precedent on `event_defs`). */
+    compiledPromptHash: text("compiled_prompt_hash"),
+    /**
+     * sha256 over everything a compiled *script* depends on (graph-compilation-llm §6.3):
+     * kind, the compiled prompt, and the consumed/emitted event schemas. Equal across two
+     * versions means the previous version's active script is still the right script, so
+     * `publishVersion` carries it (and mode `compiled`) onto the new task row instead of
+     * sending the task back through AI runs it has already paid for.
+     */
+    contentHash: text("content_hash"),
     // -------------------------------------------------------------------------------------
     // -- S6c: promotion / demotion counters (§11's binding numbers: K=2, 3-in-10) ----------
     /** Consecutive `ai` runs that succeeded *and* agreed with their predecessor. Reset by any
@@ -125,22 +139,12 @@ export const tasks = pgTable(
     uniqueIndex("tasks_version_name_key").on(t.workflowVersionId, t.name),
     check("tasks_kind_check", sql`${t.kind} in ('browser','asset','decision')`),
     // §11: asset tasks are never compiled — MCP results and LLM prose have no stable
-    // structure for the script compiler's guards to assert on. S5h adds the mirror clause
-    // confining `python` to `kind='asset'` (§2.2).
-    //
-    // **Both clauses are exclusions; `mode` stays an open domain.** §9 asks for a closed
-    // `mode IN (...)` too, and this deliberately does not ship it — `mode` is a bare
-    // `z.string()` in `graphTaskSchema` precisely so a test-only executor can claim a value
-    // without a schema change, and `scripted-browser.test.ts` publishes `mode='scripted'`
-    // through the real publish path in five places. Closing the domain would reject every one
-    // of them, turning an additive migration into one that breaks the S3b suite. `runs.mode_used`
-    // states the same posture for its own column: "Open by design ... Not a closed domain."
-    // Recorded as a deviation in `docs/subphases/S5h-python-compute.md`.
-    check(
-      "tasks_kind_mode_check",
-      sql`not (${t.kind} = 'asset' and ${t.mode} = 'compiled')
-          and not (${t.kind} <> 'asset' and ${t.mode} = 'python')`,
-    ),
+    // structure for the script compiler's guards to assert on. One exclusion; `mode` stays an
+    // open domain (a bare `z.string()` in `graphTaskSchema`) so a test-only executor can claim
+    // a value without a schema change — `scripted-browser.test.ts` publishes `mode='scripted'`
+    // through the real publish path. The former `python` clause went with the mode: Python is
+    // the asset node's `python.run` tool now, not a way a task executes.
+    check("tasks_kind_mode_check", sql`not (${t.kind} = 'asset' and ${t.mode} = 'compiled')`),
   ],
 );
 
@@ -470,16 +474,49 @@ export const artifacts = pgTable(
  * acceptable this phase only because the product is single-user local; nothing here is a
  * security decision that survives multi-tenant.
  */
-export const cdpEndpoints = pgTable("cdp_endpoints", {
+export const cdpEndpoints = pgTable(
+  "cdp_endpoints",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id"),
+    /**
+     * The workflow this endpoint belongs to (U3a). A workflow's browser runs rotate over its
+     * own endpoints — `pickWorkflowEndpoint` in `packages/engine/src/queries.ts` — so an
+     * endpoint is *owned*, never shared across workflows. Nullable only for rows created by
+     * test rigs that hand an executor a fixed id; the control plane always sets it.
+     */
+    workflowId: text("workflow_id").references(() => workflows.id, { onDelete: "cascade" }),
+    wsUrl: text("ws_url").notNull(),
+    label: text("label"),
+    healthy: boolean("healthy").notNull().default(true),
+    lastCheckedAt: ts("last_checked_at"),
+    /** Waiters beyond this many queued runs fail `endpoint_queue_full` (§15 backpressure). */
+    maxQueueDepth: integer("max_queue_depth").notNull().default(10),
+    /** Order within the workflow's list; the rotation's tie-breaker. */
+    position: integer("position").notNull().default(0),
+    /** Stamped by `pickWorkflowEndpoint` — least-recently-acquired goes first. */
+    lastAcquiredAt: ts("last_acquired_at"),
+    createdAt: createdAt(),
+  },
+  (t) => [index("cdp_endpoints_workflow_position_idx").on(t.workflowId, t.position)],
+);
+
+/**
+ * What the engine process registered at boot (U3a). The control plane and the engine share
+ * only Postgres, so this row is how the editor learns which `(kind, mode)` pairs a run can
+ * actually be dispatched to — instead of guessing from its own environment, which would
+ * lie whenever the two processes are configured differently. Single row (`id = 'engine'`);
+ * `heartbeat_at` is bumped on the engine's watchdog tick so a dead engine reads as stale.
+ */
+export const engineStatus = pgTable("engine_status", {
   id: text("id").primaryKey(),
-  userId: text("user_id"),
-  wsUrl: text("ws_url").notNull(),
-  label: text("label"),
-  healthy: boolean("healthy").notNull().default(true),
-  lastCheckedAt: ts("last_checked_at"),
-  /** Waiters beyond this many queued runs fail `endpoint_queue_full` (§15 backpressure). */
-  maxQueueDepth: integer("max_queue_depth").notNull().default(10),
-  createdAt: createdAt(),
+  /** `executorKey(kind, mode)` strings, e.g. `"browser:ai"`. */
+  executors: jsonb("executors").$type<string[]>().notNull().default([]),
+  /** Tool-level abilities that are not a `(kind, mode)` pair — `"python.run"` when the
+   * engine has a `PYRUNNER_URL`. The editor reads this to say what an asset node can do. */
+  capabilities: jsonb("capabilities").$type<string[]>().notNull().default([]),
+  bootedAt: ts("booted_at").notNull().defaultNow(),
+  heartbeatAt: ts("heartbeat_at").notNull().defaultNow(),
 });
 
 /**
@@ -790,6 +827,7 @@ export type ScheduleRow = typeof schedules.$inferSelect;
 export type WorkflowShareRow = typeof workflowShares.$inferSelect;
 export type CdpEndpointRow = typeof cdpEndpoints.$inferSelect;
 export type NewCdpEndpoint = typeof cdpEndpoints.$inferInsert;
+export type EngineStatusRow = typeof engineStatus.$inferSelect;
 export type EndpointLeaseRow = typeof endpointLeases.$inferSelect;
 export type SecretRow = typeof secrets.$inferSelect;
 export type NewSecret = typeof secrets.$inferInsert;

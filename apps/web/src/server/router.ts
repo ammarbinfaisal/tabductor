@@ -1,4 +1,6 @@
 import { endpointRouter } from "./routers/endpoint.js";
+import { engineRouter } from "./routers/engine.js";
+import { mcpRouter } from "./routers/mcp.js";
 import { eventRouter } from "./routers/event.js";
 import { publicRouter } from "./routers/public.js";
 import { runRouter } from "./routers/run.js";
@@ -14,8 +16,12 @@ export const appRouter = router({
   run: runRouter,
   event: eventRouter,
   share: shareRouter,
-  /** cdp_endpoints health, ws_url filtered out at the query (U1.5). */
+  /** cdp_endpoints health (U1.5) + per-workflow endpoint lists (U3a); ws_url filtered out at the query. */
   endpoint: endpointRouter,
+  /** Which executors the engine registered, and whether it is alive (U3a). */
+  engine: engineRouter,
+  /** MCP server registration — the asset nodes' tool sources (U3a). */
+  mcp: mcpRouter,
   /** The store browser + query console (U3.5) — every procedure routes through
    * `@tabductor/store`'s fenced read path; see `routers/store.ts`'s own doc comment. */
   store: storeRouter,

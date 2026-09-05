@@ -1,6 +1,6 @@
 import { loadConfig } from "@tabductor/core";
-import type { SchemaGenerator } from "@tabductor/engine";
-import { aiSchemaGenerator, providerFromEnv } from "@tabductor/engine/ai";
+import { staticPromptCompiler, type PromptCompiler, type SchemaGenerator } from "@tabductor/engine";
+import { aiPromptCompiler, aiSchemaGenerator, providerFromEnv } from "@tabductor/engine/ai";
 
 /**
  * The publish-time schema compiler, composed once per process like the db pool. The provider
@@ -10,11 +10,27 @@ import { aiSchemaGenerator, providerFromEnv } from "@tabductor/engine/ai";
  * version — carry-forward needs no model — and only *changed* events fail, with this message
  * in their compile-report entry telling the operator exactly what to set.
  */
-const store = globalThis as { __tabductorSchemaGen?: SchemaGenerator };
+const store = globalThis as { __tabductorSchemaGen?: SchemaGenerator; __tabductorPromptCompiler?: PromptCompiler };
 
 export function schemaGenerator(): SchemaGenerator {
   store.__tabductorSchemaGen ??= build();
   return store.__tabductorSchemaGen;
+}
+
+/**
+ * The other half of what a publish compiles: each node's internal prompt. Same key, same
+ * provider; without one the deterministic brief is the whole compiled prompt, which — unlike
+ * a missing schema — is a working outcome the compile report merely labels `brief`.
+ */
+export function promptCompiler(): PromptCompiler {
+  store.__tabductorPromptCompiler ??= buildPromptCompiler();
+  return store.__tabductorPromptCompiler;
+}
+
+function buildPromptCompiler(): PromptCompiler {
+  const { ANTHROPIC_API_KEY, OPENAI_API_KEY, SCHEMA_MODEL } = loadConfig();
+  const chosen = providerFromEnv({ ANTHROPIC_API_KEY, OPENAI_API_KEY });
+  return chosen ? aiPromptCompiler({ ...chosen, model: SCHEMA_MODEL }) : staticPromptCompiler();
 }
 
 function build(): SchemaGenerator {

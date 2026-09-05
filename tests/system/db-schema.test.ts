@@ -10,6 +10,7 @@ const EXPECTED_TABLES = [
   "cdp_endpoints",
   "compiled_scripts",
   "endpoint_leases",
+  "engine_status",
   "event_defs",
   "events",
   "mcp_servers",

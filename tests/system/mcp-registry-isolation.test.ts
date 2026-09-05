@@ -111,6 +111,6 @@ it("the asset (kind=asset) registry has no page.*/network.*/secrets.* tool", asy
   expect(names.some((n) => n.startsWith("secrets."))).toBe(false);
   // The positive control, mirroring the browser test above.
   expect(names).toEqual(
-    expect.arrayContaining(["assets.write", "assets.read", "assets.render", "mcp.fake.echo", "emit", "done", "fail"]),
+    expect.arrayContaining(["assets.write", "assets.read", "assets.render", "python.run", "mcp.fake.echo", "emit", "done", "fail"]),
   );
 });

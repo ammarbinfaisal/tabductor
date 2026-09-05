@@ -1,12 +1,12 @@
 /**
  * Does this task do the same thing every time?
  *
- * Compilation is only sound when the answer is yes, and K=2 is the threshold §11 sets: one
- * trace overfits — an A/B variant, a one-time cookie banner, a promoted tweet that happened to
- * be there — and two agreeing traces are the cheapest evidence that the path is the task
- * rather than the day. The checker is what turns "these runs looked similar" into a specific,
- * mechanical claim, and its failure reason is what a human reads when a task refuses to
- * compile.
+ * Compilation is only sound when the answer is yes. With K=1 (`promotion.ts`) the first clean
+ * run compiles on its own skeleton — the deopt door, not a second run, is what protects
+ * against a one-time cookie banner or a promoted tweet baked into the script. Whenever more
+ * than one trace *is* available (recompiles, the flagship loop test) every pair must agree,
+ * and this checker is what turns "these runs looked similar" into a specific, mechanical
+ * claim whose failure reason is what a human reads when a task refuses to compile.
  *
  * Pure functions over trace data. No database access: callers load the traces, which is what
  * keeps this testable against hand-written entries and keeps the compiler from growing a
@@ -117,8 +117,11 @@ function waitsOf(trace: RunTrace): Record<number, number> {
 }
 
 export function checkConsistency(traces: RunTrace[]): ConsistencyReport {
-  if (traces.length < 2) {
-    return { consistent: false, reason: `need at least 2 traces to compile, got ${traces.length}` };
+  // One trace is a valid input (K=1, `promotion.ts`): there is nothing to compare it against,
+  // so it is consistent by construction and the report is that trace's own skeleton. With two
+  // or more, every pair must agree — the check below is what "consistent" means then.
+  if (traces.length < 1) {
+    return { consistent: false, reason: "need at least 1 trace to compile, got 0" };
   }
 
   const perTrace = traces.map((t) => ({

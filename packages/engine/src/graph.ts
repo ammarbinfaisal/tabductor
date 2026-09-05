@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { Ajv } from "ajv";
 import addFormatsModule from "ajv-formats";
 const addFormats = addFormatsModule.default ?? addFormatsModule;
-import { AppError, ASSET_REF_SCHEMA, newId, PYTHON_RUNTIME_MANIFEST } from "@tabductor/core";
+import { AppError, ASSET_REF_SCHEMA, newId } from "@tabductor/core";
+import type { Pool } from "pg";
 import {
+  compiledScripts,
   eventDefs,
   schedules,
   taskConsumes,
@@ -17,8 +19,17 @@ import {
   type Db,
   type TaskKind,
 } from "@tabductor/db";
-import { eq, inArray } from "drizzle-orm";
+import { latestStoreSchema, provision, tablesSpecOf } from "@tabductor/store";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import { z } from "zod";
+import {
+  canonicalJson,
+  promptInputHash,
+  staticPromptCompiler,
+  type PromptCompileInput,
+  type PromptCompiler,
+  type PromptStoreTable,
+} from "./prompt-compiler.js";
 import { promptHashOf, type SchemaGenerator, type SchemaGenInput } from "./schema-generator.js";
 
 /**
@@ -65,10 +76,38 @@ export type NodeKind = TaskKind;
  * cron tick drives with an empty packet (§2.2). */
 const SCHEDULABLE: readonly NodeKind[] = ["browser", "decision"];
 
-/** `asset` tasks are never compiled (§11: MCP results and LLM prose have no stable structure
- * for the script compiler's guards to assert on). Re-asserted by the named DB check
- * `tasks_kind_mode_check` for a write that bypasses this save-time reject. */
+/**
+ * What a document may say about *how* a task runs. `stub` is the permanent graph-testing
+ * mode; `ai` is the real one. Everything else the engine decides:
+ *
+ * - `compiled` is **engine-assigned** (S6c): a browser task earns it after a clean `ai` run
+ *   compiles, loses it after three deopts in ten, and `publishVersion` carries it forward
+ *   across versions when the task's content hash is unchanged. A document that names it has
+ *   nothing to run — no script comes with a document — so it is rejected here, and
+ *   `readGraph` maps a promoted row back to `ai` so a round trip through the editor never
+ *   trips this.
+ * - `python` is not a mode at all: an asset task runs code through its `python.run` tool, on
+ *   the same `ai` executor as everything else it does. The former `(asset, python)` executor
+ *   and its authored `code`/`runtime` are gone.
+ *
+ * Deliberately *not* a closed enum on `mode` itself — a test-only executor (`scripted`,
+ * S3b) still claims a value without a schema change, as the DB check's comment records.
+ */
+const ENGINE_ASSIGNED_MODES: ReadonlyMap<string, string> = new Map([
+  ["compiled", "the engine assigns it after a clean ai run compiles; publish the task as \"ai\""],
+]);
+const RETIRED_MODES: ReadonlyMap<string, string> = new Map([
+  ["python", "Python is the asset node's python.run tool now, not a mode; publish the task as \"ai\""],
+]);
+
+/** Mirrors `tasks_kind_mode_check` for the one exclusion the DB still enforces. */
 const NOT_COMPILABLE: readonly NodeKind[] = ["asset"];
+
+/** The reason a mode cannot be *authored*, or `undefined` when it can. Shared by `checkGraph`
+ * and `updateTask` so the in-place edit path cannot admit what publish refuses. */
+export function unauthorableModeReason(mode: string): string | undefined {
+  return ENGINE_ASSIGNED_MODES.get(mode) ?? RETIRED_MODES.get(mode);
+}
 
 export const graphScheduleSchema = z.object({
   cron: z.string().min(1),
@@ -79,34 +118,6 @@ export const graphScheduleSchema = z.object({
   overlapPolicy: z.enum(OVERLAP_POLICIES).default("skip"),
   maxQueueDepth: z.number().int().positive().max(100).default(1),
   enabled: z.boolean().default(true),
-});
-
-/**
- * S5h — the Python task's program (`python-compute.md` §3.5). `language` is a literal
- * rather than an open string because it is the whole enum today: guest-side Python is the
- * only compute mode this document specifies, and widening it is a schema change, not a
- * new string value slipping through.
- */
-export const graphCodeSchema = z.object({
-  language: z.literal("python"),
-  source: z.string().min(1).max(200_000),
-});
-
-/**
- * S5h — declared inputs and the pinned image (`python-compute.md` §3.1, §4). `tables` is
- * declared but not wired: it names tables, and resolving one needs a SELECT this document has
- * no place for. `checkGraph` rejects a non-empty value rather than accept a declaration
- * nothing can honour.
- */
-export const graphRuntimeSchema = z.object({
-  image: z.string().min(1),
-  packages: z.array(z.string().min(1)).default([]),
-  inputs: z
-    .object({
-      assets: z.array(z.string().min(1)).default([]),
-      tables: z.array(z.string().min(1)).default([]),
-    })
-    .default({}),
 });
 
 export const graphTaskSchema = z.object({
@@ -122,10 +133,6 @@ export const graphTaskSchema = z.object({
   /** Event types that trigger this task — its subscriptions. Wiring is these lists. */
   consumes: z.array(z.string().min(1)).default([]),
   schedule: graphScheduleSchema.nullable().default(null),
-  /** S5h: the `mode=python` program. `null` for every other mode. */
-  code: graphCodeSchema.nullable().default(null),
-  /** S5h: the `mode=python` image/package/input declaration. `null` for every other mode. */
-  runtime: graphRuntimeSchema.nullable().default(null),
   /** Editor-only decoration, round-tripped through `graph_json` and ignored by the engine. */
   position: z.object({ x: z.number(), y: z.number() }).nullable().default(null),
 });
@@ -138,8 +145,6 @@ export const graphSchema = z.object({
 export type Graph = z.infer<typeof graphSchema>;
 export type GraphTask = z.infer<typeof graphTaskSchema>;
 export type GraphEvent = z.infer<typeof graphEventSchema>;
-export type GraphCode = z.infer<typeof graphCodeSchema>;
-export type GraphRuntime = z.infer<typeof graphRuntimeSchema>;
 
 export const GRAPH_INVALID = "graph_invalid";
 export const GRAPH_COMPILE_FAILED = "graph_compile_failed";
@@ -150,7 +155,17 @@ export type CompileEntry = {
   status: "generated" | "reused" | "failed";
   error?: string;
 };
-export type CompileReport = { events: CompileEntry[] };
+/** One line per task: what happened to its compiled (internal) prompt. `brief` means the
+ * model layer was unavailable or failed its gate and the deterministic brief alone was
+ * stored — a working outcome, reported so the operator can see it was the fallback. */
+export type TaskCompileEntry = {
+  name: string;
+  status: "generated" | "reused" | "brief";
+  /** Execution mode the row was published with — `compiled` only by carry-forward. */
+  mode: string;
+  error?: string;
+};
+export type CompileReport = { events: CompileEntry[]; tasks: TaskCompileEntry[] };
 
 const invalid = (message: string, details: Record<string, unknown>): AppError =>
   new AppError(GRAPH_INVALID, message, { details });
@@ -189,63 +204,22 @@ export function checkGraph(graph: Graph): void {
       });
     }
 
+    const unauthorable = unauthorableModeReason(task.mode);
+    if (unauthorable) {
+      throw invalid(`task "${task.name}" may not be published in mode "${task.mode}": ${unauthorable}`, {
+        task: task.name,
+        kind: task.kind,
+        mode: task.mode,
+      });
+    }
+
+    // Kept beside the DB check it mirrors even though `compiled` can no longer be authored:
+    // the carry-forward below is the only writer of `compiled`, and it filters on kind, so
+    // this is the belt to that suspender.
     if (task.mode === "compiled" && NOT_COMPILABLE.includes(task.kind)) {
       throw invalid(`a "${task.kind}" task may not use mode "compiled"`, {
         task: task.name,
         kind: task.kind,
-        mode: task.mode,
-      });
-    }
-
-    // S5h: `mode=python` requires `kind=asset` (§2.2) — re-asserted here (the save-time
-    // reject, §5) even though `tasks_kind_mode_check` is the backstop for a write that
-    // bypasses this, per the same division of labour `NOT_COMPILABLE` follows above.
-    if (task.mode === "python" && task.kind !== "asset") {
-      throw invalid(`a "${task.kind}" task may not use mode "python"`, {
-        task: task.name,
-        kind: task.kind,
-        mode: task.mode,
-      });
-    }
-
-    // `tables` (python-compute.md §3.1) is declared but not wired. Not for want of a store —
-    // S5g shipped one — but because the field holds table *names*, and §3.1 wants "the declared
-    // SELECT [run] host-side under the workflow's reader role". There is nowhere in this
-    // document for that SELECT to live, so honouring `tables` needs a schema change giving each
-    // entry a query, the fenced-SQL gate pointed at that new authoring surface, and a
-    // materializer. Rejecting is better than accepting a declaration nothing can honour.
-    if (task.runtime && task.runtime.inputs.tables.length > 0) {
-      throw invalid(
-        `task "${task.name}" declares runtime.inputs.tables, which is not wired yet — it needs a ` +
-          `per-table declared SELECT in the graph document and a host-side materializer`,
-        { task: task.name },
-      );
-    }
-
-    if (task.mode === "python") {
-      if (!task.code) {
-        throw invalid(`task "${task.name}" has mode "python" but no code`, { task: task.name });
-      }
-      if (!task.runtime) {
-        throw invalid(`task "${task.name}" has mode "python" but no runtime declaration`, { task: task.name });
-      }
-      const manifest = PYTHON_RUNTIME_MANIFEST[task.runtime.image];
-      if (!manifest) {
-        throw invalid(`task "${task.name}" declares unknown runtime image "${task.runtime.image}"`, {
-          task: task.name,
-          image: task.runtime.image,
-        });
-      }
-      const unlisted = task.runtime.packages.filter((p) => !manifest.includes(p));
-      if (unlisted.length > 0) {
-        throw invalid(
-          `task "${task.name}" declares package(s) not in the "${task.runtime.image}" manifest: ${unlisted.join(", ")}`,
-          { task: task.name, image: task.runtime.image, packages: unlisted },
-        );
-      }
-    } else if (task.code) {
-      throw invalid(`task "${task.name}" declares code but has mode "${task.mode}", not "python"`, {
-        task: task.name,
         mode: task.mode,
       });
     }
@@ -278,6 +252,8 @@ export type PublishedVersion = {
   versionId: string;
   /** Task name → the id of its row *in this version*. */
   taskIds: Record<string, string>;
+  /** Task name → the mode the row was published with (`compiled` only by carry-forward). */
+  taskModes: Record<string, string>;
   report: CompileReport;
 };
 
@@ -388,11 +364,179 @@ async function compileEventSchemas(
   return compiled;
 }
 
+type PreviousTask = {
+  id: string;
+  mode: string;
+  compiledPrompt: string | null;
+  compiledPromptHash: string | null;
+  contentHash: string | null;
+};
+
+type CompiledTask = {
+  task: GraphTask;
+  compiledPrompt: string;
+  compiledPromptHash: string;
+  contentHash: string;
+  /** The mode the row is published with. `compiled` only when carried from the previous version. */
+  mode: string;
+  /** The previous version's active script to copy onto the new row, when carried. */
+  carryScriptFrom: string | null;
+  entry: TaskCompileEntry;
+};
+
+/** A schema's field names, for the store-table section of the brief. */
+function columnsOf(schema: Record<string, unknown>): string[] {
+  const props = schema.properties;
+  return props && typeof props === "object" && !Array.isArray(props) ? Object.keys(props as object).sort() : [];
+}
+
+function promptInputFor(
+  graph: Graph,
+  workflowName: string,
+  task: GraphTask,
+  schemas: Map<string, Record<string, unknown>>,
+  store: PromptStoreTable[],
+): PromptCompileInput {
+  const eventByType = new Map(graph.events.map((e) => [e.type, e]));
+  const who = (list: "emits" | "consumes", type: string): string[] =>
+    graph.tasks
+      .filter((t) => t.name !== task.name && t[list].includes(type))
+      .map((t) => t.name)
+      .sort();
+  return {
+    workflow: { name: workflowName },
+    task: {
+      name: task.name,
+      kind: task.kind,
+      prompt: task.prompt,
+      schedule: task.schedule ? { cron: task.schedule.cron, tz: task.schedule.tz } : null,
+    },
+    consumes: [...task.consumes].sort().map((type) => ({
+      type,
+      description: eventByType.get(type)?.description ?? "",
+      schema: schemas.get(type) ?? { type: "object" },
+      emitters: who("emits", type),
+    })),
+    emits: [...task.emits].sort().map((type) => ({
+      type,
+      description: eventByType.get(type)?.description ?? "",
+      schema: schemas.get(type) ?? { type: "object" },
+      consumers: who("consumes", type),
+    })),
+    neighbours: graph.tasks
+      .filter((t) => t.name !== task.name)
+      .map((t) => ({ name: t.name, kind: t.kind, prompt: t.prompt }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    store,
+  };
+}
+
+/**
+ * graph-compilation-llm §6.3's task content hash: what a compiled *script* was compiled
+ * against. Kind, the compiled prompt (which already folds in the author's prompt, the
+ * neighbours and the store), and the exact schemas of the events crossing this task. Limits
+ * and schedules are deliberately outside it — a changed timeout does not invalidate a script.
+ */
+function contentHashOf(task: GraphTask, compiledPrompt: string, schemas: Map<string, Record<string, unknown>>): string {
+  const canonical = canonicalJson({
+    kind: task.kind,
+    compiledPrompt,
+    consumes: [...task.consumes].sort().map((type) => ({ type, schema: schemas.get(type) ?? null })),
+    emits: [...task.emits].sort().map((type) => ({ type, schema: schemas.get(type) ?? null })),
+  });
+  return createHash("sha256").update(canonical).digest("hex");
+}
+
+/**
+ * The publish-time prompt compiler pass (`prompt-compiler.ts`), plus the carry-forward
+ * decision for a task the engine had already promoted to `compiled`.
+ *
+ * Per task: hash its whole context; a match against the previous version's stored hash
+ * carries the compiled prompt forward untouched (zero model calls). Otherwise the compiler
+ * runs; if its model layer fails, the deterministic brief is stored and the report says so —
+ * a publish never fails for want of prose, only for want of a schema.
+ *
+ * Then the mode: a browser task the author publishes as `ai`, whose previous row was
+ * `compiled` with an active script *and* the same content hash, stays `compiled` and the
+ * script comes with it. Anything else about the task changed, or the author put it back to
+ * `stub`, and the new row starts from what the document says.
+ */
+async function compileTaskPrompts(
+  db: Db,
+  graph: Graph,
+  workflowName: string,
+  schemas: Map<string, Record<string, unknown>>,
+  previous: Map<string, PreviousTask>,
+  store: PromptStoreTable[],
+  compiler: PromptCompiler,
+): Promise<CompiledTask[]> {
+  const out: CompiledTask[] = [];
+  for (const task of graph.tasks) {
+    const input = promptInputFor(graph, workflowName, task, schemas, store);
+    const compiledPromptHash = promptInputHash(input);
+    const prev = previous.get(task.name);
+
+    let compiledPrompt: string;
+    let entry: TaskCompileEntry;
+    if (prev && prev.compiledPrompt !== null && prev.compiledPromptHash === compiledPromptHash) {
+      compiledPrompt = prev.compiledPrompt;
+      entry = { name: task.name, status: "reused", mode: task.mode };
+    } else {
+      const result = await compiler.compile(input);
+      if (result.ok) {
+        compiledPrompt = result.prompt;
+        entry = { name: task.name, status: "generated", mode: task.mode };
+      } else {
+        const brief = await staticPromptCompiler().compile(input);
+        compiledPrompt = brief.ok ? brief.prompt : (task.prompt ?? "");
+        entry = { name: task.name, status: "brief", mode: task.mode, error: result.error };
+      }
+    }
+
+    const contentHash = contentHashOf(task, compiledPrompt, schemas);
+    let mode = task.mode;
+    let carryScriptFrom: string | null = null;
+    if (
+      task.kind === "browser" &&
+      task.mode === "ai" &&
+      prev?.mode === "compiled" &&
+      prev.contentHash === contentHash
+    ) {
+      const [active] = await db
+        .select({ id: compiledScripts.id })
+        .from(compiledScripts)
+        .where(and(eq(compiledScripts.taskId, prev.id), eq(compiledScripts.status, "active")));
+      if (active) {
+        mode = "compiled";
+        carryScriptFrom = active.id;
+        entry = { ...entry, mode };
+      }
+    }
+
+    out.push({ task, compiledPrompt, compiledPromptHash, contentHash, mode, carryScriptFrom, entry });
+  }
+  return out;
+}
+
+export type PublishDeps = {
+  schemaGenerator: SchemaGenerator;
+  /** Defaults to the deterministic brief. A composition root with a model key wires the LLM layer. */
+  promptCompiler?: PromptCompiler;
+  /**
+   * When given, publish also **prepares the workflow's database**: the `wfdata_<id>` schema
+   * and its reader/writer role pair are provisioned (idempotently) so `store.*` has somewhere
+   * to go from the first run, and the published store tables are read into every node's
+   * compiled prompt. Without a pool (most system tests) both halves are skipped and the
+   * brief says the store has no tables.
+   */
+  pool?: Pool;
+};
+
 /**
  * Validate, compile, then write the whole version in one transaction — version row, task
- * rows, their emit/consume declarations, the event entities with their compiled schemas,
- * schedules, and the pointer that makes it current. Half a published graph would route
- * events into a shape nobody authored.
+ * rows with their compiled prompts, their emit/consume declarations, the event entities with
+ * their compiled schemas, schedules, carried compiled scripts, and the pointer that makes it
+ * current. Half a published graph would route events into a shape nobody authored.
  *
  * Generation happens *before* the transaction: it is the slow, fallible part, and a
  * failed compile must leave the workflow exactly as it was — current version unmoved, no
@@ -402,7 +546,7 @@ async function compileEventSchemas(
 export async function publishVersion(
   db: Db,
   input: { workflowId: string; graph: Graph },
-  deps: { schemaGenerator: SchemaGenerator },
+  deps: PublishDeps,
 ): Promise<PublishedVersion> {
   const graph = graphSchema.parse(input.graph);
   checkGraph(graph);
@@ -415,6 +559,7 @@ export async function publishVersion(
   }
 
   const previous = new Map<string, { promptHash: string; schema: Record<string, unknown> }>();
+  const previousTasks = new Map<string, PreviousTask>();
   if (workflow.currentVersionId) {
     const rows = await db
       .select()
@@ -426,12 +571,24 @@ export async function publishVersion(
         schema: asRecord(row.packetSchemaJson),
       });
     }
+    const taskRows = await db
+      .select({
+        id: tasks.id,
+        name: tasks.name,
+        mode: tasks.mode,
+        compiledPrompt: tasks.compiledPrompt,
+        compiledPromptHash: tasks.compiledPromptHash,
+        contentHash: tasks.contentHash,
+      })
+      .from(tasks)
+      .where(eq(tasks.workflowVersionId, workflow.currentVersionId));
+    for (const row of taskRows) previousTasks.set(row.name, row);
   }
 
   const compiled = await compileEventSchemas(graph, previous, deps.schemaGenerator);
-  const report: CompileReport = { events: compiled.map((c) => c.entry) };
-  const failed = report.events.filter((e) => e.status === "failed");
+  const failed = compiled.filter((c) => c.entry.status === "failed");
   if (failed.length > 0) {
+    const report: CompileReport = { events: compiled.map((c) => c.entry), tasks: [] };
     throw new AppError(
       GRAPH_COMPILE_FAILED,
       `${failed.length} event schema(s) failed to compile`,
@@ -439,29 +596,98 @@ export async function publishVersion(
     );
   }
 
+  // Prepare the workflow's database, and learn what it holds. Provisioning is idempotent
+  // (`@tabductor/store`'s own contract) and precedes the transaction like every other slow,
+  // external step here.
+  let storeTables: PromptStoreTable[] = [];
+  if (deps.pool) {
+    await provision(deps.pool, workflow.id);
+    const spec = tablesSpecOf(await latestStoreSchema(db, workflow.id));
+    storeTables = Object.entries(spec)
+      .map(([name, table]) => ({ name, columns: columnsOf(asRecord(table.schema)), primaryKey: table.primaryKey }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  const schemas = new Map(compiled.map((c) => [c.event.type, c.schema]));
+  const compiledTasks = await compileTaskPrompts(
+    db,
+    graph,
+    workflow.name,
+    schemas,
+    previousTasks,
+    storeTables,
+    deps.promptCompiler ?? staticPromptCompiler(),
+  );
+  const report: CompileReport = { events: compiled.map((c) => c.entry), tasks: compiledTasks.map((t) => t.entry) };
+
   return db.transaction(async (trx) => {
     const versionId = newId("wfv");
     await trx.insert(workflowVersions).values({ id: versionId, workflowId: workflow.id, graphJson: graph });
 
+    /**
+     * A publish *replaces* this workflow's schedules; it does not add to them.
+     *
+     * Every version gets fresh task rows, so the schedule inserted below is a new row rather
+     * than an update of the old one — and without this delete the superseded version's row
+     * stays `enabled`, because nothing else ever retires it. The scheduler selects on
+     * `enabled` alone (`scheduler.ts`) and routes each fire against the *latest* version
+     * (§5), so N publishes of a scheduled task meant N fires per tick, all landing on the one
+     * current task. Seen in the wild as six runs a tick where one was authored, with the
+     * genuine schedule the only one skipped — its own overlap policy locked out by the
+     * duplicates it was competing with.
+     *
+     * Deleted rather than disabled: a schedule belonging to a superseded version is not
+     * history, it is a duplicate. The version's own `graph_json` still records what was
+     * authored, which is where that history actually lives. `ne` guards the new version's
+     * rows against a future caller moving this below the insert loop.
+     */
+    await trx.delete(schedules).where(
+      inArray(
+        schedules.taskId,
+        trx
+          .select({ id: tasks.id })
+          .from(tasks)
+          .innerJoin(workflowVersions, eq(workflowVersions.id, tasks.workflowVersionId))
+          .where(and(eq(workflowVersions.workflowId, workflow.id), ne(tasks.workflowVersionId, versionId))),
+      ),
+    );
+
     const taskIds: Record<string, string> = {};
-    for (const task of graph.tasks) {
+    const taskModes: Record<string, string> = {};
+    for (const { task, compiledPrompt, compiledPromptHash, contentHash, mode, carryScriptFrom } of compiledTasks) {
       const id = newId("task");
       taskIds[task.name] = id;
+      taskModes[task.name] = mode;
       await trx.insert(tasks).values({
         id,
         workflowVersionId: versionId,
         name: task.name,
         prompt: task.prompt,
         kind: task.kind,
-        mode: task.mode,
+        mode,
         limitsJson: task.limits,
-        // S5h: projected here, at publish, and nowhere else — `updateTask` deliberately
-        // never touches these three columns (see its own doc comment: code is structural
-        // history, not a knob you turn while watching a run).
-        codeSource: task.code?.source ?? null,
-        codeSha256: task.code ? createHash("sha256").update(task.code.source, "utf8").digest("hex") : null,
-        runtimeJson: task.runtime ?? null,
+        compiledPrompt,
+        compiledPromptHash,
+        contentHash,
       });
+
+      if (carryScriptFrom) {
+        // The previous version's active script, re-shelved under the new row as its own
+        // version 1 (`compiled_scripts` is per task row) — provenance kept verbatim, so the
+        // runs it was compiled from are still the runs it was compiled from.
+        const [script] = await trx.select().from(compiledScripts).where(eq(compiledScripts.id, carryScriptFrom));
+        if (script) {
+          await trx.insert(compiledScripts).values({
+            id: newId("script"),
+            taskId: id,
+            version: 1,
+            source: script.source,
+            guardsMeta: script.guardsMeta as Record<string, unknown>,
+            fromRuns: script.fromRuns as string[],
+            status: "active",
+          });
+        }
+      }
 
       for (const type of task.emits) {
         await trx.insert(taskEmits).values({ taskId: id, workflowVersionId: versionId, eventType: type });
@@ -488,7 +714,7 @@ export async function publishVersion(
     }
 
     await trx.update(workflows).set({ currentVersionId: versionId }).where(eq(workflows.id, workflow.id));
-    return { versionId, taskIds, report };
+    return { versionId, taskIds, taskModes, report };
   });
 }
 
@@ -508,6 +734,10 @@ export async function updateTask(
   db: Db,
   input: { taskId: string; prompt?: string | null; mode?: string; limits?: Record<string, unknown> },
 ): Promise<void> {
+  const unauthorable = input.mode === undefined ? undefined : unauthorableModeReason(input.mode);
+  if (input.mode !== undefined && unauthorable) {
+    throw invalid(`mode "${input.mode}" cannot be set on a task: ${unauthorable}`, { taskId: input.taskId, mode: input.mode });
+  }
   const patch = {
     ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
     ...(input.mode === undefined ? {} : { mode: input.mode }),
@@ -571,7 +801,11 @@ export async function readGraph(db: Db, versionId: string): Promise<Graph> {
       return {
         name: row.name,
         kind: row.kind,
-        mode: row.mode,
+        // `compiled` is the engine's word, not the author's: a promoted row reads back as the
+        // `ai` the author published, and the next publish re-derives `compiled` by content
+        // hash (`compileTaskPrompts`). `listVersionTasks` is where the editor sees the real
+        // row mode.
+        mode: row.mode === "compiled" ? "ai" : row.mode,
         prompt: row.prompt,
         limits: asRecord(row.limitsJson),
         emits: emitRows
@@ -592,10 +826,6 @@ export async function readGraph(db: Db, versionId: string): Promise<Graph> {
               enabled: schedule.enabled,
             }
           : null,
-        // S5h: read from the `tasks` columns `publishVersion` projected to, the same rule
-        // `kind` already follows — never from `graph_json`.
-        code: row.codeSource ? { language: "python", source: row.codeSource } : null,
-        runtime: graphRuntimeSchema.nullable().catch(null).parse(row.runtimeJson),
         position: decoration.get(row.name)?.position ?? null,
       };
     }),

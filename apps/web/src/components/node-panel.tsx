@@ -1,7 +1,7 @@
 "use client";
 
 import type { GraphTask } from "@tabductor/engine";
-import { KIND_LIST, NODE_KINDS } from "../lib/node-kinds.js";
+import { KIND_LIST, MODE_REQUIREMENTS, NODE_KINDS, ROW_MODE_STATUS } from "../lib/node-kinds.js";
 import type { EditorState, EditorStore } from "./editor-store.js";
 import { EventChip, GhostChip, KindBadge, ScheduleChip, SectionLabel } from "./primitives.js";
 
@@ -56,6 +56,7 @@ function NodeCard({ task, store, state }: { task: GraphTask; store: EditorStore;
   const confirming =
     state.ui.confirmingDelete?.kind === "node" && state.ui.confirmingDelete.id === task.name;
   const taskId = state.taskIds[task.name];
+  const published = state.publishedTasks[task.name];
   const limits = task.limits as { run_timeout_ms?: unknown; retry?: { max?: unknown } };
   const timeoutS = typeof limits.run_timeout_ms === "number" ? limits.run_timeout_ms / 1000 : "";
   const retries = typeof limits.retry?.max === "number" ? limits.retry.max : "";
@@ -181,12 +182,16 @@ function NodeCard({ task, store, state }: { task: GraphTask; store: EditorStore;
       <div className="row">
         <label className="field">
           <span>Mode</span>
-          <select value={task.mode} onChange={(e) => store.patchNode(task.name, { mode: e.target.value })}>
-            {[...new Set(["stub", task.mode])].map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
+          <select value={task.mode} onChange={(e) => store.setMode(task.name, e.target.value)}>
+            {[...new Set([...kind.modes, task.mode])].map((m) => {
+              const unavailable = state.engineExecutors !== null && !state.engineExecutors.includes(`${task.kind}:${m}`);
+              return (
+                <option key={m} value={m} disabled={unavailable && m !== task.mode} title={unavailable ? MODE_REQUIREMENTS[m] : undefined}>
+                  {m}
+                  {unavailable ? " (engine: not available)" : ""}
+                </option>
+              );
+            })}
           </select>
         </label>
         <label className="field">
@@ -226,6 +231,30 @@ function NodeCard({ task, store, state }: { task: GraphTask; store: EditorStore;
           </span>
         </label>
       </div>
+
+      <p className="muted" style={{ fontSize: "var(--text-sm)", margin: "var(--space-1) 0 0" }}>
+        {task.mode === "stub"
+          ? "Stub: emits one valid sample of each declared event, or runs its scripted stub. For testing the graph's wiring."
+          : kind.execution}
+        {task.kind === "asset" && task.mode === "ai" && state.engineCapabilities !== null && !state.engineCapabilities.includes("python.run")
+          ? " (python.run: the engine has no PYRUNNER_URL, so it will report itself unavailable.)"
+          : ""}
+      </p>
+      {published && published.mode !== task.mode ? (
+        <p className="muted" style={{ fontSize: "var(--text-sm)", margin: 0 }}>
+          Published row is <code>{published.mode}</code>: {ROW_MODE_STATUS[published.mode] ?? published.mode}
+        </p>
+      ) : null}
+      {published?.compiledPrompt ? (
+        <details>
+          <summary className="section-label" style={{ cursor: "pointer" }}>
+            Internal prompt (compiled at publish, read-only)
+          </summary>
+          <pre className="mono" style={{ whiteSpace: "pre-wrap", fontSize: "var(--text-sm)", maxHeight: 320, overflow: "auto" }}>
+            {published.compiledPrompt}
+          </pre>
+        </details>
+      ) : null}
 
       <div className="row row--between">
         <span className="row">

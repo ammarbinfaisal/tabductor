@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import {
   createAgentExecutor,
   createCompiledExecutor,
+  createCompileLoop,
   createLlm,
   type CompiledExecutorDeps,
   type Llm,
@@ -83,6 +84,12 @@ export type StartAgentRigOptions = {
    * running.
    */
   compiled?: { onOutcome?: CompiledExecutorDeps["onOutcome"] };
+  /**
+   * Wire the production compile loop (`createCompileLoop`) into both browser executors, with
+   * the compiler's model replayed from `compilerFixture`. Implies `compiled`. `onOutcome`
+   * hooks given above still fire, after the loop's own.
+   */
+  compileLoop?: { compilerFixture: string };
 };
 
 function renderTranscript(name: string, fxUrl: string, cache: Map<string, string>, scratchDir: string): string {
@@ -115,12 +122,25 @@ export async function startAgentRig(opts: StartAgentRigOptions): Promise<AgentRi
   const scratchDir = mkdtempSync(path.join(tmpdir(), "tabductor-agent-transcripts-"));
   const rendered = new Map<string, string>();
 
+  const compileLoop = opts.compileLoop
+    ? createCompileLoop({
+        db: handle.db,
+        pool,
+        gate,
+        blobs,
+        endpointFor: async () => endpointId,
+        compileLlmFor: ({ trace }) =>
+          createLlm("replay", { fixturePath: renderTranscript(opts.compileLoop!.compilerFixture, fx.url, rendered, scratchDir), trace }),
+      })
+    : undefined;
+
   const executor = createAgentExecutor({
     pool,
     gate,
     blobs,
     db: handle.db,
-    defaultEndpointId: endpointId,
+    endpointFor: async () => endpointId,
+    ...(compileLoop ? { onOutcome: async (input) => void (await compileLoop.afterAiRun(input)) } : {}),
     llmFor: ({ trace, task }) => {
       if (opts.llmFor) return opts.llmFor({ trace, task });
       if (!opts.fixtureFor) {
@@ -132,13 +152,13 @@ export async function startAgentRig(opts: StartAgentRigOptions): Promise<AgentRi
     },
   });
 
-  const compiledExecutor = opts.compiled
+  const compiledExecutor = opts.compiled || compileLoop
     ? createCompiledExecutor({
         pool,
         gate,
         blobs,
         db: handle.db,
-        defaultEndpointId: endpointId,
+        endpointFor: async () => endpointId,
         llmFor: ({ trace, task }) => {
           if (opts.llmFor) return opts.llmFor({ trace, task });
           if (!opts.fixtureFor) throw new Error("startAgentRig needs either `fixtureFor` or `llmFor`");
@@ -146,7 +166,10 @@ export async function startAgentRig(opts: StartAgentRigOptions): Promise<AgentRi
           const llm = createLlm("replay", { fixturePath, trace });
           return opts.wrapLlm ? opts.wrapLlm(llm, task) : llm;
         },
-        ...(opts.compiled.onOutcome ? { onOutcome: opts.compiled.onOutcome } : {}),
+        onOutcome: async (input) => {
+          await compileLoop?.afterCompiledRun(input);
+          await opts.compiled?.onOutcome?.(input);
+        },
       })
     : undefined;
 

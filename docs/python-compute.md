@@ -7,6 +7,20 @@ Decisions incorporated from review: Python is a **mode on `kind=asset`**, not a 
 
 ---
 
+## Changelog — 0.3 (S6d: a tool, not a mode)
+
+`mode=python` is **retired**. Everything this document says about the job bundle, the runner,
+the dependency manifest, determinism and the host-side trust boundary (§3–§7) still holds;
+what changed is who calls it and when. `python.run` is a tool on the `(asset, ai)` registry,
+always present (it fails closed with "not configured" without a `PYRUNNER_URL`), and the
+program is written by the model at run time from the node's prompt rather than authored on
+the task. Outputs under `out/files/` become assets exactly as §3.3 describes, grant-checked
+host-side; `out/emits.jsonl` is returned to the model as text rather than published, because
+the model has `emit` and is the one deciding what to emit. The authored `code`/`runtime`
+columns and the `(asset, python)` executor are gone (migration `0019`); the "empty tool
+registry" argument of §2.1 becomes "the program has no host bridge", which was always the
+load-bearing half. Read §2 and §3.5 as history.
+
 ## Changelog — 0.2 (as built)
 
 Sections below are **superseded where they describe a microVM**. tabductor became an

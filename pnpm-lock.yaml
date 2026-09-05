@@ -243,6 +243,9 @@ importers:
       '@tabductor/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@tabductor/mcp':
+        specifier: workspace:*
+        version: link:../../packages/mcp
       '@tabductor/telemetry':
         specifier: workspace:*
         version: link:../../packages/telemetry

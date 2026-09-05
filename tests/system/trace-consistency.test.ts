@@ -83,11 +83,19 @@ it("diverged emitted event types are refused even when every step matched", () =
   expect(report.reason).toContain("emitted event types diverged");
 });
 
-it("one trace is never enough — K=2 is the threshold, not a suggestion", () => {
-  const report = checkConsistency([tweetsTrace("run_a")]);
-  expect(report.consistent).toBe(false);
-  if (report.consistent) return;
-  expect(report.reason).toContain("at least 2 traces");
+/** K=1 (`promotion.ts`): one trace compiles on its own skeleton; there is nothing for it to
+ * disagree with. Zero traces is the one count that is never enough. */
+it("one trace is consistent by construction; zero traces are refused", () => {
+  const one = checkConsistency([tweetsTrace("run_a")]);
+  expect(one.consistent).toBe(true);
+  if (!one.consistent) return;
+  expect(one.fromRuns).toEqual(["run_a"]);
+  expect(one.anchors.length).toBeGreaterThan(0);
+
+  const none = checkConsistency([]);
+  expect(none.consistent).toBe(false);
+  if (none.consistent) return;
+  expect(none.reason).toContain("got 0");
 });
 
 /**

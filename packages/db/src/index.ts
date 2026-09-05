@@ -27,6 +27,7 @@ export {
   storeSchemas,
   storeWriteGrants,
   compiledScripts,
+  engineStatus,
 } from "./schema.js";
 export {
   RUN_STATUSES,
@@ -62,6 +63,7 @@ export type {
   ScheduleRow,
   WorkflowShareRow,
   CdpEndpointRow,
+  EngineStatusRow,
   NewCdpEndpoint,
   EndpointLeaseRow,
   SecretTier,

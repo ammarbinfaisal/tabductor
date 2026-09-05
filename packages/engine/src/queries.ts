@@ -1,7 +1,8 @@
-import { AppError } from "@tabductor/core";
+import { AppError, newId } from "@tabductor/core";
 import { chainOf } from "@tabductor/bus";
 import {
   cdpEndpoints,
+  engineStatus,
   events,
   runs,
   tasks,
@@ -17,7 +18,7 @@ import {
   type TraceEntryRow,
   type WorkflowRow,
 } from "@tabductor/db";
-import { and, asc, desc, eq, gt, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, sql, type SQL } from "drizzle-orm";
 
 /**
  * Read models for the control plane (S2c). They live beside the engine rather than in the
@@ -122,7 +123,12 @@ export async function getWorkflow(db: Db, workflowId: string): Promise<WorkflowR
   return row;
 }
 
-export type TaskSummary = { id: string; name: string; mode: string };
+/**
+ * `mode` here is the **row's** mode — `compiled` when the engine promoted the task — unlike
+ * `readGraph`, which hands the editor the authored `ai` back. `compiledPrompt` is the
+ * internal prompt publish compiled for the node; shown read-only, never edited.
+ */
+export type TaskSummary = { id: string; name: string; kind: string; mode: string; compiledPrompt: string | null };
 
 export async function getTask(db: Db, taskId: string): Promise<TaskRow | undefined> {
   const [row] = await db.select().from(tasks).where(eq(tasks.id, taskId));
@@ -132,7 +138,7 @@ export async function getTask(db: Db, taskId: string): Promise<TaskRow | undefin
 /** Tasks of a version, for the runs/events filters and the trigger panel's task picker. */
 export async function listVersionTasks(db: Db, versionId: string): Promise<TaskSummary[]> {
   return db
-    .select({ id: tasks.id, name: tasks.name, mode: tasks.mode })
+    .select({ id: tasks.id, name: tasks.name, kind: tasks.kind, mode: tasks.mode, compiledPrompt: tasks.compiledPrompt })
     .from(tasks)
     .where(eq(tasks.workflowVersionId, versionId))
     .orderBy(tasks.name);
@@ -185,7 +191,7 @@ export type RunDetail = { run: RunRow; task: TaskSummary; trigger: EventRow | nu
 
 export async function getRun(db: Db, runId: string): Promise<RunDetail | undefined> {
   const [row] = await db
-    .select({ run: runs, id: tasks.id, name: tasks.name, mode: tasks.mode })
+    .select({ run: runs, id: tasks.id, name: tasks.name, kind: tasks.kind, mode: tasks.mode, compiledPrompt: tasks.compiledPrompt })
     .from(runs)
     .innerJoin(tasks, eq(tasks.id, runs.taskId))
     .where(eq(runs.id, runId));
@@ -194,7 +200,11 @@ export async function getRun(db: Db, runId: string): Promise<RunDetail | undefin
   const trigger = row.run.triggerEventId
     ? ((await db.select().from(events).where(eq(events.eventId, row.run.triggerEventId)))[0] ?? null)
     : null;
-  return { run: row.run, task: { id: row.id, name: row.name, mode: row.mode }, trigger };
+  return {
+    run: row.run,
+    task: { id: row.id, name: row.name, kind: row.kind, mode: row.mode, compiledPrompt: row.compiledPrompt },
+    trigger,
+  };
 }
 
 export type EventListInput = {
@@ -324,18 +334,231 @@ export async function listTraceEntries(db: Db, input: TraceListInput): Promise<P
  */
 export type CdpEndpointSummary = Omit<CdpEndpointRow, "wsUrl" | "userId">;
 
+const ENDPOINT_SUMMARY = {
+  id: cdpEndpoints.id,
+  workflowId: cdpEndpoints.workflowId,
+  label: cdpEndpoints.label,
+  healthy: cdpEndpoints.healthy,
+  lastCheckedAt: cdpEndpoints.lastCheckedAt,
+  maxQueueDepth: cdpEndpoints.maxQueueDepth,
+  position: cdpEndpoints.position,
+  lastAcquiredAt: cdpEndpoints.lastAcquiredAt,
+  createdAt: cdpEndpoints.createdAt,
+} as const;
+
 export async function listCdpEndpoints(db: Db): Promise<CdpEndpointSummary[]> {
+  return db.select(ENDPOINT_SUMMARY).from(cdpEndpoints).orderBy(desc(cdpEndpoints.createdAt));
+}
+
+// -- U3a: per-workflow endpoints + rotation ----------------------------------------------
+//
+// A workflow owns an ordered list of CDP endpoints (its "Browser endpoints" setting) and its
+// browser runs rotate across them. There is deliberately no global default any more: the
+// engine used to bind `(browser, ai)` to the oldest row in the table at boot, which meant
+// every workflow drove the same browser and adding a second one changed nothing.
+
+export async function listWorkflowEndpoints(db: Db, workflowId: string): Promise<CdpEndpointSummary[]> {
   return db
-    .select({
-      id: cdpEndpoints.id,
-      label: cdpEndpoints.label,
-      healthy: cdpEndpoints.healthy,
-      lastCheckedAt: cdpEndpoints.lastCheckedAt,
-      maxQueueDepth: cdpEndpoints.maxQueueDepth,
-      createdAt: cdpEndpoints.createdAt,
-    })
+    .select(ENDPOINT_SUMMARY)
     .from(cdpEndpoints)
-    .orderBy(desc(cdpEndpoints.createdAt));
+    .where(eq(cdpEndpoints.workflowId, workflowId))
+    .orderBy(asc(cdpEndpoints.position), asc(cdpEndpoints.createdAt));
+}
+
+export type AddWorkflowEndpointInput = { workflowId: string; wsUrl: string; label?: string | undefined };
+
+/** Appends to the workflow's list. `ws_url` goes in and never comes back out (Threat 5). */
+export async function addWorkflowEndpoint(db: Db, input: AddWorkflowEndpointInput): Promise<CdpEndpointSummary> {
+  const [wf] = await db.select({ userId: workflows.userId }).from(workflows).where(eq(workflows.id, input.workflowId)).limit(1);
+  if (!wf) throw new AppError("workflow_not_found", `no workflow ${input.workflowId}`, { details: { workflowId: input.workflowId } });
+  const [{ next }] = await db
+    .select({ next: sql<number>`coalesce(max(${cdpEndpoints.position}), -1) + 1` })
+    .from(cdpEndpoints)
+    .where(eq(cdpEndpoints.workflowId, input.workflowId));
+  const [row] = await db
+    .insert(cdpEndpoints)
+    .values({
+      id: newId("cdp"),
+      userId: wf.userId,
+      workflowId: input.workflowId,
+      wsUrl: input.wsUrl,
+      label: input.label ?? null,
+      position: Number(next),
+    })
+    .returning(ENDPOINT_SUMMARY);
+  return row!;
+}
+
+export type UpdateWorkflowEndpointInput = {
+  workflowId: string;
+  id: string;
+  wsUrl?: string | undefined;
+  label?: string | null | undefined;
+};
+
+/**
+ * Edits an endpoint in place, keeping its id, position, and lease.
+ *
+ * Editing rather than remove-and-re-add because the two are not equivalent: re-adding
+ * appends to the end of the list, and the list's order is the rotation order the engine
+ * spreads runs across — so fixing a typo would silently demote the endpoint to last. An
+ * omitted field is left alone; `label: null` clears it, which is why the type distinguishes
+ * `null` from `undefined`.
+ *
+ * `healthy` is reset to true on a URL change: the old value is a verdict about an address
+ * that is no longer the one stored, and leaving it false would keep an endpoint the user
+ * just repaired looking broken until something happened to reconnect it.
+ */
+export async function updateWorkflowEndpoint(
+  db: Db,
+  input: UpdateWorkflowEndpointInput,
+): Promise<CdpEndpointSummary | null> {
+  const patch: Record<string, unknown> = {};
+  if (input.wsUrl !== undefined) {
+    patch.wsUrl = input.wsUrl;
+    patch.healthy = true;
+    patch.lastCheckedAt = null;
+  }
+  if (input.label !== undefined) patch.label = input.label;
+  if (Object.keys(patch).length === 0) {
+    const [row] = await db
+      .select(ENDPOINT_SUMMARY)
+      .from(cdpEndpoints)
+      .where(and(eq(cdpEndpoints.id, input.id), eq(cdpEndpoints.workflowId, input.workflowId)));
+    return row ?? null;
+  }
+  const [row] = await db
+    .update(cdpEndpoints)
+    .set(patch)
+    .where(and(eq(cdpEndpoints.id, input.id), eq(cdpEndpoints.workflowId, input.workflowId)))
+    .returning(ENDPOINT_SUMMARY);
+  return row ?? null;
+}
+
+export async function removeWorkflowEndpoint(db: Db, input: { workflowId: string; id: string }): Promise<boolean> {
+  const deleted = await db
+    .delete(cdpEndpoints)
+    .where(and(eq(cdpEndpoints.id, input.id), eq(cdpEndpoints.workflowId, input.workflowId)))
+    .returning({ id: cdpEndpoints.id });
+  return deleted.length > 0;
+}
+
+/** `ids` in the wanted order; ids not in the workflow's list are ignored, missing ones keep
+ * their relative order after the given ones. */
+export async function reorderWorkflowEndpoints(db: Db, input: { workflowId: string; ids: string[] }): Promise<void> {
+  await db.transaction(async (trx) => {
+    const current = await trx
+      .select({ id: cdpEndpoints.id })
+      .from(cdpEndpoints)
+      .where(eq(cdpEndpoints.workflowId, input.workflowId))
+      .orderBy(asc(cdpEndpoints.position), asc(cdpEndpoints.createdAt));
+    const known = new Set(current.map((r) => r.id));
+    const ordered = [...input.ids.filter((id) => known.has(id)), ...current.map((r) => r.id).filter((id) => !input.ids.includes(id))];
+    for (const [position, id] of ordered.entries()) {
+      await trx.update(cdpEndpoints).set({ position }).where(eq(cdpEndpoints.id, id));
+    }
+  });
+}
+
+/**
+ * The rotation. Picks the workflow's healthy endpoint that was acquired longest ago (never
+ * acquired first; ties by `position`) and stamps `last_acquired_at` in the same statement,
+ * so two runs of the same workflow starting together take different endpoints. Per-endpoint
+ * serialization (`endpoint_leases`, S3b) still applies underneath — this chooses *which*
+ * browser, the pool decides *when*.
+ *
+ * No endpoints → `no_endpoint_configured`, which the executors fail **permanently**: a retry
+ * cannot change a setting.
+ */
+export async function pickWorkflowEndpoint(db: Db, workflowId: string): Promise<string> {
+  const candidate = db
+    .select({ id: cdpEndpoints.id })
+    .from(cdpEndpoints)
+    .where(and(eq(cdpEndpoints.workflowId, workflowId), eq(cdpEndpoints.healthy, true)))
+    .orderBy(sql`${cdpEndpoints.lastAcquiredAt} asc nulls first`, asc(cdpEndpoints.position), asc(cdpEndpoints.createdAt))
+    .limit(1)
+    .for("update", { skipLocked: true });
+  const [picked] = await db
+    .update(cdpEndpoints)
+    .set({ lastAcquiredAt: sql`now()` })
+    .where(inArray(cdpEndpoints.id, candidate))
+    .returning({ id: cdpEndpoints.id });
+  if (picked) return picked.id;
+  const [any] = await db
+    .select({ id: cdpEndpoints.id })
+    .from(cdpEndpoints)
+    .where(and(eq(cdpEndpoints.workflowId, workflowId), eq(cdpEndpoints.healthy, true)))
+    .limit(1);
+  if (any) {
+    // Every healthy endpoint is mid-pick by a concurrent run; fall back to the plain LRU
+    // order without the lock — the pool serializes actual use anyway.
+    const [row] = await db
+      .update(cdpEndpoints)
+      .set({ lastAcquiredAt: sql`now()` })
+      .where(eq(cdpEndpoints.id, any.id))
+      .returning({ id: cdpEndpoints.id });
+    return row!.id;
+  }
+  throw new AppError("no_endpoint_configured", "this workflow has no healthy browser endpoint configured", {
+    details: { workflowId },
+  });
+}
+
+/** Workflow id for a task's pinned version — what `pickWorkflowEndpoint` needs. */
+export async function workflowIdForVersion(db: Db, workflowVersionId: string): Promise<string> {
+  const [row] = await db
+    .select({ workflowId: workflowVersions.workflowId })
+    .from(workflowVersions)
+    .where(eq(workflowVersions.id, workflowVersionId))
+    .limit(1);
+  if (!row) {
+    throw new AppError("task_workflow_not_found", `no workflow found for workflow_version ${workflowVersionId}`, {
+      details: { workflowVersionId },
+    });
+  }
+  return row.workflowId;
+}
+
+// -- U3a: engine status ---------------------------------------------------------------------
+
+export const ENGINE_STATUS_ID = "engine";
+/** A heartbeat older than this means the engine is down (the watchdog ticks every 250ms). */
+export const ENGINE_STALE_MS = 15_000;
+
+/** `capabilities`: tool-level abilities that are not a `(kind, mode)` pair — `"python.run"`
+ * when a `PYRUNNER_URL` is configured. The editor reads it to say what an asset node can do. */
+export async function recordEngineBoot(db: Db, executors: string[], capabilities: string[] = []): Promise<void> {
+  await db
+    .insert(engineStatus)
+    .values({ id: ENGINE_STATUS_ID, executors, capabilities, bootedAt: sql`now()`, heartbeatAt: sql`now()` })
+    .onConflictDoUpdate({
+      target: engineStatus.id,
+      set: { executors, capabilities, bootedAt: sql`now()`, heartbeatAt: sql`now()` },
+    });
+}
+
+export async function touchEngineHeartbeat(db: Db): Promise<void> {
+  await db.update(engineStatus).set({ heartbeatAt: sql`now()` }).where(eq(engineStatus.id, ENGINE_STATUS_ID));
+}
+
+export type EngineStatusView = {
+  executors: string[];
+  capabilities: string[];
+  bootedAt: Date | null;
+  heartbeatAt: Date | null;
+  stale: boolean;
+};
+
+export async function getEngineStatus(db: Db, now: Date = new Date()): Promise<EngineStatusView> {
+  const [row] = await db.select().from(engineStatus).where(eq(engineStatus.id, ENGINE_STATUS_ID)).limit(1);
+  if (!row) return { executors: [], capabilities: [], bootedAt: null, heartbeatAt: null, stale: true };
+  return {
+    executors: row.executors,
+    capabilities: row.capabilities,
+    bootedAt: row.bootedAt,
+    heartbeatAt: row.heartbeatAt,
+    stale: now.getTime() - row.heartbeatAt.getTime() > ENGINE_STALE_MS,
+  };
 }
 
 /**

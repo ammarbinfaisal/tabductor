@@ -51,3 +51,4 @@ export {
   type EndpointPool,
   type EndpointPoolDeps,
 } from "./pool.js";
+export { resolveCdpWsUrl, CDP_ENDPOINT_UNREACHABLE } from "./cdp-url.js";

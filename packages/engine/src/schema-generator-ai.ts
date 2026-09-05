@@ -1,6 +1,7 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
 import { generateText, type LanguageModel } from "ai";
+import { llmPromptCompiler, PROMPT_SYSTEM_PROMPT, type PromptCompiler } from "./prompt-compiler.js";
 import type { SchemaGenerator } from "./schema-generator.js";
 import { llmSchemaGenerator, SCHEMA_SYSTEM_PROMPT, type ChatTransport } from "./schema-generator-llm.js";
 
@@ -33,13 +34,22 @@ export interface AiSchemaGeneratorOptions {
 }
 
 export function aiSchemaGenerator(opts: AiSchemaGeneratorOptions): SchemaGenerator {
-  const model = languageModel(opts);
+  return llmSchemaGenerator(chatTransport(languageModel(opts), SCHEMA_SYSTEM_PROMPT));
+}
 
-  const transport: ChatTransport = {
+/** The prompt compiler's model layer (`prompt-compiler.ts`), over the same transport shape
+ * and the same provider selection as the schema compiler — one key configures both halves
+ * of what a publish compiles. */
+export function aiPromptCompiler(opts: AiSchemaGeneratorOptions): PromptCompiler {
+  return llmPromptCompiler(chatTransport(languageModel(opts), PROMPT_SYSTEM_PROMPT));
+}
+
+function chatTransport(model: LanguageModel, system: string): ChatTransport {
+  return {
     async complete(turns) {
       const result = await generateText({
         model,
-        system: SCHEMA_SYSTEM_PROMPT,
+        system,
         messages: turns.map((t) => ({ role: t.role, content: t.content })),
       });
       // A content filter is a refusal: the loop should report it rather than spend its
@@ -48,8 +58,6 @@ export function aiSchemaGenerator(opts: AiSchemaGeneratorOptions): SchemaGenerat
       return { text: result.text };
     },
   };
-
-  return llmSchemaGenerator(transport);
 }
 
 function languageModel(opts: AiSchemaGeneratorOptions): LanguageModel {

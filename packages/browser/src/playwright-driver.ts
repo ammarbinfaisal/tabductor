@@ -134,9 +134,41 @@ export const playwrightDriver: Driver = { connect };
 /** A fragment never reaches the network, so URLs are compared without one. */
 const stripFragment = (url: string): string => url.split("#", 1)[0]!;
 
+/**
+ * Defines the `__name` helper esbuild expects, inside the page.
+ *
+ * The engine runs under `tsx` (`docker-compose.yml`), which transpiles with esbuild and
+ * hardcodes `keepNames: true`. That rewrites every *named* function — including named inner
+ * `const fn = () => …` — into `__name(fn, "fn")`, and defines `__name` once at **module**
+ * scope. A function handed to `page.evaluate` is serialized with `toString()` and evaluated
+ * in the page, where that module scope does not exist: the call arrives referencing a helper
+ * that never travelled with it, and throws `ReferenceError: __name is not defined`.
+ *
+ * `perceiveInPage` is the only page function shaped to trip this (named, with named inner
+ * helpers) — the driver's other two `evaluate` calls pass a plain string and an anonymous
+ * arrow, and esbuild leaves both alone, an anonymous function having no name to keep.
+ *
+ * Installed rather than worked around because the alternatives do not survive the compiler:
+ * inner `function` declarations are wrapped just the same, and a local `__name` shim is
+ * renamed to `__name2` while the injected calls still resolve to module scope. The identity
+ * function is the right body — the page has no use for a correct `.name`, only for the call
+ * not to throw. `??=` so a page that already defines one keeps it.
+ *
+ * This arrow is itself name-wrapped, harmlessly: that wrap executes in Node, where the helper
+ * exists, and only the *body* below is serialized into the page.
+ */
+const KEEP_NAMES_SHIM = (): void => {
+  (globalThis as unknown as Record<string, unknown>).__name ??= (target: unknown) => target;
+};
+
 async function connect(wsUrl: string): Promise<BrowserConn> {
   const browser = await chromium.connectOverCDP(wsUrl);
   const context = browser.contexts()[0] ?? (await browser.newContext());
+
+  // Before any page exists, so every page this connection goes on to create — and every
+  // popup the context spawns — is born with the helper, and keeps it across navigations.
+  // Pages the context already held predate this; `perceive` covers those.
+  await context.addInitScript(KEEP_NAMES_SHIM);
 
   /** Which guard applies to which page. A popup inherits its opener's — see `adoptNewPage`. */
   const hooks = new Map<PwPage, NavigationHook>();
@@ -791,9 +823,52 @@ function perceiveInPage(args: { maxChars: number; maxElements: number }): Percep
   return { url: location.href, title: document.title, elements, text };
 }
 
+/** How long `perceive` will keep re-looking at a page that is rendering nothing yet, and how
+ * often. Bounded and short: this is a settle, not a load wait — the goal is to not hand the
+ * model an empty shell, not to guarantee a page ever fills. */
+const SETTLE_TOTAL_MS = 6_000;
+const SETTLE_POLL_MS = 400;
+
+/**
+ * True for a perception with nothing in it worth reasoning about.
+ *
+ * `goto` resolves at `domcontentloaded`, which for a client-rendered app is the moment the
+ * *shell* arrives — before the framework has put anything in it. Perceiving there yields
+ * `textChars: 0` and whatever static fallback markup the shell shipped with, which is how a
+ * real run ended up clicking X's "Try again" button: not because the profile failed to load,
+ * but because the agent was shown the page 449ms in, when that button was the only thing on
+ * it.
+ */
+function isBlank(p: Perception): boolean {
+  return p.text.trim().length === 0 && p.elements.length <= 2;
+}
+
 async function perceive(pwPage: PwPage, opts: PerceiveOptions = {}): Promise<Perception> {
-  return pwPage.evaluate(perceiveInPage, {
+  const args = {
     maxChars: opts.maxChars ?? DEFAULT_PERCEIVE_MAX_CHARS,
     maxElements: MAX_PERCEIVE_ELEMENTS,
-  });
+  };
+  try {
+    let seen = await pwPage.evaluate(perceiveInPage, args);
+    // Only a real document gets the settle: `about:blank` is legitimately blank and would
+    // otherwise spend the whole budget proving it.
+    if (isBlank(seen) && /^https?:/.test(seen.url)) {
+      const deadline = Date.now() + SETTLE_TOTAL_MS;
+      while (Date.now() < deadline && isBlank(seen)) {
+        await new Promise((r) => setTimeout(r, SETTLE_POLL_MS));
+        seen = await pwPage.evaluate(perceiveInPage, args);
+      }
+    }
+    return seen;
+  } catch (err) {
+    // `connect`'s init script covers every page born after this connection attached, which is
+    // all of them in the normal case. A page the reused context already held — we connect to
+    // a browser the user is already driving (see `connect`'s comment on `newContext`) — is
+    // the one that predates it, and reaches `perceiveInPage` without the helper. Install it
+    // in place and retry once, rather than making the caller's perception fail over a
+    // transpiler artifact. Narrow on purpose: any other failure is the page's own and rethrows.
+    if (!(err instanceof Error && err.message.includes("__name is not defined"))) throw err;
+    await pwPage.evaluate(KEEP_NAMES_SHIM);
+    return await pwPage.evaluate(perceiveInPage, args);
+  }
 }

@@ -1,3 +1,4 @@
+import { AppError } from "@tabductor/core";
 import {
   createTraceRecorder,
   openRunSession,
@@ -10,7 +11,7 @@ import {
   type TraceRecorder,
 } from "@tabductor/browser";
 import { getActiveScript } from "@tabductor/compiler";
-import { taskState, tasks, type Db, type TaskRow } from "@tabductor/db";
+import { taskState, tasks, type Db, type RunRow, type TaskRow } from "@tabductor/db";
 import type { RunHandle, RunResult, TaskExecutor } from "@tabductor/engine";
 import type { PolicyGate } from "@tabductor/policy";
 import { runCompiledScript, type CtxHost, type StateStore } from "@tabductor/static-rt";
@@ -55,7 +56,8 @@ export type CompiledExecutorDeps = {
   gate: PolicyGate;
   blobs: BlobStore;
   db: Db;
-  defaultEndpointId: string;
+  /** See `AgentExecutorDeps.endpointFor`. */
+  endpointFor: (handle: RunHandle) => Promise<string>;
   /** Only ever built when a deopt actually happens — a clean compiled run never calls this,
    * which is what makes "zero LLM calls" true of the wiring and not just of the transcript. */
   llmFor: (opts: { trace: TraceRecorder; task: TaskRow }) => Llm;
@@ -65,7 +67,7 @@ export type CompiledExecutorDeps = {
    * Called after the run settles, with whether it deopted. S6c's demotion policy lives here;
    * injected so the executor stays a code path and not a coordinator.
    */
-  onOutcome?: (input: { task: TaskRow; deopted: boolean; ok: boolean }) => Promise<void>;
+  onOutcome?: (input: { task: TaskRow; run: RunRow; deopted: boolean; ok: boolean }) => Promise<void>;
 };
 
 /** `limits_json.static_rt.{max_wall_ms,max_memory_mb}` — may only tighten S6a's defaults. */
@@ -119,7 +121,7 @@ function handoffPrompt(task: TaskRow, prompt: string, evidence: unknown): string
     prompt,
     "",
     "Original task:",
-    task.prompt ?? "(none recorded)",
+    task.compiledPrompt ?? task.prompt ?? "(none recorded)",
     "",
     "The compiled script stopped here because its guards did not hold. What failed:",
     JSON.stringify(evidence),
@@ -129,7 +131,7 @@ function handoffPrompt(task: TaskRow, prompt: string, evidence: unknown): string
 }
 
 export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor {
-  const { pool, gate, blobs, db, defaultEndpointId, llmFor, metrics } = deps;
+  const { pool, gate, blobs, db, endpointFor, llmFor, metrics } = deps;
   const storageFlagsOf = deps.storageFlagsOf ?? defaultStorageFlagsOf;
 
   return {
@@ -146,7 +148,7 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
           return { ok: false, error: "no active compiled script for this task", permanent: true };
         }
 
-        lease = await pool.acquire(defaultEndpointId, handle.run.id);
+        lease = await pool.acquire(await endpointFor(handle), handle.run.id);
         const trace = createTraceRecorder(db, blobs, handle.run.id, storageFlagsOf(handle.task));
         const limits = browserLimitsOf(handle.task);
         session = await openRunSession({
@@ -212,11 +214,14 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
         }
         return runResult;
       } catch (err) {
+        if (err instanceof AppError && err.code === "no_endpoint_configured") {
+          return { ok: false, error: "no_endpoint_configured", permanent: true };
+        }
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
       } finally {
         await session?.close().catch(() => undefined);
         await lease?.release().catch(() => undefined);
-        await deps.onOutcome?.({ task: handle.task, deopted, ok }).catch(() => undefined);
+        await deps.onOutcome?.({ task: handle.task, run: handle.run, deopted, ok }).catch(() => undefined);
       }
     },
   };

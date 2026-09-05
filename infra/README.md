@@ -18,7 +18,7 @@ That is the only command needed from a cold checkout. The first run builds the i
 | `migrate` | one-shot drizzle migrator | runs to completion; `engine` and `web` wait on its exit 0 |
 | `engine` | outbox dispatcher, run loop, cron scheduler, timeout watchdog, crash recovery | no ports |
 | `web` | Next.js + tRPC control plane | `127.0.0.1:3000` |
-| `pyrunner` | Python compute for `mode=python` asset nodes | no ports; internal `compute` network only |
+| `pyrunner` | Python compute behind the asset node's `python.run` tool | no ports; internal `compute` network only |
 | `otel-lgtm` | Grafana LGTM | `--profile telemetry` only |
 
 ### Exposing it beyond this machine
@@ -173,3 +173,22 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-lgtm:4318 docker compose --profile telem
 
 Telemetry is **no-op when that variable is unset** (§17.2 rule 2), which is the CI and
 docker-less-dev mode, so this profile is never required to run tests.
+
+## Driving your own browser (per-workflow endpoints, U3a)
+
+A browser node in `ai` or `compiled` mode drives a real Chrome over CDP — yours, with your
+logins in it. Expose one:
+
+```sh
+# A dedicated profile keeps automation out of your daily browser's session store.
+google-chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.tabductor-chrome"
+curl -s http://127.0.0.1:9222/json/version | grep webSocketDebuggerUrl
+```
+
+Paste the `ws://…` URL into the workflow's **Settings → Browser endpoints**. The list is
+ordered and rotated: each run takes the endpoint used longest ago, and the S3b lease keeps
+two runs off one browser at the same time. When the engine runs in compose, the host's
+`127.0.0.1:9222` is reachable as `host.docker.internal:9222` (add
+`extra_hosts: ["host.docker.internal:host-gateway"]` on Linux, or bind Chrome to a LAN
+address you trust). Also set `HARNESS_NAV_ALLOWLIST` in `.env` to the domains the node may
+visit — navigation anywhere else is aborted by the guard.

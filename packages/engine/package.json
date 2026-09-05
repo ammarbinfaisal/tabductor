@@ -6,7 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./ai": "./src/schema-generator-ai.ts",
-    "./python": "./src/python-executor.ts"
+    "./python": "./src/pyrun-client.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json"

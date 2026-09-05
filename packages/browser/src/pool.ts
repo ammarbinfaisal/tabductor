@@ -3,6 +3,7 @@ import { AppError, createLogger, type Logger } from "@tabductor/core";
 import { cdpEndpoints, endpointLeases, runs, type Db } from "@tabductor/db";
 import type { Metrics } from "@tabductor/telemetry";
 import { and, eq, sql } from "drizzle-orm";
+import { resolveCdpWsUrl } from "./cdp-url.js";
 import type { BrowserConn, Driver } from "./driver.js";
 
 /**
@@ -162,7 +163,12 @@ export function createEndpointPool(deps: EndpointPoolDeps): EndpointPool {
     s.connecting = (async () => {
       try {
         const row = await getEndpointRow(endpointId);
-        const raw = await driver.connect(row.wsUrl);
+        // Resolved per connect, not per add: the DevTools GUID changes on every browser
+        // restart, so a `ws://` URL frozen at add time names a target that stops existing
+        // the first time the user quits Chrome. An endpoint stored as `http://host:port`
+        // re-discovers it here and simply keeps working. A stored `ws://` passes through.
+        const wsUrl = await resolveCdpWsUrl(row.wsUrl);
+        const raw = await driver.connect(wsUrl);
         const conn = wrap(raw, endpointId);
         s.conn = conn;
         s.dead = false;
@@ -174,6 +180,17 @@ export function createEndpointPool(deps: EndpointPoolDeps): EndpointPool {
         await setHealthy(endpointId, true);
         return conn;
       } catch (err) {
+        // Logged here because this is the only frame that still holds *why*. `grantLease`
+        // turns whatever lands here into `browser.disconnected` for the run, and
+        // `scheduleReconnect` swallows its retries entirely — so without this line an
+        // unreachable endpoint produces a run that failed for a generic reason and an engine
+        // log that says nothing at all, which is exactly how long a network-level
+        // misconfiguration can hide.
+        log.warn("cdp endpoint connect failed", {
+          endpointId,
+          error: err instanceof AppError ? err.code : String(err),
+          detail: err instanceof Error ? err.message : undefined,
+        });
         s.dead = true;
         await setHealthy(endpointId, false).catch(() => undefined);
         scheduleReconnect(endpointId);

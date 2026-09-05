@@ -10,6 +10,7 @@ export default async function StatusPage() {
   const api = createCaller();
   const workflows = await api.workflow.list();
   const runs = await api.run.list({ limit: 1 });
+  const engine = await api.engine.status();
 
   return (
     <>
@@ -17,6 +18,43 @@ export default async function StatusPage() {
       <p className="muted">
         {workflows.length} workflow(s); {runs.items.length ? "runs recorded" : "no runs yet"}.
       </p>
+
+      <section>
+        <h3>Engine</h3>
+        {engine.heartbeatAt === null ? (
+          <p className="muted">The engine has never reported — is the engine process running against this database?</p>
+        ) : (
+          <>
+            <p className="muted">
+              {engine.stale ? (
+                <span className="status status-failed">not heartbeating</span>
+              ) : (
+                <span className="status status-succeeded">alive</span>
+              )}{" "}
+              — executors registered at boot (a node whose kind:mode is not listed fails{" "}
+              <code>no_executor</code>):
+            </p>
+            <div className="row">
+              {engine.executors.map((k) => (
+                <span key={k} className="chip mono">
+                  {k}
+                </span>
+              ))}
+              {engine.capabilities.map((k) => (
+                <span key={k} className="chip mono" title="tool-level ability, not a kind:mode pair">
+                  tool {k}
+                </span>
+              ))}
+            </div>
+            {!engine.capabilities.includes("python.run") ? (
+              <p className="muted">
+                <code>python.run</code> is not configured (no <code>PYRUNNER_URL</code>): asset nodes keep the tool but it
+                reports itself unavailable.
+              </p>
+            ) : null}
+          </>
+        )}
+      </section>
       <table>
         <thead>
           <tr>

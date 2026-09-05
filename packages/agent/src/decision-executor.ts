@@ -75,7 +75,7 @@ export function createDecisionExecutor(deps: DecisionExecutorDeps): TaskExecutor
         const result = await runAgentLoop({
           llm,
           tools,
-          task: { prompt: handle.task.prompt },
+          task: { prompt: handle.task.compiledPrompt ?? handle.task.prompt },
           trigger,
           emits,
           trace,

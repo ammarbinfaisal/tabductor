@@ -65,7 +65,12 @@ export const workflowRouter = router({
   publishVersion: procedure
     .input(z.object({ workflowId: z.string().min(1), graph: graphSchema }))
     .mutation(({ ctx, input }) =>
-      publishVersion(ctx.db, input, { schemaGenerator: ctx.schemaGenerator }),
+      publishVersion(ctx.db, input, {
+        schemaGenerator: ctx.schemaGenerator,
+        ...(ctx.promptCompiler ? { promptCompiler: ctx.promptCompiler } : {}),
+        // With a pool, publish also prepares the workflow's store (`PublishDeps.pool`).
+        ...(ctx.pool ? { pool: ctx.pool } : {}),
+      }),
     ),
 
   /** S5g: the store schema artifact's publish path (graph-compilation-llm §4.2's "the store

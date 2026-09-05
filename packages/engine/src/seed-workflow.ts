@@ -1,7 +1,7 @@
 import { schedules, workflows, type Db, type ScheduleRow } from "@tabductor/db";
 import { newId } from "@tabductor/core";
 import { eq } from "drizzle-orm";
-import { createWorkflow, publishVersion, type Graph, type GraphCode, type GraphEvent, type GraphRuntime, type NodeKind } from "./graph.js";
+import { createWorkflow, publishVersion, type Graph, type GraphEvent, type NodeKind } from "./graph.js";
 import { staticSchemaGenerator } from "./schema-generator.js";
 
 /**
@@ -36,11 +36,6 @@ export type SeedTask = {
   prompt?: string;
   /** Scripted StubExecutor behavior; lands in `limits_json.stub`. */
   stub?: unknown;
-  /** S5h: the `mode=python` program and its runtime declaration. Both go through the same
-   * `checkGraph` gate a real publish does — a seed cannot conjure a graph the editor could
-   * not have produced. */
-  code?: GraphCode | null;
-  runtime?: GraphRuntime | null;
   /** Per-task limits merged into `limits_json` verbatim — e.g. `{python: {wall_clock_ms}}`. */
   limits?: Record<string, unknown>;
   runTimeoutMs?: number;
@@ -147,9 +142,6 @@ export async function seedWorkflow(db: Db, spec: SeedSpec): Promise<SeededWorkfl
       emits: declaredEmits(task).map(([type]) => type),
       consumes: [...(consumesOf.get(name) ?? [])],
       schedule: null,
-      // S5h: `null` unless the spec names one, so every pre-S5h seed is unchanged.
-      code: task.code ?? null,
-      runtime: task.runtime ?? null,
       position: null,
     })),
     events: [...entities.values()],

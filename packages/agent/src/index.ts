@@ -49,7 +49,14 @@ export {
   type AssetExecutorDeps,
 } from "./asset-executor.js";
 export { buildDecisionToolRegistry, type DecisionToolRegistryDeps } from "./decision-tools.js";
-export { buildPythonToolRegistry } from "./python-tools.js";
+export { buildPythonTool, PYTHON_RUNTIME_IMAGE, type PythonToolDeps } from "./python-tool.js";
+export {
+  createCompileLoop,
+  COMPILE_INVALIDATED,
+  COMPILE_PROMOTED,
+  type CompileLoop,
+  type CompileLoopDeps,
+} from "./compile-loop.js";
 export { createCompiledExecutor, type CompiledExecutorDeps } from "./compiled-executor.js";
 export {
   createDecisionExecutor,

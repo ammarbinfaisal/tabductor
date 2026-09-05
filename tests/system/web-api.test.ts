@@ -449,10 +449,13 @@ describe("endpoint health (U1.5)", () => {
     const row = list.find((e) => e.id === id);
     expect(row).toEqual({
       id,
+      workflowId: null,
       label: "dev chrome",
       healthy: true,
       lastCheckedAt: null,
       maxQueueDepth: 5,
+      position: 0,
+      lastAcquiredAt: null,
       createdAt: expect.any(Date),
     });
 

@@ -161,8 +161,16 @@ export async function compileTask(
       // Run it in the cage it will live in. A script that throws on the very traces it was
       // compiled from is not a candidate; one that deopts cleanly is (the guards did their
       // job, which is a working script meeting a page it was not compiled for).
+      // The host is borrowed for exactly this run and returned here, whatever happened —
+      // a production caller lends a real endpoint lease through `session.close()`, and a
+      // dry run that kept it would starve the next real run of that endpoint.
       const host = await deps.dryRunHost();
-      const dry = await runCompiledScript(source, host, { metrics: deps.metrics });
+      let dry: Awaited<ReturnType<typeof runCompiledScript>>;
+      try {
+        dry = await runCompiledScript(source, host, { metrics: deps.metrics });
+      } finally {
+        await host.session.close().catch(() => undefined);
+      }
       if (dry.outcome === "error" || dry.outcome === "killed") {
         lastError =
           dry.outcome === "error" ? `dry run threw: ${dry.error}` : `dry run was killed: ${dry.reason}`;

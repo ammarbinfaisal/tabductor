@@ -15,6 +15,7 @@
       "@tabductor/engine/python": ["packages/engine/src/python-executor.ts"],
       "@tabductor/static-rt": ["packages/static-rt/src/index.ts"],
       "@tabductor/mcp": ["packages/mcp/src/index.ts"],
+      "@tabductor/mcp/servers": ["packages/mcp/src/servers.ts"],
       "@tabductor/policy": ["packages/policy/src/index.ts"],
       "@tabductor/secrets": ["packages/secrets/src/index.ts"],
       "@tabductor/store": ["packages/store/src/index.ts"],

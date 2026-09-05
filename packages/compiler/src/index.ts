@@ -25,3 +25,4 @@ export {
   type TraceEntry,
 } from "./consistency.js";
 export { lintScript, LINT_RULES, type LintResult, type LintRule, type LintViolation } from "./lint.js";
+export { loadRunTraces, previousCleanAiRunIds } from "./traces.js";

@@ -94,6 +94,18 @@ services:
     environment:
       <<: *app-env
       PYRUNNER_URL: http://pyrunner:4200
+      # The navigation guard's domain allowlist (impl-phases §0.1). Suffix match includes
+      # subdomains, so `x.com` covers `api.x.com` but never `notx.com`.
+      #
+      # Empty by default, and empty means allow all (`AllowAllGate.checkNavigation`) — a
+      # browser node reaches whatever its prompt drives it to. A localhost-only default reads
+      # like the safer choice and is not: every real workflow drives a real site, so it denied
+      # the first navigation of every graph anyone actually authored, and the deny surfaced as
+      # a run failure rather than as "you have not configured this yet". Set it to opt *into*
+      # confinement — e.g. `mail.google.com,accounts.google.com,google.com` for the Gmail flow
+      # (docs/flows/daily-expenditure.md) — which is the case where the list is a decision
+      # someone made rather than a default they tripped over.
+      HARNESS_NAV_ALLOWLIST: ${HARNESS_NAV_ALLOWLIST:-}
     # Restated in full, not extended: a YAML merge key replaces the mapping it merges into, so
     # inheriting `x-app`'s depends_on and adding pyrunner means writing all three out.
     depends_on:

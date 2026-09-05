@@ -210,7 +210,7 @@ export async function startTwoKindRig(opts: StartTwoKindRigOptions): Promise<Two
     gate,
     blobs,
     db: handle.db,
-    defaultEndpointId: endpointId,
+    endpointFor: async () => endpointId,
     llmFor: ({ trace, task }) => {
       if (task.name === "Upload") {
         return lazyReplayLlm(() => renderUploadTranscript(handle.db, fx.url, scratchDir), trace);

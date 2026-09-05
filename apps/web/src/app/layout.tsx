@@ -28,6 +28,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <nav>
             <Link href="/workflows">workflows</Link>
             <Link href="/endpoints">endpoints</Link>
+            <Link href="/settings/mcp">mcp</Link>
             <Link href="/status">status</Link>
           </nav>
         </header>

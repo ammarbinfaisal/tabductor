@@ -55,7 +55,11 @@ inspector's scope or prerequisites changes.
 | S5e | LaTeX renderer: `apps/renderer` sandbox (`FROM scratch` + `docker run` isolation), `assets.render` | **done** — no migration |
 | S5f | Two-kind e2e: browser → asset (MCP + LaTeX) → browser `page.upload`, real render, byte-match | **done** — Phase 5 exit criterion met |
 | S5g | Workflow store (`wfdata` schema + `_r`/`_w` role pair, fenced `store.query`, staged writes) + `kind=decision` (`packages/store`) | **done** — migration `0014` |
-| S5h, S6–S8 | python compute, compiler, policy, graph compiler | not started |
+| S5h | Python compute: `apps/pyrunner`, `(asset, python)` executor, hostile-input contract tests | **done** |
+| S6a–S6c | Compiler track: isolate host, script registry/compiler, `(browser, compiled)` + deopt handoff | **done** |
+| U3a | Real-mode authoring: per-kind mode selector + python editor, per-workflow CDP endpoints with rotation, MCP server settings, engine executor status | **done** — mode selector and python editor since replaced by S6d |
+| S6d | **Modes model**: `stub`/`ai` are the only authorable modes; `compiled` is engine-assigned and carried across publishes by content hash; the compile loop is wired into the engine (K=1); `python` retired as a mode in favour of the asset node's always-on `python.run` tool; publish compiles a detailed internal prompt per node (`tasks.compiled_prompt`) and provisions the workflow store | **done** — migration `0019`, `docs/subphases/S6d-modes-model.md` |
+| S7–S8 | policy engine, graph compiler | not started |
 
 What exists as code: `packages/{core,db,bus,engine,policy,telemetry,browser}` +
 `apps/{engine,web,testkit}` + `tests/system` — 286 tests in 60 files (one live-mode LLM
@@ -419,6 +423,12 @@ Asserts: the PDF exists and is valid; the browser node received bytes matching t
 
 ### S5h — Python compute mode (`mode=python`)
 
+> **Superseded by S6d.** `python` is no longer a mode. The runner, the job contract, the
+> host-side path validation and the hostile corpus all survive unchanged; what changed is the
+> caller — `python.run` is a tool on the `(asset, ai)` registry, always present, and the model
+> writes the program at run time. The authored `code`/`runtime` columns and the
+> `(asset, python)` executor are gone (migration `0019`).
+
 Gated on S5a (the `kind`/`mode` discriminants) and S5d (somewhere for output files to land). **Independent of S5b/S5c/S5e** — it touches no secret, no MCP server and no renderer — so it may land before or after them. Full design in `python-compute.md`; §13.6 and Threats 18–22 in the design doc.
 
 - **`(kind, mode)` tool registry.** S5a already re-keys the *executor* registry; this re-keys the *tool* registry to match. `(asset, ai)` keeps `mcp.*`/`assets.*`/`emit`; **`(asset, python)` gets nothing at all**. That is the whole security argument for putting Python on the asset kind: the job has no host bridge, so it cannot reach `mcp.*` even though it shares a kind with them.
@@ -450,7 +460,7 @@ Gated on S5a (the `kind`/`mode` discriminants) and S5d (somewhere for output fil
 3. **Trace consistency checker:** given K traces for a task, do resolved locators + flow match? Output: the *stable anchor set* + observed waits — the compiler agent's input.
 4. **Compiler agent:** LLM (live/record/replay like Phase 4) that takes checker output + traces → script per the §11 template (guards, static path, `ctx.deopt(recoveryPrompt, evidence)`). Output must pass lint + a **dry-run in the sandbox against a fixture replay** before becoming `candidate`.
 5. **Executor + deopt handoff:** `CompiledExecutor` runs the active script; `deopt()` → same run continues under `AgentExecutor` with recovery prompt + guard evidence + current page (mid-run handoff, §11); success → trace flagged `deopt_recovery` → recompile queue.
-6. **Promotion/demotion:** promote to `compiled` after K=2 consistent clean AI runs; demote to `ai` + `compile.invalidated` after 3 deopts in 10 runs (counters on `tasks`).
+6. **Promotion/demotion:** promote to `compiled` after K=2 consistent clean AI runs; demote to `ai` + `compile.invalidated` after 3 deopts in 10 runs (counters on `tasks`). **S6d lowered K to 1** (the first clean run compiles; the deopt door is what makes an over-fitted script cheap) and did the wiring this list left to "a caller": `createCompileLoop` in `packages/agent` hangs off both browser executors' `onOutcome`, recompiles from a recovered deopt, and publishes `compile.promoted`/`compile.invalidated`.
 
 **System tests:**
 

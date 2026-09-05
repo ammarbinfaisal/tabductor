@@ -75,7 +75,8 @@ Environment deviations from `impl-phases.md`:
 | S5f | Two-kind e2e: browser → asset (MCP + LaTeX) → browser upload | impl Phase 5 | **done** |
 | S5g | Workflow store (`wfdata` schema + role pair, `store.*` tools, fenced SQL) + `kind=decision` + plan/act/record e2e | graph-compilation-llm §2–3, §10 | **done** (migration `0014`) |
 | U3.5 | Decision node's kind badge (third entity family) + workflow store browser (tables/row-counts/schema per version) + read-only query console over S5g's own fenced read path + schema-diff-at-publish preview | graph-compilation-llm §3, impl UI track U3.5 | **done** |
-| S5h | Python compute: `mode=python` on `kind=asset`, empty `(asset, python)` tool registry, `apps/pyrunner` as a plain compose service, host-side path validation + emits | python-compute §2–7 (v0.2), §13.6 | **done** (migration `0015`) |
+| S5h | Python compute: `mode=python` on `kind=asset`, empty `(asset, python)` tool registry, `apps/pyrunner` as a plain compose service, host-side path validation + emits | python-compute §2–7 (v0.2), §13.6 | **done** (migration `0015`); mode retired by S6d |
+| S6d | Modes model: authorable modes are `stub`/`ai` only; `compiled` engine-assigned + carried by content hash; compile loop wired (K=1); `python.run` tool replaces `mode=python`; publish compiles per-node internal prompts and provisions the store | `S6d-modes-model.md` | **done** (migration `0019`) |
 | S6a | Static runtime sandbox + script registry + lint gate | impl Phase 6, §12 | **done** (migration `0016`) |
 | S6b | Trace consistency checker + compiler agent | impl Phase 6, §11 | **done** |
 | S6c | CompiledExecutor + deopt handoff + promotion/demotion + flagship e2e | impl Phase 6 | **done** (migration `0017`) |

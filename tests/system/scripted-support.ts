@@ -63,7 +63,7 @@ export async function startScriptedRig(opts: { chrome?: Chrome; gate?: PolicyGat
     gate,
     blobs,
     db: handle.db,
-    defaultEndpointId: endpointId,
+    endpointFor: async () => endpointId,
   });
 
   const dispatcher = createDispatcher(handle, { intervalMs: 25, backoffBaseMs: 10 });

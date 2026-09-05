@@ -5,6 +5,7 @@ import { AppError } from "@tabductor/core";
 import { workflows, workflowVersions, type Db, type TaskRow } from "@tabductor/db";
 import { eq } from "drizzle-orm";
 import type { RunHandle, RunResult, TaskExecutor } from "@tabductor/engine";
+import type { PyrunClient } from "@tabductor/engine/python";
 import { createMcpRunClient, loadMcpServers, type McpToolInfo } from "@tabductor/mcp";
 import type { PolicyGate } from "@tabductor/policy";
 import type { SecretsBrokerHandle } from "@tabductor/secrets";
@@ -97,7 +98,20 @@ export type AssetExecutorDeps = {
    * registry has no `store.*` tools at all, exactly the S5c-era shape.
    */
   pool?: Pool;
+  /**
+   * `python.run`'s client to `apps/pyrunner`. Optional like `render`: the tool is always on
+   * the registry and fails closed without a client. `apps/engine/src/main.ts` supplies one
+   * when `PYRUNNER_URL` is set.
+   */
+  pyrun?: PyrunClient;
 };
+
+/** `limits_json.python.wall_clock_ms` — the cap a single `python.run` call may only tighten. */
+function pythonLimitsOf(task: TaskRow): { maxWallClockMs?: number } {
+  const python = asRecord(asRecord(task.limitsJson)?.python);
+  const wall = asNumber(python?.wall_clock_ms);
+  return wall !== undefined && wall > 0 ? { maxWallClockMs: wall } : {};
+}
 
 /** `limits_json.mcp` (§13: "per-run call budget... and per-call timeout"). Absent fields let
  * `createMcpRunClient` apply its own defaults (20 calls, 60s) — one default kept in one
@@ -142,7 +156,7 @@ function mapAssetError(err: unknown): RunResult {
 }
 
 export function createAssetExecutor(deps: AssetExecutorDeps): TaskExecutor {
-  const { gate, blobs, db, llmFor, metrics, secrets, render, pool } = deps;
+  const { gate, blobs, db, llmFor, metrics, secrets, render, pool, pyrun } = deps;
   const storageFlagsOf = deps.storageFlagsOf ?? defaultStorageFlagsOf;
 
   return {
@@ -205,6 +219,7 @@ export function createAssetExecutor(deps: AssetExecutorDeps): TaskExecutor {
           ...(render ? { render } : {}),
           mcp,
           grantedMcpTools,
+          python: { ...(pyrun ? { pyrun } : {}), ...pythonLimitsOf(handle.task) },
         });
         // §4/ROADMAP.md: "kind=asset gets... store.query/insert/upsert" — added onto the
         // registry `buildAssetToolRegistry` (`asset-tools.ts`, S5f territory) returns, rather
@@ -224,7 +239,10 @@ export function createAssetExecutor(deps: AssetExecutorDeps): TaskExecutor {
         const result = await runAgentLoop({
           llm,
           tools,
-          task: { prompt: handle.task.prompt },
+          // The prompt publish compiled from the whole graph (`prompt-compiler.ts`); the
+          // author's own sentence is folded into it. A row published before that existed
+          // falls back to the bare prompt.
+          task: { prompt: handle.task.compiledPrompt ?? handle.task.prompt },
           trigger,
           emits,
           trace,

@@ -5,6 +5,7 @@ import {
   findShareByToken,
   publicEventTypes,
   refCodec,
+  type PromptCompiler,
   type PublicRead,
   type SchemaGenerator,
 } from "@tabductor/engine";
@@ -14,7 +15,7 @@ import superjson from "superjson";
 import { z } from "zod";
 import { db, pool } from "./db.js";
 import { createRateLimiter } from "./rate-limit.js";
-import { schemaGenerator } from "./schema-generator.js";
+import { promptCompiler, schemaGenerator } from "./schema-generator.js";
 
 export type Context = {
   db: Db;
@@ -25,6 +26,8 @@ export type Context = {
   pool?: Pool;
   /** The publish-time schema compiler — injected so tests publish deterministically. */
   schemaGenerator: SchemaGenerator;
+  /** The publish-time prompt compiler's model layer; absent means the deterministic brief. */
+  promptCompiler?: PromptCompiler;
   /**
    * Who is asking, for rate-limiting purposes — an IP-derived string, supplied by whatever
    * composition point has a request in hand (the HTTP route, a server component). Absent
@@ -36,7 +39,7 @@ export type Context = {
 };
 
 export function createContext(): Context {
-  return { db: db(), pool: pool(), schemaGenerator: schemaGenerator() };
+  return { db: db(), pool: pool(), schemaGenerator: schemaGenerator(), promptCompiler: promptCompiler() };
 }
 
 /**

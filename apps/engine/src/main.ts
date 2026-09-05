@@ -2,27 +2,33 @@ import {
   createAgentExecutor,
   createAssetExecutor,
   createCompiledExecutor,
+  createCompileLoop,
   createDecisionExecutor,
   createLlm,
   providerFromEnv,
+  type CompileLoop,
 } from "@tabductor/agent";
 import { createEndpointPool, createMinioBlobStore, playwrightDriver } from "@tabductor/browser";
-import { createDispatcher } from "@tabductor/bus";
+import { createDispatcher, publish } from "@tabductor/bus";
 import { loadConfig } from "@tabductor/core";
-import { cdpEndpoints, createDb, type Db } from "@tabductor/db";
+import { createDb, type Db } from "@tabductor/db";
 import {
   AssetExecutor,
   createEngine,
   executorKey,
+  pickWorkflowEndpoint,
+  recordEngineBoot,
   StubExecutor,
+  touchEngineHeartbeat,
+  workflowIdForVersion,
   type ExecutorRegistry,
+  type RunHandle,
   type TaskExecutor,
 } from "@tabductor/engine";
-import { createPyrunClient, createPythonExecutor } from "@tabductor/engine/python";
+import { createPyrunClient } from "@tabductor/engine/python";
 import { AllowAllGate } from "@tabductor/policy";
 import { createSecretsBroker, fileKeyWrapper } from "@tabductor/secrets";
 import { initTelemetry } from "@tabductor/telemetry/init";
-import { asc } from "drizzle-orm";
 import type { Pool } from "pg";
 
 /**
@@ -44,56 +50,93 @@ const log = telemetry.logger;
 const handle = createDb(config.DATABASE_URL);
 
 /**
- * The first browser node executor this process can run (S4b): `AgentExecutor` under mode
- * `ai`. Two things gate whether it gets registered at all, both checked once at boot rather
- * than per run:
- *
- * 1. **A live LLM key.** `providerFromEnv` is the same selection rule the schema compiler
- *    uses (`schema-generator-ai.ts`) — Anthropic wins if both are set. With neither set,
- *    registering the executor anyway would hand the engine a mode it can dispatch runs to but
- *    can never actually call a model for; every one of those runs would fail deep inside the
- *    loop's first `llm.complete`, indistinguishably from a real outage. A run failing
- *    `no_executor` up front (the engine's own existing behaviour for an unregistered mode) is
- *    the honest failure — it says "not configured," not "broke."
- * 2. **A CDP endpoint to drive.** There is no per-task or per-user endpoint assignment model
- *    yet (S3b's `ScriptedBrowserExecutor` doc note says the same thing) — a real deployment
- *    manages `cdp_endpoints` rows through the control plane, not through engine config, so
- *    the *composition root* has no endpoint to declare up front the way a test rig does.
- *    Reading the oldest row at boot is a stopgap for "the endpoint this single-user install
- *    talks to" until a later subphase gives tasks their own; with zero rows the executor is
- *    withheld for the identical reason as a missing key — nothing to run it against.
+ * U3a: which browser a run drives. Resolved per run from the run's workflow — the rotation
+ * over its "Browser endpoints" setting (`pickWorkflowEndpoint`) — so a workflow with no
+ * endpoints fails `no_endpoint_configured` at run time instead of the whole `(browser, ai)`
+ * mode being withheld at boot because the *table* was empty.
  */
-async function agentExecutorEntry(db: Db): Promise<ReturnType<typeof createAgentExecutor> | undefined> {
+const endpointFor = (db: Db) => async (handle: RunHandle) =>
+  pickWorkflowEndpoint(db, await workflowIdForVersion(db, handle.task.workflowVersionId));
+
+/** One pool, one blob store, one gate for every browser-facing piece below — the compile
+ * loop's dry run borrows an endpoint through the same pool the runs do, so the two never
+ * hold one endpoint twice. */
+const browserPool = createEndpointPool({ db: handle.db, driver: playwrightDriver, metrics: telemetry.metrics, logger: log });
+const blobs = createMinioBlobStore({
+  endpoint: config.BLOB_ENDPOINT,
+  accessKey: config.BLOB_ACCESS_KEY,
+  secretKey: config.BLOB_SECRET_KEY,
+  bucket: config.BLOB_BUCKET,
+});
+// `AllowAllGate` reads `HARNESS_NAV_ALLOWLIST` from config itself when no allowlist is
+// passed (impl-phases §0.1) — the real evaluator (Phase 7) replaces this construction, not
+// these call sites.
+const gate = new AllowAllGate();
+const liveProvider = providerFromEnv({ ANTHROPIC_API_KEY: config.ANTHROPIC_API_KEY, OPENAI_API_KEY: config.OPENAI_API_KEY });
+/** `python.run`'s client — the asset node's compute tool (`packages/agent`'s `python-tool.ts`).
+ * Without a `PYRUNNER_URL` the tool stays on the registry and fails closed per call. */
+const pyrun = config.PYRUNNER_URL ? createPyrunClient({ url: config.PYRUNNER_URL }) : undefined;
+if (!pyrun) log.info("no PYRUNNER_URL configured — python.run will report itself unavailable", {});
+
+/**
+ * The compile loop (`compile-loop.ts`): after every `(browser, ai)` run, compile its trace and
+ * promote; after every `(browser, compiled)` run, feed the deopt window, recompile a
+ * recovered run, demote a task that keeps deopting. Needs the model (the compiler is an LLM
+ * pass), so it exists exactly when the browser executors do.
+ */
+function compileLoopEntry(db: Db): CompileLoop | undefined {
+  if (!liveProvider) return undefined;
+  const live = liveProvider;
+  return createCompileLoop({
+    db,
+    pool: browserPool,
+    gate,
+    blobs,
+    endpointFor: async (task) => pickWorkflowEndpoint(db, await workflowIdForVersion(db, task.workflowVersionId)),
+    compileLlmFor: ({ trace }) =>
+      createLlm("live", {
+        provider: live.provider,
+        apiKey: live.apiKey,
+        trace,
+        metrics: telemetry.metrics,
+        costLabels: { kind: "browser", mode: "compile" },
+      }),
+    publish: async (input) => {
+      await publish(db, input);
+    },
+    metrics: telemetry.metrics,
+    logger: log,
+  });
+}
+const compileLoop = compileLoopEntry(handle.db);
+
+/**
+ * The first browser node executor this process can run (S4b): `AgentExecutor` under mode
+ * `ai`. Gated on a live LLM key, checked once at boot rather than per run: `providerFromEnv`
+ * is the same selection rule the schema compiler uses (`schema-generator-ai.ts`) — Anthropic
+ * wins if both are set. With neither set, registering the executor anyway would hand the
+ * engine a mode it can dispatch runs to but can never actually call a model for; every one
+ * of those runs would fail deep inside the loop's first `llm.complete`, indistinguishably
+ * from a real outage. A run failing `no_executor` up front is the honest failure — it says
+ * "not configured," not "broke." The CDP endpoint is *not* a boot gate any more (U3a): it
+ * is a per-workflow setting, resolved by `endpointFor` per run.
+ */
+function agentExecutorEntry(db: Db): ReturnType<typeof createAgentExecutor> | undefined {
   const live = providerFromEnv({ ANTHROPIC_API_KEY: config.ANTHROPIC_API_KEY, OPENAI_API_KEY: config.OPENAI_API_KEY });
   if (!live) {
     log.info("no ANTHROPIC_API_KEY/OPENAI_API_KEY configured — (browser, ai) has no executor", {});
     return undefined;
   }
-  const [endpointRow] = await db.select({ id: cdpEndpoints.id }).from(cdpEndpoints).orderBy(asc(cdpEndpoints.createdAt)).limit(1);
-  if (!endpointRow) {
-    log.info("no cdp_endpoints row configured — (browser, ai) has no executor", {});
-    return undefined;
-  }
-
-  const pool = createEndpointPool({ db, driver: playwrightDriver, metrics: telemetry.metrics, logger: log });
-  const blobs = createMinioBlobStore({
-    endpoint: config.BLOB_ENDPOINT,
-    accessKey: config.BLOB_ACCESS_KEY,
-    secretKey: config.BLOB_SECRET_KEY,
-    bucket: config.BLOB_BUCKET,
-  });
-  // `AllowAllGate` reads `HARNESS_NAV_ALLOWLIST` from config itself when no allowlist is
-  // passed (impl-phases §0.1) — the real evaluator (Phase 7) replaces this construction, not
-  // this call site.
-  const gate = new AllowAllGate();
 
   const executor = createAgentExecutor({
-    pool,
+    pool: browserPool,
     gate,
     blobs,
     db,
-    defaultEndpointId: endpointRow.id,
+    endpointFor: endpointFor(db),
     metrics: telemetry.metrics,
+    // The first clean run compiles (K=1): this is where the fast path is earned.
+    ...(compileLoop ? { onOutcome: async (input) => void (await compileLoop.afterAiRun(input)) } : {}),
     // One live provider serves every task — `task` is here for the test rig's benefit, not
     // this composition root's; see `AgentExecutorDeps.llmFor`.
     llmFor: ({ trace }) =>
@@ -138,14 +181,6 @@ function assetExecutorEntry(db: Db, pool: Pool): ReturnType<typeof createAssetEx
     log.info("no ANTHROPIC_API_KEY/OPENAI_API_KEY configured — (asset, ai) has no executor", {});
     return undefined;
   }
-  const blobs = createMinioBlobStore({
-    endpoint: config.BLOB_ENDPOINT,
-    accessKey: config.BLOB_ACCESS_KEY,
-    secretKey: config.BLOB_SECRET_KEY,
-    bucket: config.BLOB_BUCKET,
-  });
-  const gate = new AllowAllGate();
-
   return createAssetExecutor({
     gate,
     blobs,
@@ -153,6 +188,7 @@ function assetExecutorEntry(db: Db, pool: Pool): ReturnType<typeof createAssetEx
     pool,
     metrics: telemetry.metrics,
     secrets: secretsBroker,
+    ...(pyrun ? { pyrun } : {}),
     llmFor: ({ trace }) =>
       createLlm("live", {
         provider: live.provider,
@@ -176,13 +212,6 @@ function decisionExecutorEntry(db: Db, pool: Pool): ReturnType<typeof createDeci
     log.info("no ANTHROPIC_API_KEY/OPENAI_API_KEY configured — (decision, ai) has no executor", {});
     return undefined;
   }
-  const blobs = createMinioBlobStore({
-    endpoint: config.BLOB_ENDPOINT,
-    accessKey: config.BLOB_ACCESS_KEY,
-    secretKey: config.BLOB_SECRET_KEY,
-    bucket: config.BLOB_BUCKET,
-  });
-
   return createDecisionExecutor({
     db,
     pool,
@@ -201,64 +230,25 @@ function decisionExecutorEntry(db: Db, pool: Pool): ReturnType<typeof createDeci
 // -----------------------------------------------------------------------------------------
 
 /**
- * S5h: `(asset, python)`. Withheld without a `PYRUNNER_URL` for the same reason the AI
- * executors are withheld without a key — registering something that can only fail deep inside
- * a run is worse than declining it at boot and saying so.
+ * S6c: `(browser, compiled)`. Gated on the model key like `(browser, ai)` — a compiled run
+ * needs a model the moment its guards fail, and a compiled task whose deopt had nowhere to
+ * go would fail runs that the agent could have finished. The endpoint is per run (U3a).
  */
-function pythonExecutorEntry(db: typeof handle.db): TaskExecutor | undefined {
-  if (!config.PYRUNNER_URL) {
-    log.info("no PYRUNNER_URL configured — (asset, python) has no executor", {});
-    return undefined;
-  }
-  return createPythonExecutor({
-    db,
-    blobs: createMinioBlobStore({
-      endpoint: config.BLOB_ENDPOINT,
-      accessKey: config.BLOB_ACCESS_KEY,
-      secretKey: config.BLOB_SECRET_KEY,
-      bucket: config.BLOB_BUCKET,
-    }),
-    pyrun: createPyrunClient({ url: config.PYRUNNER_URL }),
-    metrics: telemetry.metrics,
-  });
-}
-
-/**
- * S6c: `(browser, compiled)`. Gated on the same two things `(browser, ai)` is — an endpoint to
- * drive and a model key — because a compiled run needs the first always and the second the
- * moment its guards fail. A compiled task whose deopt had nowhere to go would fail runs that
- * the agent could have finished.
- */
-async function compiledExecutorEntry(db: Db): Promise<TaskExecutor | undefined> {
+function compiledExecutorEntry(db: Db): TaskExecutor | undefined {
   const live = providerFromEnv({ ANTHROPIC_API_KEY: config.ANTHROPIC_API_KEY, OPENAI_API_KEY: config.OPENAI_API_KEY });
   if (!live) {
     log.info("no ANTHROPIC_API_KEY/OPENAI_API_KEY configured — (browser, compiled) has no executor", {});
     return undefined;
   }
-  const [endpointRow] = await db
-    .select({ id: cdpEndpoints.id })
-    .from(cdpEndpoints)
-    .orderBy(asc(cdpEndpoints.createdAt))
-    .limit(1);
-  if (!endpointRow) {
-    log.info("no cdp_endpoints row configured — (browser, compiled) has no executor", {});
-    return undefined;
-  }
 
-  const pool = createEndpointPool({ db, driver: playwrightDriver, metrics: telemetry.metrics, logger: log });
-  const blobs = createMinioBlobStore({
-    endpoint: config.BLOB_ENDPOINT,
-    accessKey: config.BLOB_ACCESS_KEY,
-    secretKey: config.BLOB_SECRET_KEY,
-    bucket: config.BLOB_BUCKET,
-  });
   return createCompiledExecutor({
-    pool,
-    gate: new AllowAllGate(),
+    pool: browserPool,
+    gate,
     blobs,
     db,
-    defaultEndpointId: endpointRow.id,
+    endpointFor: endpointFor(db),
     metrics: telemetry.metrics,
+    ...(compileLoop ? { onOutcome: (input) => compileLoop.afterCompiledRun(input) } : {}),
     llmFor: ({ trace }) =>
       createLlm("live", {
         provider: live.provider,
@@ -272,11 +262,10 @@ async function compiledExecutorEntry(db: Db): Promise<TaskExecutor | undefined> 
   });
 }
 
-const agentExecutor = await agentExecutorEntry(handle.db);
+const agentExecutor = agentExecutorEntry(handle.db);
 const assetExecutor = assetExecutorEntry(handle.db, handle.pool);
 const decisionExecutor = decisionExecutorEntry(handle.db, handle.pool);
-const pythonExecutor = pythonExecutorEntry(handle.db);
-const compiledExecutor = await compiledExecutorEntry(handle.db);
+const compiledExecutor = compiledExecutorEntry(handle.db);
 const executors: ExecutorRegistry = {
   [executorKey("browser", "stub")]: StubExecutor,
   // The S5a scripted-behavior skeleton, now at mode `stub` — S5c's real `(asset, ai)`
@@ -291,9 +280,6 @@ const executors: ExecutorRegistry = {
   // ever needed for it, since `store.query` + `emit` had no MCP/LaTeX gap to bridge before
   // being buildable for real).
   ...(decisionExecutor ? { [executorKey("decision", "ai")]: decisionExecutor } : {}),
-  // S5h: `mode=python` is confined to `kind=asset` by `checkGraph` and the check constraint,
-  // so this is the only pair it can ever resolve to.
-  ...(pythonExecutor ? { [executorKey("asset", "python")]: pythonExecutor } : {}),
   ...(compiledExecutor ? { [executorKey("browser", "compiled")]: compiledExecutor } : {}),
 };
 
@@ -319,14 +305,22 @@ const engine = createEngine({
  */
 await engine.start();
 await dispatcher.start();
+// U3a: tell the control plane what this process can run, and keep saying so. The editor's
+// mode selector and `/status` read this row; a stale heartbeat reads as "engine down".
+await recordEngineBoot(handle.db, Object.keys(executors), pyrun ? ["python.run"] : []);
+const heartbeat = setInterval(() => {
+  void touchEngineHeartbeat(handle.db).catch((err) => log.warn("engine heartbeat failed", { error: String(err) }));
+}, 5_000);
+heartbeat.unref();
 log.info("engine started", {
   database: config.DATABASE_URL.replace(/\/\/[^@]*@/, "//"),
   telemetry: telemetry.enabled ? "exporting" : "disabled",
   aiExecutor: agentExecutor ? "registered" : "not registered",
   assetAiExecutor: assetExecutor ? "registered" : "not registered",
   decisionAiExecutor: decisionExecutor ? "registered" : "not registered",
-  pythonExecutor: pythonExecutor ? "registered" : "not registered",
   compiledExecutor: compiledExecutor ? "registered" : "not registered",
+  compileLoop: compileLoop ? "wired" : "not wired",
+  pythonTool: pyrun ? "configured" : "not configured",
 });
 
 /**
@@ -343,6 +337,7 @@ const shutdown = async (signal: string): Promise<void> => {
   stopping = true;
   log.info("shutting down", { signal });
   try {
+    clearInterval(heartbeat);
     await dispatcher.stop();
     await engine.stop();
     await handle.close();

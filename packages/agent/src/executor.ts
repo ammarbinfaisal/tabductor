@@ -11,7 +11,7 @@ import {
   type TraceRecorder,
 } from "@tabductor/browser";
 import { AppError } from "@tabductor/core";
-import type { Db, TaskRow } from "@tabductor/db";
+import type { Db, RunRow, TaskRow } from "@tabductor/db";
 import type { RunHandle, RunResult, TaskExecutor } from "@tabductor/engine";
 import type { PolicyGate } from "@tabductor/policy";
 import type { Metrics } from "@tabductor/telemetry";
@@ -46,10 +46,13 @@ export type AgentExecutorDeps = {
   blobs: BlobStore;
   /** For the per-run `TraceRecorder` — the executor does not own a DB connection. */
   db: Db;
-  /** Same reasoning as `ScriptedExecutorDeps.defaultEndpointId`: no per-task/per-user endpoint
-   * model exists yet, so one explicitly-injected id stands in for "the endpoint this executor
-   * talks to" until S5a-era work gives tasks their own. */
-  defaultEndpointId: string;
+  /**
+   * Which endpoint this run drives (U3a). Production passes `pickWorkflowEndpoint` over the
+   * run's workflow — the rotation across the workflow's "Browser endpoints" — and test rigs
+   * pass `async () => id`. Resolved per run, never at boot, so adding an endpoint in settings
+   * takes effect on the next run. Throwing `no_endpoint_configured` fails the run permanently.
+   */
+  endpointFor: (handle: RunHandle) => Promise<string>;
   /**
    * Builds the per-run `Llm`, wired to that run's own trace recorder — a fresh completion
    * transport per run, not one shared client, because tracing is per-run (S4a's `withTrace`
@@ -60,6 +63,12 @@ export type AgentExecutorDeps = {
   llmFor: (opts: { trace: TraceRecorder; task: TaskRow }) => Llm;
   metrics?: Metrics;
   storageFlagsOf?: (task: TaskRow) => StorageFlags;
+  /**
+   * Called after the run settles inside the executor (the run row is still `running`; the
+   * engine finishes it next). The compile loop (`compile-loop.ts`) hangs here: a clean run's
+   * trace is what promotion compiles from. Injected so the executor stays a code path.
+   */
+  onOutcome?: (input: { task: TaskRow; run: RunRow; ok: boolean }) => Promise<void>;
 };
 
 /** `limits_json.browser` — same shape and reasoning `ScriptedBrowserExecutor` reads its own
@@ -97,6 +106,7 @@ async function mapError(err: unknown, lease: EndpointLease | undefined): Promise
     if (err.code === "browser.disconnected") return { ok: false, error: "browser.disconnected" };
     if (err.code === "resource_limit_exceeded") return { ok: false, error: "resource_limit_exceeded", permanent: true };
     if (err.code === "endpoint_queue_full") return { ok: false, error: "endpoint_queue_full" };
+    if (err.code === "no_endpoint_configured") return { ok: false, error: "no_endpoint_configured", permanent: true };
     return { ok: false, error: err.message };
   }
   if (lease && (await connectionIsDead(lease))) return { ok: false, error: "browser.disconnected" };
@@ -104,15 +114,16 @@ async function mapError(err: unknown, lease: EndpointLease | undefined): Promise
 }
 
 export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
-  const { pool, gate, blobs, db, defaultEndpointId, llmFor, metrics } = deps;
+  const { pool, gate, blobs, db, endpointFor, llmFor, metrics } = deps;
   const storageFlagsOf = deps.storageFlagsOf ?? defaultStorageFlagsOf;
 
   return {
     async execute(handle: RunHandle): Promise<RunResult> {
       let lease: EndpointLease | undefined;
       let session: RunSession | undefined;
+      let ok = false;
       try {
-        lease = await pool.acquire(defaultEndpointId, handle.run.id);
+        lease = await pool.acquire(await endpointFor(handle), handle.run.id);
         const trace = createTraceRecorder(db, blobs, handle.run.id, storageFlagsOf(handle.task));
         const limits = browserLimitsOf(handle.task);
         session = await openRunSession({
@@ -140,18 +151,23 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
         const result = await runAgentLoop({
           llm,
           tools,
-          task: { prompt: handle.task.prompt },
+          // See `asset-executor.ts`: the publish-compiled prompt, with the bare one as fallback.
+          task: { prompt: handle.task.compiledPrompt ?? handle.task.prompt },
           trigger,
           emits,
           trace,
           maxSteps: maxStepsOf(handle.task),
         });
-        return toRunResult(result);
+        const runResult = toRunResult(result);
+        ok = runResult.ok;
+        return runResult;
       } catch (err) {
         return mapError(err, lease);
       } finally {
+        // Session first, so the trace is flushed before anyone reads it to compile from.
         await session?.close().catch(() => undefined);
         await lease?.release().catch(() => undefined);
+        await deps.onOutcome?.({ task: handle.task, run: handle.run, ok }).catch(() => undefined);
       }
     },
   };

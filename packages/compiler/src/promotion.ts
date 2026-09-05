@@ -6,9 +6,11 @@ import { activateScript, getActiveScript, invalidateScript } from "./registry.js
 /**
  * When a task earns the fast path, and when it loses it.
  *
- * §11's numbers are binding and they are here rather than spread through the executors:
- * **K=2** clean consecutive `ai` runs promote, **3 deopts within the last 10** compiled runs
- * demote. Both are policy, and policy belongs in one readable place; the executors only report
+ * The numbers are here rather than spread through the executors: **K=1** — the first clean
+ * `ai` run compiles (a product decision superseding §11's K=2: the deopt door is what makes
+ * an over-fitted script cheap, so paying for a second exploratory run up front buys less
+ * than it costs; consistency against the previous run is still checked whenever there *is*
+ * one) — and **3 deopts within the last 10** compiled runs demote. Both are policy, and policy belongs in one readable place; the executors only report
  * what happened.
  *
  * Demotion exists so a task that has quietly stopped working stops quietly costing money. A
@@ -16,7 +18,7 @@ import { activateScript, getActiveScript, invalidateScript } from "./registry.js
  * nothing would ever surface without this. `compile.invalidated` is what makes the user notice.
  */
 
-export const PROMOTE_AFTER_CLEAN_RUNS = 2;
+export const PROMOTE_AFTER_CLEAN_RUNS = 1;
 export const DEMOTE_DEOPTS = 3;
 export const DEOPT_WINDOW = 10;
 

@@ -129,7 +129,7 @@ export type ScriptedExecutorDeps = {
    * `cdp_endpoints` row", would make endpoint choice an implicit DB scan instead of a
    * declared dependency — a worse trade for a harness whose whole point is legibility.)
    */
-  defaultEndpointId: string;
+  endpointFor: (handle: RunHandle) => Promise<string>;
   /** Defaults to `limits_json.storage`, mirroring how `.browser` is read — injectable so a
    * test can force a flag off without writing a task row for it. */
   storageFlagsOf?: (task: TaskRow) => StorageFlags;
@@ -289,7 +289,7 @@ const defaultStorageFlagsOf = (task: TaskRow): StorageFlags => parseLimits(task.
  * the only path that runs packet validation, dedupe, the loop budget, and the outbox.
  */
 export function createScriptedBrowserExecutor(deps: ScriptedExecutorDeps): TaskExecutor {
-  const { pool, gate, blobs, db, defaultEndpointId, metrics } = deps;
+  const { pool, gate, blobs, db, endpointFor, metrics } = deps;
   const storageFlagsOf = deps.storageFlagsOf ?? defaultStorageFlagsOf;
 
   return {
@@ -299,7 +299,7 @@ export function createScriptedBrowserExecutor(deps: ScriptedExecutorDeps): TaskE
       let lease: EndpointLease | undefined;
       let session: Awaited<ReturnType<typeof openRunSession>> | undefined;
       try {
-        lease = await pool.acquire(defaultEndpointId, handle.run.id);
+        lease = await pool.acquire(await endpointFor(handle), handle.run.id);
         const trace = createTraceRecorder(db, blobs, handle.run.id, storageFlagsOf(handle.task));
         session = await openRunSession({
           conn: lease.conn,

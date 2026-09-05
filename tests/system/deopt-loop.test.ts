@@ -45,13 +45,15 @@ it("guards fail on a changed layout, the agent finishes the same run, and the tr
   const wf = await seedWorkflow(rig.handle.db, {
     tasks: {
       Scrape: {
-        mode: "compiled",
+        mode: "ai",
         prompt: "Watch the timeline and report new tweets.",
         emits: ["tweet.detected"],
       },
     },
   });
   const taskId = wf.taskIds.Scrape!;
+  // `compiled` is engine-assigned; flip the row the way promotion does.
+  await rig.handle.db.update(tasks).set({ mode: "compiled" }).where(eq(tasks.id, taskId));
 
   // The compiled script points at the v2 layout, where its `article` guard cannot hold — the
   // site-redesign case, reproduced exactly.
@@ -99,9 +101,10 @@ it("guards fail on a changed layout, the agent finishes the same run, and the tr
 it("LLM cost lands on the deopted run and nowhere else", async () => {
   rig = await startAgentRig({ fixtureFor: () => "deopt-recovery.jsonl", compiled: {} });
   const wf = await seedWorkflow(rig.handle.db, {
-    tasks: { Scrape: { mode: "compiled", prompt: "Watch the timeline.", emits: ["tweet.detected"] } },
+    tasks: { Scrape: { mode: "ai", prompt: "Watch the timeline.", emits: ["tweet.detected"] } },
   });
   const taskId = wf.taskIds.Scrape!;
+  await rig.handle.db.update(tasks).set({ mode: "compiled" }).where(eq(tasks.id, taskId));
   const source = SCRIPT.replaceAll("__FX_URL__", rig.fx.url).replace("/fake-tweets", "/mutator?layout=v2");
   const script = await insertCandidateScript(rig.handle.db, { taskId, source, fromRuns: ["r"] });
   await activateScript(rig.handle.db, script.id);
