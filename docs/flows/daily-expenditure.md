@@ -27,10 +27,12 @@ node *is* the integration, which is the product's premise (§1).
 
 **Node 1 — `gmail-scan`, kind `browser`, mode `ai`**
 
-After its first clean run the engine compiles this node's trace into a static script and runs
-that from then on — no model calls until Gmail's layout changes, at which point the script
-hands the run back to the agent mid-run and recompiles from the recovery. Nothing to
-configure: `ai` is the only real mode, and `compiled` is what the engine makes of it.
+The editor creates this node as `ai`, with no mode selector. Its first successful execution
+makes its trace eligible for separate post-execution LLM compilation: the compiler separates
+DOM exploration from actual work and validates a reusable script. Once activated, that script
+avoids model calls until a guard fails; the agent can recover within the run, whose completed
+trace then becomes recompilation input. See [trace-compilation.md](../trace-compilation.md)
+for the contract and current gaps; the existing hooks still compile before run settlement.
 
 - Schedule: cron `0 7 * * *`, your tz. Missed policy `skip` (never replay a backlog of
   mornings against a live site), overlap `skip`.

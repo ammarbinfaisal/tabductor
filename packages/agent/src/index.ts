@@ -52,10 +52,14 @@ export { buildDecisionToolRegistry, type DecisionToolRegistryDeps } from "./deci
 export { buildPythonTool, PYTHON_RUNTIME_IMAGE, type PythonToolDeps } from "./python-tool.js";
 export {
   createCompileLoop,
+  createCompileWorker,
   COMPILE_INVALIDATED,
   COMPILE_PROMOTED,
+  COMPILE_TIMEOUT_MS,
+  type CompileHooksDeps,
   type CompileLoop,
-  type CompileLoopDeps,
+  type CompileWorker,
+  type CompileWorkerDeps,
 } from "./compile-loop.js";
 export { createCompiledExecutor, type CompiledExecutorDeps } from "./compiled-executor.js";
 export {

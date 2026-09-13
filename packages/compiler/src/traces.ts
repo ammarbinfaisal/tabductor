@@ -1,6 +1,6 @@
 import { runs, traceEntries, type Db } from "@tabductor/db";
 import { and, asc, desc, eq, inArray, ne } from "drizzle-orm";
-import type { RunTrace } from "./consistency.js";
+import type { RunTrace } from "./evidence.js";
 
 /**
  * The traces a compile reads, loaded from `trace_entries` in the shape `checkConsistency`
@@ -25,9 +25,11 @@ export async function loadRunTraces(db: Db, runIds: string[]): Promise<RunTrace[
 }
 
 /**
- * The most recent succeeded `ai` runs of a task other than `excludeRunId`, newest first —
- * the predecessors a fresh run is checked for consistency against. `mode_used` rather than
- * the task's current mode, because the task may have been demoted since those runs.
+ * The most recent succeeded `ai` runs of a task other than `excludeRunId`, newest first — the
+ * *supporting* evidence a compile gets alongside the run that made the task eligible. They
+ * widen what a plan may be grounded in, and a plan that ignores work one of them did is
+ * refused (`plan.ts`); they are never compared step for step. `mode_used` rather than the
+ * task's current mode, because the task may have been demoted since those runs.
  */
 export async function previousCleanAiRunIds(
   db: Db,

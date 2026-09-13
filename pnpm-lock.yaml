@@ -479,6 +479,9 @@ importers:
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
+      zod:
+        specifier: ^3.25.0
+        version: 3.25.76
     devDependencies:
       '@types/node':
         specifier: ^24.0.0

@@ -190,6 +190,72 @@ export const compiledScripts = pgTable(
 export type CompiledScriptRow = typeof compiledScripts.$inferSelect;
 
 /**
+ * S6e — one row per **post-execution** compilation of a task's trace.
+ *
+ * Compilation is a separate task from the run that made it eligible (`trace-compilation.md`):
+ * the run settles, flushes its trace and releases its session, and *then* this row is claimed
+ * by the compile worker. The table is what makes "separate" true across a restart — an engine
+ * that dies mid-compile leaves a `running` row whose lease goes stale, and the next worker
+ * picks it up rather than losing the eligibility the run paid for.
+ *
+ * `content_hash` is the task content the job was enqueued against. The worker re-reads the
+ * task before activating and refuses when it no longer matches: a compile that started before
+ * an edit must never overwrite the definition that replaced it (graph-compilation-llm §6.3).
+ */
+export const COMPILE_JOB_STATUSES = ["queued", "running", "succeeded", "refused", "failed"] as const;
+export type CompileJobStatus = (typeof COMPILE_JOB_STATUSES)[number];
+
+/** Why a trace became eligible. `promote` is a first clean `ai` run; `recompile` is a deopt
+ * the agent recovered, whose trace describes the layout that replaced the compiled one. */
+export const COMPILE_JOB_REASONS = ["promote", "recompile"] as const;
+export type CompileJobReason = (typeof COMPILE_JOB_REASONS)[number];
+
+export const compileJobs = pgTable(
+  "compile_jobs",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    /** The run whose completed trace is the compile's primary evidence. */
+    runId: text("run_id")
+      .notNull()
+      .references(() => runs.id, { onDelete: "cascade" }),
+    reason: text("reason").$type<CompileJobReason>().notNull(),
+    status: text("status").$type<CompileJobStatus>().notNull().default("queued"),
+    /** The task's `content_hash` when the job was enqueued; `null` for a task that had none. */
+    contentHash: text("content_hash"),
+    attempts: integer("attempts").notNull().default(0),
+    /** Compilation's own retry budget — separate from the run's, which is already spent. */
+    maxAttempts: integer("max_attempts").notNull().default(2),
+    /** Not before this instant: the backoff between attempts, and the small delay that lets
+     * the engine settle the source run before its trace is read. */
+    notBefore: ts("not_before").notNull().defaultNow(),
+    /** Pinged by the worker holding the job; a stale one is reclaimable. */
+    heartbeatAt: ts("heartbeat_at"),
+    startedAt: ts("started_at"),
+    endedAt: ts("ended_at"),
+    /** The candidate this job produced, once it has one. */
+    scriptId: text("script_id"),
+    /** The refusal, in the compiler's own words — what the author reads. */
+    error: text("error"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("compile_jobs_claim_idx").on(t.status, t.notBefore),
+    // One open job per task: a second clean run while the first compile is still queued adds
+    // evidence, not a second compile. The worker loads whatever traces exist when it runs.
+    uniqueIndex("compile_jobs_open_task_key")
+      .on(t.taskId)
+      .where(sql`${t.status} in ('queued','running')`),
+    check("compile_jobs_status_check", sql`${t.status} in ('queued','running','succeeded','refused','failed')`),
+    check("compile_jobs_reason_check", sql`${t.reason} in ('promote','recompile')`),
+  ],
+);
+
+export type CompileJobRow = typeof compileJobs.$inferSelect;
+
+/**
  * The event as an entity of the graph, not a property of its emitter: one row per
  * (version, type), whoever emits it. The wiring model routes on event types, so this is
  * where everything about a type lives — the author's plain-language `description` (the

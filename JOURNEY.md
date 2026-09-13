@@ -10,12 +10,12 @@
 **Job story (viewer):** When someone sends me a link to a running workflow, I want to watch its graph, runs, and opted-in event data live without an account, so I can see the thing working without being able to touch it or read what wasn't shared.
 
 **Functional job:** author a working event-driven agent workflow through prompts alone; publish it; observe and iterate on it; expose a curated live view of it.
-**Emotional job:** feel in control of an LLM-compiled system — the author can always see what their prose produced (the compiled schema, the compile report) and always has a deterministic lever (Trigger now, stub packets, republish).
+**Emotional job:** feel in control: inspect what the prose produced, trigger real work and evolve the workflow by editing and republishing.
 **Social job:** look competent in front of whoever holds the share link — the public view shows a live, legible system, never a broken or oversharing one.
 
 **Switch interview (Moesta four forces):**
 - **Push:** hand-rolled automation scripts and canvas workflow tools demand JSON schemas, drawn edges, and code; every contract change means editing structures by hand, and wiring drift breaks silently.
-- **Pull:** prose is the only input. Topology is derived from type declarations; schemas are compiled from descriptions; a just-published graph runs immediately on sampled stub packets.
+- **Pull:** prose is the authoring surface. Topology follows event declarations; publish compiles schemas and internal prompts; configured agents perform real work.
 - **Anxiety:** "an LLM writes my schemas — will it produce the contract I meant, and how do I fix it when it doesn't?" (Answered by design: read-only field-list schema display, per-event compile report, atomic publish failure, edit-and-republish repair loop.)
 - **Habit:** the canvas mental model — wanting to draw the arrow. (Answered by the derived Map: the arrows still exist, they're just read-only evidence of the declarations, not an editing surface.)
 
@@ -35,14 +35,14 @@
 | Author | In the editor: write event descriptions (`tweet.detected`: "A tweet found on the timeline: its text, author handle, permalink URL, and when it was posted"), write node prompts, toggle trigger/emit chips | "I'm describing what I want, not wiring it" | High | Editor (Events + Nodes panels) | The derived Map updates as chips toggle — instant proof the declarations connect |
 | Publish (compile) | Hit Publish; LLM compiles each changed event description into a schema; deterministic gate checks; per-event compile report returns | "Did my prose produce the right contract?" | **Valley risk** | Editor (compile report, error banners) | The make-or-break moment — see the dedicated repair flow below (this is a first-class journey step, not an edge case) |
 | Repair (when compile fails) | Read the failed event's error, edit that description, republish; unchanged events are carried forward free | "The report tells me exactly which event and why" | Low → recovering | Editor | Error banner keyed to the offending event card; failure is atomic so nothing half-published |
-| Watch | Stub engine emits sampled packets from compiled schemas; open Runs and the Event feed; inspect packets and lineage; "Trigger now" a node | "It's alive — and I wrote zero JSON" | **Peak** | Runs table, Event feed, Map | Peak-end rule (Kahneman): invest here — the first sampled `tweet.detected` packet appearing is the product's payoff moment |
+| Watch | Trigger or schedule real execution; inspect packets and lineage; after success, separate LLM compilation distills browser traces into reusable work | "It performed the task I described" | **Peak** | Runs, Events, Map | The payoff is real work; compilation improves subsequent executions |
 | Evolve | Edit a node prompt or event description, republish (hash-matched events reuse schemas at zero cost), re-watch | "Iteration is cheap" | High | Editor, Runs, Events | The carry-forward hash makes the steady-state loop nearly free — surface "reused" in the compile report so the author sees it |
 | Share | Open Share, create a link, review the visibility preview (public vs private events, emitters, schema fields), send the URL | "Exactly what am I exposing?" | Med, vigilant | Share management | The preview and the publish-time visibility diff are the trust surface — widening is always a deliberate, diffed act |
 | (Viewer) Watch | Open `/s/<token>`: graph shape, runs, event feed; private packets withheld; poll-live at 2s | "I can see it working; some data is deliberately private" | Med | Public view | Withheld packets render as an honest "private" marker, never a gap that looks like a bug |
 
 **Decision model:** McKinsey loyalty loop (2009). There is no acquisition funnel — the actor already owns the tool. The loop that matters is the post-purchase loyalty loop: Author → Publish → Watch → Evolve → Publish…, re-entered directly without re-evaluation. Design effort goes to loop friction (compile-report clarity, carry-forward cost, error-to-fix distance), not to persuasion. (No linear funnel — doctrine rule.)
 
-**Emotion curve:** rises through Author (prose feels effortless), dips to its valley at Publish when a compile fails (the author is momentarily at the mercy of a model they steer only indirectly), recovers through Repair if the report is legible, peaks at Watch when sampled packets flow, and settles high through Evolve. The design's job is to make the valley shallow (per-event errors, atomicity, free retries) and the peak fast (stub packets require nothing hand-written).
+**Emotion curve:** rises through Author, dips at failed publish, recovers through repair and peaks when real work completes. Execution and compilation outcomes remain distinct: failed optimization must not obscure successful work.
 
 **Research basis:** UNGROUNDED — single-user pre-production product; no interviews or diary studies exist. This map is a hypothesis derived from the product docs (`docs/event-centric-model.md`, `docs/sharing.md`) and must be revisited against real usage. Owner: the builder (repo owner). Update cadence: at each design-track phase gate. (Flagged per NN/g / Watermark 2023 journey-map-theater rule.)
 
@@ -55,7 +55,7 @@ The pages here are fixed, so journey mapping legitimately applies (ai-native ori
 1. **Goal contract:** publish takes prose (event descriptions + neighborhood node prompts) and returns either a compiled schema per event or a per-event failure. The UI states this contract: what the compiler read (the description), what it produced (the schema), what gate it passed (deterministic ajv check).
 2. **Inspectability:** the compiled schema is always displayed as a **read-only field list** (name, type, format/enum, nesting one level) — never raw JSON — so the author can tell whether their prose produced the right contract at a glance.
 3. **Failure and repair:** compile failure is a designed loop (flow F2), not an error toast. Atomic failure + per-event report + error banner keyed to the offending card = shortest possible error-to-fix distance.
-4. **Deterministic exits:** "Trigger now", sampled stub packets, and the reused-schema carry-forward are always-available non-LLM paths; the author is never blocked on a model call to see the system move.
+4. **Execution and optimization:** "Trigger now" queues real work, which may use an LLM. Trace compilation is a separate post-execution LLM task. Stub packets belong to automated tests, not an authoring or preview feature.
 5. **Honest confidence:** compile statuses are exactly `generated | reused | failed` — the system never presents a generated schema as anything other than compiler output.
 
 There is no chat or streaming surface; this is a document-editing product whose compiler happens to be a model. Conversational-UI patterns do not apply.
@@ -103,7 +103,9 @@ Notation: entry ●, exit ◎, [action], <decision> (NN/g flow notation). Fitts'
 4. [Add "Ranker" (asset) — consumes `tweet.detected`, emits `tweet.ranked`]
 5. [Add "Curator" (browser) — consumes `tweet.ranked`, emits `scrape.requested`] — the Map now shows the cycle Curator → scrape.requested → Scraper → tweet.detected → Ranker → tweet.ranked → Curator, annotated with the loop-budget note
 6. [Publish] → compile report: 3 events `generated`
-7. ◎ Stub engine emits sampled packets; author lands in Watch (Runs / Event feed)
+7. ◎ A configured agent runs on a trigger or schedule and emits real results; the author
+   watches Runs / Event feed. Browser trace compilation follows successful execution as a
+   separate task; it is not part of completing that run.
 **Error states:** save-time gate rejects an emit chip naming an undeclared event (inline on the chip, before publish is even possible). Compile failure → flow F2.
 **Success state:** version indicator increments; event feed shows sampled `tweet.detected` packets.
 

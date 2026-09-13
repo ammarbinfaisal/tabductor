@@ -1,7 +1,10 @@
 # Agentic Browsing Platform — Incremental Implementation Plan (Backend-First)
 
 **Version:** 0.6
-**Companion to:** `techical_plan.md` (the design doc), `graph-compilation-llm.md` (decision kind, workflow store, graph compiler), `sharing.md` (shared workflows), `python-compute.md` (`mode=python`) and `event-centric-model.md` (events as entities). Section references (§) below point to the design doc. Resolved §18 decisions are folded in below and in the design doc itself.
+**Companion to:** `techical_plan.md` (design), `graph-compilation-llm.md` (decision kind,
+store and graph compiler), `trace-compilation.md` (post-execution LLM compilation),
+`sharing.md` (shared workflows), `python-compute.md` (the asset agent's tool) and
+`event-centric-model.md` (events). Section references (§) below point to the technical plan.
 **Ordering constraints (updated in 0.3):** "backend only" held until the tooling + event architecture stabilized — **that gate is passed** (Phases 1–2 done and committed). From S2c onward the UI ships incrementally per the **UI track** at the end of this document: each slice lands as soon as its backend prerequisite exists, starting with U0 which needs only S2c. The policy/permissions engine stays last. Testing remains backend system testing throughout — no UI tests.
 
 **Changes in 0.2:** two node kinds (§4) — `browser` and `asset`. MCP moves off the browser node onto the asset node, joined by the asset store and LaTeX document generation. What was Phase 5 (MCP + secrets) is now **Phase 5 (asset node)**; the compiler and policy phases shift by one and gain kind-awareness.
@@ -13,7 +16,7 @@
 **Changes in 0.5 (2026-08-10):** two tracks are added, each specified in its own companion document.
 
 - **Shared workflows** (`sharing.md`) — a read-only public link onto a workflow's graph, triggers, runs, events, opted-in packets and assets. Its only prerequisite is S2c, so it lands as **S2d + U0.5** and is independent of everything from S3a on. It is the first slice since U0 whose backend and UI can both ship immediately, and the sharing track section below sits between Phases 2 and 3 to reflect that.
-- **Python compute** (`python-compute.md`) — `mode=python` on `kind=asset`, running an authored program in a Firecracker microVM to produce spreadsheets and other computed deliverables. It lands as **S5h** inside Phase 5, gated on S5a (the `kind`/`mode` discriminants) and S5d (somewhere for output files to go), and independent of S5e. The UI folds into U3.
+- **Python compute (historical 0.5 plan)** introduced an authored mode and microVM proposal. Current behavior is the asset agent's `python.run` tool and self-hosted subprocess runner; see `python-compute.md`.
 
 **Changes in 0.6 (2026-08-10):** the wiring model changes — events become workflow-version-scoped
 entities carrying a description prompt and an LLM-compiled packet schema, tasks declare
@@ -56,9 +59,10 @@ inspector's scope or prerequisites changes.
 | S5f | Two-kind e2e: browser → asset (MCP + LaTeX) → browser `page.upload`, real render, byte-match | **done** — Phase 5 exit criterion met |
 | S5g | Workflow store (`wfdata` schema + `_r`/`_w` role pair, fenced `store.query`, staged writes) + `kind=decision` (`packages/store`) | **done** — migration `0014` |
 | S5h | Python compute: `apps/pyrunner`, `(asset, python)` executor, hostile-input contract tests | **done** |
-| S6a–S6c | Compiler track: isolate host, script registry/compiler, `(browser, compiled)` + deopt handoff | **done** |
+| S6a–S6c | Isolate, registry, LLM generator, compiled executor and deopt | **done** — migrations `0016`/`0017` |
 | U3a | Real-mode authoring: per-kind mode selector + python editor, per-workflow CDP endpoints with rotation, MCP server settings, engine executor status | **done** — mode selector and python editor since replaced by S6d |
-| S6d | **Modes model**: `stub`/`ai` are the only authorable modes; `compiled` is engine-assigned and carried across publishes by content hash; the compile loop is wired into the engine (K=1); `python` retired as a mode in favour of the asset node's always-on `python.run` tool; publish compiles a detailed internal prompt per node (`tasks.compiled_prompt`) and provisions the workflow store | **done** — migration `0019`, `docs/subphases/S6d-modes-model.md` |
+| S6d | UI uses `ai` without selector; stub test support; K=1; Python tool; internal prompts/store | **done** — migration `0019`, `subphases/S6d-modes-model.md` |
+| S6e | Post-execution compilation: `compile_jobs` queue + worker, full-trace interpretation + work plan, isolated validation, content-hash carry-forward | **done** — migration `0020`, `subphases/S6e-post-execution-compilation.md`, `trace-compilation.md` |
 | S7–S8 | policy engine, graph compiler | not started |
 
 What exists as code: `packages/{core,db,bus,engine,policy,telemetry,browser}` +
@@ -166,7 +170,7 @@ TypeScript monorepo (pnpm workspaces). One deployable process in early phases (`
                  network observer, trace recorder, action API
   /agent       — browser agent: perception builder, tool registry, agent loop,
                  LLM adapter (live + replay)
-  /compiler    — trace consistency checker, compiler agent, script registry
+  /compiler    — trace evidence + work plan, compiler agent, isolated validation, script registry, compile jobs
   /static-rt   — isolated-vm host, ctx implementation
   /mcp         — MCP client + per-task tool routing (asset node only)
   /assets      — asset store (paths, versions, blobs) + LaTeX renderer client
@@ -283,8 +287,8 @@ injected `SchemaGenerator`, reuses unchanged schemas via the hash, gates everyth
 ajv strict (+formats), and returns a per-event compile report; failure writes nothing.
 The model-backed implementation (bounded self-repair) lives behind
 `@tabductor/engine/ai` over the Vercel AI SDK, constructed only in the web composition
-root off `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. Scriptless stub tasks emit sampled packets derived from their
-compiled schemas, so a published graph runs with nothing hand-scripted.
+root off `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. Automated tests can use scriptless stubs to
+derive sample packets from compiled schemas; UI nodes use real execution, not sampled packets.
 
 ### U1 — the declarative editor (replaces U0's canvas) ✅ **DONE**
 
@@ -421,35 +425,30 @@ Built before MCP and before assets, so no credential ever passes through a promp
 
 Asserts: the PDF exists and is valid; the browser node received bytes matching the asset's `sha256`; the asset outlives the run that created it; the whole flow is replay-deterministic in CI.
 
-### S5h — Python compute mode (`mode=python`)
+### S5h — Python compute, now the asset agent's tool
 
-> **Superseded by S6d.** `python` is no longer a mode. The runner, the job contract, the
-> host-side path validation and the hostile corpus all survive unchanged; what changed is the
-> caller — `python.run` is a tool on the `(asset, ai)` registry, always present, and the model
-> writes the program at run time. The authored `code`/`runtime` columns and the
-> `(asset, python)` executor are gone (migration `0019`).
+The runner and asset-output pipeline exist. S6d replaced the authored Python mode with
+`python.run` on `(asset, ai)`; source and input asset paths are supplied by the agent at
+execution time. Files become grant-checked assets; stdout/stderr and optional event lines
+return as untrusted data. The agent calls `emit`.
 
-Gated on S5a (the `kind`/`mode` discriminants) and S5d (somewhere for output files to land). **Independent of S5b/S5c/S5e** — it touches no secret, no MCP server and no renderer — so it may land before or after them. Full design in `python-compute.md`; §13.6 and Threats 18–22 in the design doc.
+The self-hosted runner is a Python subprocess in the Compose container, with wall-clock and
+output limits. The original Firecracker design and its hostile corpus were withdrawn;
+they are not deployment requirements or claims about current isolation. There are no
+authored `code`/`runtime` columns after migration `0019`.
 
-- **`(kind, mode)` tool registry.** S5a already re-keys the *executor* registry; this re-keys the *tool* registry to match. `(asset, ai)` keeps `mcp.*`/`assets.*`/`emit`; **`(asset, python)` gets nothing at all**. That is the whole security argument for putting Python on the asset kind: the job has no host bridge, so it cannot reach `mcp.*` even though it shares a kind with them.
-- **Constraint extension:** S5a's named `tasks_kind_mode_check` grows `mode IN ('ai','compiled','python')` and `NOT (kind <> 'asset' AND mode = 'python')`. Rejected at save time by the control plane, re-asserted by the check.
-- **Graph document:** `GraphTask.code = {language, source}` and `GraphTask.runtime = {image, packages[], inputs{assets[], tables[]}}`, projected into `tasks.code_source`/`code_sha256`/`runtime_json`. Code changes go through `publishVersion`, never `updateTask` — runs pin their version, and `code_sha256` feeds the task content hash (`graph-compilation-llm.md` §6.3). Publish validates `packages` against the committed image manifest.
-- **`apps/pyrunner`:** a composition root on an internal, egress-less compose network reachable only by `engine`. Two backends behind one interface — `firecracker` (default when `/dev/kvm` is present; the only one that is a security boundary) and `subprocess` (labelled not-a-boundary in code, docs and its startup log; refuses to start without `PYRUNNER_ALLOW_UNSAFE_BACKEND=1`).
-- **The sandbox:** microVM under `jailer`, **no network device configured**, `--no-api` static boot, read-only rootfs, one fresh ext4 scratch drive as the only channel, no vsock, 1 vCPU with memory/CPU/wall-clock caps. Scratch built with `mke2fs -d` and read back with `debugfs -R rdump` — both userspace, so the host never loop-mounts an image written by untrusted code.
-- **`PythonExecutor`** in the engine: resolve declared inputs → call the runner → extract outputs → write asset versions under the write-grant glob → **publish emits host-side** through the same `emit` path every other executor uses, so packet validation, dedupe, loop budget and the outbox apply unchanged. Sandbox kills fail the run *permanently*; program errors surface `stderr` and retry per policy.
-- Metrics: `pyrun_jobs_total{outcome}`, `pyrun_duration_seconds{outcome}`, `pyrun_vm_boot_seconds`, `pyrun_sandbox_kills_total{reason}`, `pyrun_output_bytes`.
+Current contract, tests and remaining table-input limitations: [python-compute.md](python-compute.md).
+Historical proposal: [archived Python design](history/python-compute-original.md).
 
-**Tests — a hostile corpus in the S5e style, table-driven, extended whenever someone thinks of a new escape:** network attempts of every flavour (`socket`, `urllib`, `requests`, raw fd); `subprocess`/`os.system`; fork bomb against the pid limit; memory bomb; infinite loop against the wall clock; writes outside `/job/out`; a symlink pointing out of the scratch dir; output exceeding the byte and file-count caps; `../../etc/passwd` as an output filename; a 100 MB single-line `emits.jsonl`. Contract tests: emits validated host-side against the declared packet schema, a malformed emit failing the run; a sandbox kill failing permanently with no retry; a task declaring a package outside the manifest rejected at publish; `kind=browser, mode=python` rejected at publish and by the check constraint. Happy path: a fixture program producing a byte-stable `.xlsx` after timestamp normalisation (same rule as the PDF fixtures).
-
-**Sandbox suite gating:** the hostile corpus runs on the `firecracker` backend only and **skips with a visible message** when `/dev/kvm` is absent — never silently, and never by re-pointing at the subprocess backend, which would turn the sandbox suite into a suite that tests nothing.
-
-**E2E:** browser node scrapes fixture pricing → decision or stub node filters → python node writes `/reports/pricing-<date>.xlsx` with a pivot and a chart → emits `report.ready {asset_ref}` → browser node uploads it to `fake-gram`.
-
-**Exit:** both node kinds work, exchange data only through validated packets, the tool registries are provably disjoint, and a workflow can compute.
+**E2E:** browser emits pricing → asset agent calls Python to write a spreadsheet → agent
+emits `report.ready {asset_ref}` → browser uploads the asset.
 
 ## Phase 6 — Compiler + static runtime (deopt loop)
 
-**Goal:** `CompiledExecutor` and the self-healing JIT loop (§11–§12).
+**Goal:** `CompiledExecutor` and the post-execution trace-compilation loop (§11–§12,
+[trace-compilation.md](trace-compilation.md)). Complete as of S6e: the runtime primitives
+(S6a–S6c), the modes model (S6d), and the separate job timing, full-trace LLM interpretation
+and isolated validation (S6e, migration `0020`).
 
 **Scope: `kind=browser` only** (§18.10). The compiler's task selector filters on `kind='browser'`; asset tasks are exempt from promotion/demotion counters entirely. Add one test asserting an asset task with K clean runs is *not* compiled — a silent widening of the selector would put MCP calls behind guards that cannot assert on them.
 
@@ -457,16 +456,30 @@ Gated on S5a (the `kind`/`mode` discriminants) and S5d (somewhere for output fil
 
 1. **Static runtime host:** `isolated-vm` isolate; inject only `ctx` (page/guard/network/emit/emitIfNew/deopt/state per §12, plus read-only `ctx.page.upload(anchor, assetRef)`); **no `ctx.mcp`, no asset writes** — the compiled path must mirror the browser node's registry exactly, or it becomes the policy bypass §2 principle 3 forbids; every `ctx` call crosses to host → `PolicyGate` → driver; wall-clock + memory caps; no ambient globals (verify: `fetch`, `require`, `process` undefined in-isolate).
 2. **Script registry:** `compiled_scripts` versions with `status: candidate|active|invalidated`, provenance (`from_runs`), lint gate (AST check: no `eval`/`Function`/imports/`with`; only `ctx.*` member calls).
-3. **Trace consistency checker:** given K traces for a task, do resolved locators + flow match? Output: the *stable anchor set* + observed waits — the compiler agent's input.
-4. **Compiler agent:** LLM (live/record/replay like Phase 4) that takes checker output + traces → script per the §11 template (guards, static path, `ctx.deopt(recoveryPrompt, evidence)`). Output must pass lint + a **dry-run in the sandbox against a fixture replay** before becoming `candidate`.
-5. **Executor + deopt handoff:** `CompiledExecutor` runs the active script; `deopt()` → same run continues under `AgentExecutor` with recovery prompt + guard evidence + current page (mid-run handoff, §11); success → trace flagged `deopt_recovery` → recompile queue.
-6. **Promotion/demotion:** promote to `compiled` after K=2 consistent clean AI runs; demote to `ai` + `compile.invalidated` after 3 deopts in 10 runs (counters on `tasks`). **S6d lowered K to 1** (the first clean run compiles; the deopt door is what makes an over-fitted script cheap) and did the wiring this list left to "a caller": `createCompileLoop` in `packages/agent` hangs off both browser executors' `onOutcome`, recompiles from a recovered deopt, and publishes `compile.promoted`/`compile.invalidated`.
+3. **Trace interpretation:** after execution settles, the compiler LLM receives completed
+   trace evidence, the detailed internal prompt and event/trigger context. It separates DOM
+   exploration from actual work; any multi-trace consistency checks compare the distilled work.
+4. **Compiler agent:** in that separate task, generate the guarded script and recovery prompt,
+   preserving necessary actions, extraction, emissions and state. Validate through lint and
+   the sandbox on fixture/replay or otherwise isolated inputs; do not replay live side effects.
+5. **Executor + deopt handoff:** the active script runs; deopt continues the same execution
+   under the agent. Successful recovery settles and flushes its trace before recompilation.
+6. **Promotion/demotion:** K=1 makes the first successful execution eligible; a validated
+   matching candidate activates and promotes the task. Three deopts in ten compiled runs
+   demote it and publish `compile.invalidated`. Compile failures and latency cannot alter the
+   completed execution — the outcome hook queues a `compile_jobs` row, and a separate worker
+   compiles once the run is terminal (S6e).
 
 **System tests:**
 
 - Sandbox: hostile script fixtures (infinite loop → wall-clock kill; memory bomb → cap; attempts at `this.constructor.constructor('return process')` → undefined; direct network attempt → no primitive exists). Write these as table-driven tests; extend the table every time you think of a new escape.
 - Golden compile: recorded compiler transcript over the canonical `fake-tweets` traces → snapshot-test the emitted script (normalized); lint gate rejects a corpus of bad scripts (eval, import, non-ctx calls).
-- **Deopt loop end-to-end (the flagship test):** run task twice in AI mode (replay) → auto-compiles → run in compiled mode against `fake-tweets` → succeeds with *zero LLM calls* (assert on trace) → flip fixture to `mutator?layout=v2` → guards fail → deopt → agent (replay transcript for the recovery) finishes the run → recompile produces v2 → next run: compiled v2, zero LLM calls, on the new layout.
+- **Deopt loop end-to-end (acceptance target):** one AI run settles → separate trace
+  compilation distills and validates a script → compiled run succeeds with zero LLM calls →
+  changed fixture triggers deopt → the agent recovers and the execution settles → separate
+  recompilation produces v2 → a subsequent run uses v2 without LLM calls. `compile-loop.test.ts`
+  additionally asserts that a failed compile changes nothing about the run that earned it, and
+  `compiler-agent.test.ts` that exploration is not replayed as business work.
 - Demotion: force 3 deopts in 10 via mutator toggling → task mode flips to `ai`, `compile.invalidated` emitted.
 - `emitIfNew` + `ctx.state`: compiled polling run twice against unchanged fixture → second run emits nothing.
 

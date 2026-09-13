@@ -8,6 +8,7 @@ const EXPECTED_TABLES = [
   "asset_write_grants",
   "assets",
   "cdp_endpoints",
+  "compile_jobs",
   "compiled_scripts",
   "endpoint_leases",
   "engine_status",

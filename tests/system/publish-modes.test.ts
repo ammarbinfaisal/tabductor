@@ -4,6 +4,7 @@ import { compiledScripts, tasks } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import {
   createWorkflow,
+  updateTask,
   llmPromptCompiler,
   publishVersion,
   readGraph,
@@ -126,7 +127,10 @@ it("an unchanged node's prompt is carried forward by hash; a neighbour's edit re
   expect(v3.report.tasks.map((t) => t.status)).toEqual(["generated", "generated"]);
   const [, s3] = await rowsOf(h, v3.versionId);
   expect(s3!.compiledPrompt).toContain("Write a PDF instead.");
-  expect(s3!.contentHash).not.toBe(s1!.contentHash);
+  // ...but Scrape's *content* hash does not move, because Scrape does the same work (S6e).
+  // The brief is context for an agent; the script is compiled from what this node does, and
+  // hashing the brief meant every neighbour's wording change threw a working script away.
+  expect(s3!.contentHash).toBe(s1!.contentHash);
 });
 
 /** A scripted transport: each call pops the next reply, so a test can stage a repair turn. */
@@ -201,6 +205,20 @@ it("a promoted browser task keeps its script and `compiled` across an unchanged 
   expect(carried).toHaveLength(1);
   expect(carried[0]).toMatchObject({ status: "active", source: "// v1 script", fromRuns: ["run_1"], version: 1 });
 
+  // A neighbour's edit rewrites this node's brief but not its content: the fast path stays,
+  // and so does the record that decides when it is taken away again.
+  await h.db.update(tasks).set({ recentDeopts: [false, true], cleanAiRuns: 3 }).where(eq(tasks.id, scrape2!.id));
+  const vN = await publishVersion(
+    h.db,
+    { workflowId, graph: { ...doc, tasks: doc.tasks.map((t) => (t.name === "Report" ? { ...t, prompt: "Write a PDF instead." } : t)) } },
+    { schemaGenerator: generator },
+  );
+  expect(vN.taskModes.Scrape).toBe("compiled");
+  const [, scrapeN] = await rowsOf(h, vN.versionId);
+  expect(scrapeN!.mode).toBe("compiled");
+  expect(scrapeN!.recentDeopts).toEqual([false, true]);
+  expect(scrapeN!.cleanAiRuns).toBe(3);
+
   // A prompt edit changes the content hash: back to `ai`, nothing on the shelf.
   const v3 = await publishVersion(h.db, { workflowId, graph: graph({ scrapePrompt: "Watch replies instead." }) }, { schemaGenerator: generator });
   expect(v3.taskModes.Scrape).toBe("ai");
@@ -215,6 +233,38 @@ it("a promoted browser task keeps its script and `compiled` across an unchanged 
     { schemaGenerator: generator },
   );
   expect(v4.taskModes.Scrape).toBe("stub");
+});
+
+/**
+ * The other door into a task's definition: the in-place node edit, which is not a publish and
+ * so never recompiles anything. Before S6e it left both compiled artifacts behind — the next
+ * run executed detailed instructions generated from wording the author had already replaced,
+ * and a script compiled from a run that followed them.
+ */
+it("editing a node's prompt in place retires its compiled prompt and its active script", async () => {
+  const { handle: h, workflowId } = await fresh();
+  const v1 = await publishVersion(h.db, { workflowId, graph: graph() }, { schemaGenerator: generator });
+  const scrapeId = v1.taskIds.Scrape!;
+  const script = await insertCandidateScript(h.db, { taskId: scrapeId, source: "// v1 script", fromRuns: ["run_1"] });
+  await activateScript(h.db, script.id);
+  await h.db.update(tasks).set({ mode: "compiled", cleanAiRuns: 1 }).where(eq(tasks.id, scrapeId));
+
+  await updateTask(h.db, { taskId: scrapeId, prompt: "Watch the replies, not the timeline." });
+
+  const [edited] = await h.db.select().from(tasks).where(eq(tasks.id, scrapeId));
+  expect(edited!.prompt).toBe("Watch the replies, not the timeline.");
+  expect(edited!.mode).toBe("ai");
+  expect(edited!.compiledPrompt).toBeNull();
+  expect(edited!.contentHash).toBeNull();
+  expect(edited!.cleanAiRuns).toBe(0);
+  const [shelf] = await h.db.select().from(compiledScripts).where(eq(compiledScripts.id, script.id));
+  expect(shelf!.status).toBe("invalidated");
+
+  // A limits-only edit touches none of it — the knobs you turn while watching a graph run are
+  // not a change to what the node does.
+  await h.db.update(tasks).set({ mode: "compiled" }).where(eq(tasks.id, scrapeId));
+  await updateTask(h.db, { taskId: scrapeId, limits: { retry: { max: 3 } } });
+  expect((await h.db.select().from(tasks).where(eq(tasks.id, scrapeId)))[0]!.mode).toBe("compiled");
 });
 
 it("a publish given a pool prepares the workflow's store schema and role pair", async () => {

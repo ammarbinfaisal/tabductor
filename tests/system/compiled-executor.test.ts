@@ -4,11 +4,12 @@ import { afterEach, expect, it } from "vitest";
 import {
   activateScript,
   insertCandidateScript,
-  recordAiRun,
+  noteAiRun,
+  promoteTask,
   recordCompiledRun,
 } from "@tabductor/compiler";
 import { compiledScripts, tasks } from "@tabductor/db";
-import { seedWorkflow, triggerTask } from "@tabductor/engine";
+import { seedWorkflow, triggerTask, updateTask } from "@tabductor/engine";
 import { eq } from "drizzle-orm";
 import { readFileSync } from "node:fs";
 import { startAgentRig, traceRowsFor, type AgentRig } from "./agent-support.js";
@@ -169,11 +170,12 @@ it("deopts older than the window stop counting", async () => {
 }, 120_000);
 
 /**
- * Promotion, tested as policy. §11's rule is two *consecutive clean consistent* `ai` runs, and
- * the cases worth asserting are the ones where a naive counter gets it wrong: a failure in
- * between, and two successes that did different things.
+ * Promotion, tested as policy — and as *two* steps, which is the S6e shape. A run only makes
+ * the task **eligible**; the script is activated later, by the compile worker, against the task
+ * content the job was queued for. The cases worth asserting are the ones a naive counter gets
+ * wrong: a failed run, a kind that is never compiled, and a task edited mid-compile.
  */
-it("promotes after the first clean ai run (K=1), activating the compiled script", async () => {
+it("the first clean ai run makes the task eligible, and promotion activates the script", async () => {
   rig = await startAgentRig({ compiled: {}, fixtureFor: () => "compiled-tweets-script.jsonl" });
   const db = rig.handle.db;
   const wf = await seedWorkflow(db, { tasks: { Scrape: { mode: "ai", emits: ["tweet.detected"] } } });
@@ -181,10 +183,14 @@ it("promotes after the first clean ai run (K=1), activating the compiled script"
   const taskRow = async () => (await db.select().from(tasks).where(eq(tasks.id, taskId)))[0]!;
 
   const script = await insertCandidateScript(db, { taskId, source: "// compiled", fromRuns: ["a"] });
-  const compile = async () => ({ ok: true as const, scriptId: script.id });
+  const eligibility = await noteAiRun({ db }, await taskRow(), { ok: true });
+  expect(eligibility.eligible).toBe(true);
 
-  const first = await recordAiRun({ db, compile }, await taskRow(), { ok: true, consistent: true });
-  expect(first).toEqual({ promoted: true, scriptId: script.id });
+  const promotion = await promoteTask(
+    { db },
+    { taskId, scriptId: script.id, expectContentHash: (await taskRow()).contentHash },
+  );
+  expect(promotion.promoted).toBe(true);
 
   const after = await taskRow();
   expect(after.mode).toBe("compiled");
@@ -195,53 +201,56 @@ it("promotes after the first clean ai run (K=1), activating the compiled script"
   expect(row?.status).toBe("active");
 }, 120_000);
 
-it.each([
-  ["a failed run", { ok: false, consistent: true }, "run failed"],
-  ["a run that diverged from its predecessor", { ok: true, consistent: false }, "runs diverged"],
-])("%s does not promote and leaves the task in ai", async (_label, input, reason) => {
+it("a failed ai run is not eligible and resets the counter", async () => {
   rig = await startAgentRig({ compiled: {}, fixtureFor: () => "compiled-tweets-script.jsonl" });
   const db = rig.handle.db;
   const wf = await seedWorkflow(db, { tasks: { Scrape: { mode: "ai" } } });
   const taskId = wf.taskIds.Scrape!;
   const taskRow = async () => (await db.select().from(tasks).where(eq(tasks.id, taskId)))[0]!;
-  const compile = async () => {
-    throw new Error("promotion must not have been attempted");
-  };
 
-  const result = await recordAiRun({ db, compile }, await taskRow(), input);
-  expect(result).toEqual({ promoted: false, reason });
+  const result = await noteAiRun({ db }, await taskRow(), { ok: false });
+  expect(result).toEqual({ eligible: false, cleanRuns: 0, reason: "run failed" });
   expect((await taskRow()).cleanAiRuns).toBe(0);
   expect((await taskRow()).mode).toBe("ai");
 }, 120_000);
 
-/** A compile that refuses (inconsistent traces, lint, dry run) is a reason, not a promotion. */
-it("a compile refusal leaves the task in ai with the reason reported", async () => {
+/**
+ * The artifact has to match the task content it implements (graph-compilation-llm §6.3).
+ * Compilation is long; an author who edits the node while it runs must not get a script
+ * compiled from the definition they just replaced.
+ */
+it("a task edited while its trace was compiling is not promoted", async () => {
   rig = await startAgentRig({ compiled: {}, fixtureFor: () => "compiled-tweets-script.jsonl" });
   const db = rig.handle.db;
-  const wf = await seedWorkflow(db, { tasks: { Scrape: { mode: "ai" } } });
+  const wf = await seedWorkflow(db, { tasks: { Scrape: { mode: "ai", prompt: "Watch the timeline." } } });
   const taskId = wf.taskIds.Scrape!;
   const taskRow = async () => (await db.select().from(tasks).where(eq(tasks.id, taskId)))[0]!;
-  const compile = async () => ({ ok: false as const, error: "lint: eval is forbidden" });
 
-  const result = await recordAiRun({ db, compile }, await taskRow(), { ok: true, consistent: true });
-  expect(result).toEqual({ promoted: false, reason: "lint: eval is forbidden" });
+  const script = await insertCandidateScript(db, { taskId, source: "// compiled", fromRuns: ["a"] });
+  const hashAtEnqueue = (await taskRow()).contentHash;
+  await updateTask(db, { taskId, prompt: "Watch the timeline, and also the replies." });
+
+  const promotion = await promoteTask({ db }, { taskId, scriptId: script.id, expectContentHash: hashAtEnqueue });
+  expect(promotion.promoted).toBe(false);
+  expect(promotion.reason).toContain("changed");
   expect((await taskRow()).mode).toBe("ai");
+  const [row] = await db.select().from(compiledScripts).where(eq(compiledScripts.id, script.id));
+  expect(row?.status).toBe("candidate");
 }, 120_000);
 
-/** The §4 boundary again: an asset task must not accumulate toward a promotion S6b would refuse. */
+/** The §4 boundary again: an asset task must not accumulate toward a promotion the compiler
+ * would refuse. */
 it.each(["asset", "decision"] as const)("a %s task never advances the promotion counter", async (kind) => {
   rig = await startAgentRig({ compiled: {}, fixtureFor: () => "compiled-tweets-script.jsonl" });
   const db = rig.handle.db;
   const wf = await seedWorkflow(db, { tasks: { T: { kind, mode: "ai" } } });
   const taskId = wf.taskIds.T!;
   const taskRow = async () => (await db.select().from(tasks).where(eq(tasks.id, taskId)))[0]!;
-  const compile = async () => {
-    throw new Error("promotion must not have been attempted");
-  };
 
   for (let i = 0; i < 2; i++) {
-    const out = await recordAiRun({ db, compile }, await taskRow(), { ok: true, consistent: true });
-    expect(out).toEqual({ promoted: false, reason: `kind ${kind} is never compiled` });
+    const out = await noteAiRun({ db }, await taskRow(), { ok: true });
+    expect(out.eligible).toBe(false);
+    expect(out.reason).toBe(`kind ${kind} is never compiled`);
   }
   expect((await taskRow()).cleanAiRuns).toBe(0);
   expect((await taskRow()).mode).toBe("ai");

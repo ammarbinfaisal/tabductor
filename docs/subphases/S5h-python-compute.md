@@ -1,7 +1,12 @@
-# S5h — Python compute mode (`kind=asset`, `mode=python`)
+# S5h — Historical Python compute implementation brief
+
+**Historical only, superseded.** This records the original S5h task and implementation.
+It is not a current instruction to restore a Python mode, authored code columns or a
+microVM. The current specification is [Python compute](../python-compute.md), with the
+S6d caller changes in [the mode model](S6d-modes-model.md).
 
 You are implementing subphase S5h. Read, in order:
-1. This file (authoritative).
+1. This file (historical S5h requirements; superseded by the current specification above).
 2. `docs/python-compute.md` — the whole document. It is the design; this file is the build order.
 3. `docs/impl-phases.md` — the S5h section under Phase 5.
 4. `docs/techical_plan.md` — §4 (the `(kind, mode)` registry rule), §5 (mode constraints),

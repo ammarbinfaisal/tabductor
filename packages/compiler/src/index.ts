@@ -5,24 +5,49 @@ export {
   invalidateScript,
 } from "./registry.js";
 export {
-  recordAiRun,
+  noteAiRun,
+  promoteTask,
   recordCompiledRun,
   DEMOTE_DEOPTS,
   DEOPT_WINDOW,
   PROMOTE_AFTER_CLEAN_RUNS,
   type DemotionOutcome,
-  type PromotionDeps,
-  type PromotionOutcome,
+  type EligibilityOutcome,
 } from "./promotion.js";
-export { compileTask, type CompileDeps, type CompileResult, type Llm } from "./compile.js";
 export {
-  checkConsistency,
-  type Anchor,
-  type ConsistencyReport,
-  type Extraction,
+  compileTask,
+  type CompileDeps,
+  type CompileInput,
+  type CompileResult,
+  type CompileStage,
+  type Llm,
+} from "./compile.js";
+export {
+  buildEvidence,
+  missingEvidence,
+  renderEvidence,
+  type ActionEvidence,
+  type RunEvidence,
   type RunTrace,
-  type Step,
   type TraceEntry,
-} from "./consistency.js";
+} from "./evidence.js";
+export {
+  renderPlan,
+  validatePlan,
+  workPlanSchema,
+  type PlanCheck,
+  type PlanStep,
+  type WorkPlan,
+} from "./plan.js";
+export { validateCandidate, type ValidationResult } from "./validate.js";
+export {
+  claimCompileJob,
+  enqueueCompileJob,
+  finishCompileJob,
+  heartbeatCompileJob,
+  taskForJob,
+  COMPILE_JOB_STALE_MS,
+  COMPILE_RETRY_DELAY_MS,
+} from "./jobs.js";
 export { lintScript, LINT_RULES, type LintResult, type LintRule, type LintViolation } from "./lint.js";
 export { loadRunTraces, previousCleanAiRunIds } from "./traces.js";

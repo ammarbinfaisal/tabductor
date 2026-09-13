@@ -21,13 +21,13 @@ Environment deviations from `impl-phases.md`:
 - Fixture sites: served in-process by the testkit, not as a compose service.
 - Blob storage: MinIO (S3 API) behind a `BlobStore` interface.
 - Python compute (S5h): **an ordinary compose service, no microVM.** tabductor is open-source
-  and self-hosted, so a `mode=python` program is the operator's own code and there is no
+  and self-hosted; programs now come from the asset agent's `python.run` tool. There is no
   untrusted tenant to isolate from. Firecracker, the jailer, the vendored kernel, the
   `/dev/kvm` requirement and the ext4 block-device job protocol are all withdrawn. `pyrunner`
   runs `python` as a subprocess of itself under a wall clock — that container *is* the
   isolation unit — and needs no docker socket, which is why it can be in `docker-compose.yml`
-  at all (contrast `apps/renderer`, which cannot). It sits alone on an internal `compute`
-  network with no published ports and no route off the host.
+  at all (contrast `apps/renderer`, which cannot). It shares an internal `compute` network
+  with the engine, with no published runner ports. This is not a per-job network sandbox.
 
 ## Stack decisions (user-mandated, binding for all subphases)
 - **Next.js + tRPC + zod** for the control plane (`apps/web`). Backend logic stays in
@@ -75,11 +75,12 @@ Environment deviations from `impl-phases.md`:
 | S5f | Two-kind e2e: browser → asset (MCP + LaTeX) → browser upload | impl Phase 5 | **done** |
 | S5g | Workflow store (`wfdata` schema + role pair, `store.*` tools, fenced SQL) + `kind=decision` + plan/act/record e2e | graph-compilation-llm §2–3, §10 | **done** (migration `0014`) |
 | U3.5 | Decision node's kind badge (third entity family) + workflow store browser (tables/row-counts/schema per version) + read-only query console over S5g's own fenced read path + schema-diff-at-publish preview | graph-compilation-llm §3, impl UI track U3.5 | **done** |
-| S5h | Python compute: `mode=python` on `kind=asset`, empty `(asset, python)` tool registry, `apps/pyrunner` as a plain compose service, host-side path validation + emits | python-compute §2–7 (v0.2), §13.6 | **done** (migration `0015`); mode retired by S6d |
-| S6d | Modes model: authorable modes are `stub`/`ai` only; `compiled` engine-assigned + carried by content hash; compile loop wired (K=1); `python.run` tool replaces `mode=python`; publish compiles per-node internal prompts and provisions the store | `S6d-modes-model.md` | **done** (migration `0019`) |
+| S5h | Python runner/output pipeline, now the asset agent's `python.run` | python-compute §2–7 | **implemented**, caller updated by S6d; authored mode retired |
+| S6d | UI uses `ai` without selector; internal prompts, Python tool, K=1 and hooks | `S6d-modes-model.md`, `../trace-compilation.md` | **done** (migration `0019`); its compile wiring superseded by S6e |
 | S6a | Static runtime sandbox + script registry + lint gate | impl Phase 6, §12 | **done** (migration `0016`) |
-| S6b | Trace consistency checker + compiler agent | impl Phase 6, §11 | **done** |
-| S6c | CompiledExecutor + deopt handoff + promotion/demotion + flagship e2e | impl Phase 6 | **done** (migration `0017`) |
+| S6b | Trace interpretation + LLM script compiler | §11, `../trace-compilation.md` | **done**; the raw-sequence checker was replaced at S6e |
+| S6c | Compiled executor, deopt handoff and promotion/demotion | impl Phase 6, `../trace-compilation.md` | **done** (migration `0017`); post-execution lifecycle landed at S6e |
+| S6e | Post-execution compilation: `compile_jobs` queue + worker, full-trace interpretation, isolated validation, content-hash carry-forward | `../trace-compilation.md`, `S6e-post-execution-compilation.md` | **done** (migration `0020`) |
 | S7 | Real policy evaluator + redaction + approvals + MCP/asset/secret grants + regression sweep | impl Phase 7, §10 | |
 | S8 | Graph compiler: passes P1–P5, deterministic gate, compile reports, proposed-grants flow, task content hashes | graph-compilation-llm §4–6, §10 | after S7 |
 
@@ -92,20 +93,22 @@ a layering preference. Do not add `mcp.*` to a browser task, `page.*` to an asse
 beyond `store.query`+`emit` to a decision task without a design-doc change. Schedules bind to
 `browser` and `decision` only; `asset` stays event-triggered only.
 
-**The tool registry keys on `(kind, mode)`, not `kind` (§4, from S5h):** for every mode that
-existed before, this changes nothing — `(browser, ai)` and `(browser, compiled)` share the browser
-registry, as §12 requires. It exists for **`(asset, python)`, which has no tool registry at all**.
-A Python job has no host bridge: its inputs are resolved and written by the host before the
-process starts, its outputs and emissions are collected by the host after it exits, and in
-between it can call nothing. That is why Python can live on the kind that owns `mcp.*` without
-reopening the exfiltration chain — the chain is severed by the absence of a channel rather than by
-a rule about which names appear in a list. **That argument survived the S5h reshape unchanged**:
-it was never a property of the microVM, only of a job talking to the host through a directory and
-an exit code. Adding any host callable to that job still requires a design-doc change (§16 Threat
-22). Mode constraints: `compiled` implies `browser`, `python` implies `asset`, both rejected at
-save time and re-asserted by the named `tasks_kind_mode_check` — which stays a pair of
-**exclusions**, never a closed `mode IN (...)` domain, because `mode` is deliberately open so a
-test-only executor can claim a value without a schema change (`scripted-browser.test.ts`).
+**Execution model:** the registry selects executors by `(kind, mode)`. The editor authors
+`ai`; `compiled` is engine-assigned only to browser tasks after validation. The API rejects
+authored `compiled` and retired `python`; the DB retains the asset/compiled exclusion.
+Open mode strings preserve automated test executors; there is no UI mode selector.
+
+The asset agent owns `python.run`, and the program it invokes has no host tool bridge.
+Returned event lines are untrusted data for the agent, not automatically published events.
+The current contract is `../python-compute.md`.
+
+**Trace compilation (S6e):** after a successful browser execution settles and flushes its trace,
+the executor hook queues a `compile_jobs` row and gets out of the way. A separate worker claims
+it — never before the source run is terminal — reads the *whole* trace, separates DOM
+exploration from actual work as an explicit checked plan, and validates the resulting script
+against a page built out of the evidence rather than a live one. K=1 is eligibility, not
+guaranteed promotion; compilation carries its own outcome, timeout and retry budget, and
+nothing it does can alter the completed execution. `../trace-compilation.md` is authoritative.
 
 **Share visibility is default-deny and versioned with the graph (from S2d):** each declared
 emitted event carries `public: boolean`, default `false`, in the graph document; `publishVersion`

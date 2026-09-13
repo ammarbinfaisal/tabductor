@@ -1,9 +1,13 @@
 # S6c — CompiledExecutor + deopt handoff + promotion/demotion (flagship e2e)
 
+**Status:** done. The runtime and deopt handoff are this subphase's; the post-execution
+lifecycle they hand off to landed in [S6e](S6e-post-execution-compilation.md).
+[trace-compilation.md](../trace-compilation.md) is the lifecycle contract.
+
 You are implementing subphase S6c. Read, in order:
-1. This file (authoritative).
+1. `docs/trace-compilation.md`, then this subphase's requirements.
 2. `docs/techical_plan.md` — §11 (deopt semantics, promotion rule, deopt budget — the
-   numbers there are binding: K=2 promotion, 3-in-10 demotion), §12 (ctx crossing into the
+   numbers there are binding: K=1 eligibility, 3-in-10 demotion), §12 (ctx crossing into the
    host), §17.2 (metric names), §18 decisions 5 (automatic recompilation) and 6.
 3. `docs/impl-phases.md` — Phase 6 build steps 5–6 and the flagship test description
    (your e2e must match it step for step); §0.5.
@@ -40,15 +44,17 @@ NOT yours: any change to the compiler agent's prompt or the lint gate (S6b/S6a);
      original task prompt + guard failures/evidence + the current page (same session, page
      left untouched). `runs.mode_used` stays `compiled`; the trace records a `deopt` entry
      with the trigger class, then the agent's entries follow.
-   - A deopted run that **succeeds** flags its trace `deopt_recovery` and enqueues
-     recompilation (call S6b's `compileTask` with the fresh trace; automatic, §18.5).
+   - A deopted run that succeeds flags its trace `deopt_recovery`. After terminal status
+     persistence, trace flush and session release, enqueue separate LLM recompilation.
+     Compiler latency and failure must not affect the recovered run's result or timeout.
    - Deopt triggers the executor itself must detect (beyond in-script guards): missing
      element at action time, unexpected dialog, navigation to an unexpected URL, zero
      extraction where guards passed, step timeout (§11 list).
 
 3. **Promotion/demotion** (counters on `tasks`, engine-side):
-   - **Promote:** after K=2 clean consistent `ai` runs (S6b consistency checker decides
-     consistency), compile; if a candidate passes the pipeline → flip task `mode` to
+   - **Promote:** after the first successful `ai` execution settles (**K=1**), compile its
+     trace in a separate task. The LLM distills actual work from DOM exploration; if a
+     candidate passes validation and still matches the task content → flip task `mode` to
      `compiled`, activate the script. Asset and decision tasks are exempt (S6b's selector
      already filters; the counters must simply never advance for them).
    - **Demote:** 3 deopts within the last 10 runs → task `mode` flips to `ai`, active
@@ -61,10 +67,11 @@ NOT yours: any change to the compiler agent's prompt or the lint gate (S6b/S6a);
 4. **System tests** (`tests/system/`, content-named, e.g. `compiled-executor.test.ts`,
    `deopt-loop.test.ts`):
    - **Flagship deopt-loop e2e — exactly as impl-phases Phase 6 states it:** run the
-     canonical fake-tweets task twice in AI mode (replay) → auto-promotion compiles and
+     canonical fake-tweets task once in AI mode (replay) → execution settles → a separate
+     compilation task interprets the trace, validates the candidate and
      activates → compiled run succeeds with **zero LLM calls** (assert no LLM trace
      entries) → flip fixture to `mutator?layout=v2` → guards fail → deopt → agent (replay
-     recovery transcript) finishes the run → recompile produces v2 (v1 `invalidated`) →
+     recovery transcript) finishes and settles the run → separate recompilation produces v2 (v1 `invalidated`) →
      next run: compiled v2, zero LLM calls, on the new layout.
    - Demotion: force 3 deopts in 10 runs via mutator toggling → mode flips to `ai`,
      `compile.invalidated` observed on the bus, active script invalidated.
@@ -94,7 +101,7 @@ What you built, deviations + why, commands + outcomes, flakiness noticed. Do NOT
 
 ---
 
-## As built
+## As built and remaining gaps
 
 **Deviation: `CompiledExecutor` lives in `packages/agent`, not beside the registry it reads.**
 The handoff target is `runAgentLoop`, and `packages/agent` already imports `packages/engine`;
@@ -115,14 +122,14 @@ a run abandoned mid-execution — the watchdog fails it on stale heartbeat and t
 applies — and nothing about the deopt path changes that. `crash-recovery.test.ts` is where that
 behaviour is asserted.
 
-**Automatic recompilation after a successful deopt (§18.5) is recorded in the trace but not
-enqueued.** The run flags itself `deopt_recovery`, which is the signal S6b's `compileTask` needs,
-but nothing consumes it yet — there is no queue in the system to put the work on, and inventing
-one for a single producer would be the speculative abstraction the style rules forbid. The
-promotion path (`recordAiRun`) is where a caller wires that in.
+**Recompilation is a post-execution task (S6e).** S6d connected both outcome hooks to
+`createCompileLoop` and awaited the compile before the engine settled the execution; S6e moved
+the compile behind terminal settlement onto the `compile_jobs` queue, leaving the hooks with
+the counter, the deopt window and one insert. The original S6c lacked a caller entirely; both
+that gap and the timing gap that replaced it are now closed.
 
 Promotion and demotion are in `packages/compiler/src/promotion.ts` rather than in the executors:
-§11's numbers (K=2, 3-in-10) are policy, and the executors only report what happened via the
+§11's numbers (K=1, 3-in-10) are policy, and the executors report what happened via the
 injected `onOutcome` hook. Counters are two columns on `tasks` — `clean_ai_runs` for promotion,
 `recent_deopts` as a rolling ten-run window for demotion, because "3 within the last 10" is a
 question a bare counter cannot answer.

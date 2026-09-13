@@ -218,8 +218,8 @@ methods, bounded label sets, no `run_id`/`event_id` as a label):
 
 - `staticRtKills: { add: (labels: { reason: "wall_clock" | "memory" }) => void }` →
   `static_rt_kills_total` counter. The security-signals-dashboard row for this sandbox,
-  mirroring `pyrun_sandbox_kills_total{reason}`'s role for the Python one — should sit near
-  zero outside of intentional hostile-corpus runs.
+  should sit near zero outside intentional hostile-corpus runs. Python runner kills use
+  `pyrun_kills_total{reason}` and describe its different subprocess-runner boundary.
 - `scriptLintRejected: { add: (labels: { rule: string }) => void }` →
   `script_lint_rejected_total` counter, mirroring the `store_sql_rejected_total` naming
   precedent named for S5g.

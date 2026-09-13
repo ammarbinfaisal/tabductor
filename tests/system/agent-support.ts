@@ -6,8 +6,10 @@ import {
   createAgentExecutor,
   createCompiledExecutor,
   createCompileLoop,
+  createCompileWorker,
   createLlm,
   type CompiledExecutorDeps,
+  type CompileWorker,
   type Llm,
 } from "@tabductor/agent";
 import {
@@ -17,7 +19,7 @@ import {
   type EndpointPool,
   type TraceRecorder,
 } from "@tabductor/browser";
-import { createDispatcher, type Dispatcher } from "@tabductor/bus";
+import { createDispatcher, publish, type Dispatcher } from "@tabductor/bus";
 import { newId } from "@tabductor/core";
 import { cdpEndpoints, traceEntries, type TaskRow, type TraceEntryRow } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
@@ -55,6 +57,13 @@ export type AgentRig = {
   blobs: BlobStore;
   endpointId: string;
   gate: PolicyGate;
+  /**
+   * The compile worker, when `compileLoop` was requested. **Not started**: compilation is a
+   * separate task now, and a test that wants one drains the queue by hand (`runOnce`) so the
+   * assertions about *when* a compile happens are the test's, not a timer's. A test that wants
+   * the production cadence calls `start()` itself.
+   */
+  compiles?: CompileWorker;
   stop: () => Promise<void>;
 };
 
@@ -85,11 +94,13 @@ export type StartAgentRigOptions = {
    */
   compiled?: { onOutcome?: CompiledExecutorDeps["onOutcome"] };
   /**
-   * Wire the production compile loop (`createCompileLoop`) into both browser executors, with
-   * the compiler's model replayed from `compilerFixture`. Implies `compiled`. `onOutcome`
-   * hooks given above still fire, after the loop's own.
+   * Wire the production compile hooks (`createCompileLoop`) into both browser executors and
+   * build the worker that drains their queue, with the compiler's model replayed from
+   * `compilerFixture`. Implies `compiled`. `onOutcome` hooks given above still fire, after the
+   * loop's own. Pass `compilerLlm` instead to supply the model directly — the way a test makes
+   * a compile slow, or makes it throw.
    */
-  compileLoop?: { compilerFixture: string };
+  compileLoop?: { compilerFixture?: string; compilerLlm?: () => Llm; publish?: boolean };
 };
 
 function renderTranscript(name: string, fxUrl: string, cache: Map<string, string>, scratchDir: string): string {
@@ -125,12 +136,26 @@ export async function startAgentRig(opts: StartAgentRigOptions): Promise<AgentRi
   const compileLoop = opts.compileLoop
     ? createCompileLoop({
         db: handle.db,
-        pool,
-        gate,
-        blobs,
-        endpointFor: async () => endpointId,
-        compileLlmFor: ({ trace }) =>
-          createLlm("replay", { fixturePath: renderTranscript(opts.compileLoop!.compilerFixture, fx.url, rendered, scratchDir), trace }),
+        publish: async (input) => {
+          await publish(handle.db, input);
+        },
+      })
+    : undefined;
+
+  const compiles = opts.compileLoop
+    ? createCompileWorker({
+        db: handle.db,
+        compileLlmFor: () => {
+          const spec = opts.compileLoop!;
+          if (spec.compilerLlm) return spec.compilerLlm();
+          if (!spec.compilerFixture) throw new Error("startAgentRig needs a compilerFixture or a compilerLlm");
+          return createLlm("replay", { fixturePath: renderTranscript(spec.compilerFixture, fx.url, rendered, scratchDir) });
+        },
+        publish: async (input) => {
+          await publish(handle.db, input);
+        },
+        // Short, because a test that starts the worker is testing the cadence, not waiting on it.
+        pollMs: 50,
       })
     : undefined;
 
@@ -200,7 +225,9 @@ export async function startAgentRig(opts: StartAgentRigOptions): Promise<AgentRi
     blobs,
     endpointId,
     gate,
+    ...(compiles ? { compiles } : {}),
     stop: async () => {
+      await compiles?.stop();
       await dispatcher.stop();
       await engine.stop();
       await pool.close();

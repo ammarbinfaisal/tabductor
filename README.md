@@ -23,11 +23,14 @@ note in `docker-compose.yml` first, because the bundled datastore credentials ar
 ## The idea
 
 Most browser automation breaks because it is written as a script against a page that changes.
-Here, a node starts as an **LLM agent** driving a real browser and describing what it did. Once
-two runs agree on the same path, the platform compiles that path into a plain script and runs
-it with no model calls at all. When the site changes and the script's guards fail, it **deopts**
-back to the agent mid-run, finishes the job, and recompiles. You pay for a model while the shape
-of a task is uncertain, and stop paying once it is not.
+Here, a node starts as an **LLM agent** driving a real browser and recording its execution.
+After the first successful execution, a separate compiler LLM interprets the completed trace,
+separates DOM exploration from the actual work, and produces a reusable script. Once validated
+and activated, that script runs without model calls. When its guards fail, it **deopts** to
+the agent mid-run; the recovered execution supplies a new trace for post-execution compilation.
+Compilation is a separate task with its own outcome, timeout and retry budget: it starts only
+once the execution has settled, and its candidate is validated against a page rebuilt from the
+trace — never the live site. [trace-compilation.md](docs/trace-compilation.md) is the contract.
 
 Events are the wiring. A node declares the event types it emits and consumes; there are no
 edges to draw, and the topology falls out of those declarations. Each event type carries a
@@ -39,7 +42,7 @@ packet crossing the system is validated against a real JSON Schema.
 | Kind | Gets | For |
 |---|---|---|
 | `browser` | `page.*`, `network.*`, `secrets.fill`, `emit` | driving a page |
-| `asset` | `mcp.*`, `assets.*`, `store.query/insert/upsert`, `emit` | producing deliverables — files, decks, spreadsheets |
+| `asset` | `mcp.*`, `assets.*`, `python.run`, `store.query/insert/upsert`, `emit` | producing deliverables — files, decks, spreadsheets |
 | `decision` | `store.query`, `emit` | choosing what to do next, and nothing else |
 
 The registries are **disjoint by design**, enforced by tests rather than by convention: a
@@ -79,11 +82,12 @@ the trace — navigations, actions, network reads, policy denials, model calls w
 Share a workflow with an unguessable link and anyone can watch it live, seeing packets only for
 the event types you marked shared.
 
-Asset nodes can also run an authored Python program (`mode=python`) against a pinned
-scientific stack, producing spreadsheets and other computed deliverables.
+Asset agents write and run Python through `python.run` against a pinned scientific stack,
+producing spreadsheets and other computed deliverables. There is no Python execution mode.
+The editor creates real agent nodes with no mode selector; stub executors serve automated tests.
 
-Still ahead: the compiled-script runtime and its deopt loop, the real policy evaluator, and
-one-prompt-to-a-graph compilation. See
+The compiled-script runtime, the deopt handoff and post-execution trace compilation are in
+place. Still ahead: the real policy evaluator and one-prompt-to-a-graph compilation. See
 [`docs/subphases/ROADMAP.md`](docs/subphases/ROADMAP.md) for status.
 
 ## Design docs
@@ -97,8 +101,9 @@ Companion designs, each extending the main one:
 authoring surface), [`graph-compilation-llm.md`](docs/graph-compilation-llm.md) (the decision
 node, the per-workflow data store, one prompt to a graph),
 [`sharing.md`](docs/sharing.md) (watch a workflow run, with visibility opt-in per event type),
-[`python-compute.md`](docs/python-compute.md) (`mode=python` — an authored Python program, for
-the numbers).
+[`python-compute.md`](docs/python-compute.md) (the asset agent's `python.run` tool), and
+[`trace-compilation.md`](docs/trace-compilation.md) (post-execution trace interpretation,
+isolated validation and promotion).
 
 ## Working on it
 

@@ -27,6 +27,7 @@ export {
   storeSchemas,
   storeWriteGrants,
   compiledScripts,
+  compileJobs,
   engineStatus,
 } from "./schema.js";
 export {
@@ -40,6 +41,8 @@ export {
   MCP_TRANSPORTS,
   STORE_MIGRATION_CLASSES,
   COMPILED_SCRIPT_STATUSES,
+  COMPILE_JOB_STATUSES,
+  COMPILE_JOB_REASONS,
 } from "./schema.js";
 export type {
   RunStatus,
@@ -84,6 +87,9 @@ export type {
   StoreWriteGrantRow,
   CompiledScriptRow,
   CompiledScriptStatus,
+  CompileJobRow,
+  CompileJobStatus,
+  CompileJobReason,
 } from "./schema.js";
 // test-db is deliberately NOT re-exported here: it imports @tabductor/testkit, which
 // imports playwright-core, and this barrel is what `apps/web` bundles — the chain broke

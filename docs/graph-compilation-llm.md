@@ -32,6 +32,12 @@ L1  graph definition       nodes + kinds + prompts + grants(proposed)
 L2  compiled JS            per browser task (and later, decision task)
 ```
 
+The L1→L2 step is a separate post-execution LLM task: finish the browser run, flush its
+trace, then interpret the evidence to separate DOM exploration from actual work before
+generating and validating a script. The first successful run is eligible (K=1); it need
+not repeat its exploration on a second run. [trace-compilation.md](trace-compilation.md)
+defines this contract and lists the current implementation gaps.
+
 The invariant that makes this safe, restated from §2 principle 2 and applied at every level: **every level's author is an LLM; every level's gatekeeper is deterministic; every level's executor is sandboxed.** The graph compiler's output is never trusted because an LLM wrote it — it is trusted because it passed the gate in §5, exactly as compiled JS is trusted only because it passed the §11/§12 lint-and-sandbox gate.
 
 Deopt flows *up* the ladder (L2 guard failure hands control to the L1 agent mid-run, §11); recompilation flows back *down*. Graph edits at L0/L1 invalidate L2 artifacts per task, not per workflow (§6.3).
@@ -232,12 +238,25 @@ Every applied migration bumps a monotonically increasing `schema_version` record
 
 ### 6.3 Graph versions × compiled scripts
 
-The link the tech plan left implicit, made explicit: L2 artifacts attach to a **task content hash**, not to a workflow version. `content_hash = hash(kind, prompt, limits, approved grants, emitted packet schemas, consumed packet schemas, store tables touched)`.
+**Design contract:** L2 artifacts attach to task content, rather than becoming obsolete
+merely because a workflow has a new version. The content key must cover the task's effective
+instructions, required schemas and relevant execution assumptions, including grants and
+store tables when those affect the script. Compiler activation must check that its input
+content still matches the task it is replacing.
 
 - Publish a new version where a task's hash is unchanged → its compiled script (and promotion counters) carry forward. Editing one node does not demote the other five to `ai` mode.
-- Hash changed → the task's scripts are invalidated (`compile.invalidated` emitted), the task reverts to `ai`, and the §11 promotion loop (K clean consistent traces) rebuilds the fast path against the new definition.
+- Hash changed → the new definition runs as `ai`, invalidation is observable, and a
+  successful run supplies a trace for the separate post-execution compiler (K=1 eligibility).
+  Scripts pinned to in-flight executions remain associated with their original definition.
 
-This closes the "how does graph versioning interact with compilation" question: the graph compiler changes *what a task is*; the script compiler is keyed on exactly that, so invalidation is automatic, minimal, and observable.
+**S6d implementation:** the current hash covers kind, compiled prompt and consumed/emitted
+schemas. The compiled prompt includes every other node's prompt, so even disconnected edits
+can invalidate a task. Limits and grants are not directly in the hash; schedules affect it
+through the compiled prompt. An unchanged active script is copied to the new task row, but
+promotion/deopt counters are reset, and a content-changing publish does not emit
+`compile.invalidated`. In-place `task.update` also leaves compiled artifacts stale. These
+are outstanding gaps against the dependency-scoped carry-forward contract above, not its
+intended behavior.
 
 ## 7. The Canonical Example, End to End
 

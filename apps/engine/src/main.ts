@@ -3,10 +3,11 @@ import {
   createAssetExecutor,
   createCompiledExecutor,
   createCompileLoop,
+  createCompileWorker,
   createDecisionExecutor,
   createLlm,
   providerFromEnv,
-  type CompileLoop,
+  type CompileWorker,
 } from "@tabductor/agent";
 import { createEndpointPool, createMinioBlobStore, playwrightDriver } from "@tabductor/browser";
 import { createDispatcher, publish } from "@tabductor/bus";
@@ -79,25 +80,38 @@ const pyrun = config.PYRUNNER_URL ? createPyrunClient({ url: config.PYRUNNER_URL
 if (!pyrun) log.info("no PYRUNNER_URL configured — python.run will report itself unavailable", {});
 
 /**
- * The compile loop (`compile-loop.ts`): after every `(browser, ai)` run, compile its trace and
- * promote; after every `(browser, compiled)` run, feed the deopt window, recompile a
- * recovered run, demote a task that keeps deopting. Needs the model (the compiler is an LLM
- * pass), so it exists exactly when the browser executors do.
+ * The compile loop's two halves (`compile-loop.ts`).
+ *
+ * The **hooks** are cheap and always wired: after a `(browser, ai)` run they advance the
+ * promotion counter and queue a compile; after a `(browser, compiled)` run they feed the deopt
+ * window and demote a task that keeps deopting. No model is needed for any of that, so unlike
+ * the executors this half does not depend on a provider key.
+ *
+ * The **worker** is what actually compiles, and it is a separate process-level thing with its
+ * own poll, timeout and retry budget. It needs the model, so it exists exactly when a provider
+ * key does — with none configured, jobs simply queue up and wait for an engine that has one.
  */
-function compileLoopEntry(db: Db): CompileLoop | undefined {
-  if (!liveProvider) return undefined;
+const compileLoop = createCompileLoop({
+  db: handle.db,
+  publish: async (input) => {
+    await publish(handle.db, input);
+  },
+  metrics: telemetry.metrics,
+  logger: log,
+});
+
+function compileWorkerEntry(db: Db): CompileWorker | undefined {
+  if (!liveProvider) {
+    log.info("no ANTHROPIC_API_KEY/OPENAI_API_KEY configured — compiles will queue but not run", {});
+    return undefined;
+  }
   const live = liveProvider;
-  return createCompileLoop({
+  return createCompileWorker({
     db,
-    pool: browserPool,
-    gate,
-    blobs,
-    endpointFor: async (task) => pickWorkflowEndpoint(db, await workflowIdForVersion(db, task.workflowVersionId)),
-    compileLlmFor: ({ trace }) =>
+    compileLlmFor: () =>
       createLlm("live", {
         provider: live.provider,
         apiKey: live.apiKey,
-        trace,
         metrics: telemetry.metrics,
         costLabels: { kind: "browser", mode: "compile" },
       }),
@@ -108,7 +122,8 @@ function compileLoopEntry(db: Db): CompileLoop | undefined {
     logger: log,
   });
 }
-const compileLoop = compileLoopEntry(handle.db);
+const compileWorker = compileWorkerEntry(handle.db);
+
 
 /**
  * The first browser node executor this process can run (S4b): `AgentExecutor` under mode
@@ -135,8 +150,9 @@ function agentExecutorEntry(db: Db): ReturnType<typeof createAgentExecutor> | un
     db,
     endpointFor: endpointFor(db),
     metrics: telemetry.metrics,
-    // The first clean run compiles (K=1): this is where the fast path is earned.
-    ...(compileLoop ? { onOutcome: async (input) => void (await compileLoop.afterAiRun(input)) } : {}),
+    // The first clean run makes the task eligible (K=1); the hook only queues the compile,
+    // so the run settles without waiting for a model.
+    onOutcome: async (input) => void (await compileLoop.afterAiRun(input)),
     // One live provider serves every task — `task` is here for the test rig's benefit, not
     // this composition root's; see `AgentExecutorDeps.llmFor`.
     llmFor: ({ trace }) =>
@@ -248,7 +264,7 @@ function compiledExecutorEntry(db: Db): TaskExecutor | undefined {
     db,
     endpointFor: endpointFor(db),
     metrics: telemetry.metrics,
-    ...(compileLoop ? { onOutcome: (input) => compileLoop.afterCompiledRun(input) } : {}),
+    onOutcome: (input) => compileLoop.afterCompiledRun(input),
     llmFor: ({ trace }) =>
       createLlm("live", {
         provider: live.provider,
@@ -305,6 +321,7 @@ const engine = createEngine({
  */
 await engine.start();
 await dispatcher.start();
+compileWorker?.start();
 // U3a: tell the control plane what this process can run, and keep saying so. The editor's
 // mode selector and `/status` read this row; a stale heartbeat reads as "engine down".
 await recordEngineBoot(handle.db, Object.keys(executors), pyrun ? ["python.run"] : []);
@@ -319,7 +336,7 @@ log.info("engine started", {
   assetAiExecutor: assetExecutor ? "registered" : "not registered",
   decisionAiExecutor: decisionExecutor ? "registered" : "not registered",
   compiledExecutor: compiledExecutor ? "registered" : "not registered",
-  compileLoop: compileLoop ? "wired" : "not wired",
+  compileWorker: compileWorker ? "running" : "not running (no model configured)",
   pythonTool: pyrun ? "configured" : "not configured",
 });
 
@@ -338,6 +355,7 @@ const shutdown = async (signal: string): Promise<void> => {
   log.info("shutting down", { signal });
   try {
     clearInterval(heartbeat);
+    await compileWorker?.stop();
     await dispatcher.stop();
     await engine.stop();
     await handle.close();

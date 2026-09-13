@@ -91,9 +91,11 @@ rest of the graph compiler, with §4.2's staging contract honoured where it appl
   event. This report is the seed of §5's compile-report artifact; a persisted
   `compile_reports` table is deferred until the full compiler lands (S8).
 
-Editing a task's `prompt` via `task.update` changes generator *context* without a
-republish; the affected events recompile on the next publish, not immediately. Schemas
-only ever change at publish.
+Schemas only change at publish. The editor publishes prompt edits as a new version, which
+also recompiles the affected internal node prompts. The legacy `task.update` API can edit
+`prompt` in place, but currently leaves `compiled_prompt` and any active script unchanged;
+execution can therefore keep following old instructions until republish. This is a known
+implementation gap, not a supported way to refresh compiled behavior.
 
 ## 4. Sharing follows the entity
 
@@ -108,13 +110,18 @@ column selected conditionally — is untouched.
 
 ## 5. Stub derivation
 
+This section describes automated-test support. The UI has no stub or mode selector and
+authors every node as `ai`; real execution requires its configured engine dependencies.
+Synthetic event packets are not the product's initial-run experience.
+
 With schemas known at publish, a stub task needs no script: absent `limits_json.stub`,
 the StubExecutor emits **one valid sampled packet per declared event**, synthesized
 deterministically from the compiled schema (`sampleFromSchema`, whose supported shapes are
 the generator's allowlist). A present script still fully specifies behavior — the
 `fail`/`fail_times`/`hang_ms` knobs the engine tests script against are unchanged — and a
-task with neither script nor declared emits stays a no-op. A graph is therefore
-exercisable the moment it publishes, with nothing hand-written.
+task with neither script nor declared emits stays a no-op. A test graph is therefore
+exercisable without hand-written packets. Stub emissions use the ordinary event bus;
+they do not establish an isolated preview of a live workflow.
 
 ## 6. The editor consequence
 

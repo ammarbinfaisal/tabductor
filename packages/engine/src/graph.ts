@@ -370,6 +370,11 @@ type PreviousTask = {
   compiledPrompt: string | null;
   compiledPromptHash: string | null;
   contentHash: string | null;
+  /** Carried with a carried script: a task whose content did not change keeps the deopt
+   * window it had earned, so republishing an unrelated node cannot buy a failing script three
+   * fresh deopts. */
+  cleanAiRuns: number;
+  recentDeopts: unknown;
 };
 
 type CompiledTask = {
@@ -381,6 +386,8 @@ type CompiledTask = {
   mode: string;
   /** The previous version's active script to copy onto the new row, when carried. */
   carryScriptFrom: string | null;
+  /** The promotion/deopt history that came with it — a carried script keeps its record. */
+  carryHistory: { cleanAiRuns: number; recentDeopts: unknown } | null;
   entry: TaskCompileEntry;
 };
 
@@ -433,14 +440,22 @@ function promptInputFor(
 
 /**
  * graph-compilation-llm §6.3's task content hash: what a compiled *script* was compiled
- * against. Kind, the compiled prompt (which already folds in the author's prompt, the
- * neighbours and the store), and the exact schemas of the events crossing this task. Limits
- * and schedules are deliberately outside it — a changed timeout does not invalidate a script.
+ * against. Kind, **this task's own** prompt, and the exact schemas of the events crossing it.
+ * Limits and schedules are deliberately outside it — a changed timeout does not invalidate a
+ * script.
+ *
+ * So are the neighbours, which is the S6e correction. This hash used to be taken over
+ * `compiledPrompt`, and `promptInputFor` folds every other node's prose into that — so editing
+ * the wording of an unrelated node changed this task's hash, dropped its script and sent a
+ * working fast path back through an AI run it had already paid for. The compiled prompt is
+ * *context* for an agent; the script is compiled from what this node does, and that is what
+ * this hash has to track. Two publishes whose only difference is a neighbour's prompt produce
+ * the same hash here, on purpose.
  */
-function contentHashOf(task: GraphTask, compiledPrompt: string, schemas: Map<string, Record<string, unknown>>): string {
+function contentHashOf(task: GraphTask, schemas: Map<string, Record<string, unknown>>): string {
   const canonical = canonicalJson({
     kind: task.kind,
-    compiledPrompt,
+    prompt: task.prompt ?? "",
     consumes: [...task.consumes].sort().map((type) => ({ type, schema: schemas.get(type) ?? null })),
     emits: [...task.emits].sort().map((type) => ({ type, schema: schemas.get(type) ?? null })),
   });
@@ -493,9 +508,10 @@ async function compileTaskPrompts(
       }
     }
 
-    const contentHash = contentHashOf(task, compiledPrompt, schemas);
+    const contentHash = contentHashOf(task, schemas);
     let mode = task.mode;
     let carryScriptFrom: string | null = null;
+    let carryHistory: CompiledTask["carryHistory"] = null;
     if (
       task.kind === "browser" &&
       task.mode === "ai" &&
@@ -509,11 +525,12 @@ async function compileTaskPrompts(
       if (active) {
         mode = "compiled";
         carryScriptFrom = active.id;
+        carryHistory = { cleanAiRuns: prev.cleanAiRuns, recentDeopts: prev.recentDeopts };
         entry = { ...entry, mode };
       }
     }
 
-    out.push({ task, compiledPrompt, compiledPromptHash, contentHash, mode, carryScriptFrom, entry });
+    out.push({ task, compiledPrompt, compiledPromptHash, contentHash, mode, carryScriptFrom, carryHistory, entry });
   }
   return out;
 }
@@ -579,6 +596,8 @@ export async function publishVersion(
         compiledPrompt: tasks.compiledPrompt,
         compiledPromptHash: tasks.compiledPromptHash,
         contentHash: tasks.contentHash,
+        cleanAiRuns: tasks.cleanAiRuns,
+        recentDeopts: tasks.recentDeopts,
       })
       .from(tasks)
       .where(eq(tasks.workflowVersionId, workflow.currentVersionId));
@@ -654,7 +673,7 @@ export async function publishVersion(
 
     const taskIds: Record<string, string> = {};
     const taskModes: Record<string, string> = {};
-    for (const { task, compiledPrompt, compiledPromptHash, contentHash, mode, carryScriptFrom } of compiledTasks) {
+    for (const { task, compiledPrompt, compiledPromptHash, contentHash, mode, carryScriptFrom, carryHistory } of compiledTasks) {
       const id = newId("task");
       taskIds[task.name] = id;
       taskModes[task.name] = mode;
@@ -669,6 +688,12 @@ export async function publishVersion(
         compiledPrompt,
         compiledPromptHash,
         contentHash,
+        // A carried script carries its record: the deopt window is what demotes a script that
+        // has quietly stopped working, and resetting it at every publish would hand a failing
+        // script a fresh ten runs for free.
+        ...(carryHistory
+          ? { cleanAiRuns: carryHistory.cleanAiRuns, recentDeopts: carryHistory.recentDeopts as boolean[] }
+          : {}),
       });
 
       if (carryScriptFrom) {
@@ -729,6 +754,14 @@ export async function publishVersion(
  * Note the schema-compiler consequence: a task's `prompt` is generator *context*, so
  * editing it here changes what the next publish will hash — the connected events
  * recompile then, not now. Schemas only ever change at publish.
+ *
+ * **A prompt edit retires this task's compiled artifacts** (S6e). The compiled prompt was
+ * generated from the old wording and the active script was compiled from a run that followed
+ * it; leaving either in place means the next run executes instructions the author has already
+ * replaced, on the strength of a hash that no longer describes anything. So the detailed
+ * prompt and the content hash are cleared, the active script is invalidated and a promoted
+ * task drops back to `ai` — the same state a never-compiled task is in, which is the honest
+ * one for a task whose definition just changed. The next publish recompiles both.
  */
 export async function updateTask(
   db: Db,
@@ -745,10 +778,36 @@ export async function updateTask(
   };
   if (Object.keys(patch).length === 0) return;
 
-  const updated = await db.update(tasks).set(patch).where(eq(tasks.id, input.taskId)).returning({ id: tasks.id });
-  if (updated.length === 0) {
+  const [existing] = await db.select().from(tasks).where(eq(tasks.id, input.taskId));
+  if (!existing) {
     throw new AppError("task_not_found", `no task "${input.taskId}"`, { details: { taskId: input.taskId } });
   }
+  const promptChanged = input.prompt !== undefined && input.prompt !== existing.prompt;
+
+  await db.transaction(async (trx) => {
+    await trx
+      .update(tasks)
+      .set({
+        ...patch,
+        ...(promptChanged
+          ? {
+              compiledPrompt: null,
+              compiledPromptHash: null,
+              contentHash: null,
+              cleanAiRuns: 0,
+              ...(input.mode === undefined && existing.mode === "compiled" ? { mode: "ai" } : {}),
+            }
+          : {}),
+      })
+      .where(eq(tasks.id, input.taskId));
+
+    if (promptChanged) {
+      await trx
+        .update(compiledScripts)
+        .set({ status: "invalidated" })
+        .where(and(eq(compiledScripts.taskId, input.taskId), eq(compiledScripts.status, "active")));
+    }
+  });
 }
 
 /**

@@ -3,7 +3,6 @@
 import type { CompileEntry, Graph, GraphEvent, GraphTask, NodeKind, TaskSummary } from "@tabductor/engine";
 import { createStore } from "zustand/vanilla";
 import { api, asApiError, type ApiError } from "../lib/api.js";
-import { NODE_KINDS } from "../lib/node-kinds.js";
 
 /**
  * The declarative editor's client state (U1). One vanilla store: the document being
@@ -58,8 +57,7 @@ export type EditorState = {
   compileReport: CompileEntry[] | null;
   /**
    * `executorKey` strings the engine registered at boot (U3a), or `null` while unknown.
-   * The Mode selector disables what is not in here; `null` disables nothing — an engine
-   * that has not reported yet should not grey the world out.
+   * Used to explain when real execution is unavailable; `null` means unknown.
    */
   engineExecutors: string[] | null;
   /** Tool-level abilities the engine reported (`python.run`), or `null` while unknown. */
@@ -89,7 +87,7 @@ export type EditorStore = ReturnType<typeof createEditorStore>;
 const emptyTask = (name: string, kind: NodeKind): GraphTask => ({
   name,
   kind,
-  mode: NODE_KINDS[kind].defaultMode,
+  mode: "ai",
   prompt: null,
   limits: {},
   emits: [],
@@ -105,18 +103,19 @@ export function createEditorStore(init: {
   tasks: TaskSummary[];
   eventSchemas: Record<string, Record<string, unknown>>;
 }) {
+  const draft = executionDraft(init.graph);
   const store = createStore<EditorState>(() => ({
     workflowId: init.workflowId,
     versionId: init.versionId,
-    graph: init.graph,
+    graph: draft.graph,
     taskIds: Object.fromEntries(init.tasks.map((t) => [t.name, t.id])),
     publishedTasks: Object.fromEntries(init.tasks.map((t) => [t.name, t])),
     eventSchemas: init.eventSchemas,
     selected: init.graph.tasks[0] ? { kind: "node", id: init.graph.tasks[0].name } : null,
-    dirty: false,
+    dirty: draft.changed,
     busy: false,
     error: null,
-    notice: null,
+    notice: draft.changed ? EXECUTION_NOTICE : null,
     compileReport: null,
     engineExecutors: null,
     engineCapabilities: null,
@@ -193,9 +192,6 @@ export function createEditorStore(init: {
     },
 
     patchNode: (name: string, patch: Partial<GraphTask>) => mapTask(name, (t) => ({ ...t, ...patch })),
-
-    /** `stub` or `ai` — the only two an author picks (`node-kinds.tsx`). */
-    setMode: (name: string, mode: string) => mapTask(name, (t) => ({ ...t, mode })),
 
     /**
      * Declare a new event entity. Born with an empty description on purpose — the editor
@@ -320,20 +316,35 @@ export function createEditorStore(init: {
 
     async reload() {
       const got = await api.workflow.get.query({ id: store.getState().workflowId });
+      const draft = executionDraft(got.graph);
       store.setState({
         versionId: got.versionId,
-        graph: got.graph,
+        graph: draft.graph,
         taskIds: Object.fromEntries(got.tasks.map((t) => [t.name, t.id])),
         publishedTasks: Object.fromEntries(got.tasks.map((t) => [t.name, t])),
         eventSchemas: got.eventSchemas,
-        dirty: false,
+        dirty: draft.changed,
         error: null,
-        notice: "reloaded",
+        notice: draft.changed ? EXECUTION_NOTICE : "reloaded",
         compileReport: null,
         publishedPublic: publicTypesOf(got.graph),
         confirmVisibility: null,
       });
     },
+  };
+}
+
+const EXECUTION_NOTICE = "Publish to enable real execution for nodes that previously generated sample events.";
+
+/** Legacy test nodes become real nodes in the draft only. Marking the change dirty keeps
+ * Trigger now disabled until the author publishes; opening a workflow changes no live rows. */
+function executionDraft(graph: Graph): { graph: Graph; changed: boolean } {
+  const changed = graph.tasks.some((task) => task.mode === "stub");
+  return {
+    changed,
+    graph: changed
+      ? { ...graph, tasks: graph.tasks.map((task) => task.mode === "stub" ? { ...task, mode: "ai" } : task) }
+      : graph,
   };
 }
 

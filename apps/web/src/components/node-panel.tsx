@@ -1,15 +1,14 @@
 "use client";
 
 import type { GraphTask } from "@tabductor/engine";
-import { KIND_LIST, MODE_REQUIREMENTS, NODE_KINDS, ROW_MODE_STATUS } from "../lib/node-kinds.js";
+import { KIND_LIST, NODE_KINDS, ROW_MODE_STATUS } from "../lib/node-kinds.js";
 import type { EditorState, EditorStore } from "./editor-store.js";
 import { EventChip, GhostChip, KindBadge, ScheduleChip, SectionLabel } from "./primitives.js";
 
 /**
  * The Nodes panel (component-specs §3.2): one ruled section per node. Prompts are prose;
- * wiring is chips; limits are two numeric knobs. No JSON exists on this card — the stub
- * script editor died with the event-centric model (scriptless stubs derive their emits
- * from the compiled schemas).
+ * wiring is chips; limits are two numeric knobs. Execution is automatic, with no mode
+ * selector or test executor exposed as an authoring option.
  *
  * No hooks (repo policy): menu/confirm/note state lives in the editor store's `ui` slice.
  */
@@ -181,20 +180,6 @@ function NodeCard({ task, store, state }: { task: GraphTask; store: EditorStore;
 
       <div className="row">
         <label className="field">
-          <span>Mode</span>
-          <select value={task.mode} onChange={(e) => store.setMode(task.name, e.target.value)}>
-            {[...new Set([...kind.modes, task.mode])].map((m) => {
-              const unavailable = state.engineExecutors !== null && !state.engineExecutors.includes(`${task.kind}:${m}`);
-              return (
-                <option key={m} value={m} disabled={unavailable && m !== task.mode} title={unavailable ? MODE_REQUIREMENTS[m] : undefined}>
-                  {m}
-                  {unavailable ? " (engine: not available)" : ""}
-                </option>
-              );
-            })}
-          </select>
-        </label>
-        <label className="field">
           <span>Timeout</span>
           <span className="row" style={{ gap: "var(--space-1)" }}>
             <input
@@ -233,14 +218,19 @@ function NodeCard({ task, store, state }: { task: GraphTask; store: EditorStore;
       </div>
 
       <p className="muted" style={{ fontSize: "var(--text-sm)", margin: "var(--space-1) 0 0" }}>
-        {task.mode === "stub"
-          ? "Stub: emits one valid sample of each declared event, or runs its scripted stub. For testing the graph's wiring."
-          : kind.execution}
+        {kind.execution}
+        {state.engineExecutors !== null && !state.engineExecutors.includes(`${task.kind}:ai`)
+          ? " Execution is unavailable: configure ANTHROPIC_API_KEY or OPENAI_API_KEY on the engine."
+          : ""}
         {task.kind === "asset" && task.mode === "ai" && state.engineCapabilities !== null && !state.engineCapabilities.includes("python.run")
           ? " (python.run: the engine has no PYRUNNER_URL, so it will report itself unavailable.)"
           : ""}
       </p>
-      {published && published.mode !== task.mode ? (
+      {published?.mode === "stub" ? (
+        <p className="muted" style={{ fontSize: "var(--text-sm)", margin: 0 }}>
+          Publish to enable execution. This node previously generated sample events.
+        </p>
+      ) : published && published.mode !== task.mode ? (
         <p className="muted" style={{ fontSize: "var(--text-sm)", margin: 0 }}>
           Published row is <code>{published.mode}</code>: {ROW_MODE_STATUS[published.mode] ?? published.mode}
         </p>

@@ -82,11 +82,12 @@ export type StaticRtOutcome = "completed" | "deopt" | "killed" | "error";
  * renderer and Python kill rows, and should be near zero outside hostile-corpus runs. */
 export type StaticRtKillReason = "wall_clock" | "memory";
 // -----------------------------------------------------------------------------------------
-// --- S6b: trace compiler -------------------------------------------------------------------
+// --- S6b/S6e: trace compiler ----------------------------------------------------------------
 /** Where a compile stopped. Every value but `ok` is a refusal that wrote no row, and the
- * distinction is the point: `consistency` means the task is not compilable yet, `lint` and
- * `dry_run` mean the model produced something the gates caught. */
-export type CompileOutcome = "ok" | "kind" | "consistency" | "llm" | "lint" | "dry_run";
+ * distinction is the point: `evidence` means the trace does not say enough to compile from,
+ * `plan` means the model's interpretation was not grounded in it, and `lint`/`validation` mean
+ * the model produced code the gates caught. */
+export type CompileOutcome = "ok" | "kind" | "evidence" | "llm" | "plan" | "lint" | "validation";
 /** §11's deopt trigger classes. `guard_failure` is the in-script one; the rest are the
  * executor's own detections. */
 export type DeoptTrigger =

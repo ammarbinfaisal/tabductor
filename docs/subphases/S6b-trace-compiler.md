@@ -1,7 +1,12 @@
 # S6b — Trace consistency checker + compiler agent
 
+**Status:** done, then **superseded in part by S6e**. The contract is
+[trace-compilation.md](../trace-compilation.md); full-trace interpretation, the plan gate and
+isolated validation landed in [S6e](S6e-post-execution-compilation.md), which deleted this
+subphase's `consistency.ts`. The notes below describe what S6b itself shipped.
+
 You are implementing subphase S6b. Read, in order:
-1. This file (authoritative).
+1. `docs/trace-compilation.md`, then this subphase's requirements.
 2. `docs/techical_plan.md` — §11 (the whole compiler contract; the script artifact shown
    there is the **normative template** for what your agent must emit), §12 (the `ctx` API
    the emitted code targets), §17.2 (metric names).
@@ -25,25 +30,24 @@ any change to the sandbox or lint gate themselves (S6a owns them; you only call 
 
 ## Deliverables — in `packages/compiler`
 
-1. **Trace consistency checker** (`consistency.ts`):
-   `checkConsistency(traces: RunTrace[]) → ConsistencyReport`.
-   - Input: K successful `ai`-mode traces for one task (K=2 default — the §11 promotion
-     prerequisite; a single trace overfits A/B variants and one-time banners).
-   - Verifies across all K: same navigation sequence, same ordered action kinds, same
-     **resolved locator** per corresponding step (strategy + selector as recorded in the
-     trace), extraction steps pull from the same anchors, emitted event types match.
-   - Output on success: `{ consistent: true, anchors, waits, extractions, emits }` — the
-     stable anchor set (locator + strategy per step), max observed wait per step, extraction
-     shapes, and emitted packet shapes. This object is the compiler agent's input.
-   - Output on failure: `{ consistent: false, reason }` with a human-useful reason
-     ("step 4 locator diverged: `[data-testid=tweet]` vs `article.tweet`"). No
-     `compiled_scripts` row is created; the reason is logged (structured, with task_id)
-     and returned to the caller — S6c's promotion loop reads it.
+1. **Trace interpretation and consistency:**
+   - Input: a completed successful trace (**K=1**), the detailed internal task prompt,
+     trigger and event contracts; additional successful traces when available.
+   - The compiler LLM separates DOM exploration, probing and abandoned attempts from the
+     actual work. Required navigation, extraction, business actions, events and state
+     behavior become an explicit reusable plan grounded in the evidence.
+   - Deterministic checks evaluate that plan and its assumptions. When several traces are
+     available, compare the distilled work; different exploratory sequences are not by
+     themselves a refusal reason. Preserve source-run provenance and explain refusals.
+   - The current `checkConsistency` API compares reduced raw action sequences before the
+     LLM. It is an implementation gap, not the intended semantic interpretation stage.
 
 2. **Compiler agent** (`compile.ts`): `compileTask(deps, taskId, traces) → CompileResult`.
-   - Uses the S4a `Llm` adapter (`live | record | replay` — CI runs replay only). Prompt =
-     consistency report + trimmed traces + the §11 template with its rules stated: guard
-     block first (`ctx.guard.url/exists/noDialog` distilled from what every trace saw);
+   - Runs as a separate post-execution task, using the S4a `Llm` adapter
+     (`live | record | replay` — CI runs replay only). It receives full available trace
+     evidence and task context, distills the work, then emits the §11 script: guard
+     block after required initial navigation and before dependent work
+     (`ctx.guard.url/exists/noDialog` grounded in the traces);
      static path via `ctx.page.*` + declarative `evalExtract` only; `ctx.emitIfNew` with
      the task's dedupe key; `ctx.state` for cursors; `ctx.deopt(recoveryPrompt, evidence)`
      wherever a §11 deopt-trigger class applies (guard failure, zero-extraction where
@@ -51,8 +55,10 @@ any change to the sandbox or lint gate themselves (S6a owns them; you only call 
      emit schema — it is what the agent wakes up to mid-run in S6c.
    - **Validation pipeline, in order, before any row is written:** (a) S6a lint gate (AST:
      no `eval`/`Function`/imports/`with`; only `ctx.*` member calls); (b) **dry-run in the
-     S6a sandbox** against a fixture replay session — the script must complete or deopt
-     cleanly, not throw. Only then insert `compiled_scripts` with `status='candidate'`,
+     S6a sandbox** against fixture/replay or otherwise isolated inputs. Demonstrate the
+     work on representative inputs and a clean deopt when assumptions fail; a deopt alone
+     is not proof that the work succeeds. Validation must not repeat live side effects.
+     Only then insert `compiled_scripts` with `status='candidate'`,
      `from_runs` provenance, and version = prior max + 1. Any pipeline failure → no row,
      descriptive error in the result.
    - **Task selector: `kind = 'browser'` only.** Write the filter with a comment that
@@ -63,10 +69,12 @@ any change to the sandbox or lint gate themselves (S6a owns them; you only call 
 
 3. **System tests** (`tests/system/`, content-named, e.g. `trace-consistency.test.ts`,
    `compiler-agent.test.ts`):
-   - Consistency accept: two replay-driven fake-tweets runs → report with anchors/waits;
-     deterministic across orderings of the input traces.
-   - Consistency reject: one trace against `mutator?layout=v1`, one against `?layout=v2`
-     → `consistent: false`, reason names the diverging step; no `compiled_scripts` row.
+   - First-run eligibility: one successful trace can yield a validated candidate.
+   - Exploration separation: different DOM discovery paths for the same work yield a
+     reusable plan without replaying the probes; necessary extraction remains.
+   - Refusal: incompatible work or unsupported assumptions cannot be validated → a
+     descriptive refusal and no active replacement. A raw step-count difference alone
+     does not establish incompatibility.
    - **Golden compile:** recorded compiler transcript over the canonical fake-tweets traces
      → emitted script snapshot-tested (normalize whitespace/version comments); script passes
      lint and dry-run; `candidate` row exists with correct `from_runs`.
@@ -97,7 +105,11 @@ What you built, deviations + why, commands + outcomes, flakiness noticed. Do NOT
 
 ---
 
-## As built
+## Historical implementation, and what replaced it
+
+These notes describe the original S6b implementation. S6d changed eligibility to K=1; S6e
+replaced the raw-sequence consistency checker with full-evidence interpretation
+(`evidence.ts` + `plan.ts`) and the live dry run with isolated validation (`validate.ts`).
 
 **Deviation: consistency matches on the resolved selector, not "strategy + selector".** Strategy
 is not in the trace and never was — `LocatorStrategy` lives on `AnchoredElement` inside the
@@ -121,7 +133,7 @@ verbatim — the same "return the failure unchanged" shape S5e uses for a TeX lo
 is 2 attempts.
 
 Tests: `trace-consistency.test.ts` (accept, order-independence, locator/step-count/emit-type
-divergence, K=2 threshold, failed-action exclusion) and `compiler-agent.test.ts` (golden
+divergence, originally a two-trace threshold and now K=1, failed-action exclusion) and `compiler-agent.test.ts` (golden
 compile against a real browser dry run, fence stripping, self-repair, budget exhaustion,
 dry-run throw, consistency-before-model, and the `asset`/`decision` kind filter). Every
 rejection case asserts both the descriptive error *and* the absence of a `compiled_scripts`

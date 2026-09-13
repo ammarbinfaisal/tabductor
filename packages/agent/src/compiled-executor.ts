@@ -163,10 +163,21 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
         const emit = makeEmitFn({ db, taskId: handle.task.id, handleEmit: handle.emit, trace });
         const host: CtxHost = {
           session,
-          // `makeEmitFn` returns the agent's `EmitFn`; `ctx`'s is structurally identical by
-          // construction (S6a declares it locally to avoid a layering edge), so this is the
-          // same dedupe claim the agent path uses, not a second one.
-          emit: emit as unknown as CtxHost["emit"],
+          // The same dedupe claim the agent path uses — adapted, not cast. The two `EmitFn`s
+          // are declared in packages that do not import each other (S6a's layering note) and
+          // they are *not* structurally identical: the agent's third argument is the dedupe
+          // key itself, `ctx`'s is an options object. Casting between them handed
+          // `makeEmitFn` an object where it expected a string, so every `emitIfNew` in a
+          // compiled run claimed the key `emit:<type>:[object Object]` — the first event
+          // published and every later one was silently deduped away. Translating the outcome
+          // back is the same fix from the other side: a script reads `ok`/`deduped`, which is
+          // what `ctx.ts` documents, not the agent loop's `outcome` string.
+          emit: async (type, packet, opts) => {
+            const result = await emit(type, packet, opts?.dedupeKey);
+            if (result.outcome === "published") return { ok: true, eventId: result.eventId };
+            if (result.outcome === "deduped") return { ok: true, deduped: true };
+            return { ok: false, error: result.error };
+          },
           state: taskStateStore(db, handle.task.id),
         };
 

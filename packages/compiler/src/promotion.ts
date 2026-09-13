@@ -4,14 +4,18 @@ import { eq } from "drizzle-orm";
 import { activateScript, getActiveScript, invalidateScript } from "./registry.js";
 
 /**
- * When a task earns the fast path, and when it loses it.
+ * When a task becomes *eligible* for the fast path, when it earns it, and when it loses it.
  *
- * The numbers are here rather than spread through the executors: **K=1** — the first clean
- * `ai` run compiles (a product decision superseding §11's K=2: the deopt door is what makes
- * an over-fitted script cheap, so paying for a second exploratory run up front buys less
- * than it costs; consistency against the previous run is still checked whenever there *is*
- * one) — and **3 deopts within the last 10** compiled runs demote. Both are policy, and policy belongs in one readable place; the executors only report
- * what happened.
+ * The numbers are here rather than spread through the executors: **K=1** — one successful `ai`
+ * execution makes its trace eligible to compile (§11's K=2 superseded: the deopt door is what
+ * makes an over-fitted script cheap, so paying for a second exploratory run up front buys less
+ * than it costs) — and **3 deopts within the last 10** compiled runs demote.
+ *
+ * Eligibility is not promotion, and this file no longer conflates them. A run finishing makes
+ * a *job* (`jobs.ts`); the job compiles, validates in isolation and only then calls
+ * `promoteTask`. That separation is the S6e correction: the old `recordAiRun` took a `compile`
+ * callback and ran the whole pipeline inside the executor's `finally`, which put an LLM pass
+ * and a browser dry run inside the lifetime and timeout of a run that had already finished.
  *
  * Demotion exists so a task that has quietly stopped working stops quietly costing money. A
  * compiled script whose guards fail every run still *finishes* — the agent picks it up — so
@@ -23,52 +27,61 @@ export const DEMOTE_DEOPTS = 3;
 export const DEOPT_WINDOW = 10;
 
 /** Never advance for a kind that is not compiled — an asset task must not accumulate toward a
- * promotion that S6b's selector would refuse anyway. */
+ * promotion `compileTask`'s selector would refuse anyway. */
 const COMPILABLE_KINDS = new Set(["browser"]);
 
-export type PromotionDeps = {
-  db: Db;
-  metrics?: Metrics;
-  /** Runs S6b's pipeline. Injected so this module stays policy and does not import the model. */
-  compile: (taskId: string) => Promise<{ ok: true; scriptId: string } | { ok: false; error: string }>;
-};
-
-export type PromotionOutcome =
-  | { promoted: false; reason: string }
-  | { promoted: true; scriptId: string };
+export type EligibilityOutcome = { eligible: boolean; cleanRuns: number; reason: string };
 
 /**
- * One `ai` run's result. `consistent` is S6b's consistency verdict against the previous run —
- * two successes that did different things are not two clean runs, they are one task with two
- * behaviours, and compiling either would be compiling a coincidence.
+ * One `ai` run's result, recorded. Returns whether the task's trace is now eligible to
+ * compile; the caller enqueues the job.
  */
-export async function recordAiRun(
-  deps: PromotionDeps,
+export async function noteAiRun(
+  deps: { db: Db },
   task: TaskRow,
-  input: { ok: boolean; consistent: boolean },
-): Promise<PromotionOutcome> {
-  if (!COMPILABLE_KINDS.has(task.kind)) return { promoted: false, reason: `kind ${task.kind} is never compiled` };
-
-  if (!input.ok || !input.consistent) {
+  input: { ok: boolean },
+): Promise<EligibilityOutcome> {
+  if (!COMPILABLE_KINDS.has(task.kind)) {
+    return { eligible: false, cleanRuns: task.cleanAiRuns, reason: `kind ${task.kind} is never compiled` };
+  }
+  if (!input.ok) {
     await deps.db.update(tasks).set({ cleanAiRuns: 0 }).where(eq(tasks.id, task.id));
-    return { promoted: false, reason: input.ok ? "runs diverged" : "run failed" };
+    return { eligible: false, cleanRuns: 0, reason: "run failed" };
   }
 
   const clean = task.cleanAiRuns + 1;
   await deps.db.update(tasks).set({ cleanAiRuns: clean }).where(eq(tasks.id, task.id));
   if (clean < PROMOTE_AFTER_CLEAN_RUNS) {
-    return { promoted: false, reason: `${clean}/${PROMOTE_AFTER_CLEAN_RUNS} clean runs` };
+    return { eligible: false, cleanRuns: clean, reason: `${clean}/${PROMOTE_AFTER_CLEAN_RUNS} clean runs` };
   }
+  return { eligible: true, cleanRuns: clean, reason: `${clean} clean run(s)` };
+}
 
-  const compiled = await deps.compile(task.id);
-  if (!compiled.ok) return { promoted: false, reason: compiled.error };
+/**
+ * The fast path, granted. Flipping the mode and activating the script happen together: a task
+ * in `compiled` mode with no active script is the one state `CompiledExecutor` cannot do
+ * anything useful with.
+ *
+ * `expectContentHash` is the guard against an obsolete compile overwriting a newer definition
+ * (`trace-compilation.md`: "artifacts must match the task content they implement"). The task is
+ * re-read *inside* the check because compilation is long and the author may have edited the
+ * node while it ran.
+ */
+export async function promoteTask(
+  deps: { db: Db; metrics?: Metrics },
+  input: { taskId: string; scriptId: string; expectContentHash: string | null },
+): Promise<{ promoted: boolean; reason: string }> {
+  const [task] = await deps.db.select().from(tasks).where(eq(tasks.id, input.taskId));
+  if (!task) return { promoted: false, reason: `task ${input.taskId} is gone` };
+  if (task.contentHash !== input.expectContentHash) {
+    return { promoted: false, reason: "the task changed while its trace was being compiled" };
+  }
+  if (!COMPILABLE_KINDS.has(task.kind)) return { promoted: false, reason: `kind ${task.kind} is never compiled` };
 
-  // Flip the mode and activate in one place: a task in `compiled` mode with no active script
-  // is the one state `CompiledExecutor` cannot do anything useful with.
-  await activateScript(deps.db, compiled.scriptId);
-  await deps.db.update(tasks).set({ mode: "compiled", cleanAiRuns: 0 }).where(eq(tasks.id, task.id));
+  await activateScript(deps.db, input.scriptId);
+  await deps.db.update(tasks).set({ mode: "compiled", cleanAiRuns: 0 }).where(eq(tasks.id, input.taskId));
   deps.metrics?.promotions.add();
-  return { promoted: true, scriptId: compiled.scriptId };
+  return { promoted: true, reason: "promoted" };
 }
 
 export type DemotionOutcome = { demoted: boolean; deoptsInWindow: number };

@@ -1,7 +1,9 @@
 # Agentic Browsing Platform — Technical Design Document
 
-**Version:** 0.5 (draft for review)
-**Status:** Incorporates decisions made so far: async event-driven model, per-task policies, two node kinds (**browser** and **asset**), cron + event triggers, BYO CDP, two-agent browser/compiler model with deopt fallback, headers blocked by default with tool-based escalation, external MCP support (**asset nodes only**), LaTeX-based document generation, opt-in/out storage.
+**Version:** 0.7 (2026-09-11)
+**Status:** Design contract for the event-driven platform with browser, asset and decision nodes.
+Implementation status is tracked in `subphases/ROADMAP.md`; the trace-compilation gaps are
+listed in `trace-compilation.md`. A design requirement here is not a claim that it has shipped.
 
 **Changes in 0.2:** the single-node-type model is split into two *kinds* (§4). MCP moves off the browser node entirely and onto the new **asset node** (§13), which consumes events, calls MCP tools, and produces documents/data files (§13.5). Secrets get a concrete encryption design (§16, Threat 4).
 
@@ -12,11 +14,17 @@
 **Changes in 0.5 — two tracks, each with a companion document:**
 
 - **Shared workflows** (`sharing.md`) — an unguessable link that lets anyone watch a workflow's graph, triggers, runs, events and produced assets, live or historical. Visibility is opt-in per event type and default-deny, declared in the graph document and versioned with it. §1's scope line is narrowed rather than reversed: read-only visibility into a workflow's *own execution* is in; a marketplace of reusable workflows stays out. Adds §17.3 (a third observability audience) and Threats 13–17. Decisions #16–#18.
-- **Python compute** (`python-compute.md`) — a third execution mode, `mode=python` on `kind=asset`, running an LLM- or human-authored program on our infrastructure inside a Firecracker microVM with a pinned dependency set, to produce spreadsheets and other computed deliverables. The tool registry keys on `(kind, mode)`, and `(asset, python)` has no tools at all: the job's only channel is a block device. Adds §13.6 and Threats 18–22. Decisions #19–#20.
+- **Python compute (historical 0.5 proposal)** — introduced an authored Python mode and a microVM design. Both were superseded: the current contract is the asset agent's `python.run` tool and a subprocess runner in the self-hosted container deployment (`python-compute.md`, §13.6).
 
 **Changes in 0.6 — the event-centric model (`event-centric-model.md`, implemented as EC1):** events become first-class workflow-version entities carrying an author-written description, an LLM-compiled packet schema, and the S2d visibility flag; tasks declare `consumes`/`emits` by type; authored edges are gone — topology is derived, and dispatch routes by type within the version. The client sends prompts only, never JSON: packet schemas are compiled at publish (carry-forward hashed, ajv-strict gated, per-event compile report) and stub behavior is derived from them. §4, §5 and §14 are written against this model; `event-centric-model.md` carries the routing, compiler and editor detail behind it.
 
 ---
+
+**Changes in 0.7:** UI nodes use `ai` without a mode selector; `stub` remains for automated
+tests. `compiled` is engine-assigned after validation, with first-run eligibility (K=1).
+Trace compilation is a separate post-execution LLM task that separates DOM exploration from
+actual work; [trace-compilation.md](trace-compilation.md) defines that lifecycle. Python is
+an asset tool, and publish compiles internal prompts as well as event schemas.
 
 ## 1. Purpose and Scope
 
@@ -93,16 +101,21 @@ Components communicate only through the event bus and the state store. The Polic
 
 Tasks have two orthogonal discriminants:
 
-- **`kind`** — what the task can *do*: `browser` or `asset`. This selects the tool registry and the executor. It is fixed at authoring time and is what the graph editor calls a "node type."
-- **`mode`** — *how* it executes: `ai` (LLM-driven), `compiled` (static JS with deopt fallback), or `python` (0.5 — an authored program in a microVM, `python-compute.md`). Only `browser` tasks are compilable; only `asset` tasks may be `python`.
+- **`kind`** — what the task can *do*: `browser`, `asset` or `decision`. It is fixed at authoring time and selects the tool surface.
+- **`mode`** — *how* it executes: editor nodes start in `ai`; the engine may assign `compiled` to browser tasks after script validation. `stub` is retained for automated tests, not exposed as an editor choice. There is no `python` mode.
 
-**The tool registry is a function of `(kind, mode)`, not of `kind` alone** (0.5). For every mode that existed before 0.5 this changes nothing — `(browser, ai)` and `(browser, compiled)` share the browser registry, as §12 already requires. It matters for `(asset, python)`, which has **no tool registry at all**: a Python job has no host bridge and cannot call anything, so it cannot reach `mcp.*` even though it lives on the kind that owns those tools. The executor registry already keys on `(kind, mode)` from S5a; this makes the tool registry follow it.
+**The executor registry is keyed by `(kind, mode)`.** Browser agents and compiled scripts
+use their respective supported tool/runtime interfaces through the same policy boundary.
+The asset agent has `python.run` beside its MCP, asset and store tools; the Python program
+it invokes has no tool bridge back into the agent or host.
 
 **Browser node (`kind=browser`).** The original task node. Drives a page over CDP. Tools: `page.*`, `network.*`, `secrets.fill`, `emit`. Triggered by schedules or events. Compilable (§11).
 
-**Asset node (`kind=asset`).** Consumes events, calls MCP tools, and produces files. Tools in `mode=ai`: `mcp.*`, `assets.*`, `emit`. **No browser, no CDP endpoint, no `page.*`, no `network.*`.** Event-triggered only — no schedules, because a node with nothing to consume has nothing to generate. Never compiled *by the §11 script compiler*: MCP results and LLM prose have no stable structure for guards to assert on, so the compiler skips `kind=asset` entirely (§11).
+**Asset node (`kind=asset`).** Consumes events, calls MCP tools, and produces files. Tools: `mcp.*`, `assets.*`, `python.run`, `store.query/insert/upsert`, `emit`. **No browser, no CDP endpoint, no `page.*`, no `network.*`.** Event-triggered only. Never compiled by the §11 browser script compiler.
 
-In `mode=python` (0.5, §13.6) the same node runs an authored program instead of an agent. It has no tools, receives its trigger packet and declared inputs as files, and returns files and emissions as files — the host resolves the inputs before the sandbox starts and publishes the emissions after it exits. This is not a compiled mode: nothing is derived from traces, there are no guards and there is no deopt.
+**Decision node (`kind=decision`).** Reads the workflow store and trigger context, then emits
+work. Tools: `store.query`, `emit`; no browser, MCP or store writes. Schedule- and event-triggered.
+It stays in `ai` in v1; future static support is described in `graph-compilation-llm.md` §2.4.
 
 **Why the kinds are separated — this is a security control, not an ergonomic one.** Browser agent + MCP in one tool registry is the canonical exfiltration chain: injected page content steers the agent, which calls an MCP tool that has network egress (HTTP, email, Slack), and page data leaves the system. Splitting the registries severs that chain *at the tool boundary* rather than with prompt instructions, which is the only kind of mitigation §2 principle 2 accepts. The reverse holds too: an injected MCP result cannot navigate anywhere, because `page.*` is not in the asset node's tool list.
 
@@ -120,7 +133,9 @@ The two kinds exchange data only through **events with validated packet schemas*
 
 ## 5. Workflow Graph
 
-The node taxonomy is two **task nodes** — `browser` and `asset` (§4; 0.3 adds a third, **decision** — `graph-compilation-llm.md` §2) — plus **trigger/schedule** sources. All kinds share one `tasks` table, one wiring model, one run state machine, and one trace format; `kind` is a discriminant column, not a separate entity.
+The node taxonomy is three task kinds — `browser`, `asset` and `decision` (§4) — plus
+trigger/schedule sources. All kinds share one `tasks` table, wiring model, run state machine
+and trace format; `kind` is a discriminant column, not a separate entity.
 
 **There are no edges.** A task declares `consumes` (the event types that trigger it, alongside an optional schedule) and `emits` (the types it may produce); the graph is the bipartite structure *nodes ↔ events* that falls out of those declarations, materialized only for display. Dispatch resolves subscribers by type alone within the workflow's version — one probe of `task_consumes(workflow_version_id, event_type)` — so an event of type T reaches every consumer of T whichever task emitted it. What this means for coupling, cycles and external event types is `event-centric-model.md` §2. Because the authored artifact is a set of declarations rather than a drawing, the editor is panels plus a derived read-only map, not a canvas.
 
@@ -151,7 +166,7 @@ Graph-level rules the engine must enforce:
 - **Fan-out limits.** One event may trigger N tasks; N runs may each need a browser. Bounded by the concurrency model (§8).
 - **Versioning.** Editing a graph while runs are in flight: runs pin the graph version they started under; new events route against the latest version.
 - **Kind constraints.** A schedule may only bind to a `kind=browser` task (asset nodes are event-triggered only, §4) — 0.3: or to `kind=decision`, which is schedule- and event-triggered (`graph-compilation-llm.md` §2.1). An edge may connect any kind to any kind. The editor must reject a schedule→asset binding at save time, not at dispatch time.
-- **Mode constraints** (0.5). `mode=compiled` requires `kind=browser`; `mode=python` requires `kind=asset`. Both are rejected at save time by the control plane and re-asserted by a named DB check constraint, so a direct insert cannot create an unroutable or over-privileged graph. A task carrying Python source declares its runtime image and dependency subset, and publish validates that subset against the committed image manifest (`python-compute.md` §4).
+- **Mode constraints:** UI nodes use `ai`; only the engine assigns `compiled` after validation. The API rejects authored `compiled` and retired `python`. Test modes remain open strings; the DB keeps the asset/compiled exclusion. Python arguments are checked at the tool boundary.
 - **Share visibility** (0.5). Each declared emitted event carries `public: boolean`, default `false`. It is part of the graph document and therefore versioned, diffable and reviewed with everything else. A node added in a later version arrives private because that is the schema default — there is no path by which a graph edit silently widens an existing share (`sharing.md` §3.2).
 
 ## 6. Event Bus
@@ -217,17 +232,26 @@ Grants are **per task** (your decision). The enforcement architecture:
 
 ## 11. Compiler Agent and Deopt Model
 
-The JIT analogy is the right shape; here is the concrete contract.
+The full lifecycle is defined in [trace-compilation.md](trace-compilation.md). Trace
+compilation is a separate **post-execution LLM task**, distinct from publish-time schema
+and internal-prompt compilation. Execution settles and releases its browser before the
+compiler starts; compilation has its own outcome, timeout and retry budget.
 
 **Scope: `kind=browser` tasks only.** Asset tasks (§4) are never compiled. Their work is MCP calls and LLM-authored prose — neither has a stable structure for guards to assert on, and a "compiled" script whose output varies every run is a compiler that only pretends to be one. The compiler's task selector filters on `kind='browser'`; asset tasks stay in `ai` mode permanently and are exempt from the promotion/demotion counters below.
 
-**Input:** one or more successful AI-mode traces for a task, including resolved selectors, waits observed, network requests correlated with actions, extracted data locations, and the emitted packets.
+**Input:** the completed successful trace, detailed internal task prompt, trigger context
+and event contracts, with additional successful traces when available. The LLM reads DOM
+exploration and execution evidence to distinguish discovery from actual work. It removes
+unnecessary inspections, abandoned paths and probing actions while preserving required
+navigation, data extraction, business actions, emissions and state/deduplication semantics.
+Consistency is assessed on the distilled work, not identical exploratory action sequences.
 
 **Output:** a compiled script artifact:
 
 ```js
 // artifact: task_42.v3.js  (compiled from traces run_181, run_187)
 export default async function run(ctx) {
+  await ctx.page.goto('https://x.com/elonmusk');
   // GUARD BLOCK — assumptions distilled from traces
   const guards = [
     ctx.guard.url(/^https:\/\/x\.com\/elonmusk/),
@@ -238,13 +262,13 @@ export default async function run(ctx) {
   if (!(await ctx.guard.all(guards))) {
     return ctx.deopt("Timeline layout not recognized. Goal: extract the "
       + "5 most recent tweets as {text, url, timestamp} and emit "
-      + "tweet.detected for each new one.", { failed: ctx.guard.failures() });
+      + "tweet.detected for each new one.", { failed: await ctx.guard.failures() });
   }
 
   const tweets = await ctx.page.evalExtract('article[data-testid="tweet"]',
-    { text: '[data-testid="tweetText"]',
-      url: 'a[href*="/status/"]@href',
-      timestamp: 'time@datetime' });
+    { text: { selector: '[data-testid="tweetText"]' },
+      url: { selector: 'a[href*="/status/"]', attr: 'href' },
+      timestamp: { selector: 'time', attr: 'datetime' } });
 
   for (const t of tweets) {
     await ctx.emitIfNew('tweet.detected', t, { dedupeKey: t.url });
@@ -255,12 +279,20 @@ export default async function run(ctx) {
 **Deopt semantics:**
 
 - `ctx.deopt(prompt, evidence)` does not throw the run away. It hands control to the browser agent *mid-run*, with: the compiler-authored recovery prompt, the original task prompt, the guard failures, and the current page state. The agent finishes the run.
-- A deopted run that succeeds produces a fresh trace, which is queued for **recompilation**. This is the self-healing loop: site redesign → guards fail → agent adapts → compiler emits v(n+1).
+- After a recovered execution settles and its trace is flushed, it becomes eligible for
+  post-execution recompilation. The new compiler result affects future runs only.
 - Deopt triggers: guard failure, missing element at action time, unexpected dialog/captcha detection, navigation to an unexpected URL, extraction returning zero/`null` where the trace always saw data, and a global step timeout.
 - **Deopt budget:** N deopts within M runs (default: 3 in 10) demotes the task to `ai` mode and emits `compile.invalidated`, so the user notices instead of silently paying for AI on every run.
-- **Promotion rule:** compile only after K clean AI runs with *consistent* traces (default K=2; selectors and flow must match across them). One trace overfits — the compiler will bake in an A/B-test variant or a one-time banner.
+- **Promotion rule:** the first successful AI run makes a task eligible for compilation
+  (**K=1**). Promote only after a candidate passes validation. Additional traces help check
+  the distilled work; guards and deopt handle assumptions that do not hold on later runs.
 
-**Compiler correctness rules:** the compiler agent's output is code, so treat it like untrusted code from any other author: it runs only in the static runtime sandbox (§12), it is reviewed against a linter (no `eval`, no dynamic imports, no network primitives, only `ctx.*` calls), and it is versioned and diffable in the UI so users can inspect what will run against their browser.
+**Compiler correctness rules:** generated code must pass lint and sandbox validation using
+fixture/replay or otherwise isolated inputs; validation must not repeat live browser side
+effects. Scripts are versioned with source-run provenance. Compiler failure cannot turn a
+successful execution into a timeout or retry. Script inspection/diff UI remains a design
+requirement. Current synchronous hooks, reduced trace input and live-endpoint validation
+are documented implementation gaps in `trace-compilation.md`.
 
 ## 12. Static Runtime (Sandbox)
 
@@ -343,21 +375,33 @@ Browser tasks cannot write assets, but they participate at both ends:
 - `page.upload(anchor, assetRef)` — resolves an asset ref from the trigger packet and uploads it. Requires the `upload` capability grant (§10).
 - Downloads initiated by a browser task land in the asset store as new assets, under the `download` grant.
 
-## 13.6 Compute Nodes: Python (`mode=python`)
+## 13.6 Python compute (`python.run`)
 
 Full specification in **`python-compute.md`**. The summary that belongs in this document:
 
-An asset node in `mode=python` runs an authored program — LLM-written or hand-written — instead of an agent loop. It exists because everything numeric in a workflow (a pivot, a rolling median, a variance table, a chart, an `.xlsx`) is work an LLM does badly and a short program does exactly. §13.5's LaTeX path produces *documents*; this produces *computed data*, and the two compose: a Python node writes the figures, an `ai` asset node writes the `.tex` that presents them.
+An asset agent writes a program at run time and invokes `python.run` when computation is
+needed. The same node can compute figures, write LaTeX and render a document. Python is
+neither an authorable mode nor a browser trace-compilation target.
 
-**Contract.** The host prepares one filesystem and the guest reads and writes only that: `/job/in/trigger.json` (the trigger packet), `/job/in/assets/*` (input assets the task declares, resolved by the host), `/job/in/tables/*.parquet` (declared store tables, materialised host-side under the workflow's reader role — with S5g), `/job/code/main.py`, and `/job/out/` for files, `emits.jsonl`, and captured output. Inputs are **declared in the graph document**, never discovered at runtime.
+**Contract.** The tool accepts program source, input asset paths and an optional wall-clock
+limit. The host resolves inputs under `in/<basename>` and turns files under `out/files/`
+into grant-checked assets. The current tool does not automatically inject the trigger packet
+or materialize store tables; the agent supplies needed data through code or input assets.
 
-**Emits are published host-side.** The guest writes lines; the host reads them and calls the same `emit` path every other executor uses, so packet-schema validation, dedupe, loop budget and the transactional outbox apply unchanged and cannot be bypassed. This is §12's "every `ctx` call crosses into the host where the policy check happens", in a sandbox that has no calls.
+**The agent emits.** Program output, including optional `out/emits.jsonl`, returns as untrusted
+tool data. It is not automatically published. The agent calls `emit`, which uses normal
+packet validation, deduplication and outbox handling.
 
-**Dependencies are a pinned image, not a package manager.** One versioned image carries a fixed set (numpy, pandas, pyarrow, openpyxl, XlsxWriter, scipy, statsmodels, matplotlib, dateutil, orjson); a task declares a subset, validated at publish against a manifest committed to the repo. No `pip` at run time — and none possible, since the sandbox has no network. Adding a package is a doc change, the same rule the tool registries follow.
+**Dependencies are a pinned image.** The tool advertises the committed runtime manifest;
+authors do not select dependencies at publish. Dependency updates change that image and manifest.
 
-**Sandbox.** A **Firecracker microVM per job**, under `jailer`, with **no network device configured at all** — not a blocked network, no NIC. Read-only rootfs; a single fresh ext4 scratch drive as the only I/O channel; no vsock; no live API socket; 1 vCPU with memory, CPU and wall-clock caps. The scratch image is built with `mke2fs -d` and read back with `debugfs -R rdump`, both unprivileged, so the host never loop-mounts a filesystem written by untrusted code. The runner needs `/dev/kvm` passed through and nothing else — in particular, never the docker socket, which is why a microVM was chosen over spawning a container per job (§20).
+**Runner.** `apps/pyrunner` executes Python as a subprocess inside the self-hosted deployment's
+container. It uses a wall-clock kill, output caps and host-side path validation. Compose puts
+it on an internal network; this is not a per-job microVM or a claim that CPython cannot create
+sockets or subprocesses. Without `PYRUNNER_URL`, the tool returns an unavailable error.
 
-Same principle as §12 and §13.5, third sandbox: the author is untrusted, the gate is deterministic, the executor is isolated. The property the whole design rests on is the absent NIC — see Threat 22.
+The program has no host tool bridge. Input resolution and asset writes remain host operations;
+the retired microVM threat model is preserved only as historical context in `python-compute.md`.
 
 ## 14. Data Model (Postgres)
 
@@ -368,7 +412,9 @@ users, cdp_endpoints(user_id, ws_url_encrypted, label, health)
 workflows(id, user_id, current_version)
 workflow_versions(id, workflow_id, graph_json, created_at)
 tasks(id, workflow_version_id, name, prompt,
-      kind[browser|asset], mode[ai|compiled|python], limits_json)  -- §4 two discriminants
+      kind[browser|asset|decision], mode, limits_json,           -- ai/compiled; stub for tests
+      compiled_prompt, compiled_prompt_hash, content_hash,
+      clean_ai_runs, recent_deopts)
 task_grants(task_id, grant_key, grant_value)          -- policy
 account_baseline_rules(user_id, rule_json)            -- §10 recommendation
 event_defs(id, workflow_version_id, event_type, description,
@@ -405,10 +451,8 @@ workflow_shares(id, workflow_id, token_sha256 unique, token_prefix,
                 created_at, revoked_at)            -- token never stored in plaintext
 event_defs.public boolean not null default false   -- projected from graph_json
 
--- 0.5 python-compute.md — mode=python on kind=asset; all projected from graph_json
-tasks.code_source  text  null                      -- the program
-tasks.code_sha256  text  null                      -- feeds the task content hash
-tasks.runtime_json jsonb null                      -- {image, packages[], inputs{}}
+-- S6d removed tasks.code_source/code_sha256/runtime_json (migration 0019).
+-- Python source is supplied to python.run at execution time.
 ```
 
 Neither 0.5 track adds a table beyond `workflow_shares`. Asset visibility is *derived* — an asset is publicly readable iff a public packet under a live share references it — rather than configured, so there is no share-grant table to keep in sync (`sharing.md` §4.4). The Python dependency manifest is a file in the repo, not a row, because its whole purpose is to be reviewed in a pull request. Public page views are counted as a metric, never written as rows: a view is not product data, and a row per view would make Threat 16 cheaper.
@@ -480,15 +524,15 @@ The design:
 
 ### Threats 18–22 — Python compute (`python-compute.md` §7)
 
-**Threat 18 — Python as arbitrary code execution.** The premise, not an accident: the author is an LLM or a hurried human. Containment is the microVM — separate kernel, no network device, read-only rootfs, one per-job scratch drive, jailer chroot and cgroups, no API socket, no vsock, memory and wall-clock caps. Nothing about the program is inspected; there is nowhere for it to go.
+**Threat 18 — Python execution.** Programs are subprocesses in the self-hosted runner container, not per-job VMs or tenant sandboxes. Deployment boundaries, wall-clock termination and host output checks define the controls.
 
-**Threat 19 — Guest-to-host escape through the result channel.** The scratch image is written by hostile code and parsed by the host — the sharpest edge in that design. It is never loop-mounted, so the host kernel's ext4 parser is never exposed to it; `mke2fs -d` and `debugfs -R rdump` do both directions in userspace; only regular files are extracted; every output path is re-validated against Threat 8's rules and the write-grant glob; counts and sizes are capped.
+**Threat 19 — Hostile output.** Runner files and paths are untrusted. Symlinks and output caps are handled by the runner; the host normalizes paths and checks all destinations against task write grants before asset publication.
 
-**Threat 20 — Resource exhaustion and abuse.** cgroup CPU and memory limits, host wall-clock kill, concurrent-job cap, and `pyrun_sandbox_kills_total{reason}` on the security-signals dashboard — a series that should sit at zero.
+**Threat 20 — Resource exhaustion.** Per-job wall-clock and output limits are enforced. Container resource limits are deployment concerns, not the retired per-job microVM guarantees. Kills use `pyrun_kills_total`.
 
-**Threat 21 — Dependency supply chain.** The pinned image is the allowlist, rebuilt deliberately, its manifest committed and checked at publish. A compromised package still runs in a VM with no network, so the realistic damage is a wrong number rather than an exfiltration — a real harm, and the reason the manifest is reviewed.
+**Threat 21 — Dependencies.** A pinned image and committed manifest define the tool's packages. There is no publish-time dependency subset. Compromised dependencies execute with runner privileges; pinning does not preclude exfiltration.
 
-**Threat 22 — Import-time and runtime exfiltration.** Moot, and recorded so it stays moot: no NIC, no vsock, no host callable, so `socket`, `urllib`, `requests` and every transitive equivalent have nothing to open. **This is the single property the Python sandbox rests on.** Adding a network device, a vsock channel, or a host bridge reopens the exfiltration chain §4 exists to sever and requires a change to this document, not a pull request.
+**Threat 22 — Network and host access.** Programs have no bridge to agent tools or secrets. Compose networking is internal, but CPython can create sockets and subprocesses and internal peers can remain reachable. There is no absent-NIC guarantee.
 
 ## 17. Observability
 
@@ -552,10 +596,9 @@ Structured trace per run (already the compiler's input) rendered in a run inspec
 | `store_sql_rejected_total` | counter | `reason` |
 | `share_views_total` | counter | `result=ok\|unknown\|revoked\|rate_limited` |
 | `share_asset_reads_total` | counter | `outcome=ok\|denied\|not_found` |
-| `pyrun_jobs_total` | counter | `outcome=ok\|program_error\|sandbox_kill\|infra_error` |
+| `pyrun_jobs_total` | counter | `outcome` |
 | `pyrun_duration_seconds` | histogram | `outcome` |
-| `pyrun_vm_boot_seconds` | histogram | — |
-| `pyrun_sandbox_kills_total` | counter | `reason=wall_clock\|memory\|output_cap\|file_count\|bad_path` |
+| `pyrun_kills_total` | counter | `reason` |
 | `pyrun_output_bytes` | histogram | — |
 
 `llm_cost_usd_total{mode}` divided by `runs_total{mode}` is the ai-vs-compiled cost-per-run curve — the product's core claim, straight off the board.
@@ -573,7 +616,7 @@ Alert baseline: any dead letter; outbox lag p95 over 30s; scheduler fire lag ove
 
 **Testing posture.** Telemetry is inert in CI (rule 2) and is **not** an assertion surface — traces and events remain the system-test ground truth (testing doctrine, `impl-phases.md`). One smoke test asserts that disabled-mode init performs no I/O; beyond that, dashboards are verified by looking at them, which is what they are for.
 
-Two dashboards gain rows from 0.5: **security signals** takes `share_views_total{result="unknown"}` (someone guessing tokens) and `pyrun_sandbox_kills_total` (alongside the renderer and isolate kills it already reserves a row for); **engine health** takes `pyrun_duration_seconds` and `pyrun_vm_boot_seconds`.
+Python dashboards use `pyrun_kills_total` and `pyrun_duration_seconds`; no VM-boot metric exists. Sharing retains `share_views_total{result="unknown"}` on the security-signals dashboard.
 
 ### 17.3 Public observability (the share viewer)
 
@@ -598,7 +641,7 @@ Resolved:
 2. **Packet schema authoring** — **free-text description compiled to JSON Schema by an LLM at publish time.** The description belongs to the event, not to an emitter, so there is one schema per type per version. Both sides are schema-aware: an emitting node's agent knows what fields to produce, and every consuming node has the declared fields injected into its prompt context.
 3. **Overlap policy for event-triggered runs** — **per-task parallelism setting: `parallel` or `queue`.** Rationale: a task may emit events faster than a downstream consumer processes them; the user decides whether the consumer runs concurrently or serializes. (Per-endpoint browser serialization, §8, still applies underneath.)
 4. **Scheduled-run overlap queue depth** (§7) — **user-configurable max queue depth** per schedule (default 1).
-5. **Recompilation trigger** — **automatic** after successful deopt-recovery.
+5. **Recompilation trigger** — a separate LLM task after a recovered execution settles and flushes its trace. It separates DOM exploration from actual work; compiler failure cannot alter the completed execution.
 6. **Cycles** (§5) — cycles remain legal (bounded by loop budget), but the **UI must detect and warn** about them in the graph editor.
 7. **Two node kinds** (§4) — **accepted.** `kind = browser | asset` as a discriminant on `tasks`, sharing one table, one edge model, one run state machine. Not two tables.
 8. **MCP is asset-node-only** (§13) — **accepted.** Browser tasks have no `mcp.*` tools; compiled scripts have no `ctx.mcp`. This severs the page-injection→MCP-egress exfiltration chain at the tool boundary.
@@ -612,8 +655,8 @@ Resolved:
 16. **Read-only public sharing of a workflow's own execution is in scope; a marketplace of reusable workflows is not** (§1, `sharing.md`) — **accepted.** A share is an unguessable capability URL, hashed at rest, shown once, rotatable and revocable; unknown and revoked tokens are indistinguishable. It confers no identity and no writes, so it needs none of the multi-tenancy §1 defers.
 17. **Share visibility is opt-in per event type, default deny, declared in the graph document** (§5, `sharing.md` §3) — **accepted.** The manifest versions with the graph, so a new node arrives private because that is the schema default rather than because a check said so. The whole graph shape is shared or nothing is — no per-node hiding, since a partially hidden graph is a misleading graph. Run error free text is never public; a bounded error class is.
 18. **The public read path filters in SQL, and asset visibility is derived** (`sharing.md` §4) — **accepted.** Public read models never select a private packet, so no router, serializer or component bug can leak one. An asset is publicly readable iff a public packet under a live share references it — nothing to configure and nothing to keep in sync.
-19. **Python is a mode on `kind=asset`, and the tool registry keys on `(kind, mode)`** (§4, §13.6) — **accepted.** `(asset, python)` has **no tool registry at all**: the job has no host bridge, so it cannot reach `mcp.*` despite living on the kind that owns those tools. The exfiltration chain is severed by the absence of a channel rather than by a rule about names in a list, which is the stronger of the two. Emits are published host-side, so packet validation, dedupe, loop budget and the outbox cannot be bypassed.
-20. **Python isolation is a Firecracker microVM per job; dependencies are a pinned image manifest** (§13.6, `python-compute.md` §4–5) — **accepted.** No network device is configured at all, which is the property everything else rests on (Threat 22). Chosen over a subprocess (not a security boundary) and over a container per job (something must hold the docker socket, which is root-equivalent on the host — a worse blast radius than the thing it protects against). The scratch drive is built and read unprivileged, never loop-mounted. No runtime `pip`; adding a package is a doc change.
+19. **Python is the asset agent's `python.run` tool** — accepted, superseding the authored mode. Programs return untrusted data and files; the agent decides what to emit. Programs have no host tool bridge.
+20. **Python uses the self-hosted subprocess runner and pinned image** — accepted, superseding Firecracker. The container is the deployment isolation unit; wall-clock/output limits and host path/grant checks remain. No per-job VM is claimed.
 
 Still open:
 
@@ -633,7 +676,7 @@ Each 0.5 companion document carries its own open list — `sharing.md` §10 (exp
 
 **Phase 3 — policy + network layer:** grant sets per task, enforcement at all three points (§10), network batching + `network.read` with header gating, approvals, account baseline, secret origin binding, asset write grants.
 
-**Phase 4 — compiler:** trace consistency checker, compiler agent, static runtime on `isolated-vm`, guard/deopt loop, demotion budget, script diff UI. Browser tasks only.
+**Phase 4 — compiler:** post-execution trace interpretation, compiler agent, static runtime on `isolated-vm`, guard/deopt loop, demotion budget, script diff UI. Browser tasks only.
 
 **Phase 5 — hardening:** multiple CDP endpoints with pooling/queueing, retries/backpressure, retention/TTL, asset quotas, loop budgets and lineage limits. (Metrics dashboards are *not* deferred to here — telemetry and the day-one dashboards ship with SOb, §17.2; this phase only tunes alert thresholds and retention.)
 
@@ -642,7 +685,7 @@ Each 0.5 companion document carries its own open list — `sharing.md` §10 (exp
 - **Runtime:** Node/TypeScript throughout (shared types between engine, runtime, and generated code target).
 - **CDP client:** consider **Playwright's `connectOverCDP`** over Puppeteer — better multi-context handling, auto-waiting semantics that reduce compiler-emitted `wait` noise, and its trace format is a useful reference for yours. Puppeteer is fine if you prefer it; the runtime API in §12 insulates the rest of the system from this choice either way — make it a driver interface.
 - **Workflow engine:** build the thin engine described here rather than adopting Temporal in v1. Temporal buys durability you can get from Postgres checkpointing at this scale, and its worker/activity model fights the "one browser endpoint = one serialized queue" constraint. Revisit if you outgrow single-node.
-- **Sandbox:** three of them, one per class of untrusted author — `isolated-vm` for compiled JS (§12), a container (network-less, read-only FS) for LaTeX (§13.5), and a Firecracker microVM for Python (§13.6). **Policy:** in-process evaluator over the grants tables; OPA is overkill until policies are shared/hierarchical.
+- **Execution isolation:** `isolated-vm` for compiled JS, an out-of-process container for LaTeX, and the self-hosted subprocess runner container for Python. These have different boundaries; Python is not Firecracker. **Policy:** an in-process evaluator over grants.
 - **Python compute:** `firecracker` + `jailer`, vendored and pinned by hash into the runner image — the jailer does the chroot, cgroup, uid/gid drop and netns pinning, so do not reimplement it. Boot is static (`--no-api` with a config file), so there is no live API socket. A minimal uncompressed `vmlinux`, no modules. Scratch filesystems are built with `mke2fs -d` and read back with `debugfs -R rdump` from `e2fsprogs` — both userspace, so the host never loop-mounts an image written by untrusted code and never needs `CAP_SYS_ADMIN`. The runner service needs `/dev/kvm` passed through and nothing else; it never sees the docker socket. Dependency image pinned by digest; no runtime package installation.
 - **Sharing:** no new dependency. Tokens are `crypto.randomBytes(32)` base64url, stored as `sha256`; rate limiting is an in-process token bucket (per-instance, honest for single-node) and moves to Postgres rather than Redis if the control plane is ever replicated.
 - **LaTeX:** `tectonic` — single binary, no TeX Live install, deterministic package fetching (pre-warm the cache into the image so the render container needs no network at runtime).

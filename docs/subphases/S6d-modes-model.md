@@ -1,6 +1,8 @@
 # S6d — The modes model: what an author picks, what the engine decides
 
-**Status:** done. Migration `0019_modes_model`.
+**Status:** done. Migration `0019_modes_model`. The compile *wiring* described below was
+superseded by [S6e](S6e-post-execution-compilation.md), which moved compilation off the
+executor's `finally` and onto a queue; see [trace-compilation.md](../trace-compilation.md).
 
 ## The fault
 
@@ -19,11 +21,16 @@ were wrong, for different reasons:
 
 ## The model now
 
-| | authorable | engine-assigned |
+| | editor-authored | engine-assigned |
 |---|---|---|
-| browser | `stub`, `ai` | `compiled` (after the first clean `ai` run; back to `ai` after 3 deopts in 10) |
-| asset | `stub`, `ai` | — (`python.run` is always on the `ai` registry) |
+| browser | `ai` | `compiled` (after post-execution compilation validates a candidate; K=1 eligibility; back to `ai` after 3 deopts in 10) |
+| asset | `ai` | — (`python.run` is always on the `ai` registry) |
 | decision | `ai` | — |
+
+The editor has no mode selector. `stub` remains available through the backend for automated
+tests, but is not a product authoring option. Existing stub nodes are converted to `ai` in
+the editor's draft on load or reload; the draft is marked unpublished and requires a publish
+before manual triggering. Loading a workflow does not change its live tasks or schedules.
 
 `checkGraph` rejects `compiled` and `python` in a document with a message that says why;
 `updateTask` refuses the same. `readGraph` maps a promoted row's `compiled` back to `ai` so the
@@ -52,19 +59,25 @@ Beside the packet schemas (EC1), `publishVersion` now compiles, per node:
    go into every node's brief. The store *schema* (DDL) is still its own publish call; S8's
    graph compiler is where one pass produces both.
 
-## The compile loop, wired
+## Trace compilation: contract and current wiring
 
-`packages/agent/src/compile-loop.ts` — `createCompileLoop` — hangs off `onOutcome` of both
-browser executors (`AgentExecutor` gained the hook). After an `ai` run: load its trace (and the
-previous clean run's, when one exists, for the consistency check), compile through S6b's
-pipeline with a dry run on a borrowed endpoint, and let `recordAiRun` promote. **K=1**: the
-first clean run compiles; the deopt door is what makes an over-fitted script cheap. After a
-`compiled` run: feed the deopt window; a recovered deopt recompiles from the recovery trace
-and activates; demotion publishes `compile.invalidated` (promotion publishes
-`compile.promoted`). Nothing here can fail the run it follows.
+The first successful browser execution makes its completed trace eligible (**K=1**) for
+a separate LLM task. Execution must settle, flush its trace and release its session first.
+The compiler separates DOM exploration from actual work, preserves required actions and
+data flow, validates a reusable script in isolation, then promotes the matching task.
+Recovered deopts follow the same post-execution path. Compile failure must not alter the
+completed run. The complete contract is in `../trace-compilation.md`.
 
-`compileTask` now closes the dry-run host it borrowed — a lease held past the dry run starved
-the next real run of that endpoint.
+S6d's wiring did not meet that lifecycle — `createCompileLoop` was awaited by both executors'
+`onOutcome` hooks before run settlement, its checker compared reduced raw action sequences
+before the LLM, and validation borrowed the live endpoint. S6e closed all three: the hooks now
+queue a `compile_jobs` row and nothing more, and a separate worker compiles. `compile.promoted`
+is published by the worker on promotion; `compile.invalidated` still rides the hook, because
+demotion costs one insert and is the one thing here a user has to be told about promptly.
+
+`compileTask` no longer borrows a host at all: S6e's validation builds the page out of the
+trace, which is what actually isolates live side effects. The lease leak it used to guard
+against cannot recur, because there is no lease.
 
 ## `python.run`
 
@@ -77,7 +90,7 @@ program does not. `engine_status.capabilities` tells the editor whether the tool
 
 ## UI
 
-Mode selector offers `stub`/`ai` only; a line under it says what `ai` means for the kind; a
+Every new node uses `ai`; a read-only line explains execution for its kind; a
 promoted row shows as "fast path active"; the compiled internal prompt is a collapsed read-only
 section on the card; `/status` lists `tool python.run` beside the executors.
 

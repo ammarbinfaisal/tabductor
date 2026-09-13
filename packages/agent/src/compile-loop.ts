@@ -1,186 +1,107 @@
-import type { BlobStore, EndpointPool, RunSession, TraceRecorder } from "@tabductor/browser";
-import { openRunSession } from "@tabductor/browser";
 import {
-  activateScript,
-  checkConsistency,
+  claimCompileJob,
   compileTask,
+  enqueueCompileJob,
+  finishCompileJob,
+  heartbeatCompileJob,
   loadRunTraces,
+  noteAiRun,
   previousCleanAiRunIds,
-  recordAiRun,
+  promoteTask,
   recordCompiledRun,
-  PROMOTE_AFTER_CLEAN_RUNS,
+  taskForJob,
+  activateScript,
+  type CompileResult,
   type Llm as CompilerLlm,
-  type PromotionOutcome,
-  type RunTrace,
 } from "@tabductor/compiler";
-import { createLogger, newId, type Logger } from "@tabductor/core";
-import type { Db, RunRow, TaskRow } from "@tabductor/db";
-import type { PolicyGate } from "@tabductor/policy";
-import type { CtxHost } from "@tabductor/static-rt";
+import { createLogger, type Logger } from "@tabductor/core";
+import type { CompileJobRow, Db, RunRow, TaskRow } from "@tabductor/db";
 import type { Metrics } from "@tabductor/telemetry";
 
 /**
- * The compile loop, closed: what happens *after* a browser run, so that the next one is
- * cheaper.
+ * The compile loop, in two halves that no longer touch each other.
  *
- * S6a–S6c built every piece — the cage, the shelf, the trace compiler, the promotion policy,
- * the executor with its deopt door — and left the wiring to "a caller". This is that caller.
- * It hangs off the two browser executors' `onOutcome` hooks and does three things:
+ * **The hooks** (`afterAiRun`, `afterCompiledRun`) run inside the executor's `finally`, and do
+ * only what is cheap and belongs to the run that just happened: advance the promotion counter,
+ * feed the deopt window, demote a task that keeps deopting — and, when a trace became eligible,
+ * write one queue row. No model call, no page, no validation. The run settles immediately
+ * behind them.
  *
- * 1. **After an `ai` run** — load its trace (and its predecessor's, for the consistency
- *    check when there is one), compile, and let `recordAiRun` decide promotion. With K=1 the
- *    first clean run is enough: the script ships with guards and a deopt prompt, so an
- *    over-fitted script costs one slower run, not a wrong one.
- * 2. **After a `compiled` run** — feed the deopt window; on demotion, tell the bus
- *    (`compile.invalidated`) so the author sees it.
- * 3. **After a deopt the agent recovered** — the recovery trace is exactly what the next
- *    script should be compiled from (the site changed, the agent found the new path).
- *    Recompile from it and activate; the task never leaves `compiled`. This is the
- *    self-healing half of §11.
+ * **The worker** (`createCompileWorker`) claims those rows afterwards. `claimCompileJob` will
+ * not hand out a job whose source run is still in flight, so by the time a compile begins the
+ * run is terminal, its trace is flushed and its endpoint lease is released — the lifecycle
+ * `trace-compilation.md` requires, enforced by the query rather than by timing.
  *
- * Every step here is best-effort and logged: nothing in this file may fail the run it
- * follows, because the run already finished. A compile that fails leaves the task exactly as
- * it was, which is the state it would be in had this file not existed.
+ * This is the S6e correction to S6d's wiring, which awaited the whole compile — LLM pass,
+ * browser dry run and all — inside the executor's own lifetime. A slow compiler delayed the
+ * run's terminal transition; a wedged one could eat the run's timeout; and a compile failure
+ * ran in the same `finally` as the run's cleanup. Compilation now has its own outcome, its own
+ * timeout and its own retry budget, and nothing it does can change a run that already finished.
  */
 
 export const COMPILE_INVALIDATED = "compile.invalidated";
 export const COMPILE_PROMOTED = "compile.promoted";
 
-export type CompileLoopDeps = {
+/** How long one compile may take before the worker abandons it. Generous: two model turns plus
+ * three isolate runs. Bounded: a compile that hangs must not hold the job's claim forever. */
+export const COMPILE_TIMEOUT_MS = 180_000;
+
+export type CompileHooksDeps = {
   db: Db;
-  pool: EndpointPool;
-  gate: PolicyGate;
-  blobs: BlobStore;
-  /** Which endpoint the dry run drives — the same resolution the run itself used. */
-  endpointFor: (task: TaskRow) => Promise<string>;
-  /** The compiler's model. `trace` is where the compile's own LLM turns are recorded. */
-  compileLlmFor: (opts: { task: TaskRow; trace: TraceRecorder }) => CompilerLlm;
-  /** A system-event publisher for `compile.invalidated`/`compile.promoted`; omit to log only. */
+  /** Publishes `compile.invalidated` when the deopt budget demotes a task. Demotion is the
+   * one thing here that a user has to be told about, and it costs one insert — so it stays on
+   * the hook rather than waiting for a worker tick. */
   publish?: (input: { type: string; sourceTaskId: string; sourceRunId: string | null; packet: unknown }) => Promise<void>;
-  metrics?: Metrics;
   logger?: Logger;
+  metrics?: Metrics;
 };
 
 export type CompileLoop = {
-  /** Wire into `AgentExecutorDeps.onOutcome`. Resolves to the promotion verdict for tests. */
-  afterAiRun: (input: { task: TaskRow; run: RunRow; ok: boolean }) => Promise<PromotionOutcome | undefined>;
+  /** Wire into `AgentExecutorDeps.onOutcome`. Resolves once the queue row is written. */
+  afterAiRun: (input: { task: TaskRow; run: RunRow; ok: boolean }) => Promise<{ enqueued: boolean; reason: string }>;
   /** Wire into `CompiledExecutorDeps.onOutcome`. */
   afterCompiledRun: (input: { task: TaskRow; run: RunRow; deopted: boolean; ok: boolean }) => Promise<void>;
 };
 
-/** The dry run leaves no trace rows: it is not a run, and its entries under a real run id
- * would read as that run having done things it did not do. */
-const DISCARD_TRACE: TraceRecorder = {
-  record: async () => {},
-  flush: async () => {},
-  close: async () => {},
-};
-
-/** A dry-run emit publishes nothing — the script is being *checked*, and an event it would
- * have emitted must not enter the bus on the strength of a check. */
-const dryRunHostOf = (session: RunSession): CtxHost => ({
-  session,
-  emit: async (_type, _packet, _opts) => ({ ok: true, eventId: newId("dryrun") }),
-  state: {
-    get: async () => null,
-    set: async () => {},
-  },
-});
-
-export function createCompileLoop(deps: CompileLoopDeps): CompileLoop {
+/**
+ * The executor-side half. Everything here is best-effort and logged: nothing may fail the run
+ * it follows, because the run already finished.
+ */
+export function createCompileLoop(deps: CompileHooksDeps): CompileLoop {
   const log = deps.logger ?? createLogger({ name: "compile-loop" });
-  const { db, pool, gate, metrics } = deps;
-
-  /**
-   * One compile, all the way to a `candidate` row or a refusal. The dry run needs a page,
-   * so it borrows an endpoint the same way a run does — the compiled script begins with its
-   * own `page.goto`, so a blank tab is the right starting point.
-   */
-  const compileFrom = async (
-    task: TaskRow,
-    traces: RunTrace[],
-    trace: TraceRecorder,
-  ): Promise<{ ok: true; scriptId: string } | { ok: false; error: string }> => {
-    const result = await compileTask(
-      {
-        db,
-        llm: deps.compileLlmFor({ task, trace }),
-        ...(metrics ? { metrics } : {}),
-        dryRunHost: async () => {
-          const lease = await pool.acquire(await deps.endpointFor(task), `compile:${newId("dryrun")}`);
-          let session: RunSession;
-          try {
-            session = await openRunSession({
-              conn: lease.conn,
-              gate,
-              taskCtx: { taskId: task.id, runId: `compile:${task.id}` },
-              trace: DISCARD_TRACE,
-            });
-          } catch (err) {
-            await lease.release().catch(() => undefined);
-            throw err;
-          }
-          const inner = session;
-          const wrapped: RunSession = {
-            ...inner,
-            close: async () => {
-              await inner.close().catch(() => undefined);
-              await lease.release().catch(() => undefined);
-            },
-          };
-          return dryRunHostOf(wrapped);
-        },
-      },
-      task.id,
-      traces,
-    );
-    if (!result.ok) return { ok: false, error: `${result.stage}: ${result.error}` };
-    return { ok: true, scriptId: result.script.id };
-  };
+  const { db } = deps;
 
   const afterAiRun: CompileLoop["afterAiRun"] = async ({ task, run, ok }) => {
-    if (task.kind !== "browser" || task.mode !== "ai") return undefined;
+    if (task.kind !== "browser" || task.mode !== "ai") return { enqueued: false, reason: "not a browser ai task" };
     try {
-      // The predecessor(s) this run must agree with. K=1 means promotion needs no
-      // predecessor, but when one exists the two are still compared — a task whose runs keep
-      // doing different things does not get compiled on the strength of whichever came last.
-      const priorIds = ok
-        ? await previousCleanAiRunIds(db, { taskId: task.id, excludeRunId: run.id, limit: Math.max(PROMOTE_AFTER_CLEAN_RUNS, 2) - 1 })
-        : [];
-      const traces = ok ? await loadRunTraces(db, [...priorIds, run.id]) : [];
-      const outcome = await recordAiRun(
-        {
-          db,
-          ...(metrics ? { metrics } : {}),
-          compile: () => compileFrom(task, traces, DISCARD_TRACE),
-        },
-        task,
-        { ok, consistent: ok && traces.length > 0 ? consistencyOf(traces) : ok },
-      );
-      if (outcome.promoted) {
-        log.info("task promoted to compiled", { taskId: task.id, task: task.name, scriptId: outcome.scriptId, fromRuns: traces.map((t) => t.runId) });
-        await deps.publish?.({
-          type: COMPILE_PROMOTED,
-          sourceTaskId: task.id,
-          sourceRunId: run.id,
-          packet: { taskId: task.id, scriptId: outcome.scriptId, fromRuns: traces.map((t) => t.runId) },
-        });
-      } else {
-        log.info("task not promoted", { taskId: task.id, task: task.name, reason: outcome.reason });
-      }
-      return outcome;
+      const eligibility = await noteAiRun({ db }, task, { ok });
+      if (!eligibility.eligible) return { enqueued: false, reason: eligibility.reason };
+
+      const job = await enqueueCompileJob(db, {
+        taskId: task.id,
+        runId: run.id,
+        reason: "promote",
+        contentHash: task.contentHash,
+      });
+      if (!job) return { enqueued: false, reason: "a compile for this task is already queued" };
+      log.info("queued a compile", { taskId: task.id, task: task.name, runId: run.id, jobId: job.id });
+      return { enqueued: true, reason: eligibility.reason };
     } catch (err) {
-      log.warn("compile loop failed after ai run", { taskId: task.id, runId: run.id, error: String(err) });
-      return undefined;
+      log.warn("could not queue a compile after an ai run", { taskId: task.id, runId: run.id, error: String(err) });
+      return { enqueued: false, reason: String(err) };
     }
   };
 
   const afterCompiledRun: CompileLoop["afterCompiledRun"] = async ({ task, run, deopted, ok }) => {
     if (task.kind !== "browser") return;
     try {
-      const verdict = await recordCompiledRun({ db, ...(metrics ? { metrics } : {}) }, task, { deopted });
+      const verdict = await recordCompiledRun({ db, ...(deps.metrics ? { metrics: deps.metrics } : {}) }, task, { deopted });
       if (verdict.demoted) {
-        log.warn("task demoted to ai after repeated deopts", { taskId: task.id, task: task.name, deoptsInWindow: verdict.deoptsInWindow });
+        log.warn("task demoted to ai after repeated deopts", {
+          taskId: task.id,
+          task: task.name,
+          deoptsInWindow: verdict.deoptsInWindow,
+        });
         await deps.publish?.({
           type: COMPILE_INVALIDATED,
           sourceTaskId: task.id,
@@ -190,16 +111,15 @@ export function createCompileLoop(deps: CompileLoopDeps): CompileLoop {
         return;
       }
       if (deopted && ok) {
-        // The recovery path is the new path. Recompile from this run alone: the runs the old
-        // script was compiled from describe the layout that just stopped existing.
-        const traces = await loadRunTraces(db, [run.id]);
-        const compiled = await compileFrom(task, traces, DISCARD_TRACE);
-        if (compiled.ok) {
-          await activateScript(db, compiled.scriptId);
-          log.info("recompiled after deopt recovery", { taskId: task.id, task: task.name, scriptId: compiled.scriptId, fromRun: run.id });
-        } else {
-          log.warn("recompile after deopt recovery failed; previous script stays active", { taskId: task.id, error: compiled.error });
-        }
+        // The recovery path is the new path: the runs the old script was compiled from
+        // describe a layout that has stopped existing. Queued, not compiled here — the
+        // recovered run has to settle first, like any other.
+        await enqueueCompileJob(db, {
+          taskId: task.id,
+          runId: run.id,
+          reason: "recompile",
+          contentHash: task.contentHash,
+        });
       }
     } catch (err) {
       log.warn("compile loop failed after compiled run", { taskId: task.id, runId: run.id, error: String(err) });
@@ -209,8 +129,177 @@ export function createCompileLoop(deps: CompileLoopDeps): CompileLoop {
   return { afterAiRun, afterCompiledRun };
 }
 
-/** Pairwise agreement of the loaded traces — the same verdict `compileTask` re-derives, here
- * for the promotion counter (a diverging run resets the streak even when compile is skipped). */
-function consistencyOf(traces: RunTrace[]): boolean {
-  return traces.length < 2 || checkConsistency(traces).consistent;
+export type CompileWorkerDeps = {
+  db: Db;
+  /** The compiler's model, per job. Kept a factory for the same reason executors keep one:
+   * a transcript-replaying test rig picks a fixture per task. */
+  compileLlmFor: (opts: { task: TaskRow; job: CompileJobRow }) => CompilerLlm;
+  /** A system-event publisher for `compile.promoted`/`compile.invalidated`; omit to log only. */
+  publish?: (input: { type: string; sourceTaskId: string; sourceRunId: string | null; packet: unknown }) => Promise<void>;
+  pollMs?: number;
+  timeoutMs?: number;
+  metrics?: Metrics;
+  logger?: Logger;
+};
+
+export type CompileWorker = {
+  start: () => void;
+  stop: () => Promise<void>;
+  /** One claim-and-compile, for tests and for a caller that wants to drain the queue by hand.
+   * Resolves `null` when nothing was due. */
+  runOnce: () => Promise<{ job: CompileJobRow; result: CompileResult } | null>;
+};
+
+/** Whatever a compile threw, as a retryable failure — a transport error is not a refusal, and
+ * the job's own attempt budget is what stops it repeating forever. */
+function asFailure(err: unknown): { status: "failed"; error: string } {
+  return { status: "failed", error: err instanceof Error ? err.message : String(err) };
+}
+
+export function createCompileWorker(deps: CompileWorkerDeps): CompileWorker {
+  const log = deps.logger ?? createLogger({ name: "compile-worker" });
+  const { db } = deps;
+  const pollMs = deps.pollMs ?? 1_000;
+  const timeoutMs = deps.timeoutMs ?? COMPILE_TIMEOUT_MS;
+  let timer: NodeJS.Timeout | undefined;
+  let inFlight: Promise<unknown> = Promise.resolve();
+  let stopped = false;
+
+  /** Compilation's own wall clock. The run it followed has long since settled, so this bounds
+   * nothing but the compile — which is the entire point of it being separate. */
+  const withTimeout = async <T>(work: Promise<T>, label: string): Promise<T> =>
+    await Promise.race([
+      work,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`${label} exceeded ${timeoutMs}ms`)), timeoutMs).unref?.(),
+      ),
+    ]);
+
+  const runOnce: CompileWorker["runOnce"] = async () => {
+    const job = await claimCompileJob(db);
+    if (!job) return null;
+
+    const beat = setInterval(() => void heartbeatCompileJob(db, job.id).catch(() => undefined), 30_000);
+    beat.unref?.();
+    try {
+      const task = await taskForJob(db, job);
+      if (!task) {
+        await finishCompileJob(db, job, { status: "refused", error: "the task no longer exists" });
+        return null;
+      }
+      if (task.contentHash !== job.contentHash) {
+        // graph-compilation-llm §6.3: an artifact must match the task content it implements.
+        // The node was edited or republished while this job waited; its evidence describes
+        // work that is no longer the task's definition.
+        await finishCompileJob(db, job, { status: "refused", error: "the task changed after this run" });
+        log.info("compile abandoned: task content changed", { taskId: task.id, jobId: job.id });
+        return null;
+      }
+
+      // Supporting evidence: earlier clean `ai` runs of the same task. They widen what the
+      // plan may be grounded in and are compared *as distilled work*, never as step sequences.
+      //
+      // Not for a recompile, though: that job exists because a script's guards stopped holding,
+      // and the older runs describe the layout that just stopped existing. The recovery trace
+      // is the only evidence of the page as it is now.
+      const priorIds =
+        job.reason === "promote"
+          ? await previousCleanAiRunIds(db, { taskId: task.id, excludeRunId: job.runId, limit: 2 })
+          : [];
+      const traces = await loadRunTraces(db, [job.runId, ...priorIds]);
+
+      const result = await withTimeout(
+        compileTask(
+          {
+            db,
+            llm: deps.compileLlmFor({ task, job }),
+            ...(deps.metrics ? { metrics: deps.metrics } : {}),
+          },
+          { taskId: task.id, sourceRunId: job.runId, traces },
+        ),
+        `compile of task ${task.id}`,
+      );
+
+      if (!result.ok) {
+        await finishCompileJob(db, job, { status: "refused", error: `${result.stage}: ${result.error}` });
+        log.info("compile refused", { taskId: task.id, jobId: job.id, stage: result.stage, error: result.error });
+        return { job, result };
+      }
+
+      if (job.reason === "recompile") {
+        // The task is already `compiled`; this replaces the script that stopped matching the
+        // page. `activateScript` invalidates the previous active row in the same transaction.
+        await activateScript(db, result.script.id);
+        await finishCompileJob(db, job, { status: "succeeded", scriptId: result.script.id });
+        log.info("recompiled after deopt recovery", { taskId: task.id, scriptId: result.script.id, fromRun: job.runId });
+        await deps.publish?.({
+          type: COMPILE_PROMOTED,
+          sourceTaskId: task.id,
+          sourceRunId: job.runId,
+          packet: { taskId: task.id, scriptId: result.script.id, fromRuns: result.script.fromRuns, reason: "recompile" },
+        });
+        return { job, result };
+      }
+
+      const promotion = await promoteTask(
+        { db, ...(deps.metrics ? { metrics: deps.metrics } : {}) },
+        { taskId: task.id, scriptId: result.script.id, expectContentHash: job.contentHash },
+      );
+      if (!promotion.promoted) {
+        await finishCompileJob(db, job, { status: "refused", error: promotion.reason });
+        log.info("candidate compiled but not promoted", { taskId: task.id, reason: promotion.reason });
+        return { job, result };
+      }
+      await finishCompileJob(db, job, { status: "succeeded", scriptId: result.script.id });
+      log.info("task promoted to compiled", {
+        taskId: task.id,
+        task: task.name,
+        scriptId: result.script.id,
+        fromRuns: result.script.fromRuns,
+      });
+      await deps.publish?.({
+        type: COMPILE_PROMOTED,
+        sourceTaskId: task.id,
+        sourceRunId: job.runId,
+        packet: { taskId: task.id, scriptId: result.script.id, fromRuns: result.script.fromRuns, reason: "promote" },
+      });
+      return { job, result };
+    } catch (err) {
+      await finishCompileJob(db, job, asFailure(err)).catch(() => undefined);
+      log.warn("compile job failed", { jobId: job.id, taskId: job.taskId, error: String(err) });
+      return null;
+    } finally {
+      clearInterval(beat);
+    }
+  };
+
+  // One compile at a time per worker. Compilation is not urgent — the run it follows is
+  // already finished — and a tick that fired while the last one was still in an isolate would
+  // just add a second model call to the same process for no earlier answer.
+  let busy = false;
+  const tick = (): void => {
+    if (stopped || busy) return;
+    busy = true;
+    inFlight = runOnce()
+      .catch((err) => log.warn("compile worker tick failed", { error: String(err) }))
+      .finally(() => {
+        busy = false;
+      });
+  };
+
+  return {
+    start() {
+      if (timer) return;
+      stopped = false;
+      timer = setInterval(tick, pollMs);
+      timer.unref?.();
+    },
+    async stop() {
+      stopped = true;
+      if (timer) clearInterval(timer);
+      timer = undefined;
+      await inFlight.catch(() => undefined);
+    },
+    runOnce,
+  };
 }
