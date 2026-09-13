@@ -195,11 +195,18 @@ export function createAssetExecutor(deps: AssetExecutorDeps): TaskExecutor {
         // the ones it ends up calling. A server that never gets an actual `callTool` still
         // gets dialed once, here, for its tool list; §13's per-call budget only counts calls
         // past this point.
-        const grantedMcpTools: Array<{ server: string; tool: McpToolInfo }> = (
+        const discoveredMcpTools: Array<{ server: string; tool: McpToolInfo }> = (
           await Promise.all(
             servers.map(async (s) => (await mcp!.listTools(s.label)).map((tool) => ({ server: s.label, tool }))),
           )
         ).flat();
+        const allowedMcpToolIds = await gate.allowedMcpTools(
+          taskCtx,
+          discoveredMcpTools.map(({ server, tool }) => `mcp.${server}.${tool.name}`),
+        );
+        const grantedMcpTools = discoveredMcpTools.filter(({ server, tool }) =>
+          allowedMcpToolIds.has(`mcp.${server}.${tool.name}`),
+        );
 
         const emit = makeEmitFn({
           db,
@@ -215,7 +222,15 @@ export function createAssetExecutor(deps: AssetExecutorDeps): TaskExecutor {
         });
         const tools = buildAssetToolRegistry({
           emit,
-          assets: { db, blobs, userId, taskId: handle.task.id, runId: handle.run.id, ...(metrics ? { metrics } : {}) },
+          assets: {
+            db,
+            blobs,
+            userId,
+            taskId: handle.task.id,
+            runId: handle.run.id,
+            gate,
+            ...(metrics ? { metrics } : {}),
+          },
           ...(render ? { render } : {}),
           mcp,
           grantedMcpTools,

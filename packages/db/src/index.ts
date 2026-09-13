@@ -3,6 +3,9 @@ export {
   events,
   outbox,
   runs,
+  taskGrants,
+  accountBaselineRules,
+  approvals,
   runDedupe,
   tasks,
   taskEmits,
@@ -43,6 +46,7 @@ export {
   COMPILED_SCRIPT_STATUSES,
   COMPILE_JOB_STATUSES,
   COMPILE_JOB_REASONS,
+  APPROVAL_STATUSES,
 } from "./schema.js";
 export type {
   RunStatus,
@@ -57,6 +61,10 @@ export type {
   OutboxRow,
   RunRow,
   NewRun,
+  TaskGrantRow,
+  AccountBaselineRuleRow,
+  ApprovalRow,
+  ApprovalStatus,
   TaskRow,
   EventDefRow,
   TaskEmitRow,

@@ -97,7 +97,7 @@ export interface PolicyGate {
   checkNavigation(taskCtx: TaskCtx, url: URL, cause: NavCause): Promise<Verdict>;
   checkNetworkRead(taskCtx: TaskCtx, req: ReqRef, parts: ReadParts): Promise<Verdict>;
   checkMcpCall(taskCtx: TaskCtx, tool: string): Promise<Verdict>;
-  redact(taskCtx: TaskCtx, payload: NetworkPayload): NetworkPayload; // no-op until Phase 7
+  redact(taskCtx: TaskCtx, payload: NetworkPayload): Promise<NetworkPayload>;
 }
 
 export type Verdict = { allow: true } | { allow: false; rule: string };
@@ -485,9 +485,14 @@ and isolated validation (S6e, migration `0020`).
 
 **Exit:** cost curve realized — steady-state runs make no LLM calls; site changes self-heal. Instrument LLM-cost-per-run (ai vs compiled) now; it's the product's core claim.
 
-## Phase 7 — Policy & permissions engine (the deferred piece)
+## Phase 7 — Policy & permissions engine (the deferred piece) ✅ **DONE** (S7)
 
 **Build:** the real `PolicyGate` implementation replacing `AllowAllGate` at the composition root — grants tables (`task_grants`, `account_baseline_rules` — accepted, §10), evaluator (baseline denies → task grants → default-deny for network header/secret reads, default-allow for basic actions during migration, tightening per rollout flag), redaction filter (§9 step 4: Authorization/Cookie/token-pattern masking even under header grants, `secrets:read` as the separate louder switch), approvals (`awaiting_approval` run state + park/expiry + `approval.requested|granted|denied` events — the state machine slot was reserved in Phase 2), navigation guard now driven by per-task allowlists instead of the env var, and MCP allowlists.
+
+Implemented by migration `0021`; the exact decision order, enforcement surfaces and approval
+lifecycle are recorded in [S7-policy-permissions.md](subphases/S7-policy-permissions.md).
+Tier-2 attended secrets took the phase's documented cut rather than claiming a client-held
+key protocol that does not exist.
 
 **Additional surfaces from the Phase 5 work:**
 

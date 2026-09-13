@@ -4,6 +4,7 @@ import type { GraphTask } from "@tabductor/engine";
 import { KIND_LIST, NODE_KINDS, ROW_MODE_STATUS } from "../lib/node-kinds.js";
 import type { EditorState, EditorStore } from "./editor-store.js";
 import { EventChip, GhostChip, KindBadge, ScheduleChip, SectionLabel } from "./primitives.js";
+import { TaskGrantEditor } from "./policy-controls.js";
 
 /**
  * The Nodes panel (component-specs §3.2): one ruled section per node. Prompts are prose;
@@ -245,6 +246,7 @@ function NodeCard({ task, store, state }: { task: GraphTask; store: EditorStore;
           </pre>
         </details>
       ) : null}
+      {taskId ? <TaskGrantEditor taskId={taskId} /> : null}
 
       <div className="row row--between">
         <span className="row">

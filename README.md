@@ -63,7 +63,7 @@ is the reason an untrusted page's text cannot reach a tool that would act on it.
 | `packages/mcp` | per-run MCP client (asset nodes only) |
 | `packages/store` | the per-workflow SQL store, fenced reads, role pair |
 | `packages/secrets` | envelope encryption; fills a form without becoming a string |
-| `packages/policy` | `PolicyGate` interface (real evaluator lands in Phase 7) |
+| `packages/policy` | Database policy evaluator, grants, baseline rules and approvals |
 | `packages/telemetry` | OTel + pino — inert unless an OTLP endpoint is set |
 | `apps/engine` | composition root: the process that executes runs |
 | `apps/web` | Next.js + tRPC control plane and UI |

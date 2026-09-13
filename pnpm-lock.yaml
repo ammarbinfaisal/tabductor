@@ -377,6 +377,9 @@ importers:
       '@tabductor/db':
         specifier: workspace:*
         version: link:../db
+      '@tabductor/policy':
+        specifier: workspace:*
+        version: link:../policy
       '@tabductor/telemetry':
         specifier: workspace:*
         version: link:../telemetry
@@ -631,9 +634,24 @@ importers:
 
   packages/policy:
     dependencies:
+      '@tabductor/bus':
+        specifier: workspace:*
+        version: link:../bus
       '@tabductor/core':
         specifier: workspace:*
         version: link:../core
+      '@tabductor/db':
+        specifier: workspace:*
+        version: link:../db
+      drizzle-orm:
+        specifier: ^0.44.0
+        version: 0.44.7(@opentelemetry/api@1.9.1)(@types/pg@8.20.3)(pg@8.22.0)
+      minimatch:
+        specifier: ^10.0.1
+        version: 10.2.6
+      zod:
+        specifier: ^3.24.0
+        version: 3.25.76
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
@@ -653,6 +671,9 @@ importers:
       '@tabductor/db':
         specifier: workspace:*
         version: link:../db
+      '@tabductor/policy':
+        specifier: workspace:*
+        version: link:../policy
       '@tabductor/telemetry':
         specifier: workspace:*
         version: link:../telemetry

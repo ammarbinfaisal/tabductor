@@ -50,6 +50,7 @@ export type ResolvedAssetFile = { bytes: Buffer; mime: string; path: string; sha
  * ordinary tool error, the same "recoverable, not a crash" contract every other lookup in this
  * file follows (`mustResolve`, `defineTool`'s own zod failure path). */
 export type ReadAssetFn = (assetId: string) => Promise<ResolvedAssetFile | undefined>;
+export type FillSecretFn = (secretName: string, anchor: string) => Promise<{ ok: true }>;
 
 export type AgentToolDeps = {
   session: RunSession;
@@ -63,6 +64,8 @@ export type AgentToolDeps = {
    * fails closed with `NO_ASSET_STORE_CONFIGURED` if a task ever calls it without one.
    */
   readAsset?: ReadAssetFn;
+  /** Host-side broker call; plaintext never crosses this function boundary. */
+  fillSecret?: FillSecretFn;
 };
 
 /** See `AgentToolDeps.readAsset`'s doc comment — the same "present but unconfigured fails
@@ -276,7 +279,7 @@ export function failTool(): AgentTool {
 }
 
 export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
-  const { session, emit, readAsset = NO_ASSET_STORE_CONFIGURED } = deps;
+  const { session, emit, readAsset = NO_ASSET_STORE_CONFIGURED, fillSecret } = deps;
 
   return [
     defineTool({
@@ -407,6 +410,22 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
         return perceptionResult(session);
       },
     }),
+
+    ...(fillSecret
+      ? [
+          defineTool({
+            name: "secrets.fill",
+            description:
+              "Fill a named granted secret into the input at `anchor`. The secret value is inserted " +
+              "host-side and is never returned to you.",
+            parameters: z.object({ secretName: z.string().min(1), anchor: z.string().min(1) }),
+            async execute({ secretName, anchor }) {
+              await fillSecret(secretName, anchor);
+              return perceptionResult(session);
+            },
+          }),
+        ]
+      : []),
 
     defineTool({
       name: "network.list",

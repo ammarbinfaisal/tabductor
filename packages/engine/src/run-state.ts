@@ -1,5 +1,5 @@
 import { publish } from "@tabductor/bus";
-import { runs, schedules, RUN_STATUSES, type Db, type RunRow, type RunStatus } from "@tabductor/db";
+import { approvals, runs, schedules, RUN_STATUSES, type Db, type RunRow, type RunStatus } from "@tabductor/db";
 import { and, asc, eq, inArray, isNotNull, lte, sql } from "drizzle-orm";
 
 /**
@@ -77,7 +77,7 @@ export async function dueQueuedRuns(db: Db, limit = 100): Promise<RunRow[]> {
         sql`(${runs.notBefore} is null or ${runs.notBefore} <= now())`,
         sql`not exists (
           select 1 from ${schedules} s
-          join ${runs} live on live.task_id = s.task_id and live.status = 'running'
+          join ${runs} live on live.task_id = s.task_id and live.status in ('running', 'awaiting_approval')
           where s.task_id = ${runs.taskId}
         )`,
       ),
@@ -143,12 +143,53 @@ export async function finishRun(db: Db, input: FinishInput): Promise<RunRow | un
  * needs a per-executor abort path and arrives with the browser runtime (Phase 3).
  */
 export async function cancelRun(db: Db, runId: string): Promise<RunRow | undefined> {
-  const [row] = await db
-    .update(runs)
-    .set({ status: "cancelled", endedAt: sql`now()`, error: "cancelled by user" })
-    .where(and(eq(runs.id, runId), inArray(runs.status, ["queued", "running"])))
-    .returning();
-  return row;
+  return db.transaction(async (trx) => {
+    const [row] = await trx
+      .update(runs)
+      .set({ status: "cancelled", endedAt: sql`now()`, error: "cancelled by user" })
+      .where(and(eq(runs.id, runId), inArray(runs.status, ["queued", "running", "awaiting_approval"])))
+      .returning();
+    if (!row) return undefined;
+    await trx
+      .update(approvals)
+      .set({ status: "cancelled", decidedAt: sql`now()` })
+      .where(and(eq(approvals.runId, runId), eq(approvals.status, "pending")));
+    return row;
+  });
+}
+
+/**
+ * An approval wait holds an in-memory browser executor. After a process restart that page no
+ * longer exists, so an `awaiting_approval` row cannot honestly be resumed. Fail it once at
+ * boot and let the normal retry policy decide whether a fresh attempt should be queued.
+ */
+export async function recoverOrphanedApprovalRuns(db: Db): Promise<RunRow[]> {
+  const stranded = await db.select().from(runs).where(eq(runs.status, "awaiting_approval"));
+  const recovered: RunRow[] = [];
+  for (const run of stranded) {
+    const row = await db.transaction(async (trx) => {
+      const [failed] = await trx
+        .update(runs)
+        .set({ status: "failed", endedAt: sql`now()`, error: "engine_restart_while_awaiting_approval" })
+        .where(and(eq(runs.id, run.id), eq(runs.status, "awaiting_approval")))
+        .returning();
+      if (!failed) return undefined;
+      await trx
+        .update(approvals)
+        .set({ status: "cancelled", decidedAt: sql`now()` })
+        .where(and(eq(approvals.runId, run.id), eq(approvals.status, "pending")));
+      await publish(trx, {
+        type: RUN_FAILED,
+        sourceTaskId: run.taskId,
+        sourceRunId: run.id,
+        causationId: run.triggerEventId,
+        packet: { runId: run.id, taskId: run.taskId, error: "engine_restart_while_awaiting_approval" },
+      });
+      return failed;
+    });
+    if (row) recovered.push(row);
+  }
+  return recovered;
 }
 
 /**

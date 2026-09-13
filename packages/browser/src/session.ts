@@ -342,10 +342,10 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
 
         switch (part) {
           case "request_headers":
-            result.request_headers = gate.redact(taskCtx, { headers: await bag.requestHeaders() }).headers;
+            result.request_headers = (await gate.redact(taskCtx, { headers: await bag.requestHeaders() })).headers;
             break;
           case "response_headers":
-            result.response_headers = gate.redact(taskCtx, { headers: await bag.responseHeaders() }).headers;
+            result.response_headers = (await gate.redact(taskCtx, { headers: await bag.responseHeaders() })).headers;
             break;
           case "request_body":
             result.request_body = await bag.requestBody();

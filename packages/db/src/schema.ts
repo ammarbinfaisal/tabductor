@@ -37,7 +37,15 @@ const createdAt = () => ts("created_at").notNull().defaultNow();
  * re-exports `RunStatus`, and the graph document builds its zod enums from these tuples
  * instead of restating the members. One list per domain, whatever asks the question.
  */
-export const RUN_STATUSES = ["queued", "running", "succeeded", "failed", "timed_out", "cancelled"] as const;
+export const RUN_STATUSES = [
+  "queued",
+  "running",
+  "awaiting_approval",
+  "succeeded",
+  "failed",
+  "timed_out",
+  "cancelled",
+] as const;
 export type RunStatus = (typeof RUN_STATUSES)[number];
 
 export const MISSED_POLICIES = ["skip", "fire_once_catchup"] as const;
@@ -420,6 +428,78 @@ export const runs = pgTable(
   ],
 );
 
+// -- S7: policy grants, account baseline and attended approvals -------------------------
+
+/**
+ * A capability granted to one task. `grant_key` names the capability family and
+ * `grant_value` is the narrow member inside it (a hostname, tool id, action name, or `*`).
+ * Keeping both columns as text makes equality and prefix matching explicit at the evaluator
+ * and gives S8 a stable artifact to propose without letting its compiler write this table.
+ */
+export const taskGrants = pgTable(
+  "task_grants",
+  {
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    grantKey: text("grant_key").notNull(),
+    grantValue: text("grant_value").notNull(),
+    requiresApproval: boolean("requires_approval").notNull().default(false),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.taskId, t.grantKey, t.grantValue] })],
+);
+
+/**
+ * The non-overridable account floor. The evaluator validates `rule_json` before using it;
+ * malformed rows fail closed instead of silently disappearing from the baseline.
+ */
+export const accountBaselineRules = pgTable(
+  "account_baseline_rules",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    ruleJson: jsonb("rule_json").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("account_baseline_rules_user_idx").on(t.userId)],
+);
+
+export const APPROVAL_STATUSES = ["pending", "granted", "denied", "expired", "cancelled"] as const;
+export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
+
+/**
+ * One parked policy decision. The browser executor remains alive while this row is pending;
+ * the control plane changes only `status`, and the waiting evaluator resumes or refuses the
+ * exact intercepted action. `request_json` is diagnostic context, never credential content.
+ */
+export const approvals = pgTable(
+  "approvals",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id")
+      .notNull()
+      .references(() => runs.id, { onDelete: "cascade" }),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    check: text("check").notNull(),
+    rule: text("rule").notNull(),
+    requestJson: jsonb("request_json").notNull().default({}),
+    status: text("status").$type<ApprovalStatus>().notNull().default("pending"),
+    expiresAt: ts("expires_at").notNull(),
+    decidedAt: ts("decided_at"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("approvals_run_idx").on(t.runId),
+    index("approvals_pending_expiry_idx")
+      .on(t.expiresAt)
+      .where(sql`${t.status} = 'pending'`),
+  ],
+);
+// ---------------------------------------------------------------------------------------
+
 /** Consumer-side dedupe (§6): one row per (task, event); the unique pk is the claim. */
 export const runDedupe = pgTable(
   "run_dedupe",
@@ -682,6 +762,7 @@ export const SECRET_ACCESS_ACTIONS = [
   "filled",
   "injected",
   "denied_origin",
+  "denied_grant",
   "denied_tier",
   "denied_target_not_found",
   "denied_target_hidden",
@@ -883,6 +964,9 @@ export type NewEvent = typeof events.$inferInsert;
 export type OutboxRow = typeof outbox.$inferSelect;
 export type RunRow = typeof runs.$inferSelect;
 export type NewRun = typeof runs.$inferInsert;
+export type TaskGrantRow = typeof taskGrants.$inferSelect;
+export type AccountBaselineRuleRow = typeof accountBaselineRules.$inferSelect;
+export type ApprovalRow = typeof approvals.$inferSelect;
 export type TaskRow = typeof tasks.$inferSelect;
 export type EventDefRow = typeof eventDefs.$inferSelect;
 export type TaskEmitRow = typeof taskEmits.$inferSelect;

@@ -1,5 +1,7 @@
 export {
   AllowAllGate,
+  DatabasePolicyGate,
+  GRANT_KEYS,
   type PolicyGate,
   type Verdict,
   type TaskCtx,
@@ -8,4 +10,19 @@ export {
   type ReqRef,
   type ReadParts,
   type NetworkPayload,
+  type GrantKey,
+  type BaselineRule,
+  type DatabasePolicyGateOptions,
 } from "./gate.js";
+export {
+  addBaselineRule,
+  decideApproval,
+  grantTask,
+  listApprovals,
+  listBaselineRules,
+  listTaskGrants,
+  removeBaselineRule,
+  revokeTaskGrant,
+  type ApprovalDecision,
+  type TaskGrantInput,
+} from "./store.js";

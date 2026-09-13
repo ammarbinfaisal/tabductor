@@ -22,6 +22,7 @@ export {
   finishRun,
   heartbeat,
   reapTimedOutRuns,
+  recoverOrphanedApprovalRuns,
   recoverStaleRuns,
   startRun,
   ENGINE_RESTART,

@@ -13,6 +13,7 @@
     "@tabductor/browser": "workspace:*",
     "@tabductor/core": "workspace:*",
     "@tabductor/db": "workspace:*",
+    "@tabductor/policy": "workspace:*",
     "@tabductor/telemetry": "workspace:*",
     "drizzle-orm": "^0.44.0",
     "minimatch": "^10.0.1",

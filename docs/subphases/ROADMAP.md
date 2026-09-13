@@ -81,7 +81,7 @@ Environment deviations from `impl-phases.md`:
 | S6b | Trace interpretation + LLM script compiler | §11, `../trace-compilation.md` | **done**; the raw-sequence checker was replaced at S6e |
 | S6c | Compiled executor, deopt handoff and promotion/demotion | impl Phase 6, `../trace-compilation.md` | **done** (migration `0017`); post-execution lifecycle landed at S6e |
 | S6e | Post-execution compilation: `compile_jobs` queue + worker, full-trace interpretation, isolated validation, content-hash carry-forward | `../trace-compilation.md`, `S6e-post-execution-compilation.md` | **done** (migration `0020`) |
-| S7 | Real policy evaluator + redaction + approvals + MCP/asset/secret grants + regression sweep | impl Phase 7, §10 | |
+| S7 | Real policy evaluator + redaction + approvals + MCP/asset/secret grants + regression sweep | impl Phase 7, §10, `S7-policy-permissions.md` | **done** (migration `0021`); Tier-2 attended secrets deliberately cut |
 | S8 | Graph compiler: passes P1–P5, deterministic gate, compile reports, proposed-grants flow, task content hashes | graph-compilation-llm §4–6, §10 | after S7 |
 
 **Node kinds (§4 + graph-compilation-llm §2.1), binding for all subphases from S5a on:**

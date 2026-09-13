@@ -1,6 +1,7 @@
 import { endpointRouter } from "./routers/endpoint.js";
 import { engineRouter } from "./routers/engine.js";
 import { mcpRouter } from "./routers/mcp.js";
+import { policyRouter } from "./routers/policy.js";
 import { eventRouter } from "./routers/event.js";
 import { publicRouter } from "./routers/public.js";
 import { runRouter } from "./routers/run.js";
@@ -22,6 +23,8 @@ export const appRouter = router({
   engine: engineRouter,
   /** MCP server registration — the asset nodes' tool sources (U3a). */
   mcp: mcpRouter,
+  /** S7 grants, account baseline, and the approvals inbox. */
+  policy: policyRouter,
   /** The store browser + query console (U3.5) — every procedure routes through
    * `@tabductor/store`'s fenced read path; see `routers/store.ts`'s own doc comment. */
   store: storeRouter,

@@ -3,6 +3,7 @@ import { newId } from "@tabductor/core";
 import { assets, assetVersions, type Db } from "@tabductor/db";
 import type { BlobStore } from "@tabductor/browser/blob-store";
 import type { Metrics } from "@tabductor/telemetry";
+import type { PolicyGate } from "@tabductor/policy";
 import { and, eq, sql } from "drizzle-orm";
 import { minimatch } from "minimatch";
 import { z } from "zod";
@@ -103,6 +104,8 @@ export type AssetToolDeps = {
   /** For `asset_versions.run_id` — no `.references()` on that column (see `schema.ts`), so
    * this is provenance, not a constraint. */
   runId: string;
+  /** S7's default-deny evaluator. Omitted by pre-S7 rigs, which retain the legacy grant rule. */
+  gate?: PolicyGate;
   metrics?: Metrics;
 };
 
@@ -132,7 +135,12 @@ export async function putVersion(
   deps: AssetToolDeps,
   input: { path: string; bytes: Buffer; mime: string },
 ): Promise<AssetToolResult> {
-  const allowed = await checkWriteGrant(deps.db, deps.taskId, input.path);
+  const allowed = await checkWriteGrant(
+    deps.db,
+    deps.taskId,
+    input.path,
+    deps.gate ? { gate: deps.gate, runId: deps.runId } : undefined,
+  );
   if (!allowed) {
     deps.metrics?.assetWrites.add("denied");
     return { ok: false, error: `write outside this task's granted paths: "${input.path}"` };

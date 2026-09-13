@@ -14,6 +14,7 @@ import {
   type SecretRow,
 } from "@tabductor/db";
 import type { Metrics } from "@tabductor/telemetry";
+import type { PolicyGate } from "@tabductor/policy";
 import { unsealValue, zero, type KeyWrapper } from "./crypto.js";
 
 /**
@@ -70,6 +71,8 @@ export type SecretsBrokerDeps = {
   /** Ceiling on fills per run (default 3). A task may only lower this, never raise it
    * (`S5b-secrets-broker.md`) — that enforcement is the caller's, this is just the default. */
   maxFillsPerRun?: number;
+  /** S7 grant enforcement. Omitted by lower-level broker tests and pre-S7 callers. */
+  gate?: PolicyGate;
 };
 
 /** What the composition root actually holds: the narrow `SecretsBroker` two methods it hands
@@ -83,7 +86,7 @@ export type SecretsBrokerHandle = SecretsBroker & {
 type McpHandleEntry = { runId: string; secretId: string; issuedAt: number };
 
 export function createSecretsBroker(deps: SecretsBrokerDeps): SecretsBrokerHandle {
-  const { db, keyWrapper, resolveRun, metrics } = deps;
+  const { db, keyWrapper, resolveRun, metrics, gate } = deps;
   const maxFillsPerRun = deps.maxFillsPerRun ?? DEFAULT_MAX_FILLS_PER_RUN;
 
   // Per-run fill counts and issued MCP handles — the only state this module keeps, and both
@@ -104,9 +107,12 @@ export function createSecretsBroker(deps: SecretsBrokerDeps): SecretsBrokerHandl
   /** Scopes a secret lookup to the run's own owning user — `fill`/`injectIntoMcpArg` take no
    * `userId` themselves, so this join (run → task → workflow version → workflow.user_id) is
    * what stands in for it, matching `secrets`' `unique(user_id, name)` constraint. */
-  const resolveSecretForRun = async (runId: string, secretName: string): Promise<SecretRow | undefined> => {
+  const resolveSecretForRun = async (
+    runId: string,
+    secretName: string,
+  ): Promise<{ secret: SecretRow; taskId: string } | undefined> => {
     const rows = await db
-      .select({ secret: secrets })
+      .select({ secret: secrets, taskId: tasks.id })
       .from(runs)
       .innerJoin(tasks, eq(tasks.id, runs.taskId))
       .innerJoin(workflowVersions, eq(workflowVersions.id, tasks.workflowVersionId))
@@ -114,7 +120,7 @@ export function createSecretsBroker(deps: SecretsBrokerDeps): SecretsBrokerHandl
       .innerJoin(secrets, and(eq(secrets.userId, workflows.userId), eq(secrets.name, secretName)))
       .where(eq(runs.id, runId))
       .limit(1);
-    return rows[0]?.secret;
+    return rows[0];
   };
 
   /** One refusal path for every kind of `fill` denial: logs the access row, traces
@@ -126,7 +132,7 @@ export function createSecretsBroker(deps: SecretsBrokerDeps): SecretsBrokerHandl
     secretName: string,
     anchor: string,
     action: SecretAccessAction,
-    metricOutcome: "denied_origin" | "denied_target" | "rate_limited",
+    metricOutcome: "denied_origin" | "denied_grant" | "denied_target" | "rate_limited",
     message: string,
   ): Promise<never> => {
     await logAccess(runId, secretName, action, anchor);
@@ -168,8 +174,8 @@ export function createSecretsBroker(deps: SecretsBrokerDeps): SecretsBrokerHandl
         });
       }
 
-      const secret = await resolveSecretForRun(runId, secretName);
-      if (!secret) {
+      const resolved = await resolveSecretForRun(runId, secretName);
+      if (!resolved) {
         return refuseFill(
           run,
           runId,
@@ -179,6 +185,22 @@ export function createSecretsBroker(deps: SecretsBrokerDeps): SecretsBrokerHandl
           "denied_target",
           `no secret named "${secretName}" for this run's user`,
         );
+      }
+      const { secret, taskId } = resolved;
+
+      if (gate) {
+        const verdict = await gate.checkSecretUse({ taskId, runId }, secretName);
+        if (!verdict.allow) {
+          return refuseFill(
+            run,
+            runId,
+            secretName,
+            anchor,
+            "denied_grant",
+            "denied_grant",
+            `secret use denied by ${verdict.rule}`,
+          );
+        }
       }
 
       // 1. Origin binding (§16): the page's *live* origin, asked of the driver — never the
@@ -256,11 +278,21 @@ export function createSecretsBroker(deps: SecretsBrokerDeps): SecretsBrokerHandl
     },
 
     async injectIntoMcpArg(runId, secretName) {
-      const secret = await resolveSecretForRun(runId, secretName);
-      if (!secret) {
+      const resolved = await resolveSecretForRun(runId, secretName);
+      if (!resolved) {
         throw new AppError("secret_not_found", `no secret named "${secretName}" for this run's user`, {
           details: { runId, secretName },
         });
+      }
+      const { secret, taskId } = resolved;
+      if (gate) {
+        const verdict = await gate.checkSecretUse({ taskId, runId }, secretName);
+        if (!verdict.allow) {
+          await logAccess(runId, secretName, "denied_grant", null);
+          throw new AppError("secret_grant_denied", `secret use denied by ${verdict.rule}`, {
+            details: { runId, secretName, rule: verdict.rule },
+          });
+        }
       }
       if (secret.tier !== "server") {
         await logAccess(runId, secretName, "denied_tier", null);

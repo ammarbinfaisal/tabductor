@@ -1,6 +1,7 @@
 import { assetWriteGrants, type Db } from "@tabductor/db";
 import { eq } from "drizzle-orm";
 import { minimatch } from "minimatch";
+import type { PolicyGate } from "@tabductor/policy";
 
 /**
  * Write-grant enforcement (S5d, techical_plan §13.5 decision 14, §18.2). Reads are never
@@ -25,12 +26,19 @@ import { minimatch } from "minimatch";
  * dependency here, unlike the traversal check in `paths.ts`, which stays hand-written because
  * it is a short, closed reject list rather than a grammar.
  */
-export async function checkWriteGrant(db: Db, taskId: string, path: string): Promise<boolean> {
+export async function checkWriteGrant(
+  db: Db,
+  taskId: string,
+  path: string,
+  policy?: { gate: PolicyGate; runId: string },
+): Promise<boolean> {
   const grants = await db
     .select({ pathGlob: assetWriteGrants.pathGlob })
     .from(assetWriteGrants)
     .where(eq(assetWriteGrants.taskId, taskId));
 
-  if (grants.length === 0) return true;
-  return grants.some((g) => minimatch(path, g.pathGlob));
+  const legacyAllowed = grants.length === 0 || grants.some((g) => minimatch(path, g.pathGlob));
+  if (!legacyAllowed) return false;
+  if (!policy) return true;
+  return (await policy.gate.checkAssetWrite({ taskId, runId: policy.runId }, path)).allow;
 }

@@ -13,7 +13,7 @@ describe("AllowAllGate", () => {
     expect(await gate.checkMcpCall(ctx, "mcp.imagegen.create")).toEqual({ allow: true });
 
     const payload = { headers: { authorization: "Bearer secret" }, body: "hi" };
-    expect(gate.redact(ctx, payload)).toBe(payload); // identity until Phase 7
+    await expect(gate.redact(ctx, payload)).resolves.toBe(payload); // identity until Phase 7
   });
 
   it("allows every navigation when the allowlist is unset/empty", async () => {

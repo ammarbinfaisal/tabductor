@@ -29,6 +29,7 @@ import { usePolling, useStoreBridge } from "../lib/store.js";
 const STATUS_OPTIONS: Record<RunStatus, true> = {
   queued: true,
   running: true,
+  awaiting_approval: true,
   succeeded: true,
   failed: true,
   timed_out: true,
@@ -175,7 +176,7 @@ export function WorkflowRuns({ workflowId }: { workflowId: string }) {
     triggerHref: run.triggerEventId
       ? `/workflows/${workflowId}/events?event=${run.triggerEventId}`
       : null,
-    cancellable: run.status === "queued" || run.status === "running",
+    cancellable: run.status === "queued" || run.status === "running" || run.status === "awaiting_approval",
     inspectHref: `/workflows/${workflowId}/runs/${run.id}`,
   });
 

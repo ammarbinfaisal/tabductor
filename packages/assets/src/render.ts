@@ -113,7 +113,12 @@ export function buildRenderTool(deps: RenderToolDeps): AssetTool {
 
       // Fail before spending a sandboxed compile on a write that could never land — the same
       // grant `assets.write` enforces, checked up front rather than after the render.
-      const allowed = await checkWriteGrant(deps.db, deps.taskId, normalizedOut);
+      const allowed = await checkWriteGrant(
+        deps.db,
+        deps.taskId,
+        normalizedOut,
+        deps.gate ? { gate: deps.gate, runId: deps.runId } : undefined,
+      );
       if (!allowed) {
         return { ok: false, error: `write outside this task's granted paths: "${normalizedOut}"` };
       }

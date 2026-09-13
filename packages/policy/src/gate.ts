@@ -1,4 +1,22 @@
-import { loadConfig } from "@tabductor/core";
+import { publish } from "@tabductor/bus";
+import { loadConfig, newId } from "@tabductor/core";
+import {
+  accountBaselineRules,
+  assetWriteGrants,
+  approvals,
+  runs,
+  secretGrants,
+  taskGrants,
+  tasks,
+  workflowVersions,
+  workflows,
+  type ApprovalRow,
+  type Db,
+  type TaskGrantRow,
+} from "@tabductor/db";
+import { and, eq, sql } from "drizzle-orm";
+import { minimatch } from "minimatch";
+import { z } from "zod";
 
 /**
  * The one architectural precondition (impl-phases §0): every action in every phase routes
@@ -22,7 +40,10 @@ export interface PolicyGate {
   checkNavigation(taskCtx: TaskCtx, url: URL, cause: NavCause): Promise<Verdict>;
   checkNetworkRead(taskCtx: TaskCtx, req: ReqRef, parts: ReadParts): Promise<Verdict>;
   checkMcpCall(taskCtx: TaskCtx, tool: string): Promise<Verdict>;
-  redact(taskCtx: TaskCtx, payload: NetworkPayload): NetworkPayload; // no-op until Phase 7
+  checkSecretUse(taskCtx: TaskCtx, secretName: string): Promise<Verdict>;
+  checkAssetWrite(taskCtx: TaskCtx, path: string): Promise<Verdict>;
+  allowedMcpTools(taskCtx: TaskCtx, tools: readonly string[]): Promise<Set<string>>;
+  redact(taskCtx: TaskCtx, payload: NetworkPayload): Promise<NetworkPayload>;
 }
 
 const ALLOW: Verdict = { allow: true };
@@ -62,7 +83,377 @@ export class AllowAllGate implements PolicyGate {
     return ALLOW;
   }
 
-  redact(_taskCtx: TaskCtx, payload: NetworkPayload): NetworkPayload {
+  async checkSecretUse(_taskCtx: TaskCtx, _secretName: string): Promise<Verdict> {
+    return ALLOW;
+  }
+
+  async checkAssetWrite(_taskCtx: TaskCtx, _path: string): Promise<Verdict> {
+    return ALLOW;
+  }
+
+  async allowedMcpTools(_taskCtx: TaskCtx, tools: readonly string[]): Promise<Set<string>> {
+    return new Set(tools);
+  }
+
+  async redact(_taskCtx: TaskCtx, payload: NetworkPayload): Promise<NetworkPayload> {
     return payload;
+  }
+}
+
+export const GRANT_KEYS = [
+  "navigation",
+  "action",
+  "network.headers",
+  "network.body",
+  "mcp.call",
+  "secret.use",
+  "secrets.read",
+  "asset.write",
+] as const;
+export type GrantKey = (typeof GRANT_KEYS)[number];
+
+const baselineRuleSchema = z.object({
+  effect: z.enum(["deny", "require_approval"]),
+  grantKey: z.enum(GRANT_KEYS),
+  value: z.string().min(1),
+});
+export type BaselineRule = z.infer<typeof baselineRuleSchema>;
+
+export type DatabasePolicyGateOptions = {
+  db: Db;
+  approvalTtlMs?: number;
+  approvalPollMs?: number;
+  tokenPatterns?: readonly RegExp[];
+};
+
+type PolicyRequest = {
+  key: GrantKey;
+  value: string;
+  check: string;
+  diagnostic: Record<string, unknown>;
+  defaultAllow: boolean;
+};
+
+const DEFAULT_APPROVAL_TTL_MS = 5 * 60_000;
+const DEFAULT_APPROVAL_POLL_MS = 250;
+const DEFAULT_TOKEN_PATTERNS = [
+  /\bBearer\s+[A-Za-z0-9._~+/=-]+\b/gi,
+  /\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token)\s*[:=]\s*[^\s,;]+/gi,
+];
+
+function valueMatches(key: GrantKey, pattern: string, value: string): boolean {
+  if (pattern === "*") return true;
+  if (key === "navigation") {
+    const host = value.toLowerCase();
+    const allowed = pattern.toLowerCase();
+    if (allowed.includes("*")) return minimatch(host, allowed);
+    return host === allowed || host.endsWith(`.${allowed}`);
+  }
+  return minimatch(value, pattern, { dot: true, nocase: false });
+}
+
+function maskText(value: string, patterns: readonly RegExp[]): string {
+  let masked = value;
+  for (const pattern of patterns) masked = masked.replace(pattern, "[REDACTED]");
+  return masked;
+}
+
+/**
+ * The S7 evaluator. Account baseline rules are checked before task grants and therefore
+ * cannot be overridden. Basic page actions and network bodies remain default-allow during
+ * migration; navigation, headers, MCP, secrets, uploads/downloads and asset writes require
+ * an explicit grant.
+ */
+export class DatabasePolicyGate implements PolicyGate {
+  private readonly db: Db;
+  private readonly approvalTtlMs: number;
+  private readonly approvalPollMs: number;
+  private readonly tokenPatterns: readonly RegExp[];
+
+  constructor(opts: DatabasePolicyGateOptions) {
+    this.db = opts.db;
+    this.approvalTtlMs = opts.approvalTtlMs ?? DEFAULT_APPROVAL_TTL_MS;
+    this.approvalPollMs = opts.approvalPollMs ?? DEFAULT_APPROVAL_POLL_MS;
+    this.tokenPatterns = opts.tokenPatterns ?? DEFAULT_TOKEN_PATTERNS;
+  }
+
+  async checkAction(taskCtx: TaskCtx, action: BrowserAction): Promise<Verdict> {
+    const kind = String(action.kind);
+    const sensitive =
+      kind === "upload" || kind === "download" || kind === "page.upload" || kind === "page.download";
+    return this.evaluate(taskCtx, {
+      key: "action",
+      value: kind,
+      check: "action",
+      diagnostic: { action: kind },
+      defaultAllow: !sensitive,
+    });
+  }
+
+  async checkNavigation(taskCtx: TaskCtx, url: URL, cause: NavCause): Promise<Verdict> {
+    return this.evaluate(taskCtx, {
+      key: "navigation",
+      value: url.hostname,
+      check: "navigation",
+      diagnostic: { host: url.hostname, cause },
+      defaultAllow: false,
+    });
+  }
+
+  async checkNetworkRead(taskCtx: TaskCtx, _req: ReqRef, parts: ReadParts): Promise<Verdict> {
+    const key: GrantKey = parts.headers ? "network.headers" : "network.body";
+    return this.evaluate(taskCtx, {
+      key,
+      value: "*",
+      check: "network_read",
+      diagnostic: { parts },
+      defaultAllow: key === "network.body",
+    });
+  }
+
+  async checkMcpCall(taskCtx: TaskCtx, tool: string): Promise<Verdict> {
+    return this.evaluate(taskCtx, {
+      key: "mcp.call",
+      value: tool,
+      check: "mcp_call",
+      diagnostic: { tool },
+      defaultAllow: false,
+    });
+  }
+
+  async checkSecretUse(taskCtx: TaskCtx, secretName: string): Promise<Verdict> {
+    const [grant] = await this.db
+      .select({ secretName: secretGrants.secretName })
+      .from(secretGrants)
+      .where(and(eq(secretGrants.taskId, taskCtx.taskId), eq(secretGrants.secretName, secretName)))
+      .limit(1);
+    if (!grant) {
+      return this.deny(taskCtx, "grant_missing:secret.use", {
+        key: "secret.use",
+        value: secretName,
+        check: "secret_use",
+        diagnostic: { secretName },
+        defaultAllow: false,
+      });
+    }
+    return this.evaluate(taskCtx, {
+      key: "secret.use",
+      value: secretName,
+      check: "secret_use",
+      diagnostic: { secretName },
+      defaultAllow: true,
+    });
+  }
+
+  async checkAssetWrite(taskCtx: TaskCtx, path: string): Promise<Verdict> {
+    const grants = await this.db
+      .select({ pathGlob: assetWriteGrants.pathGlob })
+      .from(assetWriteGrants)
+      .where(eq(assetWriteGrants.taskId, taskCtx.taskId));
+    if (!grants.some(({ pathGlob }) => minimatch(path, pathGlob, { dot: true }))) {
+      return this.deny(taskCtx, "grant_missing:asset.write", {
+        key: "asset.write",
+        value: path,
+        check: "asset_write",
+        diagnostic: { path },
+        defaultAllow: false,
+      });
+    }
+    return this.evaluate(taskCtx, {
+      key: "asset.write",
+      value: path,
+      check: "asset_write",
+      diagnostic: { path },
+      defaultAllow: true,
+    });
+  }
+
+  async allowedMcpTools(taskCtx: TaskCtx, tools: readonly string[]): Promise<Set<string>> {
+    const { grants, rules, baselineInvalid } = await this.policyRows(taskCtx.taskId);
+    if (baselineInvalid) return new Set();
+    return new Set(
+      tools.filter((tool) => {
+        if (rules.some((rule) => rule.effect === "deny" && rule.grantKey === "mcp.call" && valueMatches("mcp.call", rule.value, tool))) {
+          return false;
+        }
+        return grants.some((grant) => grant.grantKey === "mcp.call" && valueMatches("mcp.call", grant.grantValue, tool));
+      }),
+    );
+  }
+
+  async redact(taskCtx: TaskCtx, payload: NetworkPayload): Promise<NetworkPayload> {
+    const secretVerdict = await this.evaluate(taskCtx, {
+      key: "secrets.read",
+      value: "*",
+      check: "redaction",
+      diagnostic: {},
+      defaultAllow: false,
+    }, false, false);
+    if (secretVerdict.allow) return payload;
+
+    const headers = payload.headers
+      ? Object.fromEntries(
+          Object.entries(payload.headers).map(([name, value]) => {
+            const lower = name.toLowerCase();
+            const sensitive = lower === "authorization" || lower === "cookie" || lower === "set-cookie";
+            return [name, sensitive ? "[REDACTED]" : maskText(value, this.tokenPatterns)];
+          }),
+        )
+      : undefined;
+    return {
+      ...(headers ? { headers } : {}),
+      ...(payload.body !== undefined ? { body: maskText(payload.body, this.tokenPatterns) } : {}),
+    };
+  }
+
+  private async policyRows(taskId: string): Promise<{
+    grants: TaskGrantRow[];
+    rules: BaselineRule[];
+    baselineInvalid: boolean;
+  }> {
+    const [grants, baseline] = await Promise.all([
+      this.db.select().from(taskGrants).where(eq(taskGrants.taskId, taskId)),
+      this.db
+        .select({ ruleJson: accountBaselineRules.ruleJson })
+        .from(tasks)
+        .innerJoin(workflowVersions, eq(workflowVersions.id, tasks.workflowVersionId))
+        .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId))
+        .innerJoin(accountBaselineRules, eq(accountBaselineRules.userId, workflows.userId))
+        .where(eq(tasks.id, taskId)),
+    ]);
+    const parsed = baseline.map(({ ruleJson }) => baselineRuleSchema.safeParse(ruleJson));
+    return {
+      grants,
+      rules: parsed.filter((row): row is z.SafeParseSuccess<BaselineRule> => row.success).map((row) => row.data),
+      baselineInvalid: parsed.some((row) => !row.success),
+    };
+  }
+
+  private async evaluate(
+    taskCtx: TaskCtx,
+    request: PolicyRequest,
+    waitForApproval = true,
+    recordDenial = true,
+  ): Promise<Verdict> {
+    const { grants, rules, baselineInvalid } = await this.policyRows(taskCtx.taskId);
+    if (baselineInvalid) {
+      return recordDenial
+        ? this.deny(taskCtx, "baseline_invalid", request)
+        : { allow: false, rule: "baseline_invalid" };
+    }
+
+    const denied = rules.find(
+      (rule) => rule.effect === "deny" && rule.grantKey === request.key && valueMatches(request.key, rule.value, request.value),
+    );
+    if (denied) {
+      const rule = `baseline_deny:${request.key}:${denied.value}`;
+      return recordDenial ? this.deny(taskCtx, rule, request) : { allow: false, rule };
+    }
+
+    const matchingGrants = grants.filter(
+      (row) => row.grantKey === request.key && valueMatches(request.key, row.grantValue, request.value),
+    );
+    if (matchingGrants.length === 0 && !request.defaultAllow) {
+      const rule = `grant_missing:${request.key}`;
+      return recordDenial ? this.deny(taskCtx, rule, request) : { allow: false, rule };
+    }
+
+    const baselineApproval = rules.find(
+      (rule) =>
+        rule.effect === "require_approval" &&
+        rule.grantKey === request.key &&
+        valueMatches(request.key, rule.value, request.value),
+    );
+    if (waitForApproval && (matchingGrants.some((grant) => grant.requiresApproval) || baselineApproval)) {
+      const verdict = await this.awaitApproval(
+        taskCtx,
+        request,
+        baselineApproval ? `baseline_approval:${request.key}` : `grant_approval:${request.key}`,
+      );
+      if (!verdict.allow && recordDenial) return this.deny(taskCtx, verdict.rule, request);
+      return verdict;
+    }
+    return ALLOW;
+  }
+
+  private async deny(taskCtx: TaskCtx, rule: string, request: PolicyRequest): Promise<Verdict> {
+    await publish(this.db, {
+      type: "policy.denied",
+      sourceTaskId: taskCtx.taskId,
+      sourceRunId: taskCtx.runId,
+      packet: {
+        runId: taskCtx.runId,
+        taskId: taskCtx.taskId,
+        check: request.check,
+        rule,
+        ...request.diagnostic,
+      },
+    });
+    return { allow: false, rule };
+  }
+
+  private async awaitApproval(taskCtx: TaskCtx, request: PolicyRequest, rule: string): Promise<Verdict> {
+    const approvalId = newId("approval");
+    const expiresAt = new Date(Date.now() + this.approvalTtlMs);
+    const parked = await this.db.transaction(async (trx) => {
+      const [run] = await trx
+        .update(runs)
+        .set({ status: "awaiting_approval" })
+        .where(and(eq(runs.id, taskCtx.runId), eq(runs.status, "running")))
+        .returning();
+      if (!run) return false;
+      await trx.insert(approvals).values({
+        id: approvalId,
+        runId: taskCtx.runId,
+        taskId: taskCtx.taskId,
+        check: request.check,
+        rule,
+        requestJson: request.diagnostic,
+        expiresAt,
+      });
+      await publish(trx, {
+        type: "approval.requested",
+        sourceTaskId: taskCtx.taskId,
+        sourceRunId: taskCtx.runId,
+        packet: { approvalId, runId: taskCtx.runId, taskId: taskCtx.taskId, check: request.check, rule, expiresAt: expiresAt.toISOString() },
+      });
+      return true;
+    });
+    if (!parked) return { allow: false, rule: "run_not_approvable" };
+
+    for (;;) {
+      const [row] = await this.db.select().from(approvals).where(eq(approvals.id, approvalId)).limit(1);
+      if (!row) return { allow: false, rule: "approval_missing" };
+      if (row.status !== "pending") return this.finishApprovalWait(taskCtx, row);
+      if (row.expiresAt.getTime() <= Date.now()) {
+        const [expired] = await this.db
+          .update(approvals)
+          .set({ status: "expired", decidedAt: sql`now()` })
+          .where(and(eq(approvals.id, approvalId), eq(approvals.status, "pending")))
+          .returning();
+        if (expired) {
+          await publish(this.db, {
+            type: "approval.denied",
+            sourceTaskId: taskCtx.taskId,
+            sourceRunId: taskCtx.runId,
+            packet: { approvalId, runId: taskCtx.runId, taskId: taskCtx.taskId, reason: "expired" },
+          });
+          return this.finishApprovalWait(taskCtx, expired);
+        }
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, this.approvalPollMs));
+    }
+  }
+
+  private async finishApprovalWait(taskCtx: TaskCtx, approval: ApprovalRow): Promise<Verdict> {
+    if (approval.status !== "cancelled") {
+      await this.db
+        .update(runs)
+        .set({ status: "running", heartbeatAt: sql`now()` })
+        .where(and(eq(runs.id, taskCtx.runId), eq(runs.status, "awaiting_approval")));
+    }
+    return approval.status === "granted"
+      ? ALLOW
+      : { allow: false, rule: approval.status === "expired" ? "approval_expired" : `approval_${approval.status}` };
   }
 }

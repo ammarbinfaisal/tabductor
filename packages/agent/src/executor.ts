@@ -14,6 +14,7 @@ import { AppError } from "@tabductor/core";
 import type { Db, RunRow, TaskRow } from "@tabductor/db";
 import type { RunHandle, RunResult, TaskExecutor } from "@tabductor/engine";
 import type { PolicyGate } from "@tabductor/policy";
+import type { SecretsBroker, SecretsBrokerRunDeps } from "@tabductor/secrets";
 import type { Metrics } from "@tabductor/telemetry";
 import {
   asNumber,
@@ -69,6 +70,9 @@ export type AgentExecutorDeps = {
    * trace is what promotion compiles from. Injected so the executor stays a code path.
    */
   onOutcome?: (input: { task: TaskRow; run: RunRow; ok: boolean }) => Promise<void>;
+  /** S7 browser secret tool plus the live-session registry the broker resolves through. */
+  secrets?: Pick<SecretsBroker, "fill">;
+  registerSecretRun?: (runId: string, deps: SecretsBrokerRunDeps) => () => void;
 };
 
 /** `limits_json.browser` — same shape and reasoning `ScriptedBrowserExecutor` reads its own
@@ -121,6 +125,7 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
     async execute(handle: RunHandle): Promise<RunResult> {
       let lease: EndpointLease | undefined;
       let session: RunSession | undefined;
+      let unregisterSecretRun: (() => void) | undefined;
       let ok = false;
       try {
         lease = await pool.acquire(await endpointFor(handle), handle.run.id);
@@ -134,6 +139,7 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
           ...(metrics ? { metrics } : {}),
           ...(limits ? { limits } : {}),
         });
+        unregisterSecretRun = deps.registerSecretRun?.(handle.run.id, { session, trace });
 
         const [emits, trigger] = await Promise.all([handle.declaredEmits(), triggerInfoOf(db, handle)]);
         const emit = makeEmitFn({ db, taskId: handle.task.id, handleEmit: handle.emit, trace });
@@ -146,7 +152,14 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
           userIdPromise ??= userIdForTask(db, handle.task.workflowVersionId);
           return readAssetById({ db, blobs }, await userIdPromise, assetId);
         };
-        const tools = buildToolRegistry({ session, emit, readAsset });
+        const tools = buildToolRegistry({
+          session,
+          emit,
+          readAsset,
+          ...(deps.secrets
+            ? { fillSecret: (secretName, anchor) => deps.secrets!.fill(handle.run.id, secretName, anchor) }
+            : {}),
+        });
 
         const result = await runAgentLoop({
           llm,
@@ -164,6 +177,7 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
       } catch (err) {
         return mapError(err, lease);
       } finally {
+        unregisterSecretRun?.();
         // Session first, so the trace is flushed before anyone reads it to compile from.
         await session?.close().catch(() => undefined);
         await lease?.release().catch(() => undefined);

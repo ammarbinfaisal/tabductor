@@ -21,6 +21,7 @@ import {
   dueQueuedRuns,
   finishRun,
   heartbeat,
+  recoverOrphanedApprovalRuns,
   reapTimedOutRuns,
   recoverStaleRuns,
   startRun,
@@ -266,8 +267,11 @@ export function createEngine(deps: EngineDeps): Engine {
       // the retry policy exactly like any other failure — re-run from the start, never
       // resume, so a half-finished browser run is simply retried.
       const recovered = await recoverStaleRuns(db, staleHeartbeatMs);
-      if (recovered.length) metrics?.crashRecoveredRuns.add(recovered.length);
-      for (const run of recovered) {
+      const orphanedApprovals = await recoverOrphanedApprovalRuns(db);
+      if (recovered.length + orphanedApprovals.length) {
+        metrics?.crashRecoveredRuns.add(recovered.length + orphanedApprovals.length);
+      }
+      for (const run of [...recovered, ...orphanedApprovals]) {
         const [task] = await db.select().from(tasks).where(eq(tasks.id, run.taskId));
         if (task) await scheduleRetry(db, { run, task, error: run.error });
       }

@@ -27,8 +27,8 @@ import {
   type TaskExecutor,
 } from "@tabductor/engine";
 import { createPyrunClient } from "@tabductor/engine/python";
-import { AllowAllGate } from "@tabductor/policy";
-import { createSecretsBroker, fileKeyWrapper } from "@tabductor/secrets";
+import { DatabasePolicyGate } from "@tabductor/policy";
+import { createSecretsBroker, fileKeyWrapper, type SecretsBrokerRunDeps } from "@tabductor/secrets";
 import { initTelemetry } from "@tabductor/telemetry/init";
 import type { Pool } from "pg";
 
@@ -69,10 +69,8 @@ const blobs = createMinioBlobStore({
   secretKey: config.BLOB_SECRET_KEY,
   bucket: config.BLOB_BUCKET,
 });
-// `AllowAllGate` reads `HARNESS_NAV_ALLOWLIST` from config itself when no allowlist is
-// passed (impl-phases §0.1) — the real evaluator (Phase 7) replaces this construction, not
-// these call sites.
-const gate = new AllowAllGate();
+// S7: one persisted evaluator shared by agent, compiled, MCP, asset and secret paths.
+const gate = new DatabasePolicyGate({ db: handle.db });
 const liveProvider = providerFromEnv({ ANTHROPIC_API_KEY: config.ANTHROPIC_API_KEY, OPENAI_API_KEY: config.OPENAI_API_KEY });
 /** `python.run`'s client — the asset node's compute tool (`packages/agent`'s `python-tool.ts`).
  * Without a `PYRUNNER_URL` the tool stays on the registry and fails closed per call. */
@@ -150,6 +148,11 @@ function agentExecutorEntry(db: Db): ReturnType<typeof createAgentExecutor> | un
     db,
     endpointFor: endpointFor(db),
     metrics: telemetry.metrics,
+    secrets: secretsBroker,
+    registerSecretRun: (runId, run) => {
+      liveSecretRuns.set(runId, run);
+      return () => liveSecretRuns.delete(runId);
+    },
     // The first clean run makes the task eligible (K=1); the hook only queues the compile,
     // so the run settles without waiting for a model.
     onOutcome: async (input) => void (await compileLoop.afterAiRun(input)),
@@ -177,10 +180,12 @@ function agentExecutorEntry(db: Db): ReturnType<typeof createAgentExecutor> | un
  * comment: "an asset-node run has no page to bind an origin to"), so this is not a stub
  * standing in for missing wiring — it is the correct, permanent answer for this call site.
  */
+const liveSecretRuns = new Map<string, SecretsBrokerRunDeps>();
 const secretsBroker = createSecretsBroker({
   db: handle.db,
+  gate,
   keyWrapper: fileKeyWrapper(config.SECRETS_KEK_FILE_PATH),
-  resolveRun: () => undefined,
+  resolveRun: (runId) => liveSecretRuns.get(runId),
   metrics: telemetry.metrics,
 });
 

@@ -31,7 +31,7 @@ export type LlmDirection = "in" | "out";
 /** The secrets broker's own outcome set (§17.2, S5b) — coarser than `secret_access_log.action`
  * on purpose: the metric is the security-signals board's flat-zero row, the log is the
  * per-attempt audit trail, and a label needs far fewer values than a log column does. */
-export type SecretFillOutcome = "filled" | "denied_origin" | "denied_target" | "rate_limited";
+export type SecretFillOutcome = "filled" | "denied_origin" | "denied_grant" | "denied_target" | "rate_limited";
 // -- S5c: MCP client (§17.2 catalogue, `mcp_calls_total`/`mcp_call_duration_seconds`) ----
 /** `packages/mcp`'s own outcome set for one `callTool` attempt. `denied` never actually
  * fires under `AllowAllGate` (S7's business) but the label exists so the metric doesn't
