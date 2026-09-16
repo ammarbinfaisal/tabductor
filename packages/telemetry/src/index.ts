@@ -10,17 +10,13 @@
 export type { Telemetry, TelemetryConfig } from "./init.js";
 export {
   createMetrics,
-  type AssetReadOutcome,
-  type AssetWriteOutcome,
   type FireResult,
   type LlmDirection,
-  type McpCallOutcome,
   type Metrics,
   type PolicyCheck,
   type ResourceLimit,
   type RunStatus,
   type SecretFillOutcome,
-  type ShareAssetOutcome,
   type ShareViewResult,
 } from "./metrics.js";
 export { createPinoLogger } from "./logger.js";

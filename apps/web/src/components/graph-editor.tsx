@@ -1,25 +1,25 @@
 "use client";
 
-import type { Graph, TaskSummary } from "@tabductor/engine";
+import type {
+  Graph,
+  PersistedGraphCompileReport,
+  ProposedGrant,
+  TaskSummary,
+} from "@tabductor/engine";
 import Link from "next/link";
-import { findCycles } from "../lib/topology.js";
 import { useStoreBridge } from "../lib/store.js";
-import { CompileReport } from "./compile-report.js";
-import { DerivedMap } from "./derived-map.js";
-import { createEditorStore, type EditorStore } from "./editor-store.js";
-import { EventPanel } from "./event-panel.js";
-import { NodePanel } from "./node-panel.js";
+import {
+  createEditorStore,
+  workflowScheduleOf,
+  type EditorState,
+  type EditorStore,
+} from "./editor-store.js";
 import { SectionLabel } from "./primitives.js";
+import { WorkflowChat } from "./workflow-chat.js";
+import { useMountHook } from "../lib/use-mount-hook.js";
+import { WorkflowWorkspace } from "./workflow-workspace.js";
 
-/**
- * The declarative editor (U1, component-specs §4.2): header + compile report + banners,
- * the Events | Nodes panel row, and the derived Map. There is no canvas — wiring is
- * toggling a chip, and the map only ever draws what the declarations already say.
- *
- * The store is created once per mounted page. It is module-level rather than passed in
- * because a page owns exactly one graph at a time — the same shape the runs and events
- * pages use.
- */
+/** Graph, packet traces and conversational changes share one workflow document. */
 let store: EditorStore | undefined;
 
 export function GraphEditor(props: {
@@ -29,21 +29,30 @@ export function GraphEditor(props: {
   graph: Graph;
   tasks: TaskSummary[];
   eventSchemas: Record<string, Record<string, unknown>>;
+  authoring: {
+    report: PersistedGraphCompileReport | null;
+    proposedGrants: Array<ProposedGrant & { id: string }>;
+  } | null;
   maxHops: number;
+  initialEventId?: string;
 }) {
   // Rebuilt when the page is showing a different workflow than the one the store holds —
   // otherwise navigating between two graphs would edit the first one's document.
   if (!store || store.getState().workflowId !== props.workflowId) store = createEditorStore(props);
   const s = store;
   const state = useStoreBridge(s);
-  const cycles = findCycles(state.graph.tasks);
-  const failedEntries = (state.compileReport ?? []).filter((e) => e.status === "failed");
-  const empty = state.graph.tasks.length === 0 || state.graph.events.length === 0;
+  useMountHook(() => s.restoreConversation());
+  const empty = state.graph.tasks.length === 0;
 
   const publishReason = empty
-    ? "Publish needs at least one event and one node."
+    ? "Describe the workflow in chat before publishing."
     : !state.dirty && state.versionId
-      ? `Everything here is already published as ${state.versionId}.`
+      ? "All changes published."
+      : null;
+  const operationReason = !state.versionId
+    ? "Publish the workflow first."
+    : state.dirty
+      ? "Publish the current edits first."
       : null;
 
   return (
@@ -57,13 +66,20 @@ export function GraphEditor(props: {
           <span className="section-label" style={{ marginLeft: "var(--space-3)" }}>
             {state.versionId
               ? state.dirty
-                ? `${state.versionId} · unpublished edits`
-                : state.versionId
+                ? "Unpublished changes"
+                : "Published"
               : "draft · never published"}
           </span>
         </span>
         <span className="row" style={{ flexDirection: "column", alignItems: "flex-end", gap: "var(--space-1)" }}>
           <span className="row">
+            <button
+              onClick={() => void s.triggerWorkflow()}
+              disabled={state.busy || operationReason !== null}
+              title={operationReason ?? "Start the published workflow now"}
+            >
+              Run workflow
+            </button>
             <button className="btn--quiet" onClick={() => void s.reload()} disabled={state.busy}>
               Reload
             </button>
@@ -84,42 +100,24 @@ export function GraphEditor(props: {
         </span>
       </div>
 
-      {state.compileReport ? (
-        <CompileReport
-          entries={state.compileReport}
-          versionId={state.versionId}
-          failed={failedEntries.length > 0}
-          onDismiss={() => s.setState({ compileReport: null })}
-        />
-      ) : null}
-
-      {failedEntries.map((entry) => (
-        <div key={entry.type} className="banner banner--error">
-          <span className="mono">◈ {entry.type}</span> didn&apos;t compile:{" "}
-          <span className="mono">&ldquo;{entry.error}&rdquo;</span>. The schema comes from the prose —
-          edit the description, then publish again. Nothing was published;{" "}
-          {state.versionId ? <span className="mono">{state.versionId}</span> : "the draft"} is
-          unchanged.{" "}
-          <button className="btn--quiet mono" onClick={() => s.select({ kind: "event", id: entry.type })}>
-            Go to ◈ {entry.type} ↓
-          </button>
-        </div>
-      ))}
-      {state.error && failedEntries.length === 0 ? (
+      {state.error ? (
         <div className="banner banner--error">
           {state.error.message}
-          {Object.keys(state.error.details).length > 0 ? (
-            <span className="mono"> — {JSON.stringify(state.error.details)}</span>
-          ) : null}
         </div>
       ) : null}
       {state.notice ? <div className="banner">{state.notice}</div> : null}
-      {cycles.length > 0 ? (
-        <div className="banner banner--warning">
-          This graph loops: <span className="mono">{cycles[0]!.join(" → ")}</span>. Loops are allowed
-          and capped at {props.maxHops} hops per causation chain.
-        </div>
-      ) : null}
+
+      <WorkflowWorkspace
+        key={`${state.workflowId}:${state.versionId ?? "draft"}`}
+        editor={s}
+        state={state}
+        chat={<WorkflowChat store={s} state={state} />}
+        {...(props.initialEventId ? { initialEventId: props.initialEventId } : {})}
+      />
+      <details className="workflow-schedule-details">
+        <summary>Schedule & automatic runs</summary>
+        <WorkflowSchedule store={s} state={state} operationReason={operationReason} />
+      </details>
 
       {state.confirmVisibility ? (
         <div className="modal-overlay" onClick={() => s.cancelVisibilityChange()}>
@@ -163,19 +161,87 @@ export function GraphEditor(props: {
         </div>
       ) : null}
 
-      <div className="editor-panels">
-        <EventPanel store={s} state={state} />
-        <NodePanel store={s} state={state} />
-      </div>
-
-      <section className="map-region">
-        <SectionLabel>Map</SectionLabel>
-        <DerivedMap
-          tasks={state.graph.tasks}
-          kinds={Object.fromEntries(state.graph.tasks.map((t) => [t.name, t.kind]))}
-          maxHops={props.maxHops}
-        />
-      </section>
     </>
+  );
+}
+
+function WorkflowSchedule({
+  store,
+  state,
+  operationReason,
+}: {
+  store: EditorStore;
+  state: EditorState;
+  operationReason: string | null;
+}) {
+  const published = workflowScheduleOf(state.graph);
+  const hasSchedule = published.scheduledEntries > 0;
+  const changed = published.distinctSchedules > 1
+    || state.scheduleDraft.cron.trim() !== published.draft.cron
+    || state.scheduleDraft.timezone.trim() !== published.draft.timezone
+    || state.scheduleDraft.enabled !== published.draft.enabled;
+  const blocked = state.busy || operationReason !== null;
+  const summary = !hasSchedule
+    ? "No automatic runs are scheduled."
+    : published.distinctSchedules > 1
+      ? `${published.distinctSchedules} automatic schedules are active. Publishing here replaces them with one schedule.`
+      : `${published.draft.cron} · ${published.draft.timezone} · ${published.draft.enabled ? "enabled" : "paused"}`;
+
+  return (
+    <section className="workflow-automation" aria-labelledby="workflow-schedule-heading">
+      <div className="workflow-automation__summary">
+        <SectionLabel>Automatic runs</SectionLabel>
+        <h2 id="workflow-schedule-heading">Schedule</h2>
+        <p className="muted">{summary}</p>
+        {operationReason ? <p className="muted">{operationReason}</p> : null}
+      </div>
+      <div className="workflow-schedule-form">
+        <label className="field">
+          <span>Cron expression</span>
+          <input
+            className="mono"
+            aria-label="Cron expression"
+            placeholder="0 7 * * *"
+            value={state.scheduleDraft.cron}
+            disabled={blocked}
+            onChange={(event) => store.setScheduleDraft({ cron: event.target.value })}
+          />
+        </label>
+        <label className="field">
+          <span>Timezone</span>
+          <input
+            className="mono"
+            aria-label="Schedule timezone"
+            placeholder="UTC"
+            value={state.scheduleDraft.timezone}
+            disabled={blocked}
+            onChange={(event) => store.setScheduleDraft({ timezone: event.target.value })}
+          />
+        </label>
+        <label className="workflow-schedule-toggle">
+          <input
+            type="checkbox"
+            checked={state.scheduleDraft.enabled}
+            disabled={blocked}
+            onChange={(event) => store.setScheduleDraft({ enabled: event.target.checked })}
+          />
+          Enabled
+        </label>
+        <div className="row workflow-schedule-actions">
+          {hasSchedule ? (
+            <button className="btn--quiet" disabled={blocked} onClick={() => void store.publishSchedule(true)}>
+              Remove
+            </button>
+          ) : null}
+          <button
+            className="btn--primary"
+            disabled={blocked || !changed || !state.scheduleDraft.cron.trim() || !state.scheduleDraft.timezone.trim()}
+            onClick={() => void store.publishSchedule()}
+          >
+            Publish schedule
+          </button>
+        </div>
+      </div>
+    </section>
   );
 }

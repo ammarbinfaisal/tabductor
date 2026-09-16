@@ -3,8 +3,10 @@ import {
   GRANT_KEYS,
   addBaselineRule,
   decideApproval,
+  decideProposedGrant,
   grantTask,
   listApprovals,
+  listProposedGrants,
   listBaselineRules,
   listTaskGrants,
   removeBaselineRule,
@@ -55,6 +57,23 @@ export const policyRouter = router({
   approvals: procedure
     .input(z.object({ status: z.enum(APPROVAL_STATUSES).optional() }).optional())
     .query(({ ctx, input }) => listApprovals(ctx.db, input?.status)),
+
+  proposedGrants: procedure
+    .input(z.object({ versionId: z.string().min(1) }))
+    .query(({ ctx, input }) => listProposedGrants(ctx.db, input.versionId)),
+
+  decideProposedGrant: procedure
+    .input(z.object({ proposalId: z.string().min(1), decision: z.enum(["approved", "rejected"]) }))
+    .mutation(async ({ ctx, input }) => {
+      const result = await decideProposedGrant(ctx.db, input.proposalId, input.decision);
+      if (result.outcome === "missing") {
+        throw new TRPCError({ code: "NOT_FOUND", message: `no proposed grant "${input.proposalId}"` });
+      }
+      if (result.outcome === "not_pending") {
+        throw new TRPCError({ code: "CONFLICT", message: `proposed grant "${input.proposalId}" is not pending` });
+      }
+      return result;
+    }),
 
   decideApproval: procedure
     .input(z.object({ approvalId: z.string().min(1), decision: z.enum(["granted", "denied"]) }))

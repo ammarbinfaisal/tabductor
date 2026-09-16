@@ -2,10 +2,10 @@ import { publish } from "@tabductor/bus";
 import { loadConfig, newId } from "@tabductor/core";
 import {
   accountBaselineRules,
-  assetWriteGrants,
   approvals,
   runs,
   secretGrants,
+  storeWriteGrants,
   taskGrants,
   tasks,
   workflowVersions,
@@ -39,10 +39,8 @@ export interface PolicyGate {
   checkAction(taskCtx: TaskCtx, action: BrowserAction): Promise<Verdict>;
   checkNavigation(taskCtx: TaskCtx, url: URL, cause: NavCause): Promise<Verdict>;
   checkNetworkRead(taskCtx: TaskCtx, req: ReqRef, parts: ReadParts): Promise<Verdict>;
-  checkMcpCall(taskCtx: TaskCtx, tool: string): Promise<Verdict>;
   checkSecretUse(taskCtx: TaskCtx, secretName: string): Promise<Verdict>;
-  checkAssetWrite(taskCtx: TaskCtx, path: string): Promise<Verdict>;
-  allowedMcpTools(taskCtx: TaskCtx, tools: readonly string[]): Promise<Set<string>>;
+  checkStoreWrite(taskCtx: TaskCtx, table: string): Promise<Verdict>;
   redact(taskCtx: TaskCtx, payload: NetworkPayload): Promise<NetworkPayload>;
 }
 
@@ -79,24 +77,40 @@ export class AllowAllGate implements PolicyGate {
     return ALLOW;
   }
 
-  async checkMcpCall(_taskCtx: TaskCtx, _tool: string): Promise<Verdict> {
-    return ALLOW;
-  }
-
   async checkSecretUse(_taskCtx: TaskCtx, _secretName: string): Promise<Verdict> {
     return ALLOW;
   }
 
-  async checkAssetWrite(_taskCtx: TaskCtx, _path: string): Promise<Verdict> {
+  async checkStoreWrite(_taskCtx: TaskCtx, _table: string): Promise<Verdict> {
     return ALLOW;
-  }
-
-  async allowedMcpTools(_taskCtx: TaskCtx, tools: readonly string[]): Promise<Set<string>> {
-    return new Set(tools);
   }
 
   async redact(_taskCtx: TaskCtx, payload: NetworkPayload): Promise<NetworkPayload> {
     return payload;
+  }
+}
+
+/** Hosted runtime policy: actions need no user grants, while trace/network data is redacted. */
+export class RuntimeSafetyGate extends AllowAllGate {
+  private readonly tokenPatterns: readonly RegExp[];
+
+  constructor(opts: { navAllowlist?: readonly string[]; tokenPatterns?: readonly RegExp[] } = {}) {
+    super({ ...(opts.navAllowlist ? { navAllowlist: opts.navAllowlist } : {}) });
+    this.tokenPatterns = opts.tokenPatterns ?? DEFAULT_TOKEN_PATTERNS;
+  }
+
+  override async redact(_taskCtx: TaskCtx, payload: NetworkPayload): Promise<NetworkPayload> {
+    const headers = payload.headers
+      ? Object.fromEntries(Object.entries(payload.headers).map(([name, value]) => {
+          const lower = name.toLowerCase();
+          const sensitive = lower === "authorization" || lower === "cookie" || lower === "set-cookie";
+          return [name, sensitive ? "[REDACTED]" : maskText(value, this.tokenPatterns)];
+        }))
+      : undefined;
+    return {
+      ...(headers ? { headers } : {}),
+      ...(payload.body !== undefined ? { body: maskText(payload.body, this.tokenPatterns) } : {}),
+    };
   }
 }
 
@@ -105,14 +119,13 @@ export const GRANT_KEYS = [
   "action",
   "network.headers",
   "network.body",
-  "mcp.call",
   "secret.use",
   "secrets.read",
-  "asset.write",
+  "store.write",
 ] as const;
 export type GrantKey = (typeof GRANT_KEYS)[number];
 
-const baselineRuleSchema = z.object({
+export const baselineRuleSchema = z.object({
   effect: z.enum(["deny", "require_approval"]),
   grantKey: z.enum(GRANT_KEYS),
   value: z.string().min(1),
@@ -121,6 +134,7 @@ export type BaselineRule = z.infer<typeof baselineRuleSchema>;
 
 export type DatabasePolicyGateOptions = {
   db: Db;
+  navigationMode?: "permissive" | "grant_required";
   approvalTtlMs?: number;
   approvalPollMs?: number;
   tokenPatterns?: readonly RegExp[];
@@ -141,7 +155,7 @@ const DEFAULT_TOKEN_PATTERNS = [
   /\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token)\s*[:=]\s*[^\s,;]+/gi,
 ];
 
-function valueMatches(key: GrantKey, pattern: string, value: string): boolean {
+export function grantValueMatches(key: GrantKey, pattern: string, value: string): boolean {
   if (pattern === "*") return true;
   if (key === "navigation") {
     const host = value.toLowerCase();
@@ -161,17 +175,19 @@ function maskText(value: string, patterns: readonly RegExp[]): string {
 /**
  * The S7 evaluator. Account baseline rules are checked before task grants and therefore
  * cannot be overridden. Basic page actions and network bodies remain default-allow during
- * migration; navigation, headers, MCP, secrets, uploads/downloads and asset writes require
- * an explicit grant.
+ * migration. Navigation is default-allow unless grant_required mode is selected;
+ * headers, secrets, and store writes require an explicit grant.
  */
 export class DatabasePolicyGate implements PolicyGate {
   private readonly db: Db;
+  private readonly navigationMode: "permissive" | "grant_required";
   private readonly approvalTtlMs: number;
   private readonly approvalPollMs: number;
   private readonly tokenPatterns: readonly RegExp[];
 
   constructor(opts: DatabasePolicyGateOptions) {
     this.db = opts.db;
+    this.navigationMode = opts.navigationMode ?? "permissive";
     this.approvalTtlMs = opts.approvalTtlMs ?? DEFAULT_APPROVAL_TTL_MS;
     this.approvalPollMs = opts.approvalPollMs ?? DEFAULT_APPROVAL_POLL_MS;
     this.tokenPatterns = opts.tokenPatterns ?? DEFAULT_TOKEN_PATTERNS;
@@ -196,7 +212,7 @@ export class DatabasePolicyGate implements PolicyGate {
       value: url.hostname,
       check: "navigation",
       diagnostic: { host: url.hostname, cause },
-      defaultAllow: false,
+      defaultAllow: this.navigationMode === "permissive",
     });
   }
 
@@ -208,16 +224,6 @@ export class DatabasePolicyGate implements PolicyGate {
       check: "network_read",
       diagnostic: { parts },
       defaultAllow: key === "network.body",
-    });
-  }
-
-  async checkMcpCall(taskCtx: TaskCtx, tool: string): Promise<Verdict> {
-    return this.evaluate(taskCtx, {
-      key: "mcp.call",
-      value: tool,
-      check: "mcp_call",
-      diagnostic: { tool },
-      defaultAllow: false,
     });
   }
 
@@ -245,40 +251,27 @@ export class DatabasePolicyGate implements PolicyGate {
     });
   }
 
-  async checkAssetWrite(taskCtx: TaskCtx, path: string): Promise<Verdict> {
+  async checkStoreWrite(taskCtx: TaskCtx, table: string): Promise<Verdict> {
     const grants = await this.db
-      .select({ pathGlob: assetWriteGrants.pathGlob })
-      .from(assetWriteGrants)
-      .where(eq(assetWriteGrants.taskId, taskCtx.taskId));
-    if (!grants.some(({ pathGlob }) => minimatch(path, pathGlob, { dot: true }))) {
-      return this.deny(taskCtx, "grant_missing:asset.write", {
-        key: "asset.write",
-        value: path,
-        check: "asset_write",
-        diagnostic: { path },
+      .select({ tableName: storeWriteGrants.tableName })
+      .from(storeWriteGrants)
+      .where(eq(storeWriteGrants.taskId, taskCtx.taskId));
+    if (!grants.some((grant) => grant.tableName === table)) {
+      return this.deny(taskCtx, "grant_missing:store.write", {
+        key: "store.write",
+        value: table,
+        check: "store_write",
+        diagnostic: { table },
         defaultAllow: false,
       });
     }
     return this.evaluate(taskCtx, {
-      key: "asset.write",
-      value: path,
-      check: "asset_write",
-      diagnostic: { path },
+      key: "store.write",
+      value: table,
+      check: "store_write",
+      diagnostic: { table },
       defaultAllow: true,
     });
-  }
-
-  async allowedMcpTools(taskCtx: TaskCtx, tools: readonly string[]): Promise<Set<string>> {
-    const { grants, rules, baselineInvalid } = await this.policyRows(taskCtx.taskId);
-    if (baselineInvalid) return new Set();
-    return new Set(
-      tools.filter((tool) => {
-        if (rules.some((rule) => rule.effect === "deny" && rule.grantKey === "mcp.call" && valueMatches("mcp.call", rule.value, tool))) {
-          return false;
-        }
-        return grants.some((grant) => grant.grantKey === "mcp.call" && valueMatches("mcp.call", grant.grantValue, tool));
-      }),
-    );
   }
 
   async redact(taskCtx: TaskCtx, payload: NetworkPayload): Promise<NetworkPayload> {
@@ -343,7 +336,7 @@ export class DatabasePolicyGate implements PolicyGate {
     }
 
     const denied = rules.find(
-      (rule) => rule.effect === "deny" && rule.grantKey === request.key && valueMatches(request.key, rule.value, request.value),
+      (rule) => rule.effect === "deny" && rule.grantKey === request.key && grantValueMatches(request.key, rule.value, request.value),
     );
     if (denied) {
       const rule = `baseline_deny:${request.key}:${denied.value}`;
@@ -351,7 +344,7 @@ export class DatabasePolicyGate implements PolicyGate {
     }
 
     const matchingGrants = grants.filter(
-      (row) => row.grantKey === request.key && valueMatches(request.key, row.grantValue, request.value),
+      (row) => row.grantKey === request.key && grantValueMatches(request.key, row.grantValue, request.value),
     );
     if (matchingGrants.length === 0 && !request.defaultAllow) {
       const rule = `grant_missing:${request.key}`;
@@ -362,7 +355,7 @@ export class DatabasePolicyGate implements PolicyGate {
       (rule) =>
         rule.effect === "require_approval" &&
         rule.grantKey === request.key &&
-        valueMatches(request.key, rule.value, request.value),
+        grantValueMatches(request.key, rule.value, request.value),
     );
     if (waitForApproval && (matchingGrants.some((grant) => grant.requiresApproval) || baselineApproval)) {
       const verdict = await this.awaitApproval(

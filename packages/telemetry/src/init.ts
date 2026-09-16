@@ -5,7 +5,7 @@ import { createMetrics, type Metrics } from "./metrics.js";
 
 /**
  * Telemetry init, called **only by composition roots** (`apps/engine`, `apps/web`, and
- * `apps/renderer` when it exists). Library packages never import this — they receive the
+ * composition roots such as `apps/engine` and `apps/web`). Library packages never import this — they receive the
  * tracer, meter and logger the same way they receive a `PolicyGate` (§17.2 rule 1), which is
  * what keeps every package testable without a collector.
  *

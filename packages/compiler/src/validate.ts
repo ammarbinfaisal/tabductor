@@ -113,6 +113,12 @@ function buildHost(evidence: RunEvidence, opts: HostOptions = {}): ValidationHos
     async waitFor(selector, _opts) {
       requireSelector("waitFor", selector);
     },
+    async waitForLoadState(state) {
+      if (!evidence.actions.some((a) => a.ok &&
+        ((a.action === "waitForLoadState" && a.state === state) || (a.action === "goto" && a.waitUntil === state)))) {
+        throw new Error(`waitForLoadState: ${state} was never observed successfully`);
+      }
+    },
     async queryAll(selector, fields) {
       requireSelector("queryAll", selector);
       const names = Object.keys(fields);
@@ -147,6 +153,14 @@ function buildHost(evidence: RunEvidence, opts: HostOptions = {}): ValidationHos
   const session: RunSession = {
     page,
     network: {
+      async waitForResponse(opts) {
+        const record = evidence.network.find((r) => r.url.includes(opts.urlPattern) && r.status !== null &&
+          r.timings.endedAt !== null && r.index > (opts.afterIndex ?? -1) &&
+          (opts.method === undefined || r.method === opts.method.toUpperCase()) &&
+          (opts.status === undefined || r.status === opts.status));
+        if (!record) throw new Error(`waitForResponse: no observed completed response for ${opts.urlPattern}`);
+        return { ...record, timings: { ...record.timings, startedAt: record.timings.startedAt ?? 0 } };
+      },
       async list() {
         return { records: [], total: 0 };
       },

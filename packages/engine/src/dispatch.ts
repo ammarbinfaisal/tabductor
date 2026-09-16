@@ -4,6 +4,7 @@ import {
   runs,
   taskConsumes,
   tasks,
+  workflowExecutions,
   workflowVersions,
   workflows,
   type Db,
@@ -32,7 +33,26 @@ export type Dispatched = {
   runId: string;
   taskId: string;
   workflowVersionId: string;
+  executionId: string | null;
 };
+
+export async function createWorkflowExecution(
+  db: Db,
+  input: { workflowId: string; workflowVersionId?: string },
+): Promise<string> {
+  const [workflow] = await db.select().from(workflows).where(eq(workflows.id, input.workflowId));
+  if (!workflow) throw new Error(`no workflow "${input.workflowId}"`);
+  const versionId = input.workflowVersionId ?? await latestVersionId(db, workflow);
+  if (!versionId) throw new Error(`workflow "${input.workflowId}" has no published version`);
+  const executionId = newId("exec");
+  await db.insert(workflowExecutions).values({
+    id: executionId,
+    workflowId: workflow.id,
+    workflowVersionId: versionId,
+    maxHops: workflow.maxHops,
+  });
+  return executionId;
+}
 
 /**
  * Resolves subscribers and creates their runs. Returns the runs created — never the ones
@@ -86,7 +106,7 @@ export async function dispatchToTask(
   event: EventRow,
   metrics?: Metrics,
 ): Promise<Dispatched | undefined> {
-  const target = await resolveTask(db, taskId);
+  const target = await resolveTask(db, taskId, event.executionId);
   if (!target) return undefined;
   return createRun(db, {
     task: target.task,
@@ -110,16 +130,27 @@ export const MANUAL_TRIGGER = "manual.trigger";
  */
 export async function triggerTask(
   db: Db,
-  input: { taskId: string; type?: string; packet?: unknown },
+  input: { taskId: string; type?: string; packet?: unknown; executionId?: string },
 ): Promise<{ event: EventRow; dispatched: Dispatched | undefined }> {
+  const target = await resolveTask(db, input.taskId, input.executionId);
+  if (!target) return { event: await db.transaction((trx) => publish(trx, {
+    type: input.type ?? MANUAL_TRIGGER,
+    sourceTaskId: input.taskId,
+    packet: input.packet ?? {},
+  })), dispatched: undefined };
+  const executionId = input.executionId ?? await createWorkflowExecution(db, {
+    workflowId: target.workflow.id,
+    workflowVersionId: target.versionId,
+  });
   const event = await db.transaction((trx) =>
     publish(trx, {
       type: input.type ?? MANUAL_TRIGGER,
-      sourceTaskId: input.taskId,
+      executionId,
+      sourceTaskId: target.task.id,
       packet: input.packet ?? {},
     }),
   );
-  return { event, dispatched: await dispatchToTask(db, input.taskId, event) };
+  return { event, dispatched: await dispatchToTask(db, target.task.id, event) };
 }
 
 /**
@@ -135,7 +166,7 @@ async function resolveSource(
   event: EventRow,
 ): Promise<{ workflow: WorkflowRow; versionId: string; taskId: string } | undefined> {
   if (!event.sourceTaskId) return undefined;
-  const resolved = await resolveTask(db, event.sourceTaskId);
+  const resolved = await resolveTask(db, event.sourceTaskId, event.executionId);
   return resolved && { workflow: resolved.workflow, versionId: resolved.versionId, taskId: resolved.task.id };
 }
 
@@ -146,6 +177,7 @@ async function resolveSource(
 async function resolveTask(
   db: Db,
   taskId: string,
+  executionId?: string | null,
 ): Promise<{ workflow: WorkflowRow; versionId: string; task: TaskRow } | undefined> {
   const [origin] = await db
     .select({ task: tasks, workflow: workflows })
@@ -155,7 +187,14 @@ async function resolveTask(
     .where(eq(tasks.id, taskId));
   if (!origin) return undefined;
 
-  const versionId = await latestVersionId(db, origin.workflow);
+  let versionId: string;
+  if (executionId) {
+    const [execution] = await db.select().from(workflowExecutions).where(eq(workflowExecutions.id, executionId));
+    if (!execution || execution.workflowId !== origin.workflow.id || execution.status !== "running") return undefined;
+    versionId = execution.workflowVersionId;
+  } else {
+    versionId = await latestVersionId(db, origin.workflow);
+  }
 
   // Same version: the row we have is already the routing row.
   if (versionId === origin.task.workflowVersionId) {
@@ -213,14 +252,19 @@ async function createRun(
 
   // The run this event triggers becomes hop N+1, so the budget is spent when the trigger's
   // own chain already fills it.
-  const depth = await chainDepth(db, event.eventId, workflow.maxHops + 1);
-  if (depth > workflow.maxHops) {
+  const [execution] = event.executionId
+    ? await db.select().from(workflowExecutions).where(eq(workflowExecutions.id, event.executionId))
+    : [];
+  const maxHops = execution?.maxHops ?? workflow.maxHops;
+  const depth = await chainDepth(db, event.eventId, maxHops + 1);
+  if (depth > maxHops) {
     await db.transaction((trx) =>
       publish(trx, {
         type: LOOP_BUDGET_EXCEEDED,
         sourceTaskId: task.id,
         causationId: event.eventId,
-        packet: { taskId: task.id, workflowId: workflow.id, maxHops: workflow.maxHops, depth },
+        executionId: event.executionId,
+        packet: { taskId: task.id, workflowId: workflow.id, maxHops, depth },
       }),
     );
     return undefined;
@@ -236,6 +280,7 @@ async function createRun(
     }
     await trx.insert(runs).values({
       id: runId,
+      executionId: event.executionId,
       taskId: task.id,
       workflowVersionId: versionId,
       triggerEventId: event.eventId,
@@ -245,5 +290,7 @@ async function createRun(
     return true;
   });
 
-  return created ? { runId, taskId: task.id, workflowVersionId: versionId } : undefined;
+  return created
+    ? { runId, taskId: task.id, workflowVersionId: versionId, executionId: event.executionId }
+    : undefined;
 }

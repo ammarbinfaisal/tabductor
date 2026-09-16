@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "tabductor.fullname" . }}-config
+  labels:
+    {{- include "tabductor.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  DATABASE_URL: {{ required "databaseUrl is required when bundled Postgres is disabled" (ternary (printf "postgres://%s:%s@%s-postgres:5432/%s" .Values.postgres.user .Values.postgres.password (include "tabductor.fullname" .) .Values.postgres.database) .Values.databaseUrl .Values.postgres.enabled) | quote }}
+  BLOB_ENDPOINT: {{ required "blobEndpoint is required when bundled MinIO is disabled" (ternary (printf "http://%s-minio:9000" (include "tabductor.fullname" .)) .Values.blobEndpoint .Values.minio.enabled) | quote }}
+  BLOB_ACCESS_KEY: {{ .Values.minio.accessKey | default .Values.blobAccessKey | quote }}
+  BLOB_SECRET_KEY: {{ .Values.minio.secretKey | default .Values.blobSecretKey | quote }}
+  BLOB_BUCKET: {{ .Values.minio.bucket | default .Values.blobBucket | quote }}
+  TABDUCTOR_FIXTURE_MODE: {{ ternary "1" "0" .Values.fixtureMode.enabled | quote }}
+  TABDUCTOR_DEPLOYMENT_MODE: {{ ternary "local" "hosted" .Values.fixtureMode.enabled | quote }}

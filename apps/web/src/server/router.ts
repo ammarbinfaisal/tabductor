@@ -1,6 +1,5 @@
 import { endpointRouter } from "./routers/endpoint.js";
 import { engineRouter } from "./routers/engine.js";
-import { mcpRouter } from "./routers/mcp.js";
 import { policyRouter } from "./routers/policy.js";
 import { eventRouter } from "./routers/event.js";
 import { publicRouter } from "./routers/public.js";
@@ -9,9 +8,12 @@ import { shareRouter } from "./routers/share.js";
 import { storeRouter } from "./routers/store.js";
 import { taskRouter } from "./routers/task.js";
 import { workflowRouter } from "./routers/workflow.js";
+import { accountRouter } from "./routers/account.js";
 import { createCallerFactory, createContext, router, type Context } from "./trpc.js";
+import { accountIdForWebRequest } from "./auth-context.js";
 
 export const appRouter = router({
+  account: accountRouter,
   workflow: workflowRouter,
   task: taskRouter,
   run: runRouter,
@@ -21,8 +23,6 @@ export const appRouter = router({
   endpoint: endpointRouter,
   /** Which executors the engine registered, and whether it is alive (U3a). */
   engine: engineRouter,
-  /** MCP server registration — the asset nodes' tool sources (U3a). */
-  mcp: mcpRouter,
   /** S7 grants, account baseline, and the approvals inbox. */
   policy: policyRouter,
   /** The store browser + query console (U3.5) — every procedure routes through
@@ -43,6 +43,10 @@ const callerFactory = createCallerFactory(appRouter);
  */
 export function createCaller(ctx: Context = createContext()) {
   return callerFactory(ctx);
+}
+
+export async function createServerCaller() {
+  return callerFactory({ ...createContext(), accountId: await accountIdForWebRequest() });
 }
 
 export type { Context };

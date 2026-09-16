@@ -4,21 +4,13 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts",
-    "./servers": "./src/servers.ts"
+    ".": "./src/index.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "@tabductor/browser": "workspace:*",
-    "@tabductor/core": "workspace:*",
-    "@tabductor/db": "workspace:*",
-    "@tabductor/policy": "workspace:*",
-    "@tabductor/secrets": "workspace:*",
-    "@tabductor/telemetry": "workspace:*",
-    "drizzle-orm": "^0.44.0",
     "zod": "^3.25.0"
   },
   "devDependencies": {

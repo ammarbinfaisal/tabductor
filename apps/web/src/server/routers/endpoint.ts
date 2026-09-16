@@ -8,7 +8,8 @@ import {
   updateWorkflowEndpoint,
 } from "@tabductor/engine";
 import { z } from "zod";
-import { procedure, router } from "../trpc.js";
+import { procedure, requireWorkflowOwner, router } from "../trpc.js";
+import { LOCAL_ACCOUNT } from "../auth-context.js";
 
 /**
  * CDP endpoints: the global health panel (U1.5) and, since U3a, each workflow's own ordered
@@ -47,21 +48,25 @@ const ENDPOINT_URL = z
   );
 
 export const endpointRouter = router({
-  list: procedure.query(({ ctx }) => listCdpEndpoints(ctx.db)),
+  list: procedure.query(({ ctx }) => listCdpEndpoints(ctx.db, ctx.accountId ?? LOCAL_ACCOUNT)),
 
   listForWorkflow: procedure
     .input(z.object({ workflowId: z.string().min(1) }))
-    .query(({ ctx, input }) => listWorkflowEndpoints(ctx.db, input.workflowId)),
+    .query(async ({ ctx, input }) => {
+      await requireWorkflowOwner(ctx, input.workflowId);
+      return listWorkflowEndpoints(ctx.db, input.workflowId);
+    }),
 
   add: procedure
     .input(z.object({ workflowId: z.string().min(1), wsUrl: ENDPOINT_URL, label: z.string().trim().max(120).optional() }))
-    .mutation(({ ctx, input }) =>
-      addWorkflowEndpoint(ctx.db, {
+    .mutation(async ({ ctx, input }) => {
+      await requireWorkflowOwner(ctx, input.workflowId);
+      return addWorkflowEndpoint(ctx.db, {
         workflowId: input.workflowId,
         wsUrl: input.wsUrl,
         ...(input.label ? { label: input.label } : {}),
-      }),
-    ),
+      });
+    }),
 
   /** In-place edit, keeping the endpoint's id and its place in the rotation order. An
    * omitted field is left as it was; an empty `label` clears it. */
@@ -75,6 +80,7 @@ export const endpointRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await requireWorkflowOwner(ctx, input.workflowId);
       const row = await updateWorkflowEndpoint(ctx.db, {
         workflowId: input.workflowId,
         id: input.id,
@@ -91,11 +97,15 @@ export const endpointRouter = router({
 
   remove: procedure
     .input(z.object({ workflowId: z.string().min(1), id: z.string().min(1) }))
-    .mutation(async ({ ctx, input }) => ({ removed: await removeWorkflowEndpoint(ctx.db, input) })),
+    .mutation(async ({ ctx, input }) => {
+      await requireWorkflowOwner(ctx, input.workflowId);
+      return { removed: await removeWorkflowEndpoint(ctx.db, input) };
+    }),
 
   reorder: procedure
     .input(z.object({ workflowId: z.string().min(1), ids: z.array(z.string().min(1)).max(100) }))
     .mutation(async ({ ctx, input }) => {
+      await requireWorkflowOwner(ctx, input.workflowId);
       await reorderWorkflowEndpoints(ctx.db, input);
       return listWorkflowEndpoints(ctx.db, input.workflowId);
     }),

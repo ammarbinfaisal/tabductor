@@ -114,13 +114,13 @@ export function RunsTable({ source }: { source: RunsSource }) {
       <table className="ledger">
         <thead>
           <tr>
-            <th>Task</th>
+            <th>Phase</th>
             <th>Status</th>
             <th>Attempt</th>
             <th>Started</th>
             <th>Ended</th>
             <th>Error</th>
-            <th>Trigger</th>
+            <th>Input</th>
             <th />
           </tr>
         </thead>
@@ -141,7 +141,7 @@ export function RunsTable({ source }: { source: RunsSource }) {
               <td>
                 {run.triggerHref ? (
                   <Link className="mono" href={run.triggerHref}>
-                    trigger
+                    Input packet
                   </Link>
                 ) : (
                   <span className="muted">—</span>
@@ -174,7 +174,7 @@ export function WorkflowRuns({ workflowId }: { workflowId: string }) {
     endedAt: run.endedAt,
     error: run.error,
     triggerHref: run.triggerEventId
-      ? `/workflows/${workflowId}/events?event=${run.triggerEventId}`
+      ? `/workflows/${workflowId}?event=${run.triggerEventId}`
       : null,
     cancellable: run.status === "queued" || run.status === "running" || run.status === "awaiting_approval",
     inspectHref: `/workflows/${workflowId}/runs/${run.id}`,
@@ -184,7 +184,7 @@ export function WorkflowRuns({ workflowId }: { workflowId: string }) {
     <RunsTable
       source={{
         scope: `workflow:${workflowId}`,
-        emptyHint: "No runs yet. Publish, wait for a schedule, or use Trigger now in the editor.",
+        emptyHint: "No runs yet. Publish, wait for a schedule, or use Run now in the editor.",
         async load({ status, cursor }) {
           const page = await api.run.list.query({
             workflowId,

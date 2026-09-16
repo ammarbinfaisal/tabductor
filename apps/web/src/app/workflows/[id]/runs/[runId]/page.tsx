@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { TRPCError } from "@trpc/server";
 import { RunInspector } from "../../../../../components/run-inspector.js";
-import { createCaller } from "../../../../../server/router.js";
+import { createServerCaller } from "../../../../../server/router.js";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
  */
 export default async function RunPage({ params }: { params: Promise<{ id: string; runId: string }> }) {
   const { id, runId } = await params;
-  await createCaller()
+  await (await createServerCaller())
     .run.get({ runId })
     .catch((err: unknown) => {
       if (err instanceof TRPCError && err.code === "NOT_FOUND") notFound();

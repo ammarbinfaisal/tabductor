@@ -1,6 +1,6 @@
 import { createDispatcher, publish, type Dispatcher } from "@tabductor/bus";
-import { createEngine, type Engine, type EngineDeps, type ExecutorRegistry } from "@tabductor/engine";
-import { events, outbox, runs, type EventRow, type RunRow } from "@tabductor/db";
+import { createEngine, createWorkflowExecution, type Engine, type EngineDeps, type ExecutorRegistry } from "@tabductor/engine";
+import { events, outbox, runs, tasks, workflowVersions, type EventRow, type RunRow } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import { asc, eq, inArray } from "drizzle-orm";
 
@@ -27,7 +27,7 @@ export type RigOptions = {
   /** Reuse an already-migrated DB instead of creating one — how a restart is simulated. */
   handle?: MigratedTestDb;
   /** Defaults to `createEngine`'s own default (`{ "browser:stub": StubExecutor }`) — pass
-   * this to also exercise `AssetExecutor` or another `(kind, mode)` registration. */
+   * this to exercise another `(kind, mode)` registration. */
   executors?: ExecutorRegistry;
 };
 
@@ -128,8 +128,18 @@ export async function trigger(
   type: string,
   packet: unknown = {},
 ): Promise<EventRow> {
+  const [source] = await on.handle.db.select({
+    workflowId: workflowVersions.workflowId,
+    versionId: tasks.workflowVersionId,
+  }).from(tasks).innerJoin(workflowVersions, eq(workflowVersions.id, tasks.workflowVersionId))
+    .where(eq(tasks.id, taskId));
+  if (!source) throw new Error(`no task ${taskId}`);
+  const executionId = await createWorkflowExecution(on.handle.db, {
+    workflowId: source.workflowId,
+    workflowVersionId: source.versionId,
+  });
   return on.handle.db.transaction((trx) =>
-    publish(trx, { type, sourceTaskId: taskId, packet }),
+    publish(trx, { type, executionId, sourceTaskId: taskId, packet }),
   );
 }
 

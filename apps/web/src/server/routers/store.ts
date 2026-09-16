@@ -11,7 +11,7 @@ import {
 } from "@tabductor/store";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { procedure, router } from "../trpc.js";
+import { procedure, requireWorkflowOwner, router, type Context } from "../trpc.js";
 import { storeTableSpecSchema } from "./workflow.js";
 
 /**
@@ -24,10 +24,7 @@ import { storeTableSpecSchema } from "./workflow.js";
  * workflow id from the URL instead of an agent's tool call.
  */
 
-async function requireWorkflow(ctx: { db: Parameters<typeof getWorkflow>[0] }, workflowId: string): Promise<void> {
-  const workflow = await getWorkflow(ctx.db, workflowId);
-  if (!workflow) throw new TRPCError({ code: "NOT_FOUND", message: `no workflow "${workflowId}"` });
-}
+const requireWorkflow = (ctx: Context, workflowId: string) => requireWorkflowOwner(ctx, workflowId);
 
 function requirePool<T extends { pool?: unknown }>(ctx: T): asserts ctx is T & { pool: NonNullable<T["pool"]> } {
   if (!ctx.pool) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "no pool configured for this context" });

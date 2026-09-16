@@ -119,7 +119,7 @@ export function EventFeed({ source, initialKey }: { source: EventsSource; initia
         <thead>
           <tr>
             <th>Type</th>
-            <th>Source</th>
+            <th>Phase</th>
             <th>At</th>
             <th>Packet</th>
           </tr>
@@ -142,8 +142,7 @@ export function EventFeed({ source, initialKey }: { source: EventsSource; initia
 
       {state.items.length === 0 ? (
         <p className="muted">
-          No events yet. Packets land here when a node runs — Trigger now in the editor is the
-          fastest way to see one.
+          No activity yet. Outputs appear here as the workflow runs.
         </p>
       ) : null}
       {state.nextCursor ? <button onClick={() => store.more()}>Older</button> : null}

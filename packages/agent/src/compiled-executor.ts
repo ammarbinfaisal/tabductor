@@ -149,6 +149,7 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
         }
 
         lease = await pool.acquire(await endpointFor(handle), handle.run.id);
+        if (handle.signal.aborted) return { ok: false, error: "run_cancelled", permanent: true };
         const trace = createTraceRecorder(db, blobs, handle.run.id, storageFlagsOf(handle.task));
         const limits = browserLimitsOf(handle.task);
         session = await openRunSession({
@@ -216,6 +217,7 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
           emits,
           trace,
           maxSteps: maxStepsOf(handle.task),
+          signal: handle.signal,
         });
         const runResult = toRunResult(loop);
         ok = runResult.ok;

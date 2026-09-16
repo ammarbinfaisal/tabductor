@@ -5,8 +5,8 @@ import { z } from "zod";
 /**
  * The browser node's LLM-facing tool registry (§4). A `ToolDef[]`, not a switch — S7 removes
  * un-granted entries from this list before it ever reaches an `Llm`, and a list is the only
- * shape that operation can act on without this file's cooperation. No `mcp.*`/`assets.*`/
- * `store.*` name is ever added here — that boundary belongs to the browser node forever
+ * shape that operation can act on without this file's cooperation. No `store.*` name is
+ * ever added here — that boundary belongs to the browser node forever
  * (§4, ROADMAP.md "the registries are disjoint by design").
  *
  * Every tool result a page or the network produced is wrapped in `untrustedBlock` before it
@@ -15,7 +15,7 @@ import { z } from "zod";
  * defence is the navigation allowlist and capability grants (Phase 7), not this string.
  */
 
-export type ToolResult = { ok: true; value: unknown } | { ok: false; error: string };
+export type ToolResult = { ok: true; value: unknown } | { ok: false; error: string; value?: unknown };
 
 export type AgentTool = {
   name: string;
@@ -39,49 +39,14 @@ export type EmitOutcome =
 
 export type EmitFn = (type: string, packet: unknown, dedupeKey?: string) => Promise<EmitOutcome>;
 
-/** What `page.upload` needs back from the asset store — a structural echo of
- * `@tabductor/assets`'s `ResolvedAsset`, duplicated rather than imported for the same reason
- * `packages/assets/src/tools.ts`'s own doc comment gives for duplicating `AgentTool`: this file
- * stays free of an `@tabductor/assets` dependency, so "no `assets.*` tool name is ever added
- * here" (this file's own header comment) stays true of the whole file, not just its tool list. */
-export type ResolvedAssetFile = { bytes: Buffer; mime: string; path: string; sha256: string };
-
-/** `undefined` for "no such asset in this task's namespace" — `page.upload` turns that into an
- * ordinary tool error, the same "recoverable, not a crash" contract every other lookup in this
- * file follows (`mustResolve`, `defineTool`'s own zod failure path). */
-export type ReadAssetFn = (assetId: string) => Promise<ResolvedAssetFile | undefined>;
 export type FillSecretFn = (secretName: string, anchor: string) => Promise<{ ok: true }>;
 
 export type AgentToolDeps = {
   session: RunSession;
   emit: EmitFn;
-  /**
-   * S5f wiring: resolves an asset ref's `asset_id` (from a trigger/consumed packet, §13.5) to
-   * bytes for `page.upload`, via `@tabductor/assets`'s `readAssetById` — `executor.ts` is the
-   * only place this file's caller actually builds one, closed over that run's own `userId`.
-   * Optional for the same reason `AssetToolRegistryDeps.render` is: a rig with nothing wired
-   * (most of S4b's own suite, which never calls `page.upload`) still gets the tool, it just
-   * fails closed with `NO_ASSET_STORE_CONFIGURED` if a task ever calls it without one.
-   */
-  readAsset?: ReadAssetFn;
   /** Host-side broker call; plaintext never crosses this function boundary. */
   fillSecret?: FillSecretFn;
 };
-
-/** See `AgentToolDeps.readAsset`'s doc comment — the same "present but unconfigured fails
- * closed" shape `asset-tools.ts`'s `RENDERER_NOT_CONFIGURED` uses for `assets.render`. */
-const NO_ASSET_STORE_CONFIGURED: ReadAssetFn = async () => undefined;
-
-/** `{asset_id, path, mime, sha256}` — the wire shape of `@tabductor/core`'s `ASSET_REF_SCHEMA`
- * (§13.5), restated in zod rather than imported: the JSON-Schema fragment is for packet
- * *validation* (ajv, at emit/publish time); this is for *this tool's own argument shape*, the
- * same "each file owns its own zod" rule every other `defineTool` call in this registry follows. */
-const assetRefSchema = z.object({
-  asset_id: z.string().min(1),
-  path: z.string().min(1),
-  mime: z.string().min(1),
-  sha256: z.string().min(1),
-});
 
 /** Labelled marker around page/network-derived content (§16 Threat 1d). A string, not an
  * object wrapper, because tool results eventually flatten into `LlmMessage.content` text
@@ -225,13 +190,12 @@ function encodeNetworkRead(result: NetworkReadResult): Record<string, unknown> {
 }
 
 const fieldSpecSchema = z.object({ selector: z.string().optional(), attr: z.string().optional() });
+const waitTimeoutSchema = z.number().int().positive().max(120_000).optional();
+const loadStateSchema = z.enum(["domcontentloaded", "load", "networkidle"]);
+const AI_WAIT_TIMEOUT_MS = 60_000;
 
 /**
- * `emit`/`done`/`fail` (S5c): pulled out to standalone builders because both node kinds carry
- * them verbatim — neither reads a page or a session, so there was never a browser-specific
- * reason for them to live only inside `buildToolRegistry`. `buildAssetToolRegistry`
- * (`asset-tools.ts`) calls these three directly instead of restating the same `emit`
- * dedupe-outcome switch and `done`/`fail` wrappers a second time.
+ * `emit`/`done`/`fail`: standalone builders shared by browser and decision registries.
  */
 export function emitTool(emit: EmitFn): AgentTool {
   return defineTool({
@@ -279,15 +243,43 @@ export function failTool(): AgentTool {
 }
 
 export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
-  const { session, emit, readAsset = NO_ASSET_STORE_CONFIGURED, fillSecret } = deps;
+  const { session, emit, fillSecret } = deps;
+  let recoveryRequired = false;
+  let failedWait: string | null = null;
+  const waitKey = (args: unknown): string | null => {
+    if (!args || typeof args !== "object") return null;
+    const a = args as { anchor?: string; text?: string; state?: string };
+    const selector = a.anchor ? session.resolveAnchor(a.anchor) : a.text ? `text=${a.text}` : undefined;
+    return selector ? `${a.state ?? "visible"}:${selector}` : null;
+  };
 
   return [
     defineTool({
+      name: "page.perceive",
+      description: "Inspect the current page again without navigating or interacting. Returns fresh text and anchors. Use after a timeout, DOM change, or unexpected result to choose a different target.",
+      parameters: z.object({ maxChars: z.number().int().positive().max(20_000).optional() }),
+      async execute(opts) {
+        const perception = await session.page.perceive(opts);
+        return { ok: true, value: untrustedBlock("page perception", summarizePerception(perception)) };
+      },
+    }),
+
+    defineTool({
       name: "page.goto",
-      description: "Navigate to a URL. Returns a fresh perception of the page once loaded.",
-      parameters: z.object({ url: z.string().min(1) }),
-      async execute({ url }) {
-        await session.page.goto(url);
+      description: "Navigate to a URL, waiting up to 60s for load by default. Returns fresh perception. Client-rendered apps may still need a response or visible-element wait.",
+      parameters: z.object({ url: z.string().min(1), waitUntil: loadStateSchema.optional(), timeoutMs: waitTimeoutSchema }),
+      async execute({ url, waitUntil, timeoutMs }) {
+        await session.page.goto(url, { waitUntil: waitUntil ?? "load", timeout: timeoutMs ?? AI_WAIT_TIMEOUT_MS });
+        return perceptionResult(session);
+      },
+    }),
+
+    defineTool({
+      name: "page.waitForLoadState",
+      description: "Wait for domcontentloaded, load, or networkidle (500ms without network connections), then return fresh perception. Defaults to load and 60s. Network idle can time out on polling apps and does not prove the required UI rendered; follow with a visible-element wait.",
+      parameters: z.object({ state: loadStateSchema.optional(), timeoutMs: waitTimeoutSchema }),
+      async execute({ state, timeoutMs }) {
+        await session.page.waitForLoadState(state ?? "load", { timeout: timeoutMs ?? AI_WAIT_TIMEOUT_MS });
         return perceptionResult(session);
       },
     }),
@@ -330,12 +322,13 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
       name: "page.waitFor",
       description:
         "Wait for an element to appear, either by anchor (from the most recent perception) or by " +
-        "its visible text. Returns a fresh perception once it appears.",
+        "its visible text. Defaults to visible and 60s; use hidden to wait for a loading indicator to disappear. Returns fresh perception. Allow up to 120s for slow apps.",
       parameters: z
         .object({
           anchor: z.string().min(1).optional(),
           text: z.string().min(1).optional(),
-          timeoutMs: z.number().int().positive().max(60_000).optional(),
+          timeoutMs: waitTimeoutSchema,
+          state: z.enum(["attached", "detached", "visible", "hidden"]).optional(),
         })
         .refine((v) => v.anchor !== undefined || v.text !== undefined, {
           message: "waitFor needs either an anchor or text",
@@ -350,7 +343,7 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
           // Playwright's own text-selector engine — no hand-built CSS or escaping here.
           selector = `text=${args.text}`;
         }
-        await session.page.waitFor(selector, args.timeoutMs === undefined ? undefined : { timeout: args.timeoutMs });
+        await session.page.waitFor(selector, { timeout: args.timeoutMs ?? AI_WAIT_TIMEOUT_MS, state: args.state ?? "visible" });
         return perceptionResult(session);
       },
     }),
@@ -360,7 +353,10 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
       description:
         "Read structured fields from an element (by anchor) or the whole page (anchor omitted). " +
         "`fields` maps a name to {selector?, attr?} — omit `selector` for the element's own text, " +
-        "omit `attr` to read trimmed text instead of an attribute.",
+        "omit `attr` to read trimmed text instead of an attribute. Field selectors support Playwright syntax, " +
+        "including :has-text(), relative to the anchor. Each field reads its first match; missing matches are null. " +
+        "For repeated items, extract each item's anchor separately. Correct invalid selectors and retry; " +
+        "omit a broken field only when it is optional for the task and event schema.",
       parameters: z.object({
         anchor: z.string().min(1).optional(),
         fields: z.record(z.string(), fieldSpecSchema),
@@ -374,40 +370,6 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
         }
         const records = await session.page.queryAll(root, args.fields);
         return { ok: true, value: untrustedBlock("page.extract", { records }) };
-      },
-    }),
-
-    defineTool({
-      name: "page.upload",
-      description:
-        "Upload an asset onto the file-input element at `anchor`, using an asset ref you read " +
-        "from an event packet ({asset_id, path, mime, sha256} — §13.5). Sets the input's file; " +
-        "does not submit any surrounding form — follow with page.click on the submit control, " +
-        "the same two-step shape page.type/page.click already use.",
-      parameters: z.object({ anchor: z.string().min(1), assetRef: assetRefSchema }),
-      async execute({ anchor, assetRef }) {
-        const locator = mustResolve(session, anchor);
-        if (typeof locator !== "string") return locator;
-
-        const resolved = await readAsset(assetRef.asset_id);
-        if (!resolved) {
-          return { ok: false, error: `no asset "${assetRef.asset_id}" readable by this task` };
-        }
-        // Belt-and-suspenders (§16): the ref is untrusted-adjacent (it rode in on an event
-        // packet another task emitted), and the store is the ground truth — a mismatch means
-        // the ref is stale or was tampered with, either way not something to upload silently.
-        if (resolved.sha256 !== assetRef.sha256) {
-          return {
-            ok: false,
-            error:
-              `asset ref sha256 mismatch for "${assetRef.asset_id}": the ref says ` +
-              `${assetRef.sha256}, the store has ${resolved.sha256} — refusing a stale upload`,
-          };
-        }
-
-        const filename = resolved.path.split("/").pop() || resolved.path;
-        await session.page.upload(locator, { name: filename, mimeType: resolved.mime, bytes: resolved.bytes });
-        return perceptionResult(session);
       },
     }),
 
@@ -443,6 +405,27 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
     }),
 
     defineTool({
+      name: "network.waitForResponse",
+      description:
+        "Wait up to 60s for a fully downloaded response matching a literal URL substring observed in network.list. " +
+        "Includes already completed requests since the latest explicit navigation. To wait for a new response after an interaction, " +
+        "record network.list's unfiltered total minus one BEFORE the interaction and pass it as afterIndex. " +
+        "Optional method/status narrow the match. Returns request metadata and fresh page perception; confirm the required UI is visible afterwards.",
+      parameters: z.object({
+        urlPattern: z.string().min(1),
+        method: z.string().min(1).optional(),
+        status: z.number().int().min(100).max(599).optional(),
+        afterIndex: z.number().int().min(-1).optional(),
+        timeoutMs: waitTimeoutSchema,
+      }),
+      async execute({ timeoutMs, ...opts }) {
+        const record = await session.network.waitForResponse({ ...opts, timeout: timeoutMs ?? AI_WAIT_TIMEOUT_MS });
+        const perception = await session.page.perceive();
+        return { ok: true, value: untrustedBlock("network.waitForResponse", { record, perception: summarizePerception(perception) }) };
+      },
+    }),
+
+    defineTool({
       name: "network.read",
       description:
         "Read parts of one observed network request by its `index` (from network.list). " +
@@ -460,5 +443,36 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
     emitTool(emit),
     doneTool(),
     failTool(),
-  ];
+  ].map((tool): AgentTool => ({
+    ...tool,
+    async execute(args) {
+      const wait = tool.name === "page.waitFor" ? waitKey(args) : null;
+      const unavailable = tool.name === "emit" && typeof args === "object" && args !== null &&
+        "type" in args && typeof args.type === "string" && /(?:^|\.)page_unavailable$/.test(args.type);
+      if (recoveryRequired && (unavailable || tool.name === "done" || tool.name === "fail")) {
+        return { ok: false, error: "A page tool failed, which does not prove the page is unavailable. Inspect the fresh perception, then try a different readiness target, interaction, or extraction before concluding. Visible task data should be used even if one optional tab or anchor failed." };
+      }
+      if (recoveryRequired && wait !== null && wait === failedWait) {
+        return { ok: false, error: "This same wait already failed. Choose a different target from the fresh perception, or extract the visible task data; repeating the same locator does not explore the page." };
+      }
+      const result = await tool.execute(args);
+      if (!result.ok && tool.name.startsWith("page.") &&
+          (result.error.startsWith(`${tool.name} failed:`) || result.error.startsWith("stale anchor"))) {
+        recoveryRequired = true;
+        failedWait = wait;
+        try {
+          const fresh = await session.page.perceive();
+          return { ...result, error: `${result.error} Re-inspect the attached current page and try a different target or extraction; this is not evidence that the whole page is unavailable.`, value: untrustedBlock("page after tool failure", summarizePerception(fresh)) };
+        } catch (err) {
+          if (err instanceof Error && "code" in err && TERMINAL_CODES.has(String(err.code))) throw err;
+          return result;
+        }
+      }
+      if (result.ok && ["page.goto", "page.click", "page.type", "page.scroll", "page.waitFor", "page.extract", "network.read", "network.waitForResponse"].includes(tool.name)) {
+        recoveryRequired = false;
+        failedWait = null;
+      }
+      return result;
+    },
+  }));
 }

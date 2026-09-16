@@ -3,14 +3,14 @@
 > **Built as specified, with the deviations noted inline below and summarized at the end.**
 > No prompt file existed for this slice — the orchestrator's task prompt *was* the spec, and
 > this document is that spec rewritten in the house `docs/subphases/SNN-*.md` shape, folded
-> together with what actually shipped (`U1.5-run-inspector.md`'s own pattern, one slice ago).
+> together with what actually shipped in the run inspector.
 
 You are implementing UI-track slice U2. Read, in order:
 1. This file (authoritative).
 2. `docs/impl-phases.md` — the UI track table (U2 row) and its two standing rules. The row's
    parenthetical ("prompts, token counts, tool-call sequences") needs the correction argued in
    deviation 1 below before it can be read literally.
-3. `docs/subphases/U1.5-run-inspector.md` and `S4b-agent-loop.md` — the run inspector's row
+3. `docs/trace-compilation.md` — the run inspector's row
    idiom and what S4b actually writes to a run's trace, both binding as-built records.
 4. Existing code: `apps/web/src/components/run-inspector.tsx`, `apps/web/src/server/routers/run.ts`
    (`run.trace`, `run.get`), `packages/agent/src/llm.ts` (`withTrace`), `packages/agent/src/executor.ts`

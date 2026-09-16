@@ -7,16 +7,20 @@
     "build": "tsc -p tsconfig.json && pnpm -F web typecheck",
     "build:web": "pnpm -F web build",
     "dev:web": "pnpm -F web dev",
-    "lint": "eslint packages apps/engine apps/renderer apps/pyrunner && node packages/secrets/scripts/leak-lint.mjs && pnpm -F web lint",
+    "lint": "eslint packages apps/engine && node packages/secrets/scripts/leak-lint.mjs && pnpm -F web lint",
     "test": "vitest run",
     "test:system": "vitest run --project system",
     "test:live-eval": "vitest run -c vitest.live-eval.config.ts",
-    "dev:engine": "tsx watch apps/engine/src/main.ts"
+    "dev:engine": "tsx watch apps/engine/src/main.ts",
+    "staging:up": "bash scripts/staging/up.sh",
+    "staging:down": "bash scripts/staging/down.sh",
+    "staging:reset": "bash scripts/staging/reset.sh",
+    "staging:test": "bash scripts/staging/test.sh",
+    "staging:test:live": "TABDUCTOR_STAGING_LIVE=1 bash scripts/staging/test.sh"
   },
   "devDependencies": {
     "@opentelemetry/api": "^1.9.0",
     "@tabductor/agent": "workspace:*",
-    "@tabductor/assets": "workspace:*",
     "@tabductor/browser": "workspace:*",
     "@tabductor/bus": "workspace:*",
     "@tabductor/compiler": "workspace:*",

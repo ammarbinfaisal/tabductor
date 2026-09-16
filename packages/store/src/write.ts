@@ -1,6 +1,7 @@
 import { Ajv, type ValidateFunction } from "ajv";
 import { sql, eq } from "drizzle-orm";
 import { storeWriteGrants, type Db } from "@tabductor/db";
+import type { PolicyGate, TaskCtx } from "@tabductor/policy";
 import type { StoreTableSpec } from "./ddl.js";
 import { wfIdsOf, type WorkflowStoreIds } from "./ids.js";
 
@@ -27,16 +28,22 @@ export function validateRow(table: string, spec: StoreTableSpec, row: unknown): 
 }
 
 /**
- * The exact `checkWriteGrant` (`packages/assets/src/grants.ts`) shape applied to
- * `store_write_grants` instead of `asset_write_grants`: zero rows for a task means open
+ * The store-table write grant: zero rows for a task means open
  * (every table the workflow's store declares), at least one row scopes the task to exactly
  * those tables. Not a second design — the same "bounded blast radius, `AllowAllGate`-era
- * default" reasoning S5d already argued once.
+ * default" policy used by the legacy permissive gate.
  */
-export async function checkStoreWriteGrant(db: Db, taskId: string, table: string): Promise<boolean> {
+export async function checkStoreWriteGrant(
+  db: Db,
+  taskId: string,
+  table: string,
+  policy?: { gate: PolicyGate; taskCtx: TaskCtx },
+): Promise<boolean> {
   const grants = await db.select({ table: storeWriteGrants.tableName }).from(storeWriteGrants).where(eq(storeWriteGrants.taskId, taskId));
-  if (grants.length === 0) return true;
-  return grants.some((g) => g.table === table);
+  const legacyScopeAllows = grants.length === 0 || grants.some((g) => g.table === table);
+  if (!legacyScopeAllows) return false;
+  if (!policy) return true;
+  return (await policy.gate.checkStoreWrite(policy.taskCtx, table)).allow;
 }
 
 /**

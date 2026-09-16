@@ -8,6 +8,9 @@ export type {
   ExtractSpec,
   FieldSpec,
   LocatorStrategy,
+  LoadState,
+  NavigationOptions,
+  WaitOptions,
   NavigationHook,
   NavigationRequest,
   NetworkBody,
@@ -21,6 +24,10 @@ export type {
   TargetProbe,
 } from "./driver.js";
 export { playwrightDriver } from "./playwright-driver.js";
+export {
+  createCamoufoxWorkerDriver,
+  type CamoufoxWorkerDriverOptions,
+} from "./camoufox-worker-driver.js";
 export {
   createMinioBlobStore,
   type BlobRef,
@@ -41,6 +48,7 @@ export {
   type NetworkListResult,
   type NetworkReadPart,
   type NetworkReadResult,
+  type NetworkWaitOptions,
   type ResourceLimits,
   type RunSession,
   type SessionDeps,

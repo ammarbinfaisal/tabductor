@@ -155,6 +155,41 @@
       "when": 1789289043231,
       "tag": "0021_wet_peter_quill",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1789292688593,
+      "tag": "0022_violet_katie_power",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1789298045392,
+      "tag": "0023_clammy_lord_tyger",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1789563060456,
+      "tag": "0024_furry_thena",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1789563397147,
+      "tag": "0025_cultured_red_skull",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1789564805802,
+      "tag": "0026_bouncy_wind_dancer",
+      "breakpoints": true
     }
   ]
 }

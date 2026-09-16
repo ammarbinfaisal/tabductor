@@ -48,7 +48,7 @@ function graph(overrides: { scrapePrompt?: string; reportPrompt?: string } = {})
       },
       {
         name: "Report",
-        kind: "asset",
+        kind: "decision",
         mode: "ai",
         prompt: overrides.reportPrompt ?? "Append each tweet to the daily report.",
         limits: {},
@@ -103,12 +103,13 @@ it("publish compiles an internal prompt per node from the whole graph, and the a
   expect(brief).not.toContain("python.run");
   expect(brief).not.toContain("Workflow store tables");
 
-  const assetBrief = report$!.compiledPrompt!;
-  expect(assetBrief).toContain("## Events that trigger this node");
-  expect(assetBrief).toContain("emitted by: Scrape");
-  expect(assetBrief).toContain("- python.run:");
-  expect(assetBrief).toContain("- store.query:");
-  expect(assetBrief).toContain("(none declared — do not call emit)");
+  const decisionBrief = report$!.compiledPrompt!;
+  expect(decisionBrief).toContain("## Events that trigger this node");
+  expect(decisionBrief).toContain("emitted by: Scrape");
+  expect(decisionBrief).toContain("- store.query:");
+  expect(decisionBrief).toContain("- store.insert:");
+  expect(decisionBrief).toContain("- store.upsert:");
+  expect(decisionBrief).toContain("(none declared — do not call emit)");
   expect(scrape!.contentHash).toMatch(/^[0-9a-f]{64}$/);
 });
 

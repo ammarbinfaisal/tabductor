@@ -1,8 +1,9 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
-import { generateText, type LanguageModel } from "ai";
+import { generateText, streamText, tool, type ToolSet, type LanguageModel } from "ai";
 import { llmPromptCompiler, PROMPT_SYSTEM_PROMPT, type PromptCompiler } from "./prompt-compiler.js";
 import type { SchemaGenerator } from "./schema-generator.js";
+import { llmGraphCompiler, type GraphCompiler } from "./graph-authoring.js";
 import { llmSchemaGenerator, SCHEMA_SYSTEM_PROMPT, type ChatTransport } from "./schema-generator-llm.js";
 
 /**
@@ -44,6 +45,12 @@ export function aiPromptCompiler(opts: AiSchemaGeneratorOptions): PromptCompiler
   return llmPromptCompiler(chatTransport(languageModel(opts), PROMPT_SYSTEM_PROMPT));
 }
 
+export function aiGraphCompiler(opts: AiSchemaGeneratorOptions & { pool?: import("pg").Pool }): GraphCompiler {
+  return llmGraphCompiler(chatTransport(languageModel(opts), "You design checked workflow graphs."), {
+    ...(opts.pool ? { pool: opts.pool } : {}),
+  });
+}
+
 function chatTransport(model: LanguageModel, system: string): ChatTransport {
   return {
     async complete(turns) {
@@ -83,4 +90,22 @@ export function providerFromEnv(env: {
   if (env.ANTHROPIC_API_KEY) return { provider: "anthropic", apiKey: env.ANTHROPIC_API_KEY };
   if (env.OPENAI_API_KEY) return { provider: "openai", apiKey: env.OPENAI_API_KEY };
   return null;
+}
+
+/** Stream conversational text while keeping graph tool execution in the tested controller. */
+export function aiWorkflowChatModel(opts: AiSchemaGeneratorOptions): import("./workflow-chat.js").WorkflowChatModel {
+  const model = languageModel(opts);
+  return {
+    async complete(input) {
+      const tools: ToolSet = Object.fromEntries(input.tools.map((entry) => [entry.name, tool({ description: entry.description, inputSchema: entry.parameters })]));
+      const result = streamText({ model, system: input.system, messages: input.messages, tools,
+        ...(input.signal ? { abortSignal: input.signal } : {}),
+      });
+      for await (const part of result.fullStream) {
+        if (part.type === "text-delta") input.onText(part.text);
+        if (part.type === "error") throw part.error;
+      }
+      return { text: await result.text, toolCalls: (await result.toolCalls).map((call) => ({ id: call.toolCallId, name: call.toolName, args: call.input })) };
+    },
+  };
 }

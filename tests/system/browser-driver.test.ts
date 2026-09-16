@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
 import { playwrightDriver } from "@tabductor/browser";
+import { buildToolRegistry, runAgentLoop } from "@tabductor/agent";
 import {
   openSession,
   payloadOf,
@@ -93,6 +94,60 @@ it("records the failure as well as the success", async () => {
   const failed = rows.find((r) => payloadOf(r).action === "waitFor")!;
   expect(payloadOf(failed).ok).toBe(false);
   expect(String(payloadOf(failed).error)).toContain("#nothing-here");
+});
+
+it("extracts Playwright field selectors per row with nulls for missing fields", async () => {
+  sess = await openSession(rig);
+  const { page } = sess.session;
+  await page.goto(`${rig.fx.url}/fake-tweets`);
+  await page.waitFor('[data-testid="tweet"]');
+  const records = await page.queryAll('[data-testid="tweet"]', {
+    text: { selector: '[data-testid="tweetText"]:has-text("tweet")' },
+    missing: { selector: 'span:has-text("Ad"), span:has-text("Promoted")' },
+    href: { selector: 'a:has-text("")', attr: "href" },
+    own: {},
+  });
+  expect(records.length).toBeGreaterThanOrEqual(3);
+  expect(records[0]).toMatchObject({ text: "first tweet", missing: null, href: "/fake-tweets/status/t1" });
+  expect(records[1]!.text).not.toBe(records[0]!.text);
+  expect(records[0]!.own).toContain("first tweet");
+  await expect(page.queryAll(".no-such-root", {
+    promoted: { selector: "span[" },
+  })).rejects.toMatchObject({
+    code: "browser.invalid_extract_selector",
+    details: { field: "promoted", selector: "span[" },
+  });
+});
+
+it("returns an actionable extraction error to the agent and supports a corrected retry", async () => {
+  sess = await openSession(rig);
+  await sess.session.page.goto(`${rig.fx.url}/fake-tweets`);
+  await sess.session.page.waitFor('[data-testid="tweet"]');
+  let turn = 0;
+  const result = await runAgentLoop({
+    tools: buildToolRegistry({ session: sess.session, emit: async () => ({ outcome: "deduped" }) }),
+    task: { prompt: "Read tweet text." }, trigger: null, emits: [], trace: sess.trace,
+    maxSteps: 3,
+    llm: { async complete(req) {
+      const step = turn++;
+      if (step === 1) {
+        expect(req.messages.at(-1)!.content).toContain("Invalid extraction selector");
+        expect(req.messages.at(-1)!.content).toContain("retry page.extract");
+      }
+      if (step === 2) {
+        expect(req.messages.at(-1)!.content).toContain("first tweet");
+        expect(req.messages.at(-1)!.content).toContain('"ok":true');
+      }
+      return { usage: { in: 0, out: 0 }, toolCalls: [{
+        id: String(step), name: step === 2 ? "done" : "page.extract",
+        args: step === 2 ? { result: "read" } : { fields: {
+          text: { selector: step === 0 ? "span[" : '[data-testid="tweetText"]:has-text("first")' },
+        } },
+      }] };
+    } },
+  });
+  expect(result.outcome).toBe("done");
+  expect(turn).toBe(3);
 });
 
 it("fills a form and the server sees the value", async () => {

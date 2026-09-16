@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import { AppError, newId } from "@tabductor/core";
+import { AppError } from "@tabductor/core";
 import type { RunSession, TargetProbe } from "@tabductor/browser";
 import type { TraceRecorder } from "@tabductor/browser";
 import {
@@ -19,22 +19,20 @@ import { unsealValue, zero, type KeyWrapper } from "./crypto.js";
 
 /**
  * THE SECRETS BROKER (§16 Threat 4). Its public, tool-adjacent surface — the `SecretsBroker`
- * type below — is exactly two methods:
+ * type below — is exactly one method:
  *
  *   fill(runId, secretName, anchor): Promise<{ok: true}>
- *   injectIntoMcpArg(runId, secretName): Promise<OpaqueHandle>
  *
  * **There is no `get(name): string` here, or anywhere else in this codebase, ever.** That
  * absence is the primary control, not an oversight to fill in later — a function that hands a
  * caller a plaintext secret by name is the one shape this module is built to make impossible.
- * Decryption happens only inside `fill` (for exactly one `insertTextRaw` call) and inside
- * `redeemMcpHandle` (for exactly one MCP arg, resolved host-side by the S5c client — never by
- * an agent tool). Every plaintext buffer this file produces is zeroed in a `finally` the
+ * Decryption happens only inside `fill`, for exactly one `insertTextRaw` call. Every plaintext
+ * buffer this file produces is zeroed in a `finally` the
  * instant its one use is over. `leak-lint` (`scripts/leak-lint.mjs`, wired into `pnpm lint`)
  * greps the whole tree for the shape of a function that would violate this; this comment is
  * the human-readable half of that guard.
  *
- * `fill`/`injectIntoMcpArg` both throw a typed `AppError` on refusal rather than returning a
+ * `fill` throws a typed `AppError` on refusal rather than returning a
  * union type — there is no `{ok: false}` in `fill`'s return type at all. Which of these a
  * future tool wrapper (S5c) treats as a recoverable tool error versus a run-ending failure is
  * its call to make (the rate-limit case is deliberately meant to kill the run — a loop of
@@ -43,17 +41,10 @@ import { unsealValue, zero, type KeyWrapper } from "./crypto.js";
 
 const ALLOWED_INPUT_TYPES = new Set(["text", "password", "email"]);
 const DEFAULT_MAX_FILLS_PER_RUN = 3;
-/** How long an MCP injection handle stays redeemable — long enough for the same run's next
- * host-side step, short enough that a leaked handle is not a standing decryption capability. */
-const MCP_HANDLE_TTL_MS = 60_000;
-
-export type OpaqueHandle = { readonly token: string };
-
 export type SecretsBrokerRunDeps = { session: RunSession; trace: TraceRecorder };
 
 export type SecretsBroker = {
   fill(runId: string, secretName: string, anchor: string): Promise<{ ok: true }>;
-  injectIntoMcpArg(runId: string, secretName: string): Promise<OpaqueHandle>;
 };
 
 export type SecretsBrokerDeps = {
@@ -62,9 +53,8 @@ export type SecretsBrokerDeps = {
   /**
    * Resolves the live browser session/trace for a run. The broker owns no session lifecycle
    * of its own — whatever composition root opens a run's session (S4b's `AgentExecutor`,
-   * S5c's wiring) registers it here before an agent's `fill` call can reach it. `undefined`
-   * means "no such run" as far as `fill` is concerned; `injectIntoMcpArg` never calls this,
-   * since an asset-node run has no page to bind an origin to at all.
+   * wiring) registers it here before an agent's `fill` call can reach it. `undefined`
+   * means "no such run" as far as `fill` is concerned.
    */
   resolveRun: (runId: string) => SecretsBrokerRunDeps | undefined;
   metrics?: Metrics;
@@ -75,25 +65,14 @@ export type SecretsBrokerDeps = {
   gate?: PolicyGate;
 };
 
-/** What the composition root actually holds: the narrow `SecretsBroker` two methods it hands
- * to agent-tool wiring, plus `redeemMcpHandle` for the S5c MCP client's host-side code only.
- * Deliberately a different shape from `SecretsBroker` — never merge these into one interface —
- * so nothing that receives a `SecretsBroker`-typed value can reach a plaintext buffer. */
-export type SecretsBrokerHandle = SecretsBroker & {
-  redeemMcpHandle: (handle: OpaqueHandle) => Promise<Buffer>;
-};
-
-type McpHandleEntry = { runId: string; secretId: string; issuedAt: number };
+export type SecretsBrokerHandle = SecretsBroker;
 
 export function createSecretsBroker(deps: SecretsBrokerDeps): SecretsBrokerHandle {
   const { db, keyWrapper, resolveRun, metrics, gate } = deps;
   const maxFillsPerRun = deps.maxFillsPerRun ?? DEFAULT_MAX_FILLS_PER_RUN;
 
-  // Per-run fill counts and issued MCP handles — the only state this module keeps, and both
-  // are bookkeeping, not a cache of anything decrypted (`S5b-secrets-broker.md`: "no caching
-  // layer" means no plaintext ever sits here between calls).
+  // Per-run fill counts are bookkeeping, not a cache of anything decrypted.
   const fillCounts = new Map<string, number>();
-  const mcpHandles = new Map<string, McpHandleEntry>();
 
   const logAccess = async (
     runId: string,
@@ -104,7 +83,7 @@ export function createSecretsBroker(deps: SecretsBrokerDeps): SecretsBrokerHandl
     await db.insert(secretAccessLog).values({ runId, secretName, action, anchor });
   };
 
-  /** Scopes a secret lookup to the run's own owning user — `fill`/`injectIntoMcpArg` take no
+  /** Scopes a secret lookup to the run's own owning user — `fill` takes no
    * `userId` themselves, so this join (run → task → workflow version → workflow.user_id) is
    * what stands in for it, matching `secrets`' `unique(user_id, name)` constraint. */
   const resolveSecretForRun = async (
@@ -275,57 +254,6 @@ export function createSecretsBroker(deps: SecretsBrokerDeps): SecretsBrokerHandl
       await run.trace.record("action", { action: "secrets.fill", secretName, anchor, ok: true });
       metrics?.secretFills.add({ outcome: "filled" });
       return { ok: true };
-    },
-
-    async injectIntoMcpArg(runId, secretName) {
-      const resolved = await resolveSecretForRun(runId, secretName);
-      if (!resolved) {
-        throw new AppError("secret_not_found", `no secret named "${secretName}" for this run's user`, {
-          details: { runId, secretName },
-        });
-      }
-      const { secret, taskId } = resolved;
-      if (gate) {
-        const verdict = await gate.checkSecretUse({ taskId, runId }, secretName);
-        if (!verdict.allow) {
-          await logAccess(runId, secretName, "denied_grant", null);
-          throw new AppError("secret_grant_denied", `secret use denied by ${verdict.rule}`, {
-            details: { runId, secretName, rule: verdict.rule },
-          });
-        }
-      }
-      if (secret.tier !== "server") {
-        await logAccess(runId, secretName, "denied_tier", null);
-        throw new AppError("secret_tier_unsupported", `"${secretName}" is Tier 2 (attended-only, Phase 7)`, {
-          details: { runId, secretName, tier: secret.tier },
-        });
-      }
-
-      const token = newId("sechandle");
-      mcpHandles.set(token, { runId, secretId: secret.id, issuedAt: Date.now() });
-      await logAccess(runId, secretName, "injected", null);
-      return { token };
-    },
-
-    /**
-     * Host-side only — the S5c MCP client calls this the moment it builds the tool call args,
-     * and must zero the returned buffer the instant it has copied what it needs into the
-     * outgoing request. Single-use: a handle is deleted the moment it is redeemed (or expires
-     * unredeemed), so it is never a standing decryption capability. Never part of
-     * `SecretsBroker` — nothing that receives that narrower type can reach this.
-     */
-    async redeemMcpHandle(handle) {
-      const entry = mcpHandles.get(handle.token);
-      mcpHandles.delete(handle.token);
-      if (!entry || Date.now() - entry.issuedAt > MCP_HANDLE_TTL_MS) {
-        throw new AppError("secret_handle_invalid", "handle not found, already redeemed, or expired");
-      }
-      const rows = await db.select().from(secrets).where(eq(secrets.id, entry.secretId)).limit(1);
-      const secret = rows[0];
-      if (!secret) {
-        throw new AppError("secret_not_found", "secret behind this handle no longer exists");
-      }
-      return decryptSecret(secret);
     },
   };
 }

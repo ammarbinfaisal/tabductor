@@ -19,6 +19,7 @@ export const DEAD_LETTER_TYPE = "system.event_dead_lettered";
 
 export type PublishInput = {
   type: string;
+  executionId?: string | null;
   packet?: unknown;
   eventId?: string;
   sourceTaskId?: string | null;
@@ -47,6 +48,7 @@ export async function publish(trx: Db, input: PublishInput): Promise<EventRow> {
     .insert(events)
     .values({
       eventId: input.eventId ?? randomUUID(),
+      executionId: input.executionId ?? null,
       type: input.type,
       sourceTaskId: input.sourceTaskId ?? null,
       sourceRunId: input.sourceRunId ?? null,

@@ -10,21 +10,13 @@ import type { Meter } from "@opentelemetry/api";
  * per run until the backend fell over. That rule is enforced by these signatures.
  *
  * Only the rows with backing code today are here. Every later subphase adds its own rows as
- * it builds the surface they measure (impl-phases §0.5 standing rule) — browser, LLM, MCP,
- * render, store, policy.
+ * it builds the surface they measure — browser, LLM, store, policy.
  */
 
 export type RunStatus = "succeeded" | "failed" | "timed_out" | "cancelled";
 export type FireResult = "fired" | "skipped_overlap" | "skipped_missed" | "queued";
 export type ShareViewResult = "ok" | "unknown" | "revoked" | "rate_limited";
-export type ShareAssetOutcome = "ok" | "denied" | "not_found";
-/** `packages/assets`'s tool call sites (S5d). Not in the §17.2 catalogue as shipped — this
- * is that catalogue's first addition since the doc was written; note it there via a doc
- * change, the same courtesy the catalogue's own "rename via doc change" rule implies for a
- * new row. */
-export type AssetWriteOutcome = "ok" | "denied" | "invalid" | "error";
-export type AssetReadOutcome = "ok" | "not_found" | "invalid" | "error";
-export type PolicyCheck = "navigation" | "action" | "network_read" | "mcp_call";
+export type PolicyCheck = "navigation" | "action" | "network_read";
 export type ResourceLimit = "max_tabs" | "max_visits" | "max_wall_ms";
 /** Which side of one `Llm.complete` call a token count belongs to (§17.2 catalogue). */
 export type LlmDirection = "in" | "out";
@@ -32,54 +24,12 @@ export type LlmDirection = "in" | "out";
  * on purpose: the metric is the security-signals board's flat-zero row, the log is the
  * per-attempt audit trail, and a label needs far fewer values than a log column does. */
 export type SecretFillOutcome = "filled" | "denied_origin" | "denied_grant" | "denied_target" | "rate_limited";
-// -- S5c: MCP client (§17.2 catalogue, `mcp_calls_total`/`mcp_call_duration_seconds`) ----
-/** `packages/mcp`'s own outcome set for one `callTool` attempt. `denied` never actually
- * fires under `AllowAllGate` (S7's business) but the label exists so the metric doesn't
- * need a new value the day the real evaluator lands. */
-export type McpCallOutcome = "ok" | "error" | "denied" | "timeout" | "budget_exceeded";
-// -----------------------------------------------------------------------------------------
-// --- S5e: LaTeX renderer (§17.2 binding names, reserved by the catalogue, first call site
-// here). ----------------------------------------------------------------------------------
-/** `assets.render`'s own outcome set. `killed` covers both wall-clock and memory kills —
- * `renderSandboxKills` below is where the *reason* for a kill is the label, so this one stays
- * within §17.2's bounded-label-set rule. */
-export type RenderOutcome = "ok" | "compile_error" | "killed" | "write_error";
-/** A render the sandbox itself stopped before tectonic finished on its own — a resource-cap
- * breach, not a document defect. Distinguished from a structural block (e.g. shell-escape
- * being unconditionally absent, or `openin`/`openout` having nothing outside scratch to
- * reach) precisely because a kill is a *runtime* intervention and a structural control never
- * needs one — `docs/subphases/S5e-latex-renderer.md`'s own test-naming rule. */
-export type RenderSandboxKillReason = "wall_clock" | "memory";
-// -----------------------------------------------------------------------------------------
-// --- S5h: Python compute -------------------------------------------------------------------
-/** One Python job's terminal outcome, host side. `write_error` is the asset-store write
- * failing *after* a job succeeded — a host fault, deliberately distinct from anything the
- * program itself did. `unavailable` is pyrunner being unreachable, which is infrastructure. */
-export type PyrunOutcome =
-  | "ok"
-  | "program_error"
-  | "killed"
-  | "output_cap"
-  | "write_error"
-  | "unavailable";
-/**
- * The only runtime control that survives the S5h reshape. Single-valued today and still a
- * label rather than a bare counter, so a second control does not need a second metric.
- *
- * §17.2 names are binding, so two renames are recorded here rather than made silently: this
- * is `python-compute.md` §10's `pyrun_sandbox_kills_total` (there is no sandbox left to name
- * — the container is the isolation unit), and `pyrun_vm_boot_seconds` is dropped outright
- * (there is no VM to boot).
- */
-export type PyrunKillReason = "wall_clock";
-// -----------------------------------------------------------------------------------------
 // --- S6a: static runtime (added under §17.2's "every later subphase adds its own rows"
 // growth clause, same clause S3b's browserQueueRejected and S5g/S5h's rows came in under) ---
 /** How a compiled script's run ended. `deopt` is not a failure — it is the script handing
  * back to the agent, which S6c turns into a mid-run handoff. */
 export type StaticRtOutcome = "completed" | "deopt" | "killed" | "error";
-/** A run the isolate itself stopped. Sits on the security-signals dashboard beside the
- * renderer and Python kill rows, and should be near zero outside hostile-corpus runs. */
+/** A run the isolate itself stopped; should be near zero outside hostile-corpus runs. */
 export type StaticRtKillReason = "wall_clock" | "memory";
 // -----------------------------------------------------------------------------------------
 // --- S6b/S6e: trace compiler ----------------------------------------------------------------
@@ -119,13 +69,6 @@ export type Metrics = {
    * engagement one — the share *token* is never a label, and neither is the workflow.
    */
   shareViews: { add: (result: ShareViewResult) => void };
-  /** Public asset reads (S2d reserved the name; S5d is the first real call site, at the
-   * public asset route). */
-  shareAssetReads: { add: (outcome: ShareAssetOutcome) => void };
-  /** `assets.write`/`assets.append` (S5d). */
-  assetWrites: { add: (outcome: AssetWriteOutcome) => void };
-  /** `assets.read`/`assets.list` (S5d). */
-  assetReads: { add: (outcome: AssetReadOutcome) => void };
   /**
    * Every verdict the gate returns (S3a). `result="deny"` on the security-signals board is
    * an agent trying to leave its allowlist, which is a thing to be told about.
@@ -175,39 +118,6 @@ export type Metrics = {
    * No `secretName` label — the bounded-label-set rule (§17.2) and the fact that a secret name
    * is exactly the kind of identifier that does not belong on a metric. */
   secretFills: { add: (labels: { outcome: SecretFillOutcome }) => void };
-  // -- S5c: MCP client (§17.2 catalogue) -------------------------------------------------
-  /** Every `callTool` attempt the MCP client makes (S5c, §13). `server` is the configured
-   * label, never the tool's own name or arguments — the bounded-label-set rule (§17.2). */
-  mcpCalls: { add: (labels: { server: string; outcome: McpCallOutcome }) => void };
-  mcpCallDuration: { record: (seconds: number, labels: { server: string; outcome: McpCallOutcome }) => void };
-  // -----------------------------------------------------------------------------------------
-  // --- S5e: LaTeX renderer -----------------------------------------------------------------
-  /** Wall-clock time of one `assets.render` call, host side (queueing + sandbox + asset
-   * write) — not tectonic's own internal timing, which never leaves the container. No
-   * `.tex` source, no TeX log, no rendered filename — content never becomes a label
-   * (§17.2, S5e deliverable 5). */
-  renderDuration: { record: (seconds: number, labels: { outcome: RenderOutcome }) => void };
-  /** A render the sandbox killed rather than let finish — lands on the security-signals
-   * dashboard beside the isolate (§12) and Python (S5h) kill rows it already reserves space
-   * for. */
-  renderSandboxKills: { add: (labels: { reason: RenderSandboxKillReason }) => void };
-  // -------------------------------------------------------------------------------------------
-  // --- S5h: Python compute -----------------------------------------------------------------
-  /** One job, by terminal outcome. Recorded host-side in `packages/engine`'s
-   * `python-executor.ts` and nowhere else — `apps/pyrunner` deliberately records nothing, the
-   * same split `render_duration_seconds` follows, because recording in both would double-count
-   * every job. */
-  pyrunJobs: { add: (labels: { outcome: PyrunOutcome }) => void };
-  /** Wall-clock time of one job, host side: resolving inputs, the HTTP hop, the program, and
-   * the asset writes. No source, no filenames, no output contents — content never becomes a
-   * label (§17.2). */
-  pyrunDuration: { record: (seconds: number, labels: { outcome: PyrunOutcome }) => void };
-  /** A job the wall clock stopped. Lands on the security-signals dashboard beside the
-   * renderer's kill row. */
-  pyrunKills: { add: (labels: { reason: PyrunKillReason }) => void };
-  /** Total bytes a job's outputs occupied, after the caps allowed them through. */
-  pyrunOutputBytes: { record: (bytes: number) => void };
-  // -------------------------------------------------------------------------------------------
   // --- S6a: static runtime -------------------------------------------------------------------
   /** Wall-clock time of one `runCompiledScript` call. Instrumented at the primitive because
    * S6b's dry-run and S6c's real runs both go through it, and neither should have to add it. */
@@ -259,9 +169,6 @@ export function createMetrics(meter: Meter): Metrics {
   const runDuration = meter.createHistogram("run_duration_seconds", { unit: "s" });
   const crashRecoveredRuns = meter.createCounter("crash_recovered_runs_total");
   const shareViews = meter.createCounter("share_views_total");
-  const shareAssetReads = meter.createCounter("share_asset_reads_total");
-  const assetWrites = meter.createCounter("asset_writes_total");
-  const assetReads = meter.createCounter("asset_reads_total");
   const policyVerdicts = meter.createCounter("policy_verdicts_total");
   const browserDisconnects = meter.createCounter("browser_disconnects_total");
   const browserQueueWait = meter.createHistogram("browser_queue_wait_seconds", { unit: "s" });
@@ -270,20 +177,6 @@ export function createMetrics(meter: Meter): Metrics {
   const llmTokens = meter.createCounter("llm_tokens_total");
   const llmCostUsd = meter.createCounter("llm_cost_usd_total", { unit: "USD" });
   const secretFills = meter.createCounter("secret_fills_total");
-  // -- S5c: MCP client --------------------------------------------------------------------
-  const mcpCalls = meter.createCounter("mcp_calls_total");
-  const mcpCallDuration = meter.createHistogram("mcp_call_duration_seconds", { unit: "s" });
-  // -----------------------------------------------------------------------------------------
-  // --- S5e: LaTeX renderer --------------------------------------------------------------
-  const renderDuration = meter.createHistogram("render_duration_seconds", { unit: "s" });
-  const renderSandboxKills = meter.createCounter("render_sandbox_kills_total");
-  // -------------------------------------------------------------------------------------------
-  // --- S5h: Python compute -------------------------------------------------------------------
-  const pyrunJobs = meter.createCounter("pyrun_jobs_total");
-  const pyrunDuration = meter.createHistogram("pyrun_duration_seconds", { unit: "s" });
-  const pyrunKills = meter.createCounter("pyrun_kills_total");
-  const pyrunOutputBytes = meter.createHistogram("pyrun_output_bytes", { unit: "By" });
-  // -------------------------------------------------------------------------------------------
   // --- S6a: static runtime -------------------------------------------------------------------
   const staticRtRunDuration = meter.createHistogram("static_rt_run_duration_seconds", { unit: "s" });
   const staticRtKills = meter.createCounter("static_rt_kills_total");
@@ -323,9 +216,6 @@ export function createMetrics(meter: Meter): Metrics {
     runDuration: { record: (seconds, labels) => runDuration.record(seconds, { ...labels }) },
     crashRecoveredRuns: { add: (count = 1) => crashRecoveredRuns.add(count) },
     shareViews: { add: (result) => shareViews.add(1, { result }) },
-    shareAssetReads: { add: (outcome) => shareAssetReads.add(1, { outcome }) },
-    assetWrites: { add: (outcome) => assetWrites.add(1, { outcome }) },
-    assetReads: { add: (outcome) => assetReads.add(1, { outcome }) },
     policyVerdicts: { add: (labels) => policyVerdicts.add(1, { ...labels }) },
 
     observeBrowserEndpointHealthy(list) {
@@ -352,20 +242,6 @@ export function createMetrics(meter: Meter): Metrics {
     llmTokens: { add: (count, labels) => llmTokens.add(count, { ...labels }) },
     llmCostUsd: { add: (usd, labels) => llmCostUsd.add(usd, { ...labels }) },
     secretFills: { add: (labels) => secretFills.add(1, { ...labels }) },
-    // -- S5c: MCP client ------------------------------------------------------------------
-    mcpCalls: { add: (labels) => mcpCalls.add(1, { ...labels }) },
-    mcpCallDuration: { record: (seconds, labels) => mcpCallDuration.record(seconds, { ...labels }) },
-    // ---------------------------------------------------------------------------------------
-    // --- S5e: LaTeX renderer ---------------------------------------------------------------
-    renderDuration: { record: (seconds, labels) => renderDuration.record(seconds, { ...labels }) },
-    renderSandboxKills: { add: (labels) => renderSandboxKills.add(1, { ...labels }) },
-    // -------------------------------------------------------------------------------------------
-    // --- S5h: Python compute -------------------------------------------------------------------
-    pyrunJobs: { add: (labels) => pyrunJobs.add(1, { ...labels }) },
-    pyrunDuration: { record: (seconds, labels) => pyrunDuration.record(seconds, { ...labels }) },
-    pyrunKills: { add: (labels) => pyrunKills.add(1, { ...labels }) },
-    pyrunOutputBytes: { record: (bytes) => pyrunOutputBytes.record(bytes) },
-    // -------------------------------------------------------------------------------------------
     // --- S6a: static runtime -------------------------------------------------------------------
     staticRtRunDuration: { record: (seconds, labels) => staticRtRunDuration.record(seconds, { ...labels }) },
     staticRtKills: { add: (labels) => staticRtKills.add(1, { ...labels }) },

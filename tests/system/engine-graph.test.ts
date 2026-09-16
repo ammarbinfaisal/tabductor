@@ -107,7 +107,7 @@ it("fans one event out to three tasks; a failing sibling does not disturb the ot
   expect(failures[0]!.packet).toMatchObject({ runId: boom!.id, error: "stub asked to fail" });
 });
 
-it("routes new events against the latest version while an in-flight run stays pinned to its own", async () => {
+it("pins every descendant of an execution to the version that accepted its trigger", async () => {
   rig = await startRig();
 
   // v1: A→B. A's stub dawdles so the graph can be edited while its run is still going.
@@ -153,12 +153,13 @@ it("routes new events against the latest version while an in-flight run stays pi
   expect(runA!.status).toBe("succeeded");
   expect(runA!.workflowVersionId).toBe(v1.versionId);
 
-  // Its emitted event routed per v2: C ran, B did not.
-  const [runC] = await runsForTask(rig, v2.taskIds.C!);
-  expect(runC?.status).toBe("succeeded");
-  expect(runC!.workflowVersionId).toBe(v2.versionId);
+  // Its emitted event remains in the execution's pinned v1 graph: B runs and C does not.
+  const [runB] = await runsForTask(rig, v1.taskIds.B!);
+  expect(runB?.status).toBe("succeeded");
+  expect(runB!.workflowVersionId).toBe(v1.versionId);
+  expect(runB!.executionId).toBe(runA!.executionId);
 
-  expect(await runsForTask(rig, v1.taskIds.B!)).toHaveLength(0);
+  expect(await runsForTask(rig, v2.taskIds.C!)).toHaveLength(0);
   expect(await runsForTask(rig, v2.taskIds.B!)).toHaveLength(0);
 
   // And nothing ran twice.

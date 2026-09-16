@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { newId } from "@tabductor/core";
 import { cdpEndpoints, runs, traceEntries } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import { finishRun, startRun, staticSchemaGenerator } from "@tabductor/engine";
+import { finishRun, startRun, staticSchemaGenerator, triggerTask } from "@tabductor/engine";
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { createCaller } from "../../apps/web/src/server/router.js";
@@ -19,6 +19,12 @@ import { createCaller } from "../../apps/web/src/server/router.js";
 
 let handle: MigratedTestDb;
 let api: ReturnType<typeof createCaller>;
+
+/** Internal fixture setup; manual task starts are not exposed by the user API. */
+async function seedManualRun(input: Parameters<typeof triggerTask>[1]) {
+  const { event, dispatched } = await triggerTask(handle.db, input);
+  return { eventId: event.eventId, type: event.type, runId: dispatched?.runId ?? null };
+}
 
 /** Deterministic publish: the one schema these tests declare, no model in the loop. */
 const TEST_SCHEMAS = {
@@ -76,6 +82,11 @@ async function trpcError(fn: () => Promise<unknown>): Promise<TRPCError> {
 }
 
 describe("workflow", () => {
+  it("rejects individual manual starts and custom event types through the control API", async () => {
+    const legacy = api.run as unknown as { triggerManual(input: unknown): Promise<unknown> };
+    await expect(legacy.triggerManual({ taskId: "task_not_allowed" })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(api.workflow.trigger({ workflowId: "wf", eventType: "replay.event" } as unknown as { workflowId: string })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
   it("creates, publishes a version, and reads the graph back", async () => {
     const workflowId = await api.workflow.create({ name: "timeline watcher", maxHops: 8 });
     const { versionId, taskIds } = await api.workflow.publishVersion({ workflowId, graph: twoNodeGraph });
@@ -116,6 +127,20 @@ describe("workflow", () => {
     expect(got.graph.tasks).toHaveLength(1);
     // The superseded version keeps its own rows — runs pinned to it must still resolve.
     expect(await api.workflow.get({ id: workflowId }).then((w) => w.tasks)).toHaveLength(1);
+  });
+
+  it("preserves user-facing descriptions separately from prompts and rejects stale publication", async () => {
+    const workflowId = await api.workflow.create({ name: "Readable workflow" });
+    const graph = { ...twoNodeGraph,
+      tasks: twoNodeGraph.tasks.map((task) => ({ ...task, label: `Friendly ${task.name}`, summary: "Collects useful updates for the team." })),
+      events: twoNodeGraph.events.map((event) => ({ ...event, label: "New update", summary: "An update ready to share." })),
+    };
+    const first = await api.workflow.publishVersion({ workflowId, graph, expectedVersionId: null });
+    const got = await api.workflow.get({ id: workflowId });
+    expect(got.graph.tasks.find((task) => task.name === "Watcher")).toMatchObject({ label: "Friendly Watcher", summary: "Collects useful updates for the team.", prompt: "watch the timeline" });
+    expect(got.graph.events[0]).toMatchObject({ label: "New update", summary: "An update ready to share.", description: twoNodeGraph.events[0]!.description });
+    await expect(api.workflow.publishVersion({ workflowId, graph, expectedVersionId: null })).rejects.toThrow("published elsewhere");
+    expect((await api.workflow.get({ id: workflowId })).versionId).toBe(first.versionId);
   });
 
   it("fails the publish with a per-event report when schema generation fails, writing nothing", async () => {
@@ -177,16 +202,15 @@ describe("workflow", () => {
     expect(details?.report?.events[0]!.error).toContain("compile");
   });
 
-  it("rejects a schedule bound to an asset node", async () => {
-    const workflowId = await api.workflow.create({ name: "asset schedule" });
-    const err = await trpcError(() =>
-      api.workflow.publishVersion({
+  it("allows a schedule on a decision node", async () => {
+    const workflowId = await api.workflow.create({ name: "decision schedule" });
+    const published = await api.workflow.publishVersion({
         workflowId,
         graph: {
           tasks: [
             {
               name: "Report",
-              kind: "asset",
+              kind: "decision",
               mode: "stub",
               prompt: null,
               limits: {},
@@ -197,14 +221,44 @@ describe("workflow", () => {
           ],
           events: [],
         },
-      }),
-    );
-
-    expect(err.code).toBe("BAD_REQUEST");
-    expect((err.cause as { details?: Record<string, unknown> }).details).toMatchObject({
-      task: "Report",
-      kind: "asset",
     });
+    expect(published.taskModes.Report).toBe("stub");
+  });
+
+  it("triggers and schedules a published workflow without exposing internal task ids", async () => {
+    const workflowId = await api.workflow.create({ name: "workflow controls" });
+    const first = await api.workflow.publishVersion({ workflowId, graph: twoNodeGraph });
+
+    const triggered = await api.workflow.trigger({ workflowId });
+    expect(triggered.accepted).toBe(1);
+    expect(triggered.runs[0]?.runId).toMatch(/^run_/);
+    expect(JSON.stringify(triggered)).not.toContain("task_");
+
+    const scheduled = await api.workflow.setSchedule({
+      workflowId,
+      schedule: { cron: "0 7 * * *", timezone: "Asia/Kolkata", enabled: false },
+    });
+    expect(scheduled.versionId).not.toBe(first.versionId);
+    let current = await api.workflow.get({ id: workflowId });
+    expect(current.graph.tasks.find((task) => task.name === "Watcher")?.schedule).toMatchObject({
+      cron: "0 7 * * *",
+      tz: "Asia/Kolkata",
+      enabled: false,
+    });
+    expect(current.graph.tasks.find((task) => task.name === "Poster")?.schedule).toBeNull();
+
+    const beforeInvalid = current.versionId;
+    const invalid = await trpcError(() => api.workflow.setSchedule({
+      workflowId,
+      schedule: { cron: "this is not cron", timezone: "UTC", enabled: true },
+    }));
+    expect(invalid.code).toBe("BAD_REQUEST");
+    expect((await api.workflow.get({ id: workflowId })).versionId).toBe(beforeInvalid);
+
+    const removed = await api.workflow.setSchedule({ workflowId, schedule: null });
+    expect(removed.versionId).not.toBe(scheduled.versionId);
+    current = await api.workflow.get({ id: workflowId });
+    expect(current.graph.tasks.every((task) => task.schedule === null)).toBe(true);
   });
 
   it("rejects an emit of an event no entity declares", async () => {
@@ -228,9 +282,9 @@ describe("workflow", () => {
     expect(before.lastRunStatus).toBeNull();
     expect(before.lastRunAt).toBeNull();
 
-    const { runId } = await api.run.triggerManual({ taskId: taskIds.Watcher! });
-    await startRun(handle.db, runId!, undefined);
-    await finishRun(handle.db, { runId: runId!, taskId: taskIds.Watcher!, status: "succeeded" });
+    const { runId } = await seedManualRun({ taskId: taskIds.Watcher! });
+    const started = await startRun(handle.db, runId!, undefined);
+    await finishRun(handle.db, { runId: runId!, taskId: taskIds.Watcher!, status: "succeeded", leaseGeneration: started!.leaseGeneration });
 
     const after = (await api.workflow.list()).find((w) => w.id === workflowId)!;
     expect(after.lastRunStatus).toBe("succeeded");
@@ -271,6 +325,30 @@ describe("task", () => {
 });
 
 describe("run", () => {
+  it("pages tool calls without network noise, preserves raw compiler evidence and identifies deopt", async () => {
+    const workflowId = await api.workflow.create({ name: "tool trace" });
+    const { taskIds } = await api.workflow.publishVersion({ workflowId, graph: twoNodeGraph });
+    const { runId } = await seedManualRun({ taskId: taskIds.Watcher! });
+    const entries: Array<{ kind: "action" | "network" | "llm"; payload: Record<string, unknown> }> = [
+      { kind: "action", payload: { action: "goto", pageId: "target-a", ok: true } },
+      { kind: "network", payload: { url: "https://example.com/data" } },
+      { kind: "action", payload: { action: "deopt", ok: true } },
+      { kind: "llm", payload: { tool_calls: ["page.waitFor"] } },
+      { kind: "action", payload: { action: "waitFor", ok: true } },
+      { kind: "action", payload: { action: "perceive", ok: true } },
+      { kind: "action", payload: { action: "tool.call", tool: "page.waitFor", ok: true } },
+      { kind: "network", payload: { url: "https://example.com/poll" } },
+      { kind: "action", payload: { action: "tool.call", tool: "done", ok: true } },
+    ];
+    await handle.db.insert(traceEntries).values(entries.map((e, seq) => ({ runId: runId!, seq, kind: e.kind, payloadJson: e.payload })));
+    const first = await api.run.trace({ runId: runId!, view: "tools", limit: 2 });
+    expect(first.items.map((e) => e.seq)).toEqual([0, 6]);
+    const next = await api.run.trace({ runId: runId!, view: "tools", limit: 2, cursor: first.nextCursor });
+    expect(next.items.map((e) => e.seq)).toEqual([8]);
+    expect(next.nextCursor).toBeNull();
+    expect((await api.run.trace({ runId: runId!, limit: 100 })).items.some((e) => e.kind === "network")).toBe(true);
+    expect(await api.run.get({ runId: runId! })).toMatchObject({ deopted: true, pageIds: ["target-a"] });
+  });
   it("paginates, filters by status, and cancels only from queued or running", async () => {
     const workflowId = await api.workflow.create({ name: "runs" });
     const { taskIds } = await api.workflow.publishVersion({ workflowId, graph: twoNodeGraph });
@@ -280,7 +358,7 @@ describe("run", () => {
     // this suite, so the rows stay exactly where the API put them.
     const triggered = [];
     for (let i = 0; i < 5; i += 1) {
-      triggered.push(await api.run.triggerManual({ taskId, type: "manual.start", packet: { i } }));
+      triggered.push(await seedManualRun({ taskId, type: "manual.start", packet: { i } }));
     }
     expect(triggered.every((t) => t.runId)).toBe(true);
 
@@ -306,13 +384,13 @@ describe("run", () => {
     const { taskIds } = await api.workflow.publishVersion({ workflowId, graph: twoNodeGraph });
     const taskId = taskIds.Watcher!;
 
-    const live = await api.run.triggerManual({ taskId });
+    const live = await seedManualRun({ taskId });
     await startRun(handle.db, live.runId!, undefined);
     expect((await api.run.cancel({ runId: live.runId! })).status).toBe("cancelled");
 
-    const done = await api.run.triggerManual({ taskId });
-    await startRun(handle.db, done.runId!, undefined);
-    await finishRun(handle.db, { runId: done.runId!, taskId, status: "succeeded" });
+    const done = await seedManualRun({ taskId });
+    const started = await startRun(handle.db, done.runId!, undefined);
+    await finishRun(handle.db, { runId: done.runId!, taskId, status: "succeeded", leaseGeneration: started!.leaseGeneration });
     const err = await trpcError(() => api.run.cancel({ runId: done.runId! }));
     expect(err.code).toBe("CONFLICT");
     expect(err.message).toContain("succeeded");
@@ -321,7 +399,7 @@ describe("run", () => {
   it("returns a run with the event that triggered it", async () => {
     const workflowId = await api.workflow.create({ name: "run detail" });
     const { taskIds } = await api.workflow.publishVersion({ workflowId, graph: twoNodeGraph });
-    const { runId, eventId } = await api.run.triggerManual({
+    const { runId, eventId } = await seedManualRun({
       taskId: taskIds.Watcher!,
       type: "manual.start",
       packet: { hello: "world" },
@@ -341,8 +419,8 @@ describe("event", () => {
     const { taskIds } = await api.workflow.publishVersion({ workflowId, graph: twoNodeGraph });
     const taskId = taskIds.Watcher!;
 
-    for (let i = 0; i < 3; i += 1) await api.run.triggerManual({ taskId, type: "manual.start", packet: { i } });
-    await api.run.triggerManual({ taskId, type: "other.start" });
+    for (let i = 0; i < 3; i += 1) await seedManualRun({ taskId, type: "manual.start", packet: { i } });
+    await seedManualRun({ taskId, type: "other.start" });
 
     const all = await api.event.list({ workflowId });
     expect(all.items).toHaveLength(4);
@@ -371,14 +449,15 @@ describe("event", () => {
     // A trigger, its run taken to `failed` — which publishes `run.failed` caused by the
     // trigger. Two links is enough to prove the walk; the depth cap is bus-level and tested
     // there on a 50-deep chain.
-    const { eventId, runId } = await api.run.triggerManual({ taskId, type: "chain.start" });
-    await startRun(handle.db, runId!, undefined);
+    const { eventId, runId } = await seedManualRun({ taskId, type: "chain.start" });
+    const started = await startRun(handle.db, runId!, undefined);
     await finishRun(handle.db, {
       runId: runId!,
       taskId,
       status: "failed",
       error: "boom",
       causationId: eventId,
+      leaseGeneration: started!.leaseGeneration,
     });
 
     const feed = await api.event.list({ workflowId, type: "run.failed" });
@@ -398,7 +477,7 @@ describe("run trace (U1.5)", () => {
   it("pages trace entries in seq order, forward, and clamps a hostile limit", async () => {
     const workflowId = await api.workflow.create({ name: "traced" });
     const { taskIds } = await api.workflow.publishVersion({ workflowId, graph: twoNodeGraph });
-    const { runId } = await api.run.triggerManual({ taskId: taskIds.Watcher! });
+    const { runId } = await seedManualRun({ taskId: taskIds.Watcher! });
 
     await handle.db.insert(traceEntries).values(
       Array.from({ length: 5 }, (_, seq) => ({
@@ -428,9 +507,8 @@ describe("run trace (U1.5)", () => {
     );
   });
 
-  it("returns an empty page for a run with no trace, rather than erroring", async () => {
-    const empty = await api.run.trace({ runId: "run_nope" });
-    expect(empty).toEqual({ items: [], nextCursor: null });
+  it("does not expose whether a foreign or missing run has trace data", async () => {
+    await expect(api.run.trace({ runId: "run_nope" })).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 });
 
@@ -447,17 +525,7 @@ describe("endpoint health (U1.5)", () => {
 
     const list = await api.endpoint.list();
     const row = list.find((e) => e.id === id);
-    expect(row).toEqual({
-      id,
-      workflowId: null,
-      label: "dev chrome",
-      healthy: true,
-      lastCheckedAt: null,
-      maxQueueDepth: 5,
-      position: 0,
-      lastAcquiredAt: null,
-      createdAt: expect.any(Date),
-    });
+    expect(row).toBeUndefined();
 
     // The central test (techical_plan §16 Threat 5): the credential is absent from the
     // result, not merely from the type — a `select()` that pulled it in and a component
@@ -473,7 +541,7 @@ describe("the web process never executes runs", () => {
   it("leaves a manually triggered run queued", async () => {
     const workflowId = await api.workflow.create({ name: "no executor here" });
     const { taskIds } = await api.workflow.publishVersion({ workflowId, graph: twoNodeGraph });
-    const { runId } = await api.run.triggerManual({ taskId: taskIds.Watcher! });
+    const { runId } = await seedManualRun({ taskId: taskIds.Watcher! });
 
     await new Promise((r) => setTimeout(r, 300));
     const [row] = await handle.db.select().from(runs).where(eq(runs.id, runId!));

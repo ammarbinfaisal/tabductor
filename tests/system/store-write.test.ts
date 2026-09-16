@@ -1,9 +1,16 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { AppError, newId } from "@tabductor/core";
-import { storeWriteGrants, tasks, workflowVersions, type Db } from "@tabductor/db";
+import { runs, storeWriteGrants, tasks, workflowVersions, type Db } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import { createWorkflow, publishStoreSchema, STORE_MIGRATION_DESTRUCTIVE, STORE_SCHEMA_INVALID } from "@tabductor/engine";
+import {
+  createWorkflow,
+  publishStoreSchema,
+  STORE_MIGRATION_BUSY,
+  STORE_MIGRATION_DESTRUCTIVE,
+  STORE_SCHEMA_INVALID,
+} from "@tabductor/engine";
 import { checkStoreWriteGrant, deprovision, validateRow, wfIdsOf } from "@tabductor/store";
+import { DatabasePolicyGate, grantTask } from "@tabductor/policy";
 import { CANDIDATES_VISITED_SPEC, publishCandidatesVisitedStore } from "./store-support.js";
 
 /**
@@ -37,7 +44,7 @@ async function bareTask(db: Db, workflowId: string): Promise<string> {
     .returning();
   const [task] = await db
     .insert(tasks)
-    .values({ id: newId("task"), workflowVersionId: version!.id, name: "T", kind: "asset", mode: "ai" })
+    .values({ id: newId("task"), workflowVersionId: version!.id, name: "T", kind: "decision", mode: "ai" })
     .returning();
   return task!.id;
 }
@@ -69,7 +76,7 @@ describe("row validation (ajv against tables_spec_json)", () => {
   });
 });
 
-describe("store_write_grants — the asset_write_grants pattern applied to tables", () => {
+describe("store_write_grants — table-scoped decision writes", () => {
   it("zero grant rows means open (every table)", async () => {
     handle = await createMigratedTestDb();
     const workflowId = await createWorkflow(handle.db, { name: "grants-open", userId: "user_test" });
@@ -86,6 +93,17 @@ describe("store_write_grants — the asset_write_grants pattern applied to table
 
     expect(await checkStoreWriteGrant(handle.db, taskId, "visited")).toBe(true);
     expect(await checkStoreWriteGrant(handle.db, taskId, "candidates")).toBe(false);
+  });
+
+  it("the production policy gate makes zero rows default-deny", async () => {
+    handle = await createMigratedTestDb();
+    const workflowId = await createWorkflow(handle.db, { name: "grants-policy", userId: "user_test" });
+    const taskId = await bareTask(handle.db, workflowId);
+    const policy = { gate: new DatabasePolicyGate({ db: handle.db }), taskCtx: { taskId, runId: newId("run") } };
+
+    expect(await checkStoreWriteGrant(handle.db, taskId, "visited", policy)).toBe(false);
+    await grantTask(handle.db, taskId, { grantKey: "store.write", grantValue: "visited" });
+    expect(await checkStoreWriteGrant(handle.db, taskId, "visited", policy)).toBe(true);
   });
 });
 
@@ -261,5 +279,66 @@ describe("migration classification and application (§6.2)", () => {
     const v2 = await publishCandidatesVisitedStore(handle, workflowId);
     expect(v2.migrationClass).toBe("none");
     expect(v2.version).toBe(v1.version);
+  });
+
+  it("holds a destructive publication until active runs drain unless an operator forces it", async () => {
+    handle = await createMigratedTestDb();
+    const workflowId = await createWorkflow(handle.db, { name: "destructive-drain", userId: "user_test" });
+    provisioned.push(workflowId);
+    const [version] = await handle.db
+      .insert(workflowVersions)
+      .values({ id: newId("wfv"), workflowId, graphJson: {} })
+      .returning();
+    const [task] = await handle.db
+      .insert(tasks)
+      .values({ id: newId("task"), workflowVersionId: version!.id, name: "Writer", kind: "decision", mode: "ai" })
+      .returning();
+
+    const fullSpec = {
+      items: {
+        primaryKey: ["id"],
+        schema: {
+          type: "object",
+          properties: { id: { type: "string" }, note: { type: ["string", "null"] } },
+          required: ["id"],
+          additionalProperties: false,
+        },
+      },
+    };
+    await publishStoreSchema(handle.db, handle.pool, {
+      workflowId,
+      ddl: "CREATE TABLE items (id text PRIMARY KEY, note text);",
+      tablesSpec: fullSpec,
+    });
+    await handle.db.insert(runs).values({
+      id: newId("run"),
+      taskId: task!.id,
+      workflowVersionId: version!.id,
+      modeUsed: "ai",
+      status: "queued",
+    });
+
+    const narrowed = {
+      workflowId,
+      ddl: "CREATE TABLE items (id text PRIMARY KEY);",
+      tablesSpec: {
+        items: {
+          primaryKey: ["id"],
+          schema: {
+            type: "object",
+            properties: { id: { type: "string" } },
+            required: ["id"],
+            additionalProperties: false,
+          },
+        },
+      },
+      confirmDestructive: true,
+    };
+    const held = await publishStoreSchema(handle.db, handle.pool, narrowed).catch((error: unknown) => error);
+    expect(held).toBeInstanceOf(AppError);
+    expect((held as AppError).code).toBe(STORE_MIGRATION_BUSY);
+
+    const forced = await publishStoreSchema(handle.db, handle.pool, { ...narrowed, forceDestructive: true });
+    expect(forced.migrationClass).toBe("destructive");
   });
 });

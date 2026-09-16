@@ -95,7 +95,7 @@ export function EndpointSettings({ workflowId }: { workflowId: string }) {
     <section>
       <h3>Browser endpoints</h3>
       <p className="muted">
-        The browsers this workflow&apos;s browser nodes drive, in rotation: each run takes the one
+        The browsers this workflow drives, in rotation: each browser run takes the one
         used longest ago, and two runs never share one at the same time. Start Chrome with{" "}
         <code>--remote-debugging-port</code> and paste its HTTP address —{" "}
         <code>http://127.0.0.1:9222</code>. The exact <code>ws://</code> URL is looked up on every
@@ -107,8 +107,8 @@ export function EndpointSettings({ workflowId }: { workflowId: string }) {
 
       {state.endpoints.length === 0 ? (
         <p className="muted">
-          No endpoints yet — browser-node runs in <code>ai</code> or <code>compiled</code> mode will
-          fail with <code>no_endpoint_configured</code> until one is added.
+          No endpoints yet — browser work fails with <code>no_endpoint_configured</code> until
+          one is configured and healthy.
         </p>
       ) : (
         <div className="ruled">

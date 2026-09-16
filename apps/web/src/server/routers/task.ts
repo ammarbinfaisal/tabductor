@@ -1,10 +1,11 @@
 import { getTask, updateTask } from "@tabductor/engine";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { procedure, router } from "../trpc.js";
+import { procedure, requireTaskOwner, router } from "../trpc.js";
 
 export const taskRouter = router({
   get: procedure.input(z.object({ taskId: z.string().min(1) })).query(async ({ ctx, input }) => {
+    await requireTaskOwner(ctx, input.taskId);
     const task = await getTask(ctx.db, input.taskId);
     if (!task) throw new TRPCError({ code: "NOT_FOUND", message: `no task "${input.taskId}"` });
     return task;
@@ -24,6 +25,7 @@ export const taskRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await requireTaskOwner(ctx, input.taskId);
       await updateTask(ctx.db, input);
       return { ok: true } as const;
     }),

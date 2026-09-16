@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import type { Metrics } from "@tabductor/telemetry";
 import type { Db } from "@tabductor/db";
+import type { PolicyGate, TaskCtx } from "@tabductor/policy";
 import { z } from "zod";
 import type { StoreTablesSpec } from "./ddl.js";
 import { runStoreQuery } from "./query.js";
@@ -9,10 +10,9 @@ import { checkStoreWriteGrant, createWriteStager, stageRowWrite, validateRow, ty
 /**
  * `store.query`/`store.insert`/`store.upsert` as tools — deliberately typed *structurally*
  * like `packages/agent`'s `AgentTool` rather than importing it: `packages/agent` already
- * depends on `@tabductor/store` (`decision-tools.ts`, `asset-executor.ts`), so the reverse
- * import would be a package cycle. `asset-tools.ts`'s own `assetToolToAgentTool` establishes
- * the precedent — a structurally-identical shape wrapped one field at a time at the one call
- * site that needs the real type, never a shared base type two packages both import.
+ * depends on `@tabductor/store` (`decision-tools.ts`), so the reverse import would be a
+ * package cycle. The structurally-identical shape is wrapped at the one call site that needs
+ * the agent type.
  */
 export type StoreToolResult = { ok: true; value: unknown } | { ok: false; error: string };
 export type StoreTool = {
@@ -46,7 +46,7 @@ export type StoreQueryToolDeps = {
   metrics?: Metrics;
 };
 
-/** `kind=decision`'s *only* data tool, and `kind=asset`'s read-back tool (§2.3, §3.4). No
+/** The decision kind's read tool. No
  * `tablesSpec` dependency at all — a `SELECT` is validated by the parse gate and the reader
  * role, never against the table spec, which exists to bound *writes*. */
 export function createStoreQueryTool(deps: StoreQueryToolDeps): StoreTool {
@@ -80,6 +80,8 @@ export type StoreWriteToolDeps = {
   /** Where a validated write lands instead of executing immediately — see `write.ts`'s own
    * doc comment on `createWriteStager` for why a tool call is not a commit point. */
   stager: ReturnType<typeof createWriteStager>;
+  /** Production supplies the S7 gate. Omitted only by pre-policy test rigs. */
+  policy?: { gate: PolicyGate; taskCtx: TaskCtx };
 };
 
 function rowArg() {
@@ -98,14 +100,14 @@ async function checkedStage(
   const validated = validateRow(table, spec, row);
   if (!validated.ok) return { ok: false, error: validated.error };
 
-  const granted = await checkStoreWriteGrant(deps.db, deps.taskId, table);
+  const granted = await checkStoreWriteGrant(deps.db, deps.taskId, table, deps.policy);
   if (!granted) return { ok: false, error: `this task has no store_write_grants entry for table "${table}"` };
 
   stageRowWrite(deps.stager, table, row, conflictKey);
   return { ok: true, value: { staged: true, table, commitsWith: "the run's next emit (or run completion)" } };
 }
 
-/** `kind=asset` only (§3.4) — plain insert, no conflict handling; a duplicate primary key
+/** Decision store insert — plain insert, no conflict handling; a duplicate primary key
  * fails loudly (a tool error the agent can see and correct), matching "fails loudly on
  * mismatch" for the validation half. */
 export function createStoreInsertTool(deps: StoreWriteToolDeps): StoreTool {
@@ -122,7 +124,7 @@ export function createStoreInsertTool(deps: StoreWriteToolDeps): StoreTool {
   });
 }
 
-/** `kind=asset` only (§3.4) — conflict target is the table's declared primary key, per the
+/** Decision store upsert — conflict target is the table's declared primary key, per the
  * spec's own `primaryKey`, not re-derived or trusted from the caller's `row`. */
 export function createStoreUpsertTool(deps: StoreWriteToolDeps): StoreTool {
   return defineTool({

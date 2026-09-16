@@ -11,6 +11,7 @@ export default async function StatusPage() {
   const workflows = await api.workflow.list();
   const runs = await api.run.list({ limit: 1 });
   const engine = await api.engine.status();
+  const productExecutors = engine.executors.filter((key) => !key.endsWith(":stub"));
 
   return (
     <>
@@ -31,27 +32,16 @@ export default async function StatusPage() {
               ) : (
                 <span className="status status-succeeded">alive</span>
               )}{" "}
-              — executors registered at boot (a node whose kind:mode is not listed fails{" "}
+              — executors registered at boot (internal work with an unavailable runtime fails{" "}
               <code>no_executor</code>):
             </p>
             <div className="row">
-              {engine.executors.map((k) => (
+              {productExecutors.map((k) => (
                 <span key={k} className="chip mono">
                   {k}
                 </span>
               ))}
-              {engine.capabilities.map((k) => (
-                <span key={k} className="chip mono" title="tool-level ability, not a kind:mode pair">
-                  tool {k}
-                </span>
-              ))}
             </div>
-            {!engine.capabilities.includes("python.run") ? (
-              <p className="muted">
-                <code>python.run</code> is not configured (no <code>PYRUNNER_URL</code>): asset nodes keep the tool but it
-                reports itself unavailable.
-              </p>
-            ) : null}
           </>
         )}
       </section>
@@ -59,7 +49,7 @@ export default async function StatusPage() {
         <thead>
           <tr>
             <th>Workflow</th>
-            <th>Tasks</th>
+            <th>Internal steps</th>
             <th>Last run</th>
             <th>Id</th>
           </tr>

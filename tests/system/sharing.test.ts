@@ -195,11 +195,11 @@ it("exposes no prompt, no limits and no raw row id", async () => {
   expect(serialized).not.toContain("do not say this out loud");
   expect(serialized).not.toContain("prompt");
   expect(serialized).not.toContain("limits");
-  // `mode` is public and happens to read "stub". What must not appear is the *script*, and
-  // the stub carries the packet it emits — so this catches the whole of `limits_json`.
+  // This internal minimized read model still supports the owner-side visibility preview. The
+  // stub carries the packet it emits, so this catches the whole of `limits_json`.
   expect(serialized).not.toContain("https://x.com/status/1");
   expect(serialized).not.toContain(wf.taskIds.Watcher!);
-  // The shape itself is public, and the manifest travels with it.
+  // The internal preview retains shape and the manifest. The public router reduces it below.
   expect(graph.tasks.map((t) => t.name)).toEqual(["Scorer", "Sink", "Watcher"]);
   expect(graph.edges).toHaveLength(2);
   const watcher = graph.tasks.find((t) => t.name === "Watcher");
@@ -218,7 +218,16 @@ it("exposes no prompt, no limits and no raw row id", async () => {
 
   // And through the router, which is what a viewer actually reaches.
   const viaApi = await api.public.graph({ token });
-  expect(JSON.stringify(viaApi)).not.toContain("do not say this out loud");
+  const publicSerialized = JSON.stringify(viaApi);
+  expect(publicSerialized).not.toContain("do not say this out loud");
+  expect(publicSerialized).not.toContain("Watcher");
+  expect(publicSerialized).not.toContain("Scorer");
+  expect(publicSerialized).not.toContain('"tasks"');
+  expect(publicSerialized).not.toContain('"edges"');
+  expect(publicSerialized).not.toContain('"mode"');
+  expect(viaApi.overview.sharedOutputs).toEqual([
+    { type: "tweet.detected", public: true, packetSchema: { type: "object" } },
+  ]);
 });
 
 it("refuses a ref minted for a different share", async () => {
@@ -304,7 +313,7 @@ it("gives a new node's events no visibility, and takes it back when the flag goe
   const preview = await api.share.preview({ workflowId: wf.workflowId });
   expect(preview.privateEvents.map((e) => e.type).sort()).toEqual(["extra.detail", "score.private"]);
   expect(preview.publicEvents).toEqual([
-    { type: "tweet.detected", emitters: ["Watcher"], fields: [] },
+    { type: "tweet.detected", fields: [] },
   ]);
 
   // Republish without the flag: visibility is withdrawn from history too, because deny

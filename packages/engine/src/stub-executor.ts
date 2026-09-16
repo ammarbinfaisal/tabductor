@@ -15,10 +15,7 @@ import { sampleFromSchema } from "./schema-sample.js";
  * fully specifies behavior, including "emit nothing"; a task with neither script nor
  * declared emits is a no-op node, not an error.
  *
- * `runStubScript` is exported for `AssetExecutor` (S5a): a `kind=asset` task has no MCP
- * client or LaTeX renderer to run yet, so it runs this identical scripted-behavior contract
- * until S5c/S5d give it real tools to call — one behavior, two registrations, not a base
- * class.
+ * `runStubScript` is exported as the shared deterministic test-fixture contract.
  */
 
 const stubSchema = z.object({
@@ -57,6 +54,7 @@ export function parseStub(limitsJson: unknown): StubScript | undefined {
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 export async function runStubScript(handle: RunHandle): Promise<RunResult> {
+  if (handle.signal.aborted) return { ok: false, error: "run_cancelled", permanent: true };
   const stub = parseStub(handle.task.limitsJson);
   if (!stub) return emitDerived(handle);
 
@@ -70,6 +68,7 @@ export async function runStubScript(handle: RunHandle): Promise<RunResult> {
 
   for (const emit of stub.emits ?? []) {
     if (emit.delay_ms) await sleep(emit.delay_ms);
+    if (handle.signal.aborted) return { ok: false, error: "run_cancelled", permanent: true };
     // A rejected emit (schema violation) ends the run — §4 requires the failure to
     // surface rather than the malformed packet to propagate.
     try {
@@ -80,6 +79,7 @@ export async function runStubScript(handle: RunHandle): Promise<RunResult> {
   }
 
   if (stub.hang_ms) await sleep(stub.hang_ms);
+  if (handle.signal.aborted) return { ok: false, error: "run_cancelled", permanent: true };
   if (stub.fail) return { ok: false, error: stub.fail };
   return { ok: true };
 }

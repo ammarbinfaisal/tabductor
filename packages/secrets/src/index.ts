@@ -10,7 +10,6 @@ export {
 } from "./crypto.js";
 export {
   createSecretsBroker,
-  type OpaqueHandle,
   type SecretsBroker,
   type SecretsBrokerDeps,
   type SecretsBrokerHandle,

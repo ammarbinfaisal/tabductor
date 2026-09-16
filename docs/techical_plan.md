@@ -1,695 +1,374 @@
-# Agentic Browsing Platform — Technical Design Document
-
-**Version:** 0.7 (2026-09-11)
-**Status:** Design contract for the event-driven platform with browser, asset and decision nodes.
-Implementation status is tracked in `subphases/ROADMAP.md`; the trace-compilation gaps are
-listed in `trace-compilation.md`. A design requirement here is not a claim that it has shipped.
-
-**Changes in 0.2:** the single-node-type model is split into two *kinds* (§4). MCP moves off the browser node entirely and onto the new **asset node** (§13), which consumes events, calls MCP tools, and produces documents/data files (§13.5). Secrets get a concrete encryption design (§16, Threat 4).
-
-**Delta 0.3 → see `graph-compilation-llm.md`:** adds a third kind (**decision**, read-only store + emit, schedule- and event-triggered), the **workflow data store** (Postgres schema + role pair per workflow, in the same database for outbox atomicity), and the **graph compiler** — the save-time LLM pass that turns one prompt into a checked, versioned graph (node prompts, kinds, proposed grants, packet + store schemas), keyed to the §11 script compiler via task content hashes. Threats 9–12 live there.
-
-**Changes in 0.4:** §17 is split into **product observability** (run traces + inspector, unchanged) and **platform observability** — operator-facing OTel traces/metrics/logs shipped to a Grafana stack, with binding content rules (no user content in telemetry), bus-hop trace propagation, a metrics catalogue, and day-one dashboards/alerts. Decision #15.
-
-**Changes in 0.5 — two tracks, each with a companion document:**
-
-- **Shared workflows** (`sharing.md`) — an unguessable link that lets anyone watch a workflow's graph, triggers, runs, events and produced assets, live or historical. Visibility is opt-in per event type and default-deny, declared in the graph document and versioned with it. §1's scope line is narrowed rather than reversed: read-only visibility into a workflow's *own execution* is in; a marketplace of reusable workflows stays out. Adds §17.3 (a third observability audience) and Threats 13–17. Decisions #16–#18.
-- **Python compute (historical 0.5 proposal)** — introduced an authored Python mode and a microVM design. Both were superseded: the current contract is the asset agent's `python.run` tool and a subprocess runner in the self-hosted container deployment (`python-compute.md`, §13.6).
-
-**Changes in 0.6 — the event-centric model (`event-centric-model.md`, implemented as EC1):** events become first-class workflow-version entities carrying an author-written description, an LLM-compiled packet schema, and the S2d visibility flag; tasks declare `consumes`/`emits` by type; authored edges are gone — topology is derived, and dispatch routes by type within the version. The client sends prompts only, never JSON: packet schemas are compiled at publish (carry-forward hashed, ajv-strict gated, per-event compile report) and stub behavior is derived from them. §4, §5 and §14 are written against this model; `event-centric-model.md` carries the routing, compiler and editor detail behind it.
-
----
-
-**Changes in 0.7:** UI nodes use `ai` without a mode selector; `stub` remains for automated
-tests. `compiled` is engine-assigned after validation, with first-run eligibility (K=1).
-Trace compilation is a separate post-execution LLM task that separates DOM exploration from
-actual work; [trace-compilation.md](trace-compilation.md) defines that lifecycle. Python is
-an asset tool, and publish compiles internal prompts as well as event schemas.
+# Tabductor technical plan
+
+Version 1.0 target — hosted browser workflows with Camoufox, observable sessions, and usage billing.
 
-## 1. Purpose and Scope
+This document describes the target architecture. The current implementation has a local,
+single-user control plane, user-supplied Chromium CDP endpoints, and deployment-wide model
+keys. Hosted tenancy, Camoufox, playback, billing, and fleet orchestration are planned work.
+[Implementation phases](impl-phases.md) define the delivery order, including local staging.
 
-This document specifies the architecture of a platform that lets users define scheduled, event-driven browser automation workflows executed by AI agents, with a policy layer constraining what the agents can see and do, and a compiler that progressively replaces AI-driven browsing with deterministic generated JavaScript.
-
-The canonical example: a task reads tweets from account X; each new tweet emits an event carrying the tweet as a data packet; that event triggers a second task which calls an MCP tool to generate an image and posts it to Instagram.
-
-Out of scope for v1: multi-tenant organizations, a marketplace of reusable workflows, hosted browser fleet (users bring their own CDP endpoints).
-
-**In scope as of 0.5, and worth distinguishing from the marketplace line above:** *read-only public visibility into a workflow's own execution* — a share link showing the graph, its triggers, its runs, its event timeline, opted-in data packets and the assets they reference (`sharing.md`). That is a read surface over one workflow's history, not a mechanism for copying someone else's workflow into your account; the latter is the marketplace and remains out. A share confers no identity and grants no writes, so it needs none of the multi-tenancy this section defers.
-
-## 2. Design Principles
-
-1. **Events, not coupling.** Tasks never call each other. A task emits events; the workflow engine decides what those events trigger. This is already decided and it is the right call — it makes the graph extensible and keeps task logic self-contained.
-2. **Policy is enforced in the runtime, never in the prompt.** The LLM is untrusted. Everything the policy layer forbids must be physically unavailable to the agent (tool not exposed, request redacted, action rejected by the runtime), not merely discouraged in the system prompt.
-3. **The compiled fast path and the AI slow path go through the same door.** Generated JS executes against the same action API, subject to the same policy checks, as the browser agent. Otherwise the compiler becomes a policy bypass.
-4. **Everything is a trace.** Every browser action, network observation, policy decision, LLM call, deopt, and event is recorded (subject to the user's storage opt-outs). Traces are the compiler's input and the debugger's ground truth.
-5. **Deterministic work is not the LLM's job.** Once a run has been compiled, the LLM is only consulted at deopt points.
-
-## 3. High-Level Architecture
-
-```
-                      ┌────────────────────────────────────────────┐
-                      │              Control Plane                 │
-                      │  Events/Nodes editor · Task/Policy config  │
-                      │  Run inspector · Approval UI               │
-                      └───────────────┬────────────────────────────┘
-                                      │ (definitions, policies)
-┌─────────────┐   events   ┌──────────▼──────────┐   schedules   ┌───────────┐
-│  Scheduler  ├───────────►│   Workflow Engine   │◄──────────────┤  Cron/    │
-│ (cron)      │            │  (graph evaluation, │               │  Timers   │
-└─────────────┘            │   task dispatch)    │               └───────────┘
-                           └──────────┬──────────┘
-                                      │ dispatch(task, packet)
-                     ┌────────────────┴────────────────┐
-                     │ kind=browser              kind=asset
-          ┌──────────▼──────────┐          ┌──────────▼──────────┐
-          │   Task Executor     │          │   Asset Executor    │
-          │ fast path? ─yes─► Static RT    │  (always ai mode)   │
-          │      │no             │ deopt   │  MCP · assets · emit│
-          │      ▼               ▼         └──────────┬──────────┘
-          │  Browser Agent ◄─────┘                    │
-          └──────────┬──────────┘                     │
-                     │ actions                        │ mcp calls · writes
-          ┌──────────▼─────────────────────────────────▼──────────┐
-          │                   Policy Engine                        │ ← single choke point
-          └──────────┬─────────────────────────────────┬──────────┘
-                     │ permitted actions               │
-          ┌──────────▼──────────┐   ┌──────────────┐   │   ┌──────────────┐
-          │   Browser Runtime   │──►│ User's CDP   │   ├──►│  MCP Servers │
-          │ (CDP client, network│wss│ (Chrome etc.)│   │   └──────────────┘
-          │  observer, tracer)  │   └──────────────┘   │   ┌──────────────┐
-          └──────────┬──────────┘                      └──►│ Asset Store  │
-                     │                                     │ + LaTeX      │
-                     │                                     │ renderer     │
-                     │                                     │ (sandboxed)  │
-                     │ traces                              └──────────────┘
-                     ├────────────────┬────────────────┐
-                     ▼                ▼                ▼
-              ┌────────────┐  ┌──────────────┐  ┌────────────┐
-              │ Event Bus  │  │  State Store │  │  Compiler  │
-              │            │  │ (runs, traces│  │   Agent    │
-              └────────────┘  │  artifacts)  │  └─────┬──────┘
-                              └──────────────┘        │ compiled JS + guards
-                                                      ▼
-                                              Script Registry
-```
-
-Components communicate only through the event bus and the state store. The Policy Engine sits between anything that wants to act — on a browser, an MCP server, or the asset store — and the resource it acts on, including generated JS. The two executor branches share the engine, the bus, the trace format, and the policy choke point; they differ only in which tools exist above the line.
-
-## 4. Core Concepts
-
-**Task.** A unit of work defined by a prompt, a policy grant set, resource limits, and two lists of event types: the ones it may *emit* and the ones that *trigger* it. The packet schema belongs to the event, not to this list (see **Event** below).
-
-Tasks have two orthogonal discriminants:
-
-- **`kind`** — what the task can *do*: `browser`, `asset` or `decision`. It is fixed at authoring time and selects the tool surface.
-- **`mode`** — *how* it executes: editor nodes start in `ai`; the engine may assign `compiled` to browser tasks after script validation. `stub` is retained for automated tests, not exposed as an editor choice. There is no `python` mode.
-
-**The executor registry is keyed by `(kind, mode)`.** Browser agents and compiled scripts
-use their respective supported tool/runtime interfaces through the same policy boundary.
-The asset agent has `python.run` beside its MCP, asset and store tools; the Python program
-it invokes has no tool bridge back into the agent or host.
-
-**Browser node (`kind=browser`).** The original task node. Drives a page over CDP. Tools: `page.*`, `network.*`, `secrets.fill`, `emit`. Triggered by schedules or events. Compilable (§11).
-
-**Asset node (`kind=asset`).** Consumes events, calls MCP tools, and produces files. Tools: `mcp.*`, `assets.*`, `python.run`, `store.query/insert/upsert`, `emit`. **No browser, no CDP endpoint, no `page.*`, no `network.*`.** Event-triggered only. Never compiled by the §11 browser script compiler.
-
-**Decision node (`kind=decision`).** Reads the workflow store and trigger context, then emits
-work. Tools: `store.query`, `emit`; no browser, MCP or store writes. Schedule- and event-triggered.
-It stays in `ai` in v1; future static support is described in `graph-compilation-llm.md` §2.4.
-
-**Why the kinds are separated — this is a security control, not an ergonomic one.** Browser agent + MCP in one tool registry is the canonical exfiltration chain: injected page content steers the agent, which calls an MCP tool that has network egress (HTTP, email, Slack), and page data leaves the system. Splitting the registries severs that chain *at the tool boundary* rather than with prompt instructions, which is the only kind of mitigation §2 principle 2 accepts. The reverse holds too: an injected MCP result cannot navigate anywhere, because `page.*` is not in the asset node's tool list.
-
-The two kinds exchange data only through **events with validated packet schemas** — a narrow, typed, audited channel. Binary payloads never travel in packets; a packet carries an **asset reference** (`{asset_id, path, mime, sha256}`) and the consuming node resolves it (§13.5).
-
-**Run.** One execution of a task, triggered by a schedule or an event. Runs have a timeout (task-level setting), a status machine (`queued → running → succeeded | failed | timed_out | cancelled | awaiting_approval`), and a trace.
-
-**Event.** Two things share the name, and keeping them apart matters. The **event definition** is an entity of the workflow version — one row per `(version, type)`, carrying the author's plain-language description of the packet, the compiled schema, and the S2d visibility flag. It is not a property of whoever emits it: two tasks emitting `tweet.detected` emit the *same* event, with one schema. The **event occurrence** is the runtime message, `{ event_id, type, source_task_id, run_id, packet, occurred_at }`; `event_id` is a UUID used for idempotency/deduplication downstream.
-
-**Data packet.** The typed payload of an occurrence, validated against its definition's schema. The author never writes the schema: they describe the fields in prose on the event, and the schema is compiled from that description at **publish** time by an LLM whose context is the neighbourhood of the event — the prompts of every task that emits it and every that consumes it — then gated under ajv strict before any row is written. Consumers get the declared fields injected as named variables into their prompt context. A packet that fails validation fails the emit (and surfaces in the run log) rather than silently propagating malformed data. Full mechanics, including the carry-forward hash that keeps schemas stable across republishes: `event-centric-model.md` §3.
-
-**Trace.** Ordered log of a run: navigations, DOM snapshots (as configured), actions with the selectors/coordinates used, network observations, LLM calls, policy decisions, emitted events, artifacts. Storage of each trace category is individually opt-in/out per user settings.
-
-**Compiled script.** Versioned artifact produced by the compiler agent from one or more successful AI-mode traces, containing static code, guard assertions, and deopt points.
-
-## 5. Workflow Graph
-
-The node taxonomy is three task kinds — `browser`, `asset` and `decision` (§4) — plus
-trigger/schedule sources. All kinds share one `tasks` table, wiring model, run state machine
-and trace format; `kind` is a discriminant column, not a separate entity.
-
-**There are no edges.** A task declares `consumes` (the event types that trigger it, alongside an optional schedule) and `emits` (the types it may produce); the graph is the bipartite structure *nodes ↔ events* that falls out of those declarations, materialized only for display. Dispatch resolves subscribers by type alone within the workflow's version — one probe of `task_consumes(workflow_version_id, event_type)` — so an event of type T reaches every consumer of T whichever task emitted it. What this means for coupling, cycles and external event types is `event-centric-model.md` §2. Because the authored artifact is a set of declarations rather than a drawing, the editor is panels plus a derived read-only map, not a canvas.
-
-Conditionals are expressed by *which event a task emits*: the task prompt tells the agent under what conditions to emit `tweet.relevant` versus emitting nothing (or `tweet.ignored`).
-
-The canonical example (§1) spans both kinds:
-
-```
-[browser: read tweets] --tweet.detected--> [asset: generate image via MCP]
-                                                 |
-                                            image.ready {asset_ref}
-                                                 v
-                                        [browser: post to Instagram]
-```
-
-The third node uploads the image via `page.upload(anchor, assetRef)` — which is why assets must outlive the run that created them (§13.5).
-
-Conditionals-as-emissions is coherent, but be aware of the trade-off you're making, because it's a real one:
-
-- **What you gain:** no dedicated conditional node, a simpler mental model, and conditions that can be arbitrarily semantic ("emit only if the tweet is about AI") since the LLM evaluates them.
-- **What you give up:** deterministic, free, auditable branching. Every conditional now costs an LLM call and is probabilistic. "Retry if status ≥ 500" or "route by language code" shouldn't need a model.
-
-**Recommended middle ground that preserves your single-node model:** keep the node taxonomy as-is, but allow an optional *consume predicate* — a small JSONPath/JMESPath expression evaluated against the packet (`$.tweet.lang == "en"`) before a consumer is triggered. No new node type, no prompt, evaluated by the engine for free. Semantic filtering stays in the task prompt; mechanical filtering moves to the declaration. It attaches per `(consumer, event type)`, so one task can ignore packets another acts on, and it is one more nullable column on `task_consumes` if it is skipped in v1 — no migration risk in deferring it. (This is where the idea landed once edges were dropped; it was originally drafted as an edge predicate.)
-
-Graph-level rules the engine must enforce:
-
-- **Loop budget.** Event-driven graphs can cycle (A emits → triggers B → emits → triggers A). Cycles are a feature (polling loops, retries) but need a per-workflow *hop budget* and/or per-event-lineage depth counter (`causation_chain` length limit) to prevent runaway loops burning LLM tokens and the user's browser.
-- **Fan-out limits.** One event may trigger N tasks; N runs may each need a browser. Bounded by the concurrency model (§8).
-- **Versioning.** Editing a graph while runs are in flight: runs pin the graph version they started under; new events route against the latest version.
-- **Kind constraints.** A schedule may only bind to a `kind=browser` task (asset nodes are event-triggered only, §4) — 0.3: or to `kind=decision`, which is schedule- and event-triggered (`graph-compilation-llm.md` §2.1). An edge may connect any kind to any kind. The editor must reject a schedule→asset binding at save time, not at dispatch time.
-- **Mode constraints:** UI nodes use `ai`; only the engine assigns `compiled` after validation. The API rejects authored `compiled` and retired `python`. Test modes remain open strings; the DB keeps the asset/compiled exclusion. Python arguments are checked at the tool boundary.
-- **Share visibility** (0.5). Each declared emitted event carries `public: boolean`, default `false`. It is part of the graph document and therefore versioned, diffable and reviewed with everything else. A node added in a later version arrives private because that is the schema default — there is no path by which a graph edit silently widens an existing share (`sharing.md` §3.2).
-
-## 6. Event Bus
-
-Delivery semantics: **at-least-once**, with consumer-side deduplication by `event_id`. Exactly-once is not achievable end-to-end when the side effects happen in third-party websites; don't design for it. Instead:
-
-- Every event carries `event_id` and `causation_id` (the event/schedule that caused the run that emitted it) — this gives you lineage for debugging and loop detection.
-- Task executor records `(task_id, event_id)` before starting; a redelivered event that matches an existing record is dropped.
-- Side-effectful tasks (posting to Instagram) should additionally use an application-level idempotency key derived from the packet (e.g. tweet ID) so that a *retried run* — not just a redelivered event — doesn't double-post. This must be surfaced to the task author as a field: "dedupe key (optional, from packet)".
-
-System events (emitted by the platform, subscribable like user events): `run.completed`, `run.failed`, `run.timed_out`, `deopt.occurred`, `compile.succeeded`, `policy.denied`, `approval.requested`, `approval.granted`. This lets users build error-handling and notification flows out of ordinary task nodes instead of you shipping dedicated error-handler nodes. Note that asset nodes make this materially more useful: a `run.failed` event can trigger an asset node that renders a failure report or calls a Slack MCP tool, with no browser involved.
-
-Implementation: for a single-node deployment, Postgres (`LISTEN/NOTIFY` or an outbox table polled by the engine) is enough and keeps events transactional with state writes. Redis Streams or NATS if/when you distribute. Do **not** start with Kafka.
-
-## 7. Scheduler
-
-Cron expressions with timezone per schedule. Decisions to encode now:
-
-- **Missed fires** (system was down): policy per schedule — `skip` (default) or `fire_once_catchup`. Never replay every missed tick against a live website.
-- **Overlap**: if the previous scheduled run is still going, default `skip`, optional `queue` with a user-configurable max queue depth (default 1). Overlapping browser runs against the same CDP session are a correctness hazard (§8).
-- Schedules are just another event source: a fire produces a synthetic event with an empty packet, entering the same dispatch path.
-
-## 8. Browser Runtime and BYO CDP
-
-Users paste CDP WebSocket endpoints; the platform connects via `puppeteer.connect({ browserWSEndpoint })` (or Playwright's `connectOverCDP` — see §20).
-
-**Be clear-eyed about what BYO CDP means for your security story.** Two consequences follow directly and you should design and document around them:
-
-1. **The browser is outside your trust boundary.** It is the user's Chrome, possibly their daily driver, possibly logged into their bank. Your harness can control what the *LLM sees* and what *actions your runtime issues*, but it cannot control what the browser itself does or what state it already holds. "Cookies are blocked" in this architecture can only mean "the LLM never sees cookie values" — the cookies are still in the user's browser and still get sent with every request. That is a meaningful protection (prevents exfiltration via model output) but it is not isolation. Say so in your docs; don't let users believe the agent is running in a clean room.
-2. **Session hygiene is the user's problem, but you should help.** On connect, detect whether you're attaching to an existing profile with live sessions and warn. Strongly recommend (in onboarding and docs) a dedicated browser profile or container (`chrome --remote-debugging-port` on a fresh `--user-data-dir`). Consider shipping a one-line launcher script that does this.
-
-**Session/connection model:**
-
-- One *browser connection* per CDP endpoint, pooled and health-checked (ping via `Browser.getVersion`; reconnect with backoff; a dropped connection fails in-flight runs with `browser.disconnected`, a system event).
-- One *run* claims one or more *pages* (tabs) up to its per-task tab limit. Runs against the same endpoint are serialized by default (queue per endpoint) because two agents driving one browser profile interleave cookies, focus, and dialogs unpredictably. Parallelism across runs requires either separate endpoints or an explicit user opt-in with separate browser contexts (`Target.createBrowserContext`) — noting that not all user-provided endpoints will permit context creation.
-- Per-task resource limits (already decided): max tabs, wall-clock time, max page visits. Enforced by the runtime, not the agent: the navigation counter and timer live in the harness, and exceeding them aborts the run with `resource_limit_exceeded`.
-
-**Agent perception model:** the browser agent should operate on a hybrid of accessibility tree + trimmed DOM + screenshot, not raw HTML (token cost, and raw HTML is where prompt-injection payloads live in their most potent form — see §16). This also matters for the compiler: the trace must record the *actual selectors/anchors* the runtime resolved, not just "clicked the login button."
-
-## 9. Network Visibility Layer
-
-Decided model, formalized:
-
-1. The runtime observes all network traffic on the run's pages via CDP (`Network.*` events). Observation is always on (it feeds traces, subject to storage opt-outs); *exposure to the LLM* is what's gated.
-2. The agent's context receives **batched request summaries**: `{ request_index, method, url, resource_type, status }` — no headers, no bodies. Batching is by navigation or by explicit agent poll (`network.list()` tool), whichever occurs first; cap batch size and truncate with a count ("… and 214 more, filterable by URL pattern") to protect the context window.
-3. The agent may call a `network.read(request_index, parts)` tool, where `parts ⊆ {request_body, response_body, request_headers, response_headers}`. The policy engine evaluates each part against the task's grants. **Headers are denied by default** and require an explicit per-task grant. Bodies are grantable separately for request vs response.
-4. Even when granted, responses pass through a **redaction filter** before entering LLM context: `Authorization`, `Cookie`/`Set-Cookie`, and configurable secret patterns are masked *even under a header grant* unless the task carries a second, explicit `secrets:read` grant. Rationale: the common legitimate use for header reading is debugging content-type/cache/CORS issues, none of which needs credentials; make the dangerous subset a separate, louder switch.
-5. Response bodies larger than a threshold are exposed via pagination (`network.read` with byte range) rather than dumped whole.
-
-Not in v1 (but leave room in the tool schema): request modification, replay, and cancellation. These change the threat model substantially (the agent becomes a proxy author, not an observer) and deserve their own design pass.
-
-## 10. Policy Engine
-
-Grants are **per task** (your decision). The enforcement architecture:
-
-- A grant set is a static document attached to the task version: navigation allowlist/blocklist (domain patterns), capability flags (click, type, scroll, execute-JS, upload, download, form-submit, clipboard, purchase-class actions), network read grants (§9), MCP tool allowlist, storage opt-outs, resource limits, and approval requirements.
-- **Enforcement points, all mandatory:** (a) tool exposure — tools not granted are not present in the agent's tool list at all; (b) runtime interception — every action, whether issued by the agent or by compiled JS, is checked before the CDP command is sent; (c) navigation guard — checked on `Page.frameNavigated`/before `goto`, including redirects and window.open, not just the initial URL. A redirect to an off-policy domain aborts navigation and emits `policy.denied`.
-- Every decision (allow and deny) is written to the trace with the rule that matched.
-
-**One direct pushback, per your preference for hearing it straight:** *per-task-only* policies leave you with no floor. Nothing stops a task definition — written in a hurry, or generated by an AI assistant, or imported from someone else's template later — from granting itself everything. You don't need a full policy hierarchy, but you should add a thin **instance-level baseline**: a small set of user-account-wide deny rules that per-task grants cannot override (e.g. "never these domains," "purchases always require approval," "secrets:read requires approval to enable"). It's one extra table and one extra check in the evaluator, it preserves "policies are authored per task" as the user-facing model, and it converts several catastrophic misconfigurations into non-events. The pro of pure per-task is simplicity and locality; the con is that your blast radius for a single bad task definition is the whole account and every credential in the user's browser profile. Given BYO CDP (real browsers, real sessions), I'd take the baseline.
-
-**Approvals:** a grant can be marked `requires_approval`. When the agent attempts such an action, the run parks in `awaiting_approval`, `approval.requested` is emitted (routable to notification tasks), and the browser page is left untouched. Approvals need a timeout (park expiry → run fails) because a CDP tab can't be held open indefinitely.
-
-## 11. Compiler Agent and Deopt Model
-
-The full lifecycle is defined in [trace-compilation.md](trace-compilation.md). Trace
-compilation is a separate **post-execution LLM task**, distinct from publish-time schema
-and internal-prompt compilation. Execution settles and releases its browser before the
-compiler starts; compilation has its own outcome, timeout and retry budget.
-
-**Scope: `kind=browser` tasks only.** Asset tasks (§4) are never compiled. Their work is MCP calls and LLM-authored prose — neither has a stable structure for guards to assert on, and a "compiled" script whose output varies every run is a compiler that only pretends to be one. The compiler's task selector filters on `kind='browser'`; asset tasks stay in `ai` mode permanently and are exempt from the promotion/demotion counters below.
-
-**Input:** the completed successful trace, detailed internal task prompt, trigger context
-and event contracts, with additional successful traces when available. The LLM reads DOM
-exploration and execution evidence to distinguish discovery from actual work. It removes
-unnecessary inspections, abandoned paths and probing actions while preserving required
-navigation, data extraction, business actions, emissions and state/deduplication semantics.
-Consistency is assessed on the distilled work, not identical exploratory action sequences.
-
-**Output:** a compiled script artifact:
-
-```js
-// artifact: task_42.v3.js  (compiled from traces run_181, run_187)
-export default async function run(ctx) {
-  await ctx.page.goto('https://x.com/elonmusk');
-  // GUARD BLOCK — assumptions distilled from traces
-  const guards = [
-    ctx.guard.url(/^https:\/\/x\.com\/elonmusk/),
-    ctx.guard.exists('[data-testid="primaryColumn"]', { timeout: 8000 }),
-    ctx.guard.exists('article[data-testid="tweet"]'),
-    ctx.guard.noDialog(),
-  ];
-  if (!(await ctx.guard.all(guards))) {
-    return ctx.deopt("Timeline layout not recognized. Goal: extract the "
-      + "5 most recent tweets as {text, url, timestamp} and emit "
-      + "tweet.detected for each new one.", { failed: await ctx.guard.failures() });
-  }
-
-  const tweets = await ctx.page.evalExtract('article[data-testid="tweet"]',
-    { text: { selector: '[data-testid="tweetText"]' },
-      url: { selector: 'a[href*="/status/"]', attr: 'href' },
-      timestamp: { selector: 'time', attr: 'datetime' } });
-
-  for (const t of tweets) {
-    await ctx.emitIfNew('tweet.detected', t, { dedupeKey: t.url });
-  }
-}
-```
-
-**Deopt semantics:**
-
-- `ctx.deopt(prompt, evidence)` does not throw the run away. It hands control to the browser agent *mid-run*, with: the compiler-authored recovery prompt, the original task prompt, the guard failures, and the current page state. The agent finishes the run.
-- After a recovered execution settles and its trace is flushed, it becomes eligible for
-  post-execution recompilation. The new compiler result affects future runs only.
-- Deopt triggers: guard failure, missing element at action time, unexpected dialog/captcha detection, navigation to an unexpected URL, extraction returning zero/`null` where the trace always saw data, and a global step timeout.
-- **Deopt budget:** N deopts within M runs (default: 3 in 10) demotes the task to `ai` mode and emits `compile.invalidated`, so the user notices instead of silently paying for AI on every run.
-- **Promotion rule:** the first successful AI run makes a task eligible for compilation
-  (**K=1**). Promote only after a candidate passes validation. Additional traces help check
-  the distilled work; guards and deopt handle assumptions that do not hold on later runs.
-
-**Compiler correctness rules:** generated code must pass lint and sandbox validation using
-fixture/replay or otherwise isolated inputs; validation must not repeat live browser side
-effects. Scripts are versioned with source-run provenance. Compiler failure cannot turn a
-successful execution into a timeout or retry. Script inspection/diff UI remains a design
-requirement. Current synchronous hooks, reduced trace input and live-endpoint validation
-are documented implementation gaps in `trace-compilation.md`.
-
-## 12. Static Runtime (Sandbox)
-
-Generated JS never touches puppeteer or the CDP socket directly. It executes inside an isolated environment — `isolated-vm` (V8 isolates) is the appropriate tool here; **do not use Node's `vm` module, it is not a security boundary** — with exactly one injected object, `ctx`:
-
-- `ctx.page`: `goto`, `click`, `type`, `scroll`, `waitFor`, `query`, `evalExtract` (declarative extraction — no arbitrary page-side JS in v1), `screenshot`
-- `ctx.guard`: `url`, `exists`, `text`, `noDialog`, `all`, `failures`
-- `ctx.network`: `list`, `read` (same tool, same policy checks as the agent path)
-- `ctx.emit(type, packet)`, `ctx.emitIfNew(type, packet, {dedupeKey})`
-- `ctx.deopt(prompt, evidence)`
-- `ctx.state`: small per-task KV (last-seen tweet id, cursors)
-- `ctx.page.upload(anchor, assetRef)`: resolve an asset ref from the trigger packet and upload it (§13.5). Read-only against the asset store — **compiled scripts cannot write assets and have no `ctx.mcp`**, matching the browser node's tool registry exactly (§4). The compiled path never gains authority the AI path lacks.
-
-Every `ctx` call crosses the isolate boundary into the host, where the **policy engine check happens** — this is how principle 3 in §2 is realized. No timers/network/fs inside the isolate; wall-clock and memory limits per execution.
-
-`page.evaluate` with arbitrary strings is deliberately excluded in v1. It is the single easiest way for a prompt-injected or miscompiled script to exfiltrate page data to an attacker-controlled sink. If a real need emerges, add it behind its own grant with static analysis of the evaluated code.
-
-## 13. MCP Integration
-
-**MCP is available to `kind=asset` tasks only.** Browser tasks have no `mcp.*` tools in their registry, and compiled scripts have no `ctx.mcp` — see §4 for why this separation is a security boundary rather than a convenience.
-
-External MCP servers are configured per user; each asset task's grant set names which MCP tools it may call. Calls flow: asset agent → `PolicyGate.checkMcpCall` → MCP client → server. MCP calls, arguments, and results go in the trace (bodies subject to storage opt-out). Timeouts and per-run call budgets apply.
-
-**MCP results are untrusted data.** They enter LLM context and are therefore injection surfaces of the same class as page content (§16). Two enforced rules, not prompt suggestions:
-
-1. Results are wrapped in delimiting structure and labelled as data.
-2. **A result cannot confer authority.** Concretely: a URL returned by an MCP tool is not navigable (there is no navigation tool on this node at all), and a file path returned by an MCP tool is resolved against the asset namespace, never against the host filesystem.
-
-**Secrets for MCP servers.** Servers needing API keys use the same broker as browser secret fill (§16, Threat 4), with a different injection point: `secrets.inject_into_mcp_arg(name)` resolves host-side inside the MCP client, so the value never enters LLM context or the trace. There is no tool that returns a secret value to the model on either node kind.
-
-## 13.5 Asset Store and Document Generation
-
-Asset nodes produce **user deliverables** — reports, decks, datasets, images. These are a different class of object from traces and artifacts: traces are debugging exhaust with a TTL (§18), assets are the product of the workflow and persist until the user deletes them or hits quota.
-
-**Namespace.** Per-user, path-addressed (`/reports/2026-q1.pdf`). Reads are open across the user's workflows — a report that aggregates three workflows is a core use case and per-workflow scoping would break it. **Writes are scoped by a per-task path grant**, so blast radius from one bad task definition is bounded without crippling reads. Every write is versioned; overwrites never destroy the prior blob.
-
-**Tools on the asset node:**
-
-| Tool | Purpose |
-|---|---|
-| `assets.write(path, content, mime)` | text formats: md, tex, json, csv, txt, html |
-| `assets.append(path, content)` | accumulate across runs (running logs, datasets) |
-| `assets.read(path, range?)` | read back, paginated for large files |
-| `assets.list(glob)` | discovery |
-| `assets.render(srcPath, format, opts)` | compile a source document → binary deliverable |
-
-`assets.write` handles **data saving** — deterministic, no renderer, no sandbox needed beyond path validation. `assets.render` handles **document generation** and is where the work is.
-
-### Document generation: LaTeX
-
-The LLM authors **LaTeX source** via `assets.write`, and `assets.render` compiles it deterministically. LaTeX is the authoring format because models write it well, it is text (so it diffs, versions, and replays in tests like any other artifact), and its output quality is unmatched for documents.
-
-| Format | Path | Fidelity |
-|---|---|---|
-| `pdf` | `.tex` → `tectonic` | excellent — the primary deliverable |
-| `pptx`-class deck | `.tex` (beamer) → `tectonic` → PDF | excellent as a **PDF deck**; not an editable `.pptx` |
-| `docx` | **deferred** — see below | — |
-
-**Be precise about what "LaTeX-based decks" means:** beamer produces a PDF, not a PowerPoint file. Users get a polished, presentable deck they cannot edit in PowerPoint. That is the right trade for v1 — the deliverable is final-form, and no text-based source compiles to a genuinely faithful `.pptx`. If demand for editable Office files materialises, it gets its own narrow path (a structural source format → `.pptx`), not a LaTeX conversion.
-
-**`docx` is deferred.** The only LaTeX→docx path is pandoc, and it is lossy in exactly the ways that matter (custom macros, TikZ, floats, precise layout degrade or vanish). Shipping it would mean shipping a format whose output does not resemble its input. Revisit with a purpose-built source format if users ask for editable Word documents.
-
-### LaTeX is untrusted code
-
-LLM-authored `.tex` is code from an untrusted author, and TeX is Turing-complete with file I/O and shell escape. `\write18` and `\input{/etc/passwd}` are live threats, not theoretical ones. The renderer therefore runs **out-of-process, in a container**, with the same posture §12 applies to compiled JS — different sandbox, identical principle:
-
-- `tectonic` (or `pdflatex -no-shell-escape`); shell escape disabled unconditionally
-- no network namespace
-- read-only filesystem except a per-render scratch directory
-- `openin_any=p`, `openout_any=p` — no reads or writes outside the scratch dir
-- package allowlist; wall-clock and memory caps; non-zero exit → render fails with the TeX log surfaced to the agent as a tool error (it may correct and retry within budget)
-- images resolved from the asset store into the scratch dir by the host *before* compilation — the `.tex` never names a host path
-
-Out-of-process matters independently of security: TeX distributions are large, compilation is slow, and a stuck render must not take the engine with it.
-
-### Assets and the browser node
-
-Browser tasks cannot write assets, but they participate at both ends:
-
-- `page.upload(anchor, assetRef)` — resolves an asset ref from the trigger packet and uploads it. Requires the `upload` capability grant (§10).
-- Downloads initiated by a browser task land in the asset store as new assets, under the `download` grant.
-
-## 13.6 Python compute (`python.run`)
-
-Full specification in **`python-compute.md`**. The summary that belongs in this document:
-
-An asset agent writes a program at run time and invokes `python.run` when computation is
-needed. The same node can compute figures, write LaTeX and render a document. Python is
-neither an authorable mode nor a browser trace-compilation target.
-
-**Contract.** The tool accepts program source, input asset paths and an optional wall-clock
-limit. The host resolves inputs under `in/<basename>` and turns files under `out/files/`
-into grant-checked assets. The current tool does not automatically inject the trigger packet
-or materialize store tables; the agent supplies needed data through code or input assets.
-
-**The agent emits.** Program output, including optional `out/emits.jsonl`, returns as untrusted
-tool data. It is not automatically published. The agent calls `emit`, which uses normal
-packet validation, deduplication and outbox handling.
-
-**Dependencies are a pinned image.** The tool advertises the committed runtime manifest;
-authors do not select dependencies at publish. Dependency updates change that image and manifest.
-
-**Runner.** `apps/pyrunner` executes Python as a subprocess inside the self-hosted deployment's
-container. It uses a wall-clock kill, output caps and host-side path validation. Compose puts
-it on an internal network; this is not a per-job microVM or a claim that CPython cannot create
-sockets or subprocesses. Without `PYRUNNER_URL`, the tool returns an unavailable error.
-
-The program has no host tool bridge. Input resolution and asset writes remain host operations;
-the retired microVM threat model is preserved only as historical context in `python-compute.md`.
-
-## 14. Data Model (Postgres)
-
-Single Postgres instance for v1; object storage (S3-compatible) for blobs.
-
-```
-users, cdp_endpoints(user_id, ws_url_encrypted, label, health)
-workflows(id, user_id, current_version)
-workflow_versions(id, workflow_id, graph_json, created_at)
-tasks(id, workflow_version_id, name, prompt,
-      kind[browser|asset|decision], mode, limits_json,           -- ai/compiled; stub for tests
-      compiled_prompt, compiled_prompt_hash, content_hash,
-      clean_ai_runs, recent_deopts)
-task_grants(task_id, grant_key, grant_value)          -- policy
-account_baseline_rules(user_id, rule_json)            -- §10 recommendation
-event_defs(id, workflow_version_id, event_type, description,
-           packet_schema_json, prompt_hash, public)   -- unique(workflow_version_id, event_type)
-task_emits(task_id, workflow_version_id, event_type)      -- pk(task_id, event_type)
-task_consumes(task_id, workflow_version_id, event_type)   -- pk(task_id, event_type)
-                                                          -- index(workflow_version_id, event_type): routing
-schedules(task_id, cron, tz, missed_policy, overlap_policy)
-events(event_id, type, source_run_id, causation_id, packet_json, occurred_at)
-runs(id, task_id, trigger_event_id, status, mode_used, started, ended, error)
-run_dedupe(task_id, event_id)  -- unique
-trace_entries(run_id, seq, kind, payload_json, blob_ref)   -- partitioned by time
-artifacts(id, run_id, kind, blob_ref, meta)                -- screenshots, files
-compiled_scripts(id, task_id, version, source, guards_meta, from_runs[], status)
-task_state(task_id, key, value)                            -- ctx.state
-approvals(id, run_id, action_json, status, expires_at)
-
--- §13.5 assets (user deliverables — NOT trace exhaust, no TTL)
-assets(id, user_id, path, mime, size, sha256, blob_ref,
-       current_version, created_at, updated_at)             -- unique(user_id, path)
-asset_versions(asset_id, version, blob_ref, sha256, size, run_id, created_at)
-asset_write_grants(task_id, path_glob)                      -- writes scoped, reads open
-
--- §16 Threat 4 envelope encryption
-secrets(id, user_id, name, description, tier[server|user_wrapped],
-        ciphertext, nonce, dek_wrapped, kek_ref,
-        allowed_origins[], created_at, rotated_at)          -- unique(user_id, name)
-secret_grants(task_id, secret_name)                         -- which task may use which
-secret_access_log(run_id, secret_name, action, anchor, ts)  -- never the value
-mcp_servers(id, user_id, label, transport, config_json, secret_name)
-
--- 0.5 sharing.md — read-only public visibility, opt-in per event type
-workflow_shares(id, workflow_id, token_sha256 unique, token_prefix,
-                created_at, revoked_at)            -- token never stored in plaintext
-event_defs.public boolean not null default false   -- projected from graph_json
-
--- S6d removed tasks.code_source/code_sha256/runtime_json (migration 0019).
--- Python source is supplied to python.run at execution time.
-```
-
-Neither 0.5 track adds a table beyond `workflow_shares`. Asset visibility is *derived* — an asset is publicly readable iff a public packet under a live share references it — rather than configured, so there is no share-grant table to keep in sync (`sharing.md` §4.4). The Python dependency manifest is a file in the repo, not a row, because its whole purpose is to be reviewed in a pull request. Public page views are counted as a metric, never written as rows: a view is not product data, and a row per view would make Threat 16 cheaper.
-
-Storage opt-outs are evaluated at write time (don't store then delete). Trace and artifact tables get TTL/retention settings per user. If semantic search over past runs is wanted later, add `pgvector` — no separate vector DB.
-
-## 15. Reliability Semantics
-
-- Delivery: at-least-once + dedupe (§6). Retries: per-task retry policy on `failed` (not on `policy_denied`), exponential backoff, retry counter in the run record; retried runs reuse the trigger event's `event_id`, so the side-effect dedupe key (§6) is what protects against double-posting.
-- Timeouts at three levels: step (single action), run (task limit), approval (park expiry).
-- Crash recovery: runs are checkpointed at trace-entry granularity; on engine restart, `running` runs older than a heartbeat window are marked `failed(engine_restart)` and retried per policy. Do not attempt to resume a half-finished browser run mid-page in v1 — re-run from the start and rely on idempotency keys.
-- Backpressure: per-endpoint run queues (§8) with max depth; events that would exceed depth park in the DB, not in memory.
-
-## 16. Security Analysis
-
-**Threat 1 — Prompt injection from web content.** The primary threat for any browsing agent. A page (or a tweet!) can contain "ignore your instructions and open attacker.com/collect?data=…". Mitigations, in order of real effectiveness: (a) the navigation allowlist — an injected agent cannot reach attacker.com if the task only allows x.com and instagram.com; this is your strongest control and a genuine advantage of per-task-scoped policy; (b) capability grants — an injected agent without `download`/`upload`/`execute-js` can do little; (c) approval gates on dangerous actions; (d) content demarcation in prompts (helps, but never rely on it). Design assumption: **the agent will eventually be injected; the policy engine is what makes that survivable.**
-
-**Threat 2 — Exfiltration via emitted events.** An injected agent can stuff stolen page data into a packet, which flows to downstream tasks (e.g. one that posts publicly to Instagram). Mitigations: packet schema validation (§4) limits shape; consider flagging events whose packets contain header-like/token-like strings (entropy heuristics) for approval. This is a residual risk to document honestly.
-
-**Threat 3 — Compiled-code escape.** Covered by §12: isolates, no ambient authority, `ctx`-only API, policy checks host-side, linted output, no arbitrary `evaluate`.
-
-**Threat 4 — Secrets.** Secrets (Instagram credentials, MCP API keys) never enter LLM context, traces, or transcripts. The LLM sees a secret's *name and description*; the harness performs the fill.
-
-**Encryption model: envelope encryption with KMS.** Stated plainly, because the obvious-sounding alternative is wrong:
-
-- **Client-side end-to-end encryption is incompatible with this product.** A cron-triggered run at 3am must type a password into a browser with no user present. If only the user's device can decrypt, unattended runs are impossible. E2E and unattended automation are mutually exclusive; any vendor claiming both decrypts server-side. We will not make that claim.
-- **A public/private keypair alone solves nothing.** It secures writes (anyone can seal to the public key), but the private key must still live somewhere the server reaches — it relocates the problem rather than solving it.
-
-The design:
-
-1. Each secret gets a random 32-byte **DEK**; the value is encrypted with XChaCha20-Poly1305 (libsodium `secretbox`).
-2. The DEK is **wrapped by a KEK held in KMS** (AWS/GCP KMS or Vault Transit). The server never stores a plaintext KEK, so a database compromise alone yields nothing.
-3. Decryption happens **only inside the secret broker**, a deliberately narrow module. Its interface is `fill(runId, secretName, anchor)` and `inject_into_mcp_arg(runId, secretName)`. **There is no `get(name) -> string` anywhere in the codebase.** That absence is the primary control; everything else is defence in depth. Plaintext lives in a buffer for one `Input.insertText` and is zeroed.
-4. The tool-result serializer for `secrets.*` returns `{ok: true}` and nothing else — never a value-shaped return type — so a serialization bug cannot leak a value into context.
-
-**Two tiers, honestly labelled:**
-
-- **Tier 1 — server-decryptable (default).** Enables scheduled and event-triggered runs. Protected by KMS, the broker, origin binding, and audit log.
-- **Tier 2 — user-wrapped (high-value).** The DEK is *additionally* wrapped by a key derived from the user's passphrase (Argon2id, derived client-side, never transmitted). The server cannot decrypt alone. Usable only in **attended** runs: the unwrapping key is held in the session for a bounded window while the user is present. A scheduled run needing a Tier-2 secret parks in `awaiting_approval` — reusing the approval machinery (§10) unchanged. This supports a real, defensible claim ("our servers cannot decrypt this without you present") instead of a fake E2E one.
-
-**The residual threat encryption cannot address.** The credential is typed into *the user's own browser* over their CDP endpoint. Encryption protects it at rest and from LLM context; it does not stop a prompt-injected agent from calling `secrets.fill('bank_password', anchor)` against an attacker-chosen field. The controls that actually bite:
-
-1. **`secret_grants`** — a task may only fill secrets explicitly granted to it.
-2. **Origin binding on the secret itself** (`allowed_origins`) — `instagram_password` fills only on `instagram.com`. The broker checks the *page's current origin at fill time*, not the task's nav allowlist. This is the strongest control here and it is cheap.
-3. **Target validation** — fill only into `input[type=password|email|text]` on a same-origin frame; refuse hidden fields, `contenteditable`, and cross-origin iframes.
-4. **Rate limiting per run** — a loop of fills is character-probing exfiltration, not a login.
-
-**Threat 7 — LaTeX rendering as code execution.** LLM-authored `.tex` is untrusted code in a Turing-complete language with shell escape and file I/O (`\write18`, `\input{/etc/passwd}`). The renderer is a containerised, network-less, shell-escape-disabled, read-only-FS process with `openin_any=p`/`openout_any=p` and resource caps (§13.5). Treated with exactly the seriousness of §12's isolate, because it is the same class of problem.
-
-**Threat 8 — Asset store path traversal.** Asset paths come from LLM output. Paths are normalized and validated against the user's namespace root; `..`, absolute paths, and symlinks are rejected. Writes additionally check the task's `asset_write_grants` glob. Renderer scratch dirs are per-render and never shared.
-
-**Threat 5 — CDP endpoint as attack surface.** A `wss://` endpoint string is a credential (anyone holding it controls the browser). Encrypt at rest, never log it, never place it in LLM context, and validate on registration that it speaks CDP before storing.
-
-**Threat 6 — The user's own browser (restating §8).** The harness constrains the agent, not the browser. Document the dedicated-profile recommendation prominently; consider refusing (or warning loudly) when the connected browser reports an existing logged-in default profile.
-
-*Threats 9–12 (the workflow store as an injection relay, LLM-authored SQL, the graph compiler as a policy author, role escape in the store path) are specified in `graph-compilation-llm.md` §8.*
-
-### Threats 13–17 — Shared workflows (`sharing.md` §6)
-
-**Threat 13 — Packet content disclosure.** A shared workflow's packets carry whatever the emitting node put in them. Controls are structural: default deny on a schema default, a manifest versioned with the graph so widening is explicit and diffable, filtering in SQL so no presentation bug can leak, and a visibility preview at share creation and at every manifest change. Residual: an opted-in event shows exactly what was asked for, including whatever an injected agent stuffed into it — sharing multiplies the consequence of Threat 2 without changing its likelihood.
-
-**Threat 14 — Share token leakage.** A share URL is a bearer credential in the leakiest place to keep one. 256 bits of entropy, hashed at rest, never logged, `Referrer-Policy: no-referrer` so a click cannot leak it, `X-Robots-Tag: noindex` so a crawler cannot publish it, rotate and revoke. Residual: a holder can always forward it — a share has no notion of who is looking, by design.
-
-**Threat 15 — Stored XSS and drive-by via public content.** Public assets are attacker-influenceable bytes served from our origin. `Content-Disposition: attachment`, `nosniff`, `CSP: sandbox`, a narrow MIME allowlist, and no `dangerouslySetInnerHTML` anywhere in a public component. A separate blob origin is recommended for any deployment whose control plane holds a session cookie.
-
-**Threat 16 — Unauthenticated read amplification.** The public path is the only surface executing queries for an unauthenticated caller. Per-share and per-IP rate limits, hard page-size caps, keyset pagination, and a depth-capped lineage CTE — the recursive walk must never run unbounded here.
-
-**Threat 17 — Inference from metadata.** Timings, run counts and failure rates are visible and do say things; that is what "watch it run" means, and it is accepted. The carve-outs are where the leak would be content rather than shape: `runs.error` free text is never public (a bounded error class is), and per-type event counts are not aggregated into totals a viewer could difference against.
-
-### Threats 18–22 — Python compute (`python-compute.md` §7)
-
-**Threat 18 — Python execution.** Programs are subprocesses in the self-hosted runner container, not per-job VMs or tenant sandboxes. Deployment boundaries, wall-clock termination and host output checks define the controls.
-
-**Threat 19 — Hostile output.** Runner files and paths are untrusted. Symlinks and output caps are handled by the runner; the host normalizes paths and checks all destinations against task write grants before asset publication.
-
-**Threat 20 — Resource exhaustion.** Per-job wall-clock and output limits are enforced. Container resource limits are deployment concerns, not the retired per-job microVM guarantees. Kills use `pyrun_kills_total`.
-
-**Threat 21 — Dependencies.** A pinned image and committed manifest define the tool's packages. There is no publish-time dependency subset. Compromised dependencies execute with runner privileges; pinning does not preclude exfiltration.
-
-**Threat 22 — Network and host access.** Programs have no bridge to agent tools or secrets. Compose networking is internal, but CPython can create sockets and subprocesses and internal peers can remain reachable. There is no absent-NIC guarantee.
-
-## 17. Observability
-
-Three audiences, three systems, deliberately separate (0.5 adds the third):
-
-- **Product observability (§17.1)** — what *users* see: the run trace and its inspector. This is product data: stored in Postgres/blob storage, governed by the user's storage opt-outs and TTLs, and doubling as the compiler's input (§2 principle 4).
-- **Platform observability (§17.2)** — what *we* see as operators: OTel traces, metrics, and structured logs shipped to a Grafana stack. This is operational exhaust: never user-facing, never an input to any product feature, stored outside the product database, with operator-set retention that has nothing to do with user trace TTLs.
-- **Public observability (§17.3)** — what *a share link's viewer* sees: exactly the visibility manifest, and nothing derived from anything outside it.
-
-They **link but never mix**. Every OTel span carries `run_id`/`task_id`/`workflow_id` as attributes, and every run records its OTel `trace_id` — so an operator jumps from a Grafana alert to the exact run in the inspector, and from a bug report's run to the platform trace around it. But no product feature reads telemetry, no telemetry carries product content (the content rules below are what make the separation real), and the public surface reads neither traces nor telemetry.
-
-### 17.1 Product observability (run inspector)
-
-Structured trace per run (already the compiler's input) rendered in a run inspector UI: timeline of actions with screenshots, network entries with policy verdicts, LLM calls with token counts, deopt points, emitted events with lineage links to the runs they triggered. Metrics worth tracking from day one: deopt rate per task version (the health signal for compiled mode), policy-denial counts (misconfiguration signal), LLM cost per run in ai vs compiled mode (the product's core value claim — measure it so you can show it), and per-endpoint browser error rates. These same signals feed §17.2's dashboards — measured once, in the runtime, surfaced to both audiences.
-
-### 17.2 Platform observability: OTel + Grafana + logs
-
-**Stack.** OpenTelemetry SDK for Node (`@opentelemetry/sdk-node`) with selective auto-instrumentation (`pg`, `http`, `undici`) plus manual spans for domain operations; everything exported over OTLP to a collector; Grafana LGTM behind it — **Loki** for logs, **Tempo** for traces, **Mimir/Prometheus** for metrics, Grafana for dashboards and alerting. For dev and single-node deployments the all-in-one `grafana/otel-lgtm` container is sufficient. Logs are structured JSON via **pino** — one logger factory, child loggers bound with `run_id`/`task_id`/`trace_id`, bridged to OTLP so Loki lines correlate to Tempo traces by `trace_id`. No `console.log` anywhere (lint rule); a log line without a bound context is a bug.
-
-**Wiring rules — these are architecture, not deployment detail:**
-
-1. **One telemetry package, initialized only at the composition root** (`apps/engine`, `apps/web`, `apps/renderer`). Library packages never import the SDK; they receive a tracer/meter/logger the same way they receive a `PolicyGate`. This keeps every package testable without a collector.
-2. **No-op by default.** With no `OTEL_EXPORTER_OTLP_ENDPOINT` configured, init resolves to no-op providers and pino writes pretty-printed console output. The app never assumes a collector exists; CI and dev-without-Docker run exactly this mode. Telemetry must be *inert* when disabled — zero sockets, zero background work.
-3. **Trace propagation across the bus.** The outbox row (and thus the event) carries a W3C `traceparent`. Emit happens inside a producer span; dispatch starts a consumer span as its child, so a workflow's causal chain — schedule fire → dispatch → run → emit → next dispatch — reads as **one distributed trace**, rooted at the schedule fire or external trigger. Redeliveries and retries start fresh spans with a **span link** back to the original producer context (at-least-once delivery means the same producer span can have several consumer descendants; links keep that honest). This is the operational mirror of `causation_id` lineage — same shape, different audience.
-4. **We instrument our system, not the user's traffic.** The network observer's view of page requests is product data and goes to the run trace only. OTel spans cover *our* operations: engine dispatch, DB queries, LLM API calls, MCP calls, render jobs, CDP command round-trips. The user's page traffic never becomes platform telemetry.
-
-**Content and cardinality rules — security rules, not tuning advice:**
-
-- Telemetry carries **identifiers, shapes, sizes, durations, and outcomes — never content**. No page content, no packet bodies, no prompts or completions, no MCP results, no LLM-authored SQL text, no asset contents. Content lives in the run trace under the user's opt-outs (§4); an operator log line containing a tweet body is a bug of the same class as a secret in a trace, because it would bypass those opt-outs.
-- Secrets and CDP `wss://` URLs never appear in any signal — restating Threat 4/5 obligations for the telemetry path, where they are easiest to violate by accident.
-- Navigation targets appear in telemetry at **domain granularity only** (`nav.domain="x.com"`); full URLs are product data.
-- **High-cardinality identifiers (`run_id`, `event_id`) are span/log attributes, never metric labels.** Metric labels come from the bounded sets: `kind`, `mode`, `status`, `model`, `check`, `reason`, endpoint id, workflow id. Histograms use exemplars to link to Tempo traces, which is how you get from "p99 spiked" to one concrete run without run-id labels.
-
-**Metrics catalogue (initial; names are binding the way tool registries are — rename via doc change, not drive-by):**
-
-| Metric | Type | Labels |
-|---|---|---|
-| `outbox_dispatch_lag_seconds` | histogram | — |
-| `outbox_undispatched_rows` | gauge | — |
-| `outbox_dead_letters_total` | counter | — |
-| `events_dedupe_dropped_total` | counter | — |
-| `scheduler_fire_lag_seconds` | histogram | — |
-| `scheduler_fires_total` | counter | `result=fired\|skipped_overlap\|skipped_missed\|queued` |
-| `runs_total` | counter | `kind`, `mode`, `status` |
-| `run_duration_seconds` | histogram | `kind`, `mode` |
-| `crash_recovered_runs_total` | counter | — |
-| `llm_tokens_total` | counter | `model`, `direction=in\|out` |
-| `llm_cost_usd_total` | counter | `model`, `kind`, `mode` |
-| `browser_endpoint_healthy` | gauge | `endpoint_id` |
-| `browser_disconnects_total` | counter | `endpoint_id` |
-| `browser_queue_wait_seconds` | histogram | `endpoint_id` |
-| `resource_limit_aborts_total` | counter | `limit` |
-| `policy_verdicts_total` | counter | `decision=allow\|deny`, `check` |
-| `secret_fills_total` | counter | `outcome=filled\|denied_origin\|denied_target\|rate_limited` |
-| `deopts_total` | counter | `trigger` |
-| `compile_runs_total` / `promotions_total` / `demotions_total` | counter | — |
-| `mcp_calls_total` / `mcp_call_duration_seconds` | counter / histogram | `server`, `outcome` |
-| `render_duration_seconds` | histogram | `outcome` |
-| `render_sandbox_kills_total` | counter | `reason` |
-| `store_query_duration_seconds` | histogram | — |
-| `store_sql_rejected_total` | counter | `reason` |
-| `share_views_total` | counter | `result=ok\|unknown\|revoked\|rate_limited` |
-| `share_asset_reads_total` | counter | `outcome=ok\|denied\|not_found` |
-| `pyrun_jobs_total` | counter | `outcome` |
-| `pyrun_duration_seconds` | histogram | `outcome` |
-| `pyrun_kills_total` | counter | `reason` |
-| `pyrun_output_bytes` | histogram | — |
-
-`llm_cost_usd_total{mode}` divided by `runs_total{mode}` is the ai-vs-compiled cost-per-run curve — the product's core claim, straight off the board.
-
-**Dashboards and alerts, from day one** (Grafana dashboards are provisioned as JSON in the repo, versioned like code):
-
-1. **Engine health** — outbox lag/depth/dead letters, run outcomes by kind/mode, scheduler fire lag, crash recoveries.
-2. **Cost** — tokens and spend by model, cost-per-run ai vs compiled, deopt rate per task version.
-3. **Browser fleet** — endpoint health and queue wait, disconnects, resource-limit aborts.
-4. **Security signals** — policy denials by rule, secret-fill denials and rate-limit hits, `store_sql_rejected_total`, renderer/isolate sandbox kills, dead letters. This board is the "misconfiguration or attack?" surface; several of its series should sit at a flat zero, which is exactly what makes a deviation loud.
-
-Alert baseline: any dead letter; outbox lag p95 over 30s; scheduler fire lag over one tick; endpoint unhealthy over 5 minutes; deopt-rate spike per task; any sandbox kill; crash recovery on boot; LLM spend rate above a configured budget.
-
-**Sampling and retention.** v1 samples nothing (volume is low; completeness is worth more than the savings); the head-sampling knob exists via standard OTel env vars for later. Telemetry retention is an operator setting (14–30 days) and is unrelated to user-facing trace TTLs — deleting a user's traces does not touch platform telemetry, which contains no user content precisely so this independence is safe.
-
-**Testing posture.** Telemetry is inert in CI (rule 2) and is **not** an assertion surface — traces and events remain the system-test ground truth (testing doctrine, `impl-phases.md`). One smoke test asserts that disabled-mode init performs no I/O; beyond that, dashboards are verified by looking at them, which is what they are for.
-
-Python dashboards use `pyrun_kills_total` and `pyrun_duration_seconds`; no VM-boot metric exists. Sharing retains `share_views_total{result="unknown"}` on the security-signals dashboard.
-
-### 17.3 Public observability (the share viewer)
-
-Specified in `sharing.md`; the rule that belongs here, beside the other two audiences:
-
-> **The public view shows exactly the visibility manifest, and nothing derived from anything outside it.**
-
-Concretely, and each of these is a rule rather than a default:
-
-- **Platform telemetry is never public.** It is operator exhaust and it is stored outside the product database precisely so that this is easy to keep true.
-- **Run traces are never public.** They are the owner's debugging data, governed by the owner's storage opt-outs, and full of content that nobody consented to publish — page snapshots, LLM transcripts, MCP results, SQL text.
-- **Nothing outside the manifest may be summarised, aggregated, sampled or hinted at.** No future "workflow health score" may be computed over private packets and rendered as a number; an aggregate over hidden data is a disclosure with a smaller bit rate, not a non-disclosure.
-- **Run error text is not public** — a bounded error class is (`sharing.md` §3.3). Free text is where content leaks back in through a channel nobody thought of as a channel.
-
-The share viewer's counterpart of the §17.2 content rules is therefore stricter, not looser: platform telemetry excludes content because operators do not need it, and the public view excludes everything unmanifested because the viewer was never granted it.
-
-## 18. Decisions
-
-Resolved:
-
-1. **Account-level baseline deny rules** (§10) — **accepted.** Account-level baseline rules that per-task grants cannot override.
-2. **Packet schema authoring** — **free-text description compiled to JSON Schema by an LLM at publish time.** The description belongs to the event, not to an emitter, so there is one schema per type per version. Both sides are schema-aware: an emitting node's agent knows what fields to produce, and every consuming node has the declared fields injected into its prompt context.
-3. **Overlap policy for event-triggered runs** — **per-task parallelism setting: `parallel` or `queue`.** Rationale: a task may emit events faster than a downstream consumer processes them; the user decides whether the consumer runs concurrently or serializes. (Per-endpoint browser serialization, §8, still applies underneath.)
-4. **Scheduled-run overlap queue depth** (§7) — **user-configurable max queue depth** per schedule (default 1).
-5. **Recompilation trigger** — a separate LLM task after a recovered execution settles and flushes its trace. It separates DOM exploration from actual work; compiler failure cannot alter the completed execution.
-6. **Cycles** (§5) — cycles remain legal (bounded by loop budget), but the **UI must detect and warn** about them in the graph editor.
-7. **Two node kinds** (§4) — **accepted.** `kind = browser | asset` as a discriminant on `tasks`, sharing one table, one edge model, one run state machine. Not two tables.
-8. **MCP is asset-node-only** (§13) — **accepted.** Browser tasks have no `mcp.*` tools; compiled scripts have no `ctx.mcp`. This severs the page-injection→MCP-egress exfiltration chain at the tool boundary.
-9. **Asset nodes are event-triggered only** (§4) — **accepted.** No schedules bind to `kind=asset`.
-10. **Asset nodes are never compiled** (§11) — **accepted.** MCP output has nothing stable to guard on.
-11. **Document generation is LaTeX-based** (§13.5) — **accepted.** `pdf` via tectonic; decks via beamer→PDF (a PDF deck, *not* an editable `.pptx`); rendered out-of-process in a network-less container with shell escape disabled.
-12. **`docx` deferred** (§13.5) — **accepted.** The only LaTeX→docx path is pandoc and it is lossy in the ways that matter. Revisit with a purpose-built source format if users need editable Word files.
-13. **Secrets use envelope encryption + KMS, not client-side E2E** (§16) — **accepted.** E2E is incompatible with unattended runs. Tier 2 (user-wrapped, attended-only) provides the stronger guarantee where it is genuinely wanted.
-14. **Asset namespace is per-user; reads open, writes grant-scoped** (§13.5) — **accepted.** Cross-workflow reports are a core use case; write grants bound the blast radius.
-15. **Platform observability is OTel + Grafana (LGTM) + structured logs, separate from run traces** (§17.2) — **accepted.** Telemetry carries identifiers and measurements, never user content; spans and runs cross-reference by id; instrumentation is baked in from the current subphase onward (SOb in `impl-phases.md`), not retrofitted in hardening.
-16. **Read-only public sharing of a workflow's own execution is in scope; a marketplace of reusable workflows is not** (§1, `sharing.md`) — **accepted.** A share is an unguessable capability URL, hashed at rest, shown once, rotatable and revocable; unknown and revoked tokens are indistinguishable. It confers no identity and no writes, so it needs none of the multi-tenancy §1 defers.
-17. **Share visibility is opt-in per event type, default deny, declared in the graph document** (§5, `sharing.md` §3) — **accepted.** The manifest versions with the graph, so a new node arrives private because that is the schema default rather than because a check said so. The whole graph shape is shared or nothing is — no per-node hiding, since a partially hidden graph is a misleading graph. Run error free text is never public; a bounded error class is.
-18. **The public read path filters in SQL, and asset visibility is derived** (`sharing.md` §4) — **accepted.** Public read models never select a private packet, so no router, serializer or component bug can leak one. An asset is publicly readable iff a public packet under a live share references it — nothing to configure and nothing to keep in sync.
-19. **Python is the asset agent's `python.run` tool** — accepted, superseding the authored mode. Programs return untrusted data and files; the agent decides what to emit. Programs have no host tool bridge.
-20. **Python uses the self-hosted subprocess runner and pinned image** — accepted, superseding Firecracker. The container is the deployment isolation unit; wall-clock/output limits and host path/grant checks remain. No per-job VM is claimed.
-
-Still open:
-
-Each 0.5 companion document carries its own open list — `sharing.md` §10 (expiring shares, per-field packet redaction, a separate blob origin) and `python-compute.md` §11 (snapshot warm pool, store writes from Python, who authors the code, resource ceilings). The ones that belong here:
-
-1. **Consume predicates in v1** (§5) — or event-emission-as-branching only? Drafted as edge predicates before 0.6; with edges gone the mechanical filter would be a nullable column on `task_consumes`, evaluated per `(consumer, type)`.
-2. **Captcha/login-wall handling** — deopt to agent is not enough (agents can't solve captchas, and shouldn't try): park for human takeover via the approval mechanism, with the user completing the step in their own browser (BYO CDP makes this natural — it's their browser)? Recommend yes; needs UI.
-3. **Trace retention defaults** and blob storage budget per user. Note assets are *not* covered by trace TTL (§13.5) — they need their own quota policy.
-4. **Tier-2 secrets in v1, or Tier-1 only?** Tier 2 is the stronger marketing and security story but adds a client-side crypto surface and blocks unattended use of those secrets.
-5. **Editable `.pptx`/`.docx`** — if demand appears, a structural source format compiled directly to Office XML, kept separate from the LaTeX path.
-
-## 19. Phased Build Plan
-
-**Phase 1 — spine (no compiler, no policy UI):** Postgres + outbox event bus, workflow engine with single-node graphs, cron scheduler, browser agent on one CDP endpoint, hardcoded permissive policy, traces stored, run inspector (read-only). Exit criterion: the tweet→image→Instagram flow works end-to-end in `ai` mode.
-
-**Phase 2 — asset nodes:** `kind` discriminant, MCP client, asset store, LaTeX renderer, secrets broker. Exit criterion: tweet → asset node generates a PDF/deck via MCP + LaTeX → browser node uploads it.
-
-**Phase 3 — policy + network layer:** grant sets per task, enforcement at all three points (§10), network batching + `network.read` with header gating, approvals, account baseline, secret origin binding, asset write grants.
-
-**Phase 4 — compiler:** post-execution trace interpretation, compiler agent, static runtime on `isolated-vm`, guard/deopt loop, demotion budget, script diff UI. Browser tasks only.
-
-**Phase 5 — hardening:** multiple CDP endpoints with pooling/queueing, retries/backpressure, retention/TTL, asset quotas, loop budgets and lineage limits. (Metrics dashboards are *not* deferred to here — telemetry and the day-one dashboards ship with SOb, §17.2; this phase only tunes alert thresholds and retention.)
-
-## 20. Stack Notes
-
-- **Runtime:** Node/TypeScript throughout (shared types between engine, runtime, and generated code target).
-- **CDP client:** consider **Playwright's `connectOverCDP`** over Puppeteer — better multi-context handling, auto-waiting semantics that reduce compiler-emitted `wait` noise, and its trace format is a useful reference for yours. Puppeteer is fine if you prefer it; the runtime API in §12 insulates the rest of the system from this choice either way — make it a driver interface.
-- **Workflow engine:** build the thin engine described here rather than adopting Temporal in v1. Temporal buys durability you can get from Postgres checkpointing at this scale, and its worker/activity model fights the "one browser endpoint = one serialized queue" constraint. Revisit if you outgrow single-node.
-- **Execution isolation:** `isolated-vm` for compiled JS, an out-of-process container for LaTeX, and the self-hosted subprocess runner container for Python. These have different boundaries; Python is not Firecracker. **Policy:** an in-process evaluator over grants.
-- **Python compute:** `firecracker` + `jailer`, vendored and pinned by hash into the runner image — the jailer does the chroot, cgroup, uid/gid drop and netns pinning, so do not reimplement it. Boot is static (`--no-api` with a config file), so there is no live API socket. A minimal uncompressed `vmlinux`, no modules. Scratch filesystems are built with `mke2fs -d` and read back with `debugfs -R rdump` from `e2fsprogs` — both userspace, so the host never loop-mounts an image written by untrusted code and never needs `CAP_SYS_ADMIN`. The runner service needs `/dev/kvm` passed through and nothing else; it never sees the docker socket. Dependency image pinned by digest; no runtime package installation.
-- **Sharing:** no new dependency. Tokens are `crypto.randomBytes(32)` base64url, stored as `sha256`; rate limiting is an in-process token bucket (per-instance, honest for single-node) and moves to Postgres rather than Redis if the control plane is ever replicated.
-- **LaTeX:** `tectonic` — single binary, no TeX Live install, deterministic package fetching (pre-warm the cache into the image so the render container needs no network at runtime).
-- **MCP:** `@modelcontextprotocol/sdk`, one client per configured server, wired only into the asset node's tool registry.
-- **Crypto:** libsodium (`sodium-native`) for XChaCha20-Poly1305 + Argon2id; KMS/Vault Transit for KEK wrapping. Do not hand-roll envelope encryption.
-- **Telemetry:** `@opentelemetry/sdk-node` + OTLP → Grafana LGTM (Loki logs, Tempo traces, Mimir/Prometheus metrics); `pino` for structured JSON logs bridged to OTLP; the all-in-one `grafana/otel-lgtm` container for dev/single-node. No-op providers when no endpoint is configured (§17.2 rule 2) — the app never requires a collector.
-- **UI:** declarative Events/Nodes panels over a dependency-free derived map (no graph-canvas library — React Flow was the original pick and was removed at U1, since topology is derived rather than drawn) + a run-inspector; the inspector is not optional polish — it is the debugging surface for a probabilistic system and should exist from Phase 1.
+## 1. Product boundary
+
+Tabductor hosts browsers for AI-driven workflows. Customers describe intent, connect an
+account through a persistent browser profile, and watch work happen live. They can replay
+completed sessions or take control for login, MFA, and recovery. The graph is an internal,
+versioned implementation detail produced by the compiler; customers do not wire nodes or
+approve individual browser actions.
+
+The first release is self-service paid SaaS: Clerk accounts, Paddle prepaid credits,
+customer-supplied model keys or paid Tabductor models, and platform-managed proxies and
+CAPTCHA services. Production runs on AWS EKS in one region, initially validated for 25
+concurrent browsers. Fetch/Search APIs, arbitrary hosted functions, standalone public browser
+connections, and a general-purpose model gateway are later products.
+
+The external automation API remains MCP at `/api/mcp`, with four workflow-level operations:
+
+- `workflow_publish(name, intent, max_hops?)`
+- `workflow_update(workflow_id, intent)`
+- `workflow_trigger(workflow_id, event_type?, packet?)`
+- `workflow_schedule(workflow_id, cron, timezone?, enabled?)`
+
+UI/tRPC and MCP call the same authenticated workflow services. Trigger responses include an
+execution ID. Session inspection and control use dedicated authenticated APIs; callers do
+not need internal task IDs or browser connection URLs.
+
+## 2. Accounts and ownership
+
+Clerk authenticates customers. Each customer starts with a personal account; the account is
+the unit of ownership, resource limits, credentials, and billing. Keep account identity
+separate from Clerk user identity so additional members can be supported later.
+
+Resolve account access server-side for every UI, tRPC, MCP, streaming, and artifact request.
+Workflow versions, executions, runs, profiles, sessions, model credentials, recordings, and
+usage records must resolve to the same account. Background workers carry this verified
+ownership context. Replace `LOCAL_USER` in hosted paths; arbitrary request fields never
+establish ownership. MCP uses revocable account API tokens stored as hashes.
+
+Existing public share tokens retain their explicit read scope. They do not grant access to
+live sessions, takeover, browser profiles, private recordings, credentials, or billing.
+
+## 3. Internal execution model
+
+There are exactly two internal task kinds:
+
+| Kind | Responsibility | Runtime capabilities | Compiled fast path |
+| --- | --- | --- | --- |
+| Browser | Navigate, perceive, extract, and act in hosted Camoufox | `page.*`, redacted network reads, emit/lifecycle | Yes |
+| Decision | Semantic transformation, normalization, planning, and durable state | Workflow-scoped `store.query`, `store.insert`, `store.upsert`, emit/lifecycle | No |
+
+Browser tasks do not query or write the workflow store. Decision tasks do not open pages,
+run customer Python, render documents, or call third-party MCP servers. The Python browser
+worker is infrastructure for Camoufox, not a new task kind or a general-purpose code runner.
+
+Authored work starts in `ai` mode. Successful browser traces can be promoted to guarded
+static scripts; failed guards hand control back to AI within the same run and browser
+session. Decision tasks remain AI-driven. `stub` is reserved for deterministic tests.
+
+### Execution, run, profile, and session
+
+| Entity | Meaning |
+| --- | --- |
+| Workflow version | Immutable published graph, event contracts, and resource bindings |
+| Workflow execution | One trigger and its entire causally related graph traversal, pinned to a version |
+| Task run | One task attempt within an execution; retries preserve execution identity |
+| Browser profile | Persistent login data, fingerprint configuration, and proxy configuration |
+| Browser session | One live browser lifetime, owned by an execution or an interactive profile setup |
+| Recording | Time-indexed media and activity metadata for one session |
+
+A workflow defaults to its own persistent profile. Sharing a profile between workflows is
+explicit. Only one session can hold a profile for writing; competing executions queue.
+Browser tasks using one session act serially. Independent profiles permit parallel browser
+work. Decision-only executions allocate no browser.
+
+## 4. Graph compilation, routing, and durability
+
+Retain the event-centric graph. Tasks declare the event types they consume and emit; matching
+declarations derive topology. Each matching event triggers a consumer independently:
+multiple subscriptions do not implicitly create a join. Events carry schema-validated
+packets, account/workflow/execution identity, and causation.
+
+Resolve the current workflow version once when accepting a manual trigger, external event,
+or schedule occurrence. All downstream events, retries, and system events stay on that
+execution's version. Publishing a new version affects subsequent executions. This replaces
+the current behavior in which downstream events route through the latest graph.
+
+The typed publication artifact contains:
+
+- A versioned graph with stable logical task identities, browser/decision kinds, event
+  declarations, explicit entry behaviors, and finite execution budgets.
+- Compiled event schemas and task briefs.
+- An optional workflow-store schema and classified migration.
+- Browser-profile and model-configuration references, with ownership validated at publication.
+
+Remove proposed grants from this artifact. Deterministic gates validate shape, identity,
+event wiring, declared external/system inputs, entry behaviors, kind constraints, resource
+bindings, store DDL/table specifications, and bounded cycles. Failed repair attempts leave
+the published version untouched. Publication uses a base-version check so concurrent
+updates cannot silently overwrite each other.
+
+Keep the Postgres outbox and durable queue. Atomically accept triggers, create execution
+roots, deduplicate deliveries, and commit emitted events with staged store writes. Fix the
+current separate emit-dedupe claim and publish transactions so a crash cannot consume a key
+without publishing its event. Distinguish execution-scoped delivery dedupe from intentional
+cross-execution record dedupe.
+
+Execution completion requires all descendant runs and pending event deliveries to settle;
+an empty in-memory queue is insufficient. Aggregate terminal status, release sessions, and
+settle usage once. Queued work, retries, and human pauses count toward execution liveness.
+
+Run and session leases carry an owner and monotonically increasing generation. Heartbeats,
+browser commands, event/store commits, and completion writes must reject stale owners.
+Cancellation revokes command access and stops executors, rather than only changing a row.
+Record browser command intent and outcome. After a disconnect during a potentially
+side-effecting action, do not blindly replay it: inspect available evidence, and mark an
+unverifiable outcome as requiring recovery. Arbitrary website effects cannot be made
+exactly-once by database deduplication.
+
+Store data persists across workflow versions. Additive compatible migrations can publish
+while older executions continue; incompatible migrations wait for all affected executions
+to drain. Destructive data changes remain explicit migration operations. These are data
+lifecycle controls, not browser action approval prompts.
+
+## 5. Camoufox worker and persistent profiles
+
+Use a Python service owning Camoufox through its supported local Playwright API. The
+TypeScript driver calls a versioned internal RPC API that implements the existing browser
+operation contract. The browser worker owns page handles, network observations, display,
+and input; model calls and graph execution remain in the TypeScript services.
+
+Camoufox's remote Playwright server is documented as experimental. The local-owner worker
+avoids making that server the production connection contract. Chromium CDP discovery,
+`newCDPSession`, and CDP navigation interception are replaced in the hosted path by
+Playwright Firefox operations and infrastructure-level network isolation.
+See [Camoufox remote server](https://camoufox.com/python/remote-server/) and
+[persistent contexts](https://camoufox.com/python/usage/).
+
+Each allocated pod hosts one customer session: Camoufox, an Xvfb display, the worker, and
+display/recording processes. Pin compatible browser, Python package, and Playwright versions
+in the image; download browser binaries during builds. Browser pods have finite CPU,
+memory, disk, tabs, and lifetime limits and no access to the Kubernetes API or host sockets.
+
+Launch with a persistent user-data directory and the profile's stored fingerprint settings.
+Store encrypted profile snapshots in account-scoped object storage. Restore under an
+exclusive profile lease, close the browser before producing a clean snapshot, upload a
+new generation, and atomically advance the profile pointer. Retain the last clean snapshot
+when a worker dies; record that newer login changes may be lost. Never share a writable
+profile directory or recycle a used customer browser into the warm pool.
+
+Persist locale, timezone, fingerprint, and proxy preferences together. Keep a sticky proxy
+assignment during a session; an expiring provider assignment does not imply a permanent IP.
+Interactive profile setup uses the same session, takeover, and metering paths as workflows.
+A persistent profile stores browser state, not a checkpoint of arbitrary running JavaScript.
+
+## 6. Live viewing, playback, and human takeover
+
+Use Camoufox with a virtual display. Camoufox documents Xvfb support for this mode:
+[virtual display](https://camoufox.com/python/virtual-display/). Live viewing uses a
+VNC/WebSocket display gateway and an embedded noVNC client; the gateway authenticates
+account/session access and enforces read-only versus input ownership server-side.
+
+Record the display with FFmpeg into independently recoverable HLS segments in object
+storage. Use a session-relative clock to align media with page/tab identity, task actions,
+network metadata, AI/compiled transitions, human control, and challenge attempts. Playback
+is a seekable recording of what happened, not re-execution of website actions. Preserve
+finished segments after a crash and show explicit gaps or incomplete recording status.
+
+The session screen gives the live browser primary space, an activity timeline, and clear
+take-control, resume, and stop controls. Completed sessions expose play/pause, seek, speed,
+and jumps from timeline events to recording positions. Persist trace entries on both a
+bounded interval and a size threshold; stream cursor-addressable activity updates so
+reconnections can recover missed events.
+
+Taking control requests an agent pause. Grant input only after the worker acknowledges the
+command boundary and revokes the automation generation. There is one input owner at a time.
+A disconnected human leaves automation paused until explicit resume or the takeover timeout;
+resume requires fresh perception and preserves committed events and task progress. For
+compiled execution, exit the isolate at a host-call boundary and resume through AI rather
+than continuing with stale selectors or restarting the script from the beginning. Unfinished
+actions with uncertain outcomes follow the recovery rule in section 4.
+
+Credential values and human keystrokes are excluded from structured traces. Suspend recorded
+media during human takeover and explicit secret injection, showing a private interval in
+playback; live viewing remains available to the authenticated owner. Network authorization
+headers and known secrets are redacted before persistence or model access. Recording
+retention defaults to seven days, with deletion of media and associated access links.
+Takeover defaults to a ten-minute idle timeout; browser time remains billable while held.
+Human-assisted traces are ineligible for automatic script promotion.
+
+## 7. Execution boundaries without action approvals
+
+Remove user-configured task grants, grant proposals, approval queues, approval baselines,
+per-action permission prompts, and the `awaiting_approval` runtime path. Publishing intent
+and starting a workflow authorizes execution within its account and configured resources.
+
+Preserve structural browser/decision tool separation, secret injection, account ownership,
+schema validation, redaction, and resource/spending limits as dedicated runtime services.
+Do not replace the policy package with an allow-all implementation that also drops those
+protections. Secret references resolve only within the account and configured workflow
+bindings; a model key is never exposed to the browser.
+
+Static scripts retain no ambient process, filesystem, module-loader, or network access.
+Workflow SQL retains its fenced reader/writer roles. Browser egress cannot reach cloud
+metadata, databases, control-plane services, or other customers' workloads. Enforce this
+outside page-level navigation hooks so redirects and subresources receive the same boundary.
+Local fixture destinations are an explicit staging-only network exception.
+
+## 8. Models, compilation, and usage
+
+A workflow selects one funding source for every model phase: BYO credentials or Tabductor
+credentials. This covers chat/authoring, graph/schema compilation, browser and decision
+execution, recovery, and post-run trace compilation. Start with the existing OpenAI and
+Anthropic adapters. Resolve credentials per account and operation rather than once at boot.
+An invalid or exhausted BYO key never silently switches to paid Tabductor models.
+
+Route all model calls through a shared metered resolver, including compiler transports that
+currently return only text. Record provider, model, purpose, token categories, funding
+source, operation ID, applicable rate version, and related workflow/execution/run or compile
+job. Store API keys encrypted and return only masked metadata to clients. Tabductor model
+rates and supported models are configured explicitly; unknown rates cannot become billable
+estimates through the current fallback price table.
+
+Trace compilation remains post-execution work. It validates candidates against recorded
+evidence in isolation, never by repeating live website effects. Promotion verifies the task
+content hash and browser/runtime compatibility. Runs pin the script artifact they acquire;
+browser upgrades invalidate incompatible artifacts. Guard failures recover in the same
+session, and repeated failures demote the script.
+
+## 9. Paddle payments and prepaid accounting
+
+Use Paddle Checkout for one-time credit packs. The server maps configured Paddle price IDs
+to credit units, creates a purchase linked to the authenticated account, and opens checkout.
+Credit quantities are determined by that server-owned mapping, not client-submitted totals,
+tax amounts, or arbitrary checkout metadata.
+
+Verify webhook signatures against the raw body and durably deduplicate delivery IDs.
+Apply credit once per completed Paddle transaction in the same database transaction as the
+ledger entry. Browser redirects never grant balance. Reconcile refunds, adjustments, and
+out-of-order notifications against the purchase, using compensating ledger entries.
+See [Paddle transactions](https://developer.paddle.com/build/transactions/create-transaction/)
+and [transaction.completed](https://developer.paddle.com/webhooks/transactions/transaction-completed/).
+
+Tabductor owns an append-only credit ledger and atomic reservations. Reserve a bounded
+amount before allocating a session or issuing a paid model/solver request; settle actual
+usage and release unused reservations. Browser reservations renew in short intervals.
+Concurrent runs cannot spend the same balance. Failed top-ups grant nothing; refunds or
+chargebacks can place an account in debt and block new reservations.
+
+Meter browser allocation time, Tabductor model usage, proxy bytes, and chargeable CAPTCHA
+attempts. Browser charging starts when a session is ready and stops when it is terminated;
+queued work and unused warm slots are platform costs. BYO model usage is visible but has
+zero Tabductor model debit. Bill provider attempts according to their actual charge outcome,
+including failed paid attempts, with no duplicate debit for polling or webhook retries.
+
+Persist operation IDs and provider request IDs for reconciliation after crashes. Missing
+usage stays pending until reconciled; do not fabricate zero usage or blindly repeat a paid
+request after an ambiguous timeout. Enforce account and execution spending ceilings before
+new work. Low balance stops further allocation and actions once reserved work is exhausted.
+The UI shows available/reserved credits and the cost breakdown. Pack sizes, unit rates, and
+model margins are operator configuration required before paid launch.
+
+## 10. Proxies and CAPTCHA handling
+
+Tabductor supplies proxy and solver credentials. Add adapters for CapSolver, 2Captcha, and
+Anti-Captcha behind a common challenge interface: detect, submit, poll, apply, verify, and
+report charge outcome. Keep a provider capability map and operator-configured ordered
+fallback list; providers support different challenge types.
+
+Use the session's proxy and browser context where required. Default to at most three solver
+submissions and a two-minute deadline per challenge, within execution and credit budgets.
+Persist a submission ID before polling; resolve an ambiguous submission before trying another
+provider. Avoid simultaneous paid attempts for one challenge. Trace provider, challenge type,
+status, latency, and cost without persisting solution tokens.
+
+Successful solutions are verified against the page. Unsupported challenges, exhausted
+attempts, and login/MFA requirements transition to a visible human-assistance state. These
+are intervention states, not permission approvals. Network/account restrictions remain in
+force during both automated and human control.
+
+## 11. AWS deployment and browser autoscaling
+
+Deploy the Next.js control plane, execution/compile workers, fleet controller, and streaming
+gateway on EKS. Use RDS Postgres for durable state, S3 for profiles/recordings/artifacts, ECR
+for images, and KMS/Secrets Manager for production key material. Services use scoped workload
+identities; customer browser processes receive no general AWS credentials.
+
+The fleet controller reconciles durable session requests into individual pods. Provision
+only work admitted by account concurrency, profile leases, and spending reservations.
+Use fair scheduling between accounts and FIFO within each account. Default to two unassigned
+warm worker slots and a maximum of 25 allocated browsers, with a total pod cap of 27 including
+warm capacity. Warm workers launch a customer browser only after assignment. Replenish spare
+capacity as resources permit; queue excess work with a visible reason.
+
+Karpenter provisions EC2 nodes for unschedulable browser pods and removes idle nodes. Keep
+the controller and baseline services on a small managed node group. Use On-Demand browser
+nodes initially and bound the NodePool's resources. HPA can scale stateless services; it
+must not arbitrarily remove individual active browser sessions.
+See [EKS autoscaling](https://docs.aws.amazon.com/eks/latest/userguide/autoscaling.html).
+
+Retire only unassigned slots during fleet scale-in. Protect active pods from voluntary
+disruption and use drain-aware upgrades; forced termination or node loss still follows
+lease recovery. Profile persistence does not make live browser processes migratable.
+Ship metrics for allocation latency, queue age, active/warm browsers, lease failures, model
+usage, credit reservations, stream lag, recording gaps, and solver outcomes.
+
+## 12. Local development and local staging
+
+Keep Docker Compose as the fast developer environment for Postgres, MinIO, engine, web,
+and a fixed Camoufox worker once implemented. Production-like acceptance runs in a dedicated
+kind cluster using the same Helm chart, images, RPC interfaces, and fleet controller as EKS.
+The staging tools and commands below are planned deliverables, not existing commands.
+
+| Concern | Local staging | AWS deployment |
+| --- | --- | --- |
+| Kubernetes | kind: one control-plane and two worker nodes | EKS with managed baseline nodes and Karpenter |
+| Browser capacity | One warm slot, three allocated browsers, four total pods | Two warm slots, 25 allocated browsers, 27 total pods |
+| Durable data | Postgres and MinIO with host-backed staging storage | RDS and S3 |
+| Encryption | Dedicated persistent development wrapping key | KMS-backed wrapping |
+| Authentication | Clerk development instance; fixture identity only in test mode | Clerk production instance |
+| Payments | Paddle sandbox; signed webhook fixtures for automated tests | Paddle live environment |
+| Models/solvers/proxies | Deterministic adapters and fixture proxy by default; explicit live smoke mode | Configured account/platform credentials |
+| External callbacks | Optional HTTPS tunnel to the local gateway | Public HTTPS ingress |
+| Telemetry | Optional local OTEL/LGTM stack | Centralized production telemetry |
+
+Use an isolated kubeconfig, namespace, database, bucket prefix, key material, and provider
+credentials. Local staging must not connect to an existing developer database or production
+services. Use a NetworkPolicy-capable CNI in kind so tenant and egress tests actually enforce
+the same restrictions as production. Fixture-site access is enabled only in local values.
+
+Add lifecycle scripts exposed as `pnpm staging:up`, `staging:down`, `staging:reset`,
+`staging:test`, and `staging:test:live`. Up checks prerequisites, builds/loads pinned images,
+creates the cluster, installs the chart, runs migrations, and checks readiness. Down preserves
+host-backed state; reset explicitly deletes only staging state. Test mode seeds two isolated
+fixture accounts, sample workflows, and test credits without external charges. Hosted
+configurations must reject fixture-auth and synthetic-credit settings.
+
+Live smoke mode uses real Camoufox, a Clerk development instance, Paddle sandbox checkout,
+and an HTTPS tunnel for signed callbacks. Real model, proxy, and solver calls require
+explicit live-test credentials and finite budgets; no ordinary staging boot starts paid calls.
+A real solver smoke uses supported provider test/demo challenges. Test signup, top-up, model
+selection, workflow execution, takeover, replay, and profile reuse end to end.
+
+Local tests exercise pod creation, queueing beyond three browsers, profile contention,
+worker/engine restarts, controller reconciliation, idle scale-in, and persistence across
+redeployment. Node count is fixed locally: kind cannot validate EC2 provisioning, IAM,
+KMS, AWS network behavior, or 25-browser production capacity. Validate those separately in
+an isolated AWS staging environment before production. See [kind quick start](https://kind.sigs.k8s.io/docs/user/quick-start/).
+
+## 13. Migration and later optimization
+
+Preserve existing workflows, versions, runs, store data, and historical traces. Backfill them
+into an explicitly selected owner account; migrate ownership before enabling hosted access.
+Drain old executions before switching routing semantics, then require execution identity on
+new work. Keep historical approval outcomes readable as audit data while retiring their
+runtime tables/APIs through an additive-then-cleanup migration. Do not modify applied migrations.
+
+Existing CDP endpoints are a legacy migration path and development fixture, not the hosted
+default. Browser-profile setup is required to establish fresh hosted logins; do not imply a
+Chromium profile can be copied directly into Camoufox. Refresh technical/API documentation
+and tests as each runtime transition lands.
+
+The later Graph Optimizer observes operational evidence and emits a typed Graph Patch IR
+against a base version. It never performs workflow work or writes runtime graph rows itself.
+Candidates may split/merge tasks, reroute events, or migrate store tables. Deterministic
+validation and publication apply the patch to a new version; active executions remain pinned.
+Browser healing and trace recompilation ship before autonomous graph optimization.

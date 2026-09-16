@@ -3,9 +3,15 @@ import { AppError } from "@tabductor/core";
 import type { Db } from "@tabductor/db";
 import {
   findShareByToken,
+  accountOwnsWorkflow,
+  accountOwnsTask,
+  accountOwnsRun,
+  accountOwnsEvent,
+  accountOwnsShare,
   publicEventTypes,
   refCodec,
   type PromptCompiler,
+  type GraphCompiler,
   type PublicRead,
   type SchemaGenerator,
 } from "@tabductor/engine";
@@ -15,10 +21,12 @@ import superjson from "superjson";
 import { z } from "zod";
 import { db, pool } from "./db.js";
 import { createRateLimiter } from "./rate-limit.js";
-import { promptCompiler, schemaGenerator } from "./schema-generator.js";
+import { graphCompiler, promptCompiler, schemaGenerator } from "./schema-generator.js";
+import { LOCAL_ACCOUNT } from "./auth-context.js";
 
 export type Context = {
   db: Db;
+  accountId?: string;
   /** S5g: `workflow.publishStoreSchema`'s migrator/fence connection — see `db.ts`'s `pool()`.
    * Optional so every existing caller that never touches the store schema path (most system
    * tests, `share.create`, every public read) keeps compiling without a pool to hand it — the
@@ -28,6 +36,7 @@ export type Context = {
   schemaGenerator: SchemaGenerator;
   /** The publish-time prompt compiler's model layer; absent means the deterministic brief. */
   promptCompiler?: PromptCompiler;
+  graphCompiler?: GraphCompiler;
   /**
    * Who is asking, for rate-limiting purposes — an IP-derived string, supplied by whatever
    * composition point has a request in hand (the HTTP route, a server component). Absent
@@ -39,7 +48,15 @@ export type Context = {
 };
 
 export function createContext(): Context {
-  return { db: db(), pool: pool(), schemaGenerator: schemaGenerator(), promptCompiler: promptCompiler() };
+  const databasePool = pool();
+  return {
+    db: db(),
+    accountId: LOCAL_ACCOUNT,
+    pool: databasePool,
+    schemaGenerator: schemaGenerator(),
+    promptCompiler: promptCompiler(),
+    graphCompiler: graphCompiler(databasePool),
+  };
 }
 
 /**
@@ -49,12 +66,34 @@ export function createContext(): Context {
  */
 export const LOCAL_USER = "user_local";
 
+export async function requireWorkflowOwner(ctx: Context, workflowId: string): Promise<void> {
+  const accountId = ctx.accountId ?? LOCAL_ACCOUNT;
+  if (!await accountOwnsWorkflow(ctx.db, accountId, workflowId)) {
+    // Deliberately indistinguishable from a missing id: ownership is not an oracle.
+    throw new TRPCError({ code: "NOT_FOUND", message: `no workflow "${workflowId}"` });
+  }
+}
+
+async function requireOwned(ctx: Context, kind: string, id: string, check: (accountId: string) => Promise<boolean>) {
+  if (!await check(ctx.accountId ?? LOCAL_ACCOUNT)) {
+    throw new TRPCError({ code: "NOT_FOUND", message: `no ${kind} "${id}"` });
+  }
+}
+
+export const requireTaskOwner = (ctx: Context, id: string) =>
+  requireOwned(ctx, "task", id, (accountId) => accountOwnsTask(ctx.db, accountId, id));
+export const requireRunOwner = (ctx: Context, id: string) =>
+  requireOwned(ctx, "run", id, (accountId) => accountOwnsRun(ctx.db, accountId, id));
+export const requireEventOwner = (ctx: Context, id: string) =>
+  requireOwned(ctx, "event", id, (accountId) => accountOwnsEvent(ctx.db, accountId, id));
+export const requireShareOwner = (ctx: Context, id: string) =>
+  requireOwned(ctx, "share", id, (accountId) => accountOwnsShare(ctx.db, accountId, id));
+
 const t = initTRPC.context<Context>().create({
   transformer: superjson,
   /**
-   * `AppError.details` rides out on `error.data.appError`, which is how the graph editor
-   * puts "a schedule may not bind to an asset task" on the offending node instead of in a
-   * toast (U0). Anything else keeps the default shape.
+   * `AppError.details` rides out on `error.data.appError` for behavior-level publication
+   * diagnostics. Anything else keeps the default shape.
    */
   errorFormatter({ shape, error }) {
     const cause = error.cause;

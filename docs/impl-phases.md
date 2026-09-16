@@ -1,563 +1,265 @@
-# Agentic Browsing Platform — Incremental Implementation Plan (Backend-First)
-
-**Version:** 0.6
-**Companion to:** `techical_plan.md` (design), `graph-compilation-llm.md` (decision kind,
-store and graph compiler), `trace-compilation.md` (post-execution LLM compilation),
-`sharing.md` (shared workflows), `python-compute.md` (the asset agent's tool) and
-`event-centric-model.md` (events). Section references (§) below point to the technical plan.
-**Ordering constraints (updated in 0.3):** "backend only" held until the tooling + event architecture stabilized — **that gate is passed** (Phases 1–2 done and committed). From S2c onward the UI ships incrementally per the **UI track** at the end of this document: each slice lands as soon as its backend prerequisite exists, starting with U0 which needs only S2c. The policy/permissions engine stays last. Testing remains backend system testing throughout — no UI tests.
-
-**Changes in 0.2:** two node kinds (§4) — `browser` and `asset`. MCP moves off the browser node onto the asset node, joined by the asset store and LaTeX document generation. What was Phase 5 (MCP + secrets) is now **Phase 5 (asset node)**; the compiler and policy phases shift by one and gain kind-awareness.
-
-**Changes in 0.3 (2026-08-09):** status verified against the repo — S2b is committed (`dc4de11`), not pending. "Phase 8 — UI at the end" is replaced by the **UI track** (slices U0–U6), each gated only on its backend prerequisite; the first visible UI is one subphase away. The **decision** node kind, the **workflow data store** (per-workflow Postgres schema + role pair), and the **graph compiler** (one prompt → checked graph) are specified in `graph-compilation-llm.md` and slot in as **S5g** and **S8** (see its §10); their UI lands as slices U3.5 and U6.
-
-**Changes in 0.4 (2026-08-09):** platform observability (design-doc §17.2 — OTel + Grafana LGTM + pino logs) becomes a cross-phase concern: §0.5 below adds the telemetry package as subphase **SOb** (alongside S2c) and binds every later subphase to instrument what it builds. The design doc's Phase 5 "metrics dashboards" item is superseded — dashboards ship with SOb.
-
-**Changes in 0.5 (2026-08-10):** two tracks are added, each specified in its own companion document.
-
-- **Shared workflows** (`sharing.md`) — a read-only public link onto a workflow's graph, triggers, runs, events, opted-in packets and assets. Its only prerequisite is S2c, so it lands as **S2d + U0.5** and is independent of everything from S3a on. It is the first slice since U0 whose backend and UI can both ship immediately, and the sharing track section below sits between Phases 2 and 3 to reflect that.
-- **Python compute (historical 0.5 plan)** introduced an authored mode and microVM proposal. Current behavior is the asset agent's `python.run` tool and self-hosted subprocess runner; see `python-compute.md`.
-
-**Changes in 0.6 (2026-08-10):** the wiring model changes — events become workflow-version-scoped
-entities carrying a description prompt and an LLM-compiled packet schema, tasks declare
-`emits`/`consumes` by type, and the `edges` table is gone. Specified in `event-centric-model.md`,
-landing as **EC1 + U1** in the event-centric track between the sharing track and Phase 3. Three
-passages ripple backwards and are rewritten in place rather than annotated: Phase 2's graph
-evaluation and packet validation, S2d's visibility projection, and U2's packet-schema authoring
-item (which shipped early, at publish rather than at save). The UI track's old **U1 — run
-inspector** is renumbered **U1.5** so U1 can name the editor redesign; nothing about the
-inspector's scope or prerequisites changes.
-
----
-
-## Status — as of 2026-08-11 (verified against the working tree)
-
-| Subphase | Scope | State |
-|---|---|---|
-| S0 | Monorepo scaffold, core, testkit (fixture sites, CDP launcher, test DBs) | **done** — `15914a0` |
-| S1 | Drizzle data layer, outbox bus, dedupe, lineage, PolicyGate/AllowAllGate | **done** — `7e2b7fd` |
-| S2a | Engine core: run state machine, graph dispatch, packet validation, loop budget, StubExecutor | **done** — `f2e2f23` |
-| S2b | Scheduler (cron/tz, missed/overlap, queue depth), retries, crash-recovery watchdog | **done** — `dc4de11` (scheduler/retries/crash-recovery + migrations `0003`/`0004`) |
-| S2c | Next.js + tRPC control-plane API | **done** |
-| SOb | `packages/telemetry`: OTel + pino + bus traceparent + engine instrumentation (§0.5) | **done** |
-| U0 | First UI: graph editor, schedules, stub scripting, runs table, event feed | **done** — editor surface since replaced by U1 |
-| S2d | Shared workflows: share model + public read API | **done** — `7dfe920` |
-| U0.5 | Public workflow view + owner-side share management | **done** — `e1e4289` |
-| EC1 | Event-centric model: event entities, consumes routing, publish-time schema compiler (`event-centric-model.md`) | **done** — migration `0007` |
-| U1 | Editor redesign: declarative panels + derived map, prompt-only authoring | **done** — `DESIGN.md` locked ("Ruled Ink"), React Flow removed |
-| S3a | Browser driver + navigation guard + trace recorder + blob store (`packages/browser`) | **done** — migration `0008` |
-| S3b | Endpoint pool + DB leases, network observer, resource limits, ScriptedBrowserExecutor | **done** — migration `0009` |
-| U1.5 | Run inspector: trace timeline + screenshots + endpoint health (`/endpoints`) | **done** |
-| S4a | LLM adapter (live/record/replay over the AI SDK, two providers) + perception builder (`packages/agent`) | **done** |
-| S4b | Agent loop + tool registry + structured emit + AgentExecutor wired in `apps/engine` + e2e milestone | **done** |
-| U2 | Agent visibility in the inspector: llm rows, emit rows, token totals | **done** |
-| S5a | `tasks.kind` + `(kind, mode)` executor registry + AssetExecutor skeleton + constraints | **done** — migration `0010` |
-| S5b | Secrets broker: envelope encryption, `fill`/`injectIntoMcpArg`, origin binding, no `get()` | **done** — migration `0011` |
-| S5d | Asset store + versions + write grants + public asset route (`packages/assets`) | **done** — migration `0012` |
-| S5c | MCP client + asset-node tool registry + asset agent loop/executor (`packages/mcp`) | **done** — migration `0013` |
-| S5e | LaTeX renderer: `apps/renderer` sandbox (`FROM scratch` + `docker run` isolation), `assets.render` | **done** — no migration |
-| S5f | Two-kind e2e: browser → asset (MCP + LaTeX) → browser `page.upload`, real render, byte-match | **done** — Phase 5 exit criterion met |
-| S5g | Workflow store (`wfdata` schema + `_r`/`_w` role pair, fenced `store.query`, staged writes) + `kind=decision` (`packages/store`) | **done** — migration `0014` |
-| S5h | Python compute: `apps/pyrunner`, `(asset, python)` executor, hostile-input contract tests | **done** |
-| S6a–S6c | Isolate, registry, LLM generator, compiled executor and deopt | **done** — migrations `0016`/`0017` |
-| U3a | Real-mode authoring: per-kind mode selector + python editor, per-workflow CDP endpoints with rotation, MCP server settings, engine executor status | **done** — mode selector and python editor since replaced by S6d |
-| S6d | UI uses `ai` without selector; stub test support; K=1; Python tool; internal prompts/store | **done** — migration `0019`, `subphases/S6d-modes-model.md` |
-| S6e | Post-execution compilation: `compile_jobs` queue + worker, full-trace interpretation + work plan, isolated validation, content-hash carry-forward | **done** — migration `0020`, `subphases/S6e-post-execution-compilation.md`, `trace-compilation.md` |
-| S7–S8 | policy engine, graph compiler | not started |
-
-What exists as code: `packages/{core,db,bus,engine,policy,telemetry,browser}` +
-`apps/{engine,web,testkit}` + `tests/system` — 286 tests in 60 files (one live-mode LLM
-smoke skips itself when no API key is set — CI never calls live; a separate `tests/live-eval`
-suite runs outside the CI vitest projects, live-only, outcome assertions only). The whole workspace typechecks clean (`tsc`) and lints
-clean (`pnpm lint`). `docker compose up -d` brings up Postgres, applies migrations, and runs both
-the engine and the control plane on :3000; `docker compose up -d postgres` is the tests-only
-subset. Credentials are compiled in as defaults, so a clean checkout needs no environment. If
-every DB-backed file fails at SCRAM auth *before any test logic runs*, that container is down or a
-stale `PG*` variable is set in the shell — an environment problem, not a regression. (This
-replaced an earlier setup that connected as the OS user to a system Postgres on 5432, which
-broke as soon as an unrelated project took that port.)
-
-Phases 1 and 2 are therefore complete, and the first UI slice is on screen. The `tasks.kind`
-column (§4) does not exist yet and is added in **S5a** below — it is a nullable-defaulted `text`
-column alongside the existing `mode`, so no backfill and no rewrite of S2a's executor registry,
-which already keys on a discriminant. Until then the node kind lives in the graph document only,
-which is enough for the two things that read it today: the editor palette and the
-"a schedule may not bind to an asset node" check at publish.
-
----
-
-## 0. The one architectural precondition for deferring policy
-
-Deferring the policy engine is workable **only if every phase routes actions through a policy interface from day one**, with a permissive implementation:
-
-```ts
-// packages/policy/src/gate.ts
-export interface PolicyGate {
-  checkAction(taskCtx: TaskCtx, action: BrowserAction): Promise<Verdict>;
-  checkNavigation(taskCtx: TaskCtx, url: URL, cause: NavCause): Promise<Verdict>;
-  checkNetworkRead(taskCtx: TaskCtx, req: ReqRef, parts: ReadParts): Promise<Verdict>;
-  checkMcpCall(taskCtx: TaskCtx, tool: string): Promise<Verdict>;
-  redact(taskCtx: TaskCtx, payload: NetworkPayload): Promise<NetworkPayload>;
-}
-
-export type Verdict = { allow: true } | { allow: false; rule: string };
-
-export class AllowAllGate implements PolicyGate { /* returns {allow:true}, redact = identity */ }
-```
-
-Everything downstream (browser runtime, agent tools, static runtime `ctx`, MCP client) takes a `PolicyGate` via constructor injection and never acts without a verdict. Phase 7 then swaps `AllowAllGate` for the real evaluator — **no call-site changes, no rewrite**. If instead you let early phases call the CDP driver directly, Phase 7 becomes a hunt through every action site, and you will miss one. This interface is ~50 lines; build it in Phase 1.
-
-Two small carve-outs I'd keep even in the "no policy yet" phases, stated directly because skipping them is how dev accidents happen against a real browser:
-
-1. A single env-var **domain allowlist** (`HARNESS_NAV_ALLOWLIST=x.com,instagram.com,localhost`) enforced in the browser runtime's navigation guard. It's one regex check inside `AllowAllGate.checkNavigation`, not a policy system, and it prevents an early prompt-injected or confused agent from wandering your logged-in browser to arbitrary domains during development.
-2. **Resource limits** (tabs / wall-clock / max visits, §8) live in the runtime from Phase 3. These are correctness/cost controls, not permissions — they don't belong to the deferred policy work.
-
----
-
-## 0.5 Cross-phase platform observability (SOb — design doc §17.2)
-
-Same shape as §0: a thin interface built now so nothing needs retrofitting. Platform observability
-(operator-facing OTel traces/metrics/logs → Grafana LGTM) is specified in design-doc §17.2; this
-section is its build placement.
-
-**SOb — `packages/telemetry`, built alongside S2c** (it instruments the engine that already exists
-and the API being built; every subphase after it arrives instrumented):
-
-- Init module used **only by composition roots** (`apps/engine`, `apps/web`, `apps/renderer`);
-  packages receive tracer/meter/logger by injection, exactly like `PolicyGate`. **No-op when
-  `OTEL_EXPORTER_OTLP_ENDPOINT` is unset** — zero sockets, zero background work; this is the CI
-  and docker-less-dev mode (this machine runs without Docker; the `grafana/otel-lgtm` container
-  runs wherever Docker exists).
-- pino logger factory (JSON, child loggers bound with `run_id`/`task_id`/`trace_id`, OTLP bridge);
-  lint rule banning `console.log`.
-- **Bus propagation:** `traceparent` column on `outbox`/`events` (one additive migration); emit =
-  producer span, dispatch = child consumer span, redeliveries/retries = span links (§17.2 rule 3).
-- Instrumentation of what already exists: outbox lag/depth/dead-letters, dedupe drops, scheduler
-  fire lag and fire results, run outcomes/durations, crash recoveries — the §17.2 metrics
-  catalogue rows that have backing code today, under their **binding names**.
-- Grafana dashboard JSON provisioned in-repo (engine-health + security-signals boards first;
-  cost and fleet boards gain panels as their metrics appear).
-
-**Standing rule for every subsequent subphase:** instrument what you build, using the §17.2
-catalogue names — S3a/S3b: endpoint health, queue wait, disconnects, resource-limit aborts;
-S4a/S4b: LLM tokens/cost, step budgets; S5b: `secret_fills_total`; S5c: MCP call metrics;
-S5e: render duration + sandbox kills; S5g: store query duration + `store_sql_rejected_total`;
-S6a–c: deopts, promotions/demotions; S7: `policy_verdicts_total` gains real rule labels.
-A subphase whose metrics are missing is incomplete the same way one without tests is.
-
-**Content rules are binding here too:** telemetry carries identifiers, durations, sizes, and
-outcomes — never page content, packets, prompts, SQL text, secrets, or CDP URLs; navigation
-appears at domain granularity only (§17.2). Telemetry is **not** an assertion surface — traces
-and events remain the system-test ground truth; the one telemetry test is the disabled-mode
-no-I/O smoke test.
-
----
-
-## Repository & runtime layout
-
-TypeScript monorepo (pnpm workspaces). One deployable process in early phases (`engine`), splitting later only if needed.
-
-```
-/packages
-  /core        — shared types, ids, errors, config loader, zod schemas
-  /db          — Drizzle schema (drizzle-orm/pg-core), drizzle-kit migrations, outbox helpers
-  /bus         — event bus: publish (outbox), dispatcher, dedupe, lineage
-  /engine      — workflow engine: graph eval, run state machine, scheduler
-  /policy      — PolicyGate interface + AllowAllGate (real evaluator in Phase 7)
-  /telemetry   — OTel init (composition roots only), pino logger factory,
-                 metric registry with the §17.2 binding names (SOb, §0.5)
-  /browser     — CDP driver interface, playwright-cdp impl, pool, queues,
-                 network observer, trace recorder, action API
-  /agent       — browser agent: perception builder, tool registry, agent loop,
-                 LLM adapter (live + replay)
-  /compiler    — trace evidence + work plan, compiler agent, isolated validation, script registry, compile jobs
-  /static-rt   — isolated-vm host, ctx implementation
-  /mcp         — MCP client + per-task tool routing (asset node only)
-  /assets      — asset store (paths, versions, blobs) + LaTeX renderer client
-  /secrets     — envelope encryption, KMS wrapping, fill/inject broker
-/apps
-  /engine      — composition root: wires packages, runs dispatcher+scheduler+executors
-  /web         — Next.js + tRPC control plane (S2c)
-  /renderer    — out-of-process LaTeX render worker (containerised, network-less)
-  /testkit     — fixture web server, mock CDP target launcher, LLM transcript tools
-/tests
-  /system      — cross-package system tests (the ones that matter)
-```
-
-**Test infrastructure (built in Phase 0, used forever):**
-
-- `docker-compose.yml` (built as the root compose file rather than a separate `docker-compose.test.yml`, since dev and test want the same services): Postgres 16, plus Grafana LGTM behind a `telemetry` profile. Since S2c/U0 it also runs the application itself — a one-shot `migrate` service both app services wait on, `engine` (the composition root) and `web` — so `docker compose up -d` is the whole bring-up and `docker compose up -d postgres` is the tests-only subset. Chromium and the fixture sites are deliberately **not** services — the testkit launches headless Chrome per test with `--remote-debugging-port` on a throwaway `--user-data-dir` (this *is* your BYO-CDP simulator, connected to exactly the way production connects to a user's endpoint) and serves the fixture sites in-process. See `infra/README.md`.
-- **Fixture sites** (`apps/testkit/sites/`): small deterministic HTML apps served locally — `fake-tweets` (a timeline page with data attributes, plus a `POST /admin/add-tweet` endpoint so tests can inject "new tweets" mid-run), `fake-gram` (a form that records submissions), `mutator` (same page, but layout switchable via query param — used to force deopts in Phase 6), `slowpoke` (configurable latency/timeouts). Fixture sites are the backbone of system testing: real Chromium, real CDP, zero external network.
-- **LLM replay adapter**: the `agent` package's LLM client has `mode: "live" | "record" | "replay"`. `record` runs against the real API and writes the full transcript (prompts, tool calls, results) to a fixture file; `replay` serves the recorded tool-call sequence deterministically. System tests run in `replay` (fast, free, deterministic); a small separate `live-eval` suite runs `live` nightly/manually to catch model drift. Never let CI depend on live LLM calls.
-- Test DB lifecycle: each system test gets a schema-per-test (template database clone) — parallel-safe, no shared-state flakes.
-- **Fake MCP server** (Phase 5): stdio MCP server in testkit exposing `echo` and an image-stub tool that returns a fixed PNG — deterministic, no external calls, exercises the client, the budget, and the untrusted-result wrapping.
-- **LaTeX fixtures** (Phase 5): a happy-path `.tex`, a malformed `.tex` (missing package, stray `&`) for the correct-and-retry path, and a **hostile corpus** (`\write18`, `\input{/etc/passwd}`, macro loop, memory bomb) — table-driven, extended whenever someone thinks of a new escape, exactly as with the `isolated-vm` corpus in Phase 6. PDF comparisons normalize timestamps and document IDs before asserting.
-
----
-
-## Phase 1 — State store + Event bus ✅ **DONE** (S1)
-
-**Goal:** durable events with at-least-once delivery, dedupe, and lineage. No tasks yet — publishers and consumers are test doubles.
-
-**Build:**
-
-- Migrations for: `events`, `run_dedupe`, `outbox`, plus the skeleton tables the engine will need (`workflows`, `workflow_versions`, `tasks`, `edges`, `event_defs`, `runs`) — schema per §14, even if some columns go unused for a phase or two. Migrating early beats renumbering later. As built, `edges` was dropped and `event_defs` re-keyed to `(version, type)` at EC1, with `task_emits`/`task_consumes` taking over the wiring (migration `0007`).
-- **Outbox publisher:** domain writes and their events commit in one transaction (`INSERT INTO outbox`); a dispatcher loop polls the outbox (`FOR UPDATE SKIP LOCKED`, batch of N), publishes to in-process subscribers, marks rows dispatched. `LISTEN/NOTIFY` as a wake-up latch to keep poll latency low without tight loops.
-- **Dispatcher contract:** delivery to a subscriber that throws → row stays undelivered, retried with backoff column (`attempts`, `next_attempt_at`); after max attempts → `dead_letter` status + a `system.event_dead_lettered` event.
-- **Dedupe helper:** `claim(taskId, eventId)` — unique insert into `run_dedupe`; returns claimed/duplicate.
-- **Lineage:** every published event carries `causation_id`; helper computes chain depth by walking `events` (recursive CTE, capped) — used later for loop budgets, tested now.
-- `PolicyGate` interface + `AllowAllGate` (see §0 above).
-
-**System tests:**
-
-- Transactionality: kill the process between domain write and outbox dispatch (test hook) → after restart, event is delivered exactly once to the subscriber's dedupe-guarded handler.
-- At-least-once + dedupe: force redelivery (reset dispatched flag) → subscriber handler called twice, `claim` admits once.
-- Dead-letter path after N failing deliveries; `system.event_dead_lettered` observable.
-- Lineage depth computation on a synthetic 50-deep chain; cap respected.
-- Throughput smoke: 10k events through the outbox under 60s on dev hardware (guards against accidental O(n²) polling).
-
-**Exit:** bus semantics are boringly reliable; every later phase publishes through it.
-
-## Phase 2 — Workflow engine + scheduler (stub executors) ✅ **DONE** (S2a `f2e2f23`, S2b `dc4de11`, S2c)
-
-**Goal:** the full trigger→dispatch→run→emit loop working *without a browser*. Tasks are executed by a **StubExecutor** that reads a scripted behavior from the task definition (`emit these events with these packets after this delay / fail / hang`). This is deliberate: the engine's correctness must be testable independently of browsers and LLMs, and the StubExecutor remains permanently useful for testing graphs.
-
-**Build:**
-
-- **Task executor abstraction:** `interface TaskExecutor { execute(run: RunHandle): Promise<RunResult> }` — implementations: `StubExecutor` (now), `AgentExecutor` (Phase 4), `CompiledExecutor` (Phase 6). Registered per task `mode`.
-- **Run state machine** (§4): `queued → running → succeeded|failed|timed_out|cancelled` (approval state arrives in Phase 7). Transitions are DB writes + system events (`run.completed`, `run.failed`, `run.timed_out`). Run-level timeout enforced by the engine (watchdog scanning `running` runs past deadline — not `setTimeout`, so it survives restarts).
-- **Graph evaluation:** on event delivery, resolve subscribers by type against the *latest* workflow version — one probe of `task_consumes (workflow_version_id, event_type)`; runs pin the version they started under (`runs.workflow_version_id`). Built first against an `edges` table and re-pointed at `task_consumes` by EC1; version pinning, dedupe and the loop budget were untouched by that change (`event-centric-model.md` §2).
-- **Packet validation:** `event_defs.packet_schema_json` — one schema per `(version, event type)`, compiled at publish and validated under ajv at emit; invalid → emit fails, run fails with a clear error. The emit is additionally gated on the task declaring the type in `emits`.
-- **Loop budget:** on dispatch, compute lineage depth; over per-workflow `max_hops` → drop trigger, emit `system.loop_budget_exceeded`.
-- **Retry policy** per task (`max_retries`, backoff); retried runs reuse the trigger `event_id` (dedupe is on side-effect keys, not on run creation — a retry is a *new run row*, same trigger).
-- **Task concurrency (event-triggered runs):** per-task `parallelism` setting — `parallel` (independent events for the same task run concurrently; the case: a fast emitter feeding a slow consumer) or `queue` (serialize runs per task). Note this is an *engine-level* dispatch policy; per-endpoint browser serialization (§8, Phase 3) still applies underneath on the browser layer.
-- **Scheduler:** cron (`croner` lib) with tz; each due fire inserts a synthetic event through the outbox (schedules are just an event source, §7). Missed-fire policy (`skip`/`fire_once_catchup`) computed from `last_fired_at` at startup; overlap policy (`skip`/`queue`) checked against live runs for the task, with a **user-configurable max queue depth** (default 1) per schedule.
-- **Crash recovery:** heartbeat column on `runs`; on boot, `running` runs with stale heartbeats → `failed(engine_restart)` → retry policy applies.
-
-**System tests (all with StubExecutor + real Postgres + real bus):**
-
-- Linear chain A→B→C: packets flow, variables from A's packet visible to B's run record.
-- Fan-out: one event, three subscriber tasks, three runs, independent failures don't affect siblings.
-- Cycle A→B→A with `max_hops=6` → exactly 6 hops then `loop_budget_exceeded`.
-- Packet schema violation → emit rejected, run failed, no downstream runs.
-- Timeout: hanging stub → `timed_out` at deadline ±1 poll interval; watchdog works across a process restart (start hang, restart engine, verify).
-- Retry with backoff: stub fails twice then succeeds → 3 run rows, one trigger event, downstream fired once.
-- Scheduler: fake clock injection; cron fires; overlap `skip` verified with a long-running stub; missed-fire `skip` vs `fire_once_catchup` after simulated downtime.
-- Graph versioning: edit graph mid-run → in-flight run completes under old version; its emitted event routes per new version.
-
-**Exit:** the events architecture is done and system-tested. This was the "basic tooling + events ready" gate, and it is passed — per the 0.3 ordering, the **UI track** starts the moment S2c lands: U0 renders exactly the tables and events this phase produces.
-
-## Sharing track — S2d + U0.5 (gated on S2c only)
-
-**Goal:** an unguessable link that lets anyone watch a workflow's graph, triggers, runs, events, opted-in data packets and produced assets — live or historical. Full design in `sharing.md`; §16 Threats 13–17 and §17.3 in the design doc.
-
-This sits here rather than at the end because it needs nothing that does not already exist. Everything it renders — graph, schedules, runs, events, packets, lineage — is data S2a/S2b produce and S2c already serves to the owner. It is off the Phase 3–8 critical path entirely and can be interleaved wherever it fits.
-
-### S2d — share model + public read API
-
-- **Migration:** `workflow_shares(id, workflow_id, token_sha256 unique, token_prefix, created_at, revoked_at)`; `event_defs.public boolean not null default false`.
-- **Graph document:** `graph.events[].public` (default `false`), projected by `publishVersion` into `event_defs.public` keyed `(version, type)`, exactly as packet schemas and schedules already are. This is what makes visibility versioned, and what makes a newly added event arrive private without a check having to say so. (Shipped on the per-emitter `GraphTask.emits[].public` and re-homed to the event entity at EC1; the migration collapsed the old rows with `bool_or`, preserving the union semantics the read models already enforced.)
-- **Public read models** in `packages/engine/src/queries.ts` — `publicGraph`, `publicRunList`, `publicEventList`, `publicEventGet` — each taking a **required** `workflowId` and an explicit `publicTypes` set. **They filter in SQL:** a private packet is never selected, so no router or component bug can leak one. This is the subphase's central rule and its central test.
-- **Error-class derivation:** `runs.error` free text never leaves the owner's view; the public read model maps it to a bounded class (`timeout`, `retries_exhausted`, `engine_restart`, `packet_invalid`, `loop_budget_exceeded`, `no_executor`, `sandbox_kill`, `policy_denied`, `other`).
-- **Share procedures** (`create`/`rotate`/`revoke`/`list`) and a **public tRPC router** with its own `{db, share}` context that cannot reach `listWorkflows` — which today ignores its `userId` argument and returns every workflow in the database.
-- Rate limiting per share and per IP; hard page-size caps; the existing depth cap on the lineage CTE.
-- Metrics: `share_views_total{result}`, `share_asset_reads_total{outcome}`.
-
-**System tests:** a private event type's packet is absent from the *query result*, not merely from the response (assert on the read model directly); publishing a version that adds a node leaves it private; marking an event public then re-publishing without the flag makes it private again; revoked, unknown and malformed tokens are indistinguishable; a run that failed with a content-bearing error string exposes only its class; lineage across a private hop keeps the hop and drops the body; page-size caps hold against a hostile `limit`.
-
-### U0.5 — public workflow view
-
-Route group `/s/[token]`: graph, runs table, event feed, event detail with lineage. Server-rendered through `createCaller` like the owner's pages, polling at 2s with `usePolling` — no websockets, for U0's reason. `X-Robots-Tag: noindex`, `Referrer-Policy: no-referrer` on every public route.
-
-**Reuse rather than fork**, or the two views will drift: the public view and the editor both render `derived-map.tsx` over a topology derived from `emits`/`consumes` and both render the same event cards, and `runs-table.tsx`/`event-feed.tsx` are parameterized by the fetcher they call. Owner-side share management (create with a visibility preview, rotate, revoke) lands on the workflow page. No UI tests, as ever — S2d's tests are the contract.
-
-**Exit:** a link you can send someone, showing a workflow running, with exactly the packets you chose and nothing else.
-
-## Event-centric track — EC1 + U1 (full design in `event-centric-model.md`)
-
-### EC1 — event entities, consumes routing, publish-time schema compiler ✅ **DONE**
-
-The wiring model change: events become workflow-version-scoped entities
-(`event_defs` re-keyed to `(version, type)`, carrying the author's description prompt, the
-compiled `packet_schema_json`, the carry-forward `prompt_hash`, and S2d's `public` flag);
-tasks declare `emits`/`consumes` by type (`task_emits`/`task_consumes`); the `edges` table
-is dropped (migration `0007` backfills consumes from it first) and dispatch routes by one
-probe of `task_consumes(workflow_version_id, event_type)`. `publishVersion` takes an
-injected `SchemaGenerator`, reuses unchanged schemas via the hash, gates everything under
-ajv strict (+formats), and returns a per-event compile report; failure writes nothing.
-The model-backed implementation (bounded self-repair) lives behind
-`@tabductor/engine/ai` over the Vercel AI SDK, constructed only in the web composition
-root off `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. Automated tests can use scriptless stubs to
-derive sample packets from compiled schemas; UI nodes use real execution, not sampled packets.
-
-### U1 — the declarative editor (replaces U0's canvas) ✅ **DONE**
-
-The client stops accepting JSON anywhere: no packet schemas, no stub scripts. Three
-panels — Events (description prompts, visibility, read-only compiled schemas), Nodes
-(prompts, trigger/emit chips), and a derived read-only map of the bipartite topology
-(dependency-free SVG; React Flow removed) — plus the compile report in the publish flow.
-Designed through the design track (JOURNEY.md → DESIGN.md → component specs) rather than
-grown from U0's inspector.
-
-As built: `JOURNEY.md` and a locked `DESIGN.md` ("Ruled Ink" — light, editorial, ink-blue
-events against amber nodes) sit at the repo root with their component specs and contrast
-validator under `.design-foundations/`; `apps/web/src/app/globals.css` is the token block
-plus everything derived from it, and no component names a raw colour. `@xyflow/react` is
-gone from `apps/web`, along with `json-field.tsx`, `stub-panel.tsx` and
-`task-config-panel.tsx`. Compile failures render as a per-event report with a deep link
-into the offending description; the S2d visibility-diff confirm survives, now reading
-`graph.events[].public`. The hook policy held — panel state (menus, delete confirms, the
-deep-link flash) lives in the editor store's `ui` slice, not in `useState`.
-
-Deliberately still open, because both belong to whoever runs the app rather than to this
-slice: `ANTHROPIC_API_KEY` is unset in `docker-compose.yml`, so a compose deployment
-publishes only carry-forward schemas until it is passed through; and the long-lived dev
-database is still at migration `0006` — `0007` has been exercised against throwaway
-databases only.
-
----
-
-## Phase 3 — Browser runtime + CDP layer (no AI yet)
-
-**Goal:** connect to user-style CDP endpoints, execute a fixed action script (not agent-driven), observe network, record traces, enforce resource limits.
-
-**Build:**
-
-- **Driver interface** insulating from Playwright/Puppeteer (§20): `connect(wsUrl)`, `createPage()`, `goto`, `click`, `type`, `waitFor`, `queryAll`, `screenshot`, `close`, plus network event subscription. First implementation: Playwright `connectOverCDP`.
-- **Endpoint pool:** `cdp_endpoints` table; health check loop (`Browser.getVersion` ping); reconnect with backoff; disconnect mid-run → run fails `browser.disconnected` (system event). **Per-endpoint run queue** (serialize by default, §8) implemented as a DB claim (`endpoint_leases` row with heartbeat) so it holds across engine restarts.
-- **Navigation guard:** every navigation (initial, redirect, window.open — hook `frameNavigated` and route interception) passes through `PolicyGate.checkNavigation` (currently env-allowlist, §0). Denied → abort navigation, record trace entry.
-- **Network observer:** CDP `Network.*` → normalized records `{index, method, url, resourceType, status, timings}`; bodies fetched lazily (`Network.getResponseBody`) only when something asks (nobody asks yet). All records → trace.
-- **Trace recorder:** append-only `trace_entries` writer (buffered, flushed on transition), blob offload (screenshots, bodies) to object storage with `blob_ref`. Storage opt-out flags read per task at write time — flags exist now; the settings UI for them comes later.
-- **Resource limits:** tab counter, visit counter, wall clock — enforced in the runtime; breach → abort with `resource_limit_exceeded`.
-- **ScriptedBrowserExecutor** (test-only executor): runs a JSON list of driver actions. This is *not* the compiler's static runtime — it's a thin test harness to exercise the browser layer before an agent exists.
-
-**System tests (real headless Chromium from docker-compose, fixture sites):**
-
-- Scripted flow against `fake-tweets`: navigate → extract via `queryAll` → assert trace contains navigation, actions, network records for the page's XHRs.
-- Redirect off-allowlist (`fixture → https://example.com`) → navigation aborted, trace shows denial.
-- Resource limits: script opening tabs beyond limit / visiting beyond max → correct abort reason.
-- Endpoint serialization: two runs queued to one endpoint → sequential (assert via trace timestamps); two endpoints → parallel.
-- Kill Chromium mid-run → `browser.disconnected` failure, retry policy re-runs, endpoint health flips unhealthy→healthy after container restart.
-- Trace blob offload: screenshot lands in object store, `blob_ref` resolves.
-
-**Exit:** the harness can drive a real user-style CDP endpoint deterministically with full tracing.
-
-## Phase 4 — Browser agent (AI mode)
-
-**Goal:** `AgentExecutor` — LLM-driven browsing over the Phase 3 runtime, with the network read tool. This is the **browser node** (§4); it never gains `mcp.*` or `assets.write` in any later phase.
-
-**Build:**
-
-- **Perception builder:** page snapshot = accessibility tree + trimmed DOM (interactive elements with stable anchors: test-ids, roles, text) + optional screenshot; token-budgeted (§8). Every element handed to the model carries an anchor id the runtime can resolve back to a locator — the trace records the *resolved locator*, which the compiler needs later.
-- **Tool registry** (exposed to the LLM): `page.goto/click/type/scroll/waitFor/extract`, `network.list` (batched summaries, §9 step 2), `network.read(index, parts)` — **implemented now, permissive via AllowAllGate**; the header-deny default is a Phase 7 policy change, not a tool change — the tool shape, pagination, and trace recording are identical, `emit(type, packet)`, `done(result)` / `fail(reason)`.
-- **Agent loop:** system prompt (task prompt + the compiled schema of every type the task emits + the trigger event's packet fields, injected per that event's declared schema + tool docs) → tool-call loop → step budget + run timeout from the engine. Every LLM call (prompt hash, tokens, tool calls) → trace.
-- **LLM adapter** with `live | record | replay` (see test infrastructure). Recorded transcripts are checked into fixtures for the canonical flows.
-- **Structured emit:** `emit` validates against the node's packet schema *before* publishing (agent gets the validation error back as a tool result and may retry within budget — this materially improves reliability vs. failing the run on first malformed packet).
-
-**System tests:**
-
-- **Replay tests (CI):** canonical `fake-tweets` flow — recorded transcript drives: goto, extract, `emit tweet.detected × 3` with dedupe keys; downstream stub task receives packets. Deterministic, no API key in CI.
-- Network tool: replay transcript where the agent calls `network.list` then `network.read(body)` on a fixture XHR → correct body in transcript context, trace records the read.
-- Emit validation retry: transcript with one malformed emit then a corrected one → run succeeds, one downstream trigger.
-- Step-budget exhaustion → run fails `step_budget_exceeded`.
-- **Live-eval suite (manual/nightly, not CI):** same fixtures, `live` mode, asserting *outcomes* only (correct events emitted), never exact action sequences. This is your model-drift alarm.
-- **First end-to-end milestone:** `fake-tweets` (cron, agent) → `tweet.detected` → agent task 2 → posts to `fake-gram`, with `emitIfNew` dedupe preventing double-posts across scheduler re-fires. Run in replay in CI, live in the eval suite.
-
-**Exit:** the product works in `ai` mode against fixtures and (manually) against real sites.
-
-## Phase 5 — Asset nodes: MCP + asset store + LaTeX + secrets
-
-**Goal:** the second node kind (§4). An `AssetExecutor` that consumes events, calls MCP tools, writes files, renders LaTeX deliverables, and emits asset refs — with no browser anywhere in the phase.
-
-This is the phase that makes the harness the selling point, and it is deliberately built *after* the browser agent so that the event-packet contract between the two kinds is exercised end-to-end the moment it exists.
-
-### S5a — `kind` discriminant + AssetExecutor skeleton
-
-- Migration: `tasks.kind text not null default 'browser'`. Existing rows are browser tasks; no backfill. `mode` is untouched and stays orthogonal (§4).
-- Executor registry keys on `(kind, mode)` instead of `mode`. S2a's registry already indirects through a discriminant, so this is a lookup-key change, not a rewrite.
-- **Engine constraints, enforced at write time not dispatch time:** a schedule may not bind to a `kind=asset` task; a `kind=asset` task may not be set to `mode=compiled`. Both rejected by the control-plane API (S2c) with a typed error, and re-asserted by a DB check constraint so a direct insert cannot create an unroutable graph.
-- `AssetExecutor` initially runs the same scripted-behavior path as `StubExecutor` (emit these events, fail, hang) so the kind plumbing is testable before any MCP or LaTeX exists.
-
-**Tests:** schedule→asset binding rejected; `kind=asset` + `mode=compiled` rejected; asset task triggered by an event from a browser task runs under `AssetExecutor`; browser tasks are unaffected (the entire Phase 2 suite re-runs green).
-
-### S5b — Secrets broker
-
-Built before MCP and before assets, so no credential ever passes through a prompt even during the permissive phases.
-
-- `secrets`, `secret_grants`, `secret_access_log` per §14. Envelope encryption: per-secret DEK (libsodium XChaCha20-Poly1305), DEK wrapped by a KMS KEK (§16 Threat 4). Dev/test use a local KEK file behind the same `KeyWrapper` interface KMS implements — the interface exists from day one so the swap is config, not code.
-- Broker interface is **exactly** `fill(runId, name, anchor)` and `injectIntoMcpArg(runId, name)`. **No `get(name): string` is defined anywhere.** A lint rule and a code-review checklist item both guard this; the absence is the control (§16).
-- Tier 1 (server-decryptable) only in this subphase. Tier 2 (user-wrapped, attended-only) is Phase 7 — it needs the approval machinery.
-- Origin binding (`allowed_origins`) is stored and **enforced now**, not deferred to policy: the broker checks the page's live origin at fill time. It is a property of the secret, not a task grant.
-
-**Tests (the value-leak test is non-negotiable):** fill into `fake-gram`'s login form → server-side submitted value correct; then grep the run's *entire* trace, every recorded LLM transcript, and every log line for the plaintext → zero hits. Origin binding: same secret, wrong origin → fill refused, `policy.denied` traced. Target validation: hidden field / cross-origin iframe → refused. Rate limit: N fills in one run → run fails.
-
-### S5c — MCP client
-
-- `@modelcontextprotocol/sdk`; per-user server configs (`mcp_servers`); server credentials resolved via `secrets.injectIntoMcpArg` — never in `config_json`.
-- Per-task tool list merged into **the asset node's** registry with a namespace (`mcp.imagegen.create`). The browser node's registry is untouched and must not gain `mcp.*` — asserted by a test, since this is the §4 security boundary and a future refactor could silently erase it.
-- Calls via `PolicyGate.checkMcpCall` (permissive until Phase 7); args/results → trace; per-run call budget + timeout; results wrapped in delimiters as untrusted data (§13).
-
-**Tests:** fake MCP server in testkit (echo + image-stub tools) — asset-node replay transcript calls it, result in context, trace recorded; call-budget breach → run fails; **registry isolation test**: build a browser task's tool schema and assert no tool name matches `mcp.*`; MCP server credential absent from trace and transcript.
-
-### S5d — Asset store
-
-- `assets`, `asset_versions`, `asset_write_grants` per §14. Blobs via the existing `BlobStore` interface (MinIO, S3 API).
-- Path handling: normalize, reject `..`/absolute/symlink, resolve within the user namespace root (§16 Threat 8). Writes checked against the task's `asset_write_grants` glob; reads open across the user's workflows (§13.5 decision).
-- Tools: `assets.write/append/read/list`. Every write creates an `asset_versions` row; overwrites never destroy the prior blob.
-- **Asset refs in packets:** a `{asset_id, path, mime, sha256}` shape registered as a reusable fragment for the LLM-generated packet schemas (§18.2), so the model does not invent its own shape per node.
-- **Public asset resolution** (required by S2d, `sharing.md` §4.4): an asset is publicly readable **iff** a public packet under a live share references it. Implement the derivation query and the `/s/<token>/assets/<id>` blob route with its headers (`Content-Disposition: attachment`, `nosniff`, `CSP: sandbox`, MIME allowlist) here rather than leaving them to be bolted on — visibility that is derived cannot fall out of sync, and visibility that is bolted on will.
-
-**Tests:** traversal corpus (`../../etc/passwd`, absolute paths, symlink, unicode-normalized dodges) all rejected — table-driven, extend on every new idea; write outside grant glob → denied; overwrite → new version, old blob still resolvable; asset ref round-trips through an event packet and validates against the fragment schema.
-
-### S5e — LaTeX renderer
-
-- `apps/renderer`: out-of-process worker, containerised, **no network namespace**, read-only FS except a per-render scratch dir, `tectonic` with shell escape disabled unconditionally, `openin_any=p`/`openout_any=p`, wall-clock + memory caps (§13.5, §16 Threat 7).
-- `assets.render(srcPath, format, opts)` → `pdf`. Deck output is beamer→PDF and is labelled a **PDF deck** in the API and UI, not a `.pptx` (§18.11). **`docx` is not implemented** (§18.12) — the tool rejects it with an explicit "deferred, see §13.5" error rather than silently degrading.
-- Images referenced by the `.tex` are resolved from the asset store into the scratch dir **by the host before compilation**; the `.tex` never names a host path.
-- Non-zero exit → the TeX log is returned to the agent as a tool error so it can correct and retry within budget. This matters: LaTeX from an LLM fails on missing packages and stray characters routinely, and a one-shot failure would make the feature unusable.
-- Tectonic's package cache is pre-warmed into the image so the render container needs no network at runtime.
-
-**Tests (hostile corpus, table-driven like the sandbox tests in Phase 6):** `\write18{curl ...}` → blocked; `\input{/etc/passwd}` → blocked; infinite macro loop → wall-clock kill; memory bomb → cap; a `.tex` attempting to write outside scratch → blocked. Happy path: fixture `.tex` → byte-stable PDF (normalize timestamps/IDs before comparing); malformed `.tex` → TeX log surfaced as a tool error, agent's corrected retry succeeds.
-
-### S5f — End-to-end milestone (the phase's exit criterion)
-
-`fake-tweets` (cron, browser node) → `tweet.detected` → **asset node** calls the image-stub MCP tool, writes a `.tex`, renders a PDF, emits `report.ready {asset_ref}` → **browser node** uploads it to `fake-gram` via `page.upload(anchor, assetRef)`.
-
-Asserts: the PDF exists and is valid; the browser node received bytes matching the asset's `sha256`; the asset outlives the run that created it; the whole flow is replay-deterministic in CI.
-
-### S5h — Python compute, now the asset agent's tool
-
-The runner and asset-output pipeline exist. S6d replaced the authored Python mode with
-`python.run` on `(asset, ai)`; source and input asset paths are supplied by the agent at
-execution time. Files become grant-checked assets; stdout/stderr and optional event lines
-return as untrusted data. The agent calls `emit`.
-
-The self-hosted runner is a Python subprocess in the Compose container, with wall-clock and
-output limits. The original Firecracker design and its hostile corpus were withdrawn;
-they are not deployment requirements or claims about current isolation. There are no
-authored `code`/`runtime` columns after migration `0019`.
-
-Current contract, tests and remaining table-input limitations: [python-compute.md](python-compute.md).
-Historical proposal: [archived Python design](history/python-compute-original.md).
-
-**E2E:** browser emits pricing → asset agent calls Python to write a spreadsheet → agent
-emits `report.ready {asset_ref}` → browser uploads the asset.
-
-## Phase 6 — Compiler + static runtime (deopt loop)
-
-**Goal:** `CompiledExecutor` and the post-execution trace-compilation loop (§11–§12,
-[trace-compilation.md](trace-compilation.md)). Complete as of S6e: the runtime primitives
-(S6a–S6c), the modes model (S6d), and the separate job timing, full-trace LLM interpretation
-and isolated validation (S6e, migration `0020`).
-
-**Scope: `kind=browser` only** (§18.10). The compiler's task selector filters on `kind='browser'`; asset tasks are exempt from promotion/demotion counters entirely. Add one test asserting an asset task with K clean runs is *not* compiled — a silent widening of the selector would put MCP calls behind guards that cannot assert on them.
-
-**Build order within the phase (each step testable alone):**
-
-1. **Static runtime host:** `isolated-vm` isolate; inject only `ctx` (page/guard/network/emit/emitIfNew/deopt/state per §12, plus read-only `ctx.page.upload(anchor, assetRef)`); **no `ctx.mcp`, no asset writes** — the compiled path must mirror the browser node's registry exactly, or it becomes the policy bypass §2 principle 3 forbids; every `ctx` call crosses to host → `PolicyGate` → driver; wall-clock + memory caps; no ambient globals (verify: `fetch`, `require`, `process` undefined in-isolate).
-2. **Script registry:** `compiled_scripts` versions with `status: candidate|active|invalidated`, provenance (`from_runs`), lint gate (AST check: no `eval`/`Function`/imports/`with`; only `ctx.*` member calls).
-3. **Trace interpretation:** after execution settles, the compiler LLM receives completed
-   trace evidence, the detailed internal prompt and event/trigger context. It separates DOM
-   exploration from actual work; any multi-trace consistency checks compare the distilled work.
-4. **Compiler agent:** in that separate task, generate the guarded script and recovery prompt,
-   preserving necessary actions, extraction, emissions and state. Validate through lint and
-   the sandbox on fixture/replay or otherwise isolated inputs; do not replay live side effects.
-5. **Executor + deopt handoff:** the active script runs; deopt continues the same execution
-   under the agent. Successful recovery settles and flushes its trace before recompilation.
-6. **Promotion/demotion:** K=1 makes the first successful execution eligible; a validated
-   matching candidate activates and promotes the task. Three deopts in ten compiled runs
-   demote it and publish `compile.invalidated`. Compile failures and latency cannot alter the
-   completed execution — the outcome hook queues a `compile_jobs` row, and a separate worker
-   compiles once the run is terminal (S6e).
-
-**System tests:**
-
-- Sandbox: hostile script fixtures (infinite loop → wall-clock kill; memory bomb → cap; attempts at `this.constructor.constructor('return process')` → undefined; direct network attempt → no primitive exists). Write these as table-driven tests; extend the table every time you think of a new escape.
-- Golden compile: recorded compiler transcript over the canonical `fake-tweets` traces → snapshot-test the emitted script (normalized); lint gate rejects a corpus of bad scripts (eval, import, non-ctx calls).
-- **Deopt loop end-to-end (acceptance target):** one AI run settles → separate trace
-  compilation distills and validates a script → compiled run succeeds with zero LLM calls →
-  changed fixture triggers deopt → the agent recovers and the execution settles → separate
-  recompilation produces v2 → a subsequent run uses v2 without LLM calls. `compile-loop.test.ts`
-  additionally asserts that a failed compile changes nothing about the run that earned it, and
-  `compiler-agent.test.ts` that exploration is not replayed as business work.
-- Demotion: force 3 deopts in 10 via mutator toggling → task mode flips to `ai`, `compile.invalidated` emitted.
-- `emitIfNew` + `ctx.state`: compiled polling run twice against unchanged fixture → second run emits nothing.
-
-**Exit:** cost curve realized — steady-state runs make no LLM calls; site changes self-heal. Instrument LLM-cost-per-run (ai vs compiled) now; it's the product's core claim.
-
-## Phase 7 — Policy & permissions engine (the deferred piece) ✅ **DONE** (S7)
-
-**Build:** the real `PolicyGate` implementation replacing `AllowAllGate` at the composition root — grants tables (`task_grants`, `account_baseline_rules` — accepted, §10), evaluator (baseline denies → task grants → default-deny for network header/secret reads, default-allow for basic actions during migration, tightening per rollout flag), redaction filter (§9 step 4: Authorization/Cookie/token-pattern masking even under header grants, `secrets:read` as the separate louder switch), approvals (`awaiting_approval` run state + park/expiry + `approval.requested|granted|denied` events — the state machine slot was reserved in Phase 2), navigation guard now driven by per-task allowlists instead of the env var, and MCP allowlists.
-
-Implemented by migration `0021`; the exact decision order, enforcement surfaces and approval
-lifecycle are recorded in [S7-policy-permissions.md](subphases/S7-policy-permissions.md).
-Tier-2 attended secrets took the phase's documented cut rather than claiming a client-held
-key protocol that does not exist.
-
-**Additional surfaces from the Phase 5 work:**
-
-- **MCP tool allowlist per asset task** — `checkMcpCall` stops being permissive. Un-granted MCP tools are absent from the tool list entirely, not denied at call time (enforcement point (a), §10).
-- **Asset write grants** tighten from "any path in the user namespace" to the per-task `path_glob`; reads stay open (§18.14).
-- **Secret grants** — `secret_grants` enforced by the broker. Origin binding already shipped in S5b and is *not* a policy grant (it is a property of the secret), so it needs no migration here.
-- **Tier-2 secrets** (§16) — user-wrapped DEK, Argon2id-derived key held client-side. A scheduled run needing a Tier-2 secret parks in `awaiting_approval` and reuses the approval machinery built in this phase. This is the subphase to cut if Phase 7 runs long (§18 open question 4).
-- **`upload`/`download` capability grants** gating `page.upload` and download-to-asset.
-
-**Additional tests:** un-granted MCP tool absent from an asset task's captured tool schema; asset write outside `path_glob` denied and traced; Tier-2 secret in a cron run → run parks, approval resumes it, expiry fails it; the **regression sweep** now includes the entire Phase 5 asset suite under a permissive-grants profile.
-
-**System tests:**
-
-- **Decision-table tests** on the evaluator alone: exhaustive grant × action matrix as data-driven cases (this is where most policy bugs die cheaply).
-- Enforcement-point integration: (a) un-granted tool absent from the agent's tool list (assert against the replay adapter's captured tool schema); (b) compiled script calling an un-granted `ctx` method → verdict denial → deopt-or-fail per config → `policy.denied` traced; (c) redirect to off-grant domain aborted mid-run.
-- Redaction: fixture endpoint returning `Set-Cookie` + bearer tokens; with `headers:read` granted but not `secrets:read` → masked in agent context (assert transcript) yet raw in the (opted-in) trace; with neither → `network.read(headers)` denied.
-- Approval flow: purchase-class action on `fake-gram` with `requires_approval` → run parks, event emitted, test approves via API → run resumes and completes; expiry path → run fails `approval_expired`.
-- **Regression sweep:** the *entire* Phase 2–6 system-test suite re-runs under a permissive-grants profile — proving the gate swap changed nothing when grants allow everything. This is the payoff of §0; if this sweep fails, the interface leaked somewhere.
-
-## The UI track — incremental, gated only on prerequisites (replaces "Phase 8 — UI")
-
-The 0.2 ordering ("UI after everything") is retired. Its actual rationale was "don't build UI
-on an unstable event architecture," and that architecture is now stable and system-tested
-(Phases 1–2 done). From here, **the UI ships in thin slices, each landing as soon as — and no
-later than — its backend prerequisite**. You see a working UI one subphase from today: U0's
-only prerequisite is S2c.
-
-Two standing rules, which are what make the slices cheap:
-
-1. **Every slice consumes the same tRPC procedures the system tests exercise.** No UI-only
-   endpoints, no business logic in `apps/web` beyond composition (the S2c stack rules:
-   thin Next.js, zod end-to-end, no hooks beyond `useMountHook`). If a slice needs data no
-   endpoint serves, that is an S2c-family backend change with a system test — the UI never
-   fills the gap itself. System tests stay the living API contract.
-2. **Still no UI tests** (doctrine unchanged). A slice is verified by the backend tests of
-   the endpoints it renders, plus eyes.
-
-| Slice | Lands with | What you see on screen | Prerequisite |
-|---|---|---|---|
-| **U0 — first UI** | **S2c** | Workflow list; schedules editor (cron/tz/missed/overlap); runs table with live status; event feed with lineage links. Author a graph, cron- or hand-trigger it, and watch runs and events flow — before any browser exists. As shipped it also carried a React Flow canvas over `workflows/tasks/edges/event_defs`, a packet-schema JSON field and a StubExecutor scripting panel; **U1 removed all three** and this row no longer describes them. Cycle visibility survived the move: cycles are legal, bounded by the loop budget, and annotated on the derived map's back-edges. | S2c only |
-| **U0.5 — public view** | **S2d** | `/s/<token>`: the graph, its schedules and triggers, the runs table and the event feed, read-only, for anyone holding the link — with packet bodies shown only for event types the author marked public, and a bounded error class instead of error text. Owner-side share management: create with a visibility preview, rotate, revoke. Reuses U0's components via an injected fetcher rather than forking them. | S2d only |
-| **U1 — declarative editor** | **EC1** | The editor stops being a canvas: an Events panel (one description prompt per event, its visibility switch, and its compiled schema as a read-only field list), a Nodes panel (prompt, trigger chips ⏰/◈, emit chips, limits), and a derived read-only map of the bipartite topology with the loop budget annotated on back-edges. Publishing renders a per-event compile report. No JSON anywhere in the client; React Flow removed. | EC1 only |
-| **U1.5 — run inspector** | S3a–S3b | The debugging surface, deliberately *before* the agent exists (you'll want it while hardening Phase 3): per-run timeline of navigations, actions, and network entries with policy verdicts, screenshots via `blob_ref`, resource-limit and disconnect failure detail; endpoint health panel for `cdp_endpoints`. | S3a (traces), S3b (observer/pool) |
-| **U2 — agent visibility** | S4a–S4b | Inspector gains LLM calls (prompts, token counts, tool-call sequences) and emitted-packet views. Packet-schema authoring is **not** part of this slice — it shipped with EC1/U1, on the event rather than the emitting node, compiling at publish so the schema versions with everything else; the derived map and the Events panel already render the declared fields to both sides. | S4b |
-| **U3 — asset surfaces** | S5a–S5h | Asset browser (paths, versions, download, quota usage), inline PDF preview for rendered deliverables, `.xlsx` download, MCP server catalog with per-task tool selection, secrets manager (add/rotate, origin binding, Tier-1 vs Tier-2 with the trade-off stated plainly — Tier 2 parks scheduled runs for approval). Asset node's config panel becomes real, including a **read-only Python source viewer with cross-version diff** — the same argument §11 makes for compiled scripts: users must be able to see what will run. | S5b–S5e, S5h as each ships |
-| **U3.5 — decision + store** | S5g | Palette gains the **decision** node; workflow store browser (tables, row counts, schema per version) and a read-only query console running the *same fenced read path* as `store.query`; store-schema migration diffs (additive/destructive) shown at publish. | S5g (`graph-compilation-llm.md` §10) |
-| **U4 — compiler** | S6a–S6c | Compiled-script viewer with version diff (users must be able to inspect what will run against their browser, §11), deopt timeline in the inspector, promotion/demotion state on nodes, and **LLM-cost-per-run, ai vs compiled** — the product's core claim, on screen from the day it's measurable. | S6c |
-| **U5 — policy** | S7 | Grants editor per task, account-baseline editor, approvals inbox (park / approve / expiry countdown), redaction settings, storage opt-outs. | S7 |
-| **U6 — one-prompt authoring** | S8 | Intent prompt → draft graph rendered in the editor; compile-report panel (per-check pass/warn/fail — the same surface U1 already renders for per-event schema compilation, widened to S8's graph checks); **proposed-grants review checklist** with diffs on recompile — the approval flow that turns proposals into `task_grants`. | S8 (`graph-compilation-llm.md` §4–5) |
-
-Sequencing note: slices are ordered by prerequisite, not priority — U1.5 (inspector) is the one
-worth pulling as early as its data exists, since it is the debugging surface for everything
-after it. U0, U0.5, U1 and U1.5 are done — the inspector landed the moment S3a/S3b's data
-existed, as this note argued it should. U2 is next, gated on S4b.
-
----
-
-## Cross-phase testing doctrine (summary)
-
-| Layer | What | Runs where |
-|---|---|---|
-| Unit | pure logic: cron math, lineage depth, lint gate, evaluator decision tables, redaction | every commit |
-| Integration | one package + real Postgres (schema-per-test) | every commit |
-| System | engine + bus + real Chromium + fixture sites + LLM **replay** | every commit (the core suite) |
-| Live eval | same fixtures, LLM **live**, outcome assertions only | nightly / pre-release |
-| Chaos | kill engine / kill Chromium / drop DB conn mid-run, assert recovery semantics | nightly |
-
-Rules: no CI test touches the public internet or a live LLM; every bug fix lands with a system test reproducing it; traces are the assertion surface (most system-test asserts read `trace_entries` + `events`, not internal state) — which keeps tests black-box against refactors and doubles as proof your observability actually observes.
+# Implementation phases
+
+Version 1.0 delivery roadmap for hosted browser workflows. The target architecture is defined
+in [the technical plan](techical_plan.md). New hosted phases below are planned; this roadmap
+does not claim that accounts, payments, Camoufox, or Kubernetes deployment already exist.
+
+## 1. Existing foundation
+
+| Phase | Outcome | Current state |
+| --- | --- | --- |
+| S0–S2 | Workspace, migrations, event bus, engine, scheduler, versioned graph API | Implemented foundation |
+| S2d | Token-scoped public workflow/run/event reads | Implemented foundation |
+| S3 | Chromium CDP driver, endpoint pool, navigation/network/resource guards | Implemented; hosted path will use Camoufox |
+| S4 | Browser perception and AI agent loop | Implemented; needs remote-worker cancellation and recovery |
+| S5 | Secret injection and workflow-store decision query/insert/upsert | Implemented; needs account ownership |
+| S6 | Guarded static runtime and post-execution trace compilation | Implemented; needs browser compatibility and metering |
+| S7 | Policy grants, approvals, account baselines | Implemented; retire action approval model |
+| S8 | Natural-language graph/store compiler and deterministic gates | In progress; finish under the new execution contract |
+| S8.5 | Workflow-level MCP publish/update/trigger/schedule | Implemented; needs account authentication and execution IDs |
+| S9 | Evidence-driven Graph Optimizer and typed Graph Patch IR | Deferred until hosted runtime is proven |
+
+Browser tasks retain adaptive AI execution, script promotion, and AI recovery. Decision tasks
+remain AI-driven and own workflow-store operations. Customers author intent and inspect
+behavior. The new Python service owns Camoufox; it does not restore the retired customer
+Python runner, asset task kind, document renderer, or external MCP tool registry.
+
+## 2. Delivery sequence
+
+Deliver H0–H7 through local staging before deploying H8 to AWS staging. H0 establishes the
+shared deployment/test harness incrementally; its initial chart boots only existing services.
+Extend it with each phase rather than waiting for the full platform to exist. Each phase
+must satisfy its acceptance gate before its dependent phase is considered complete.
+
+### H0 — Local staging foundation
+
+- Add a shared Helm chart and local/AWS values, plus kind configuration under `infra/`.
+  Local kind has one control-plane node, two worker nodes, and a NetworkPolicy-capable CNI.
+- Implement `pnpm staging:up`, `staging:down`, `staging:reset`, `staging:test`, and
+  `staging:test:live` as scripts with documented prerequisites: container runtime, kind,
+  kubectl, Helm, and sufficient local CPU/memory/disk.
+- Build application images, load them into kind, deploy Postgres/MinIO and existing services,
+  run migrations as a job, and expose a loopback gateway. Persist staging data and wrapping
+  keys outside disposable kind nodes. Use a dedicated kubeconfig and staging state directory.
+- Add deterministic model/provider adapters, two fixture account identities, fixture sites,
+  and test credits as later services become available. Make these explicit test-only settings
+  that hosted deployments reject. Keep existing Compose development usable.
+
+Acceptance: a clean checkout can create staging reproducibly; a second up is idempotent;
+down/up preserves data; reset removes only staging data. No AWS account, paid model call,
+live payment, or real solver request is needed for the deterministic suite.
+
+### H1 — Clerk accounts and removal of action approvals
+
+- Integrate Clerk and account resolution across server rendering, tRPC, workflow chat, MCP,
+  and background work. Add revocable account MCP tokens and an account ownership query layer.
+- Backfill existing data to an explicit owner and enforce ownership on workflows, stores,
+  secrets, traces, artifacts, and future browser/model resources. Preserve scoped public shares.
+- Remove grant proposals from graph artifacts/prompts, approval controls from the UI, and
+  permission-gate calls from runtime paths. Extract redaction and resource enforcement before
+  removing the policy package dependencies.
+- Retire `awaiting_approval` and approval polling. Drain or explicitly terminate legacy
+  waiting runs during migration; never auto-approve old work. Preserve historical audit data.
+- Finish the S8 intent/chat surface and deterministic compile reports without grant proposals.
+
+Acceptance: two accounts cannot access each other's resources through UI, tRPC, MCP, object
+references, or share tokens. Normal authoring and execution require no action approvals.
+Secret hygiene, registry separation, store isolation, and resource-limit tests still pass.
+
+### H2 — Durable workflow executions and robust graphs
+
+- Add execution identity to triggers, events, task attempts, and system events. Atomically
+  create roots and pin the complete execution to one published graph version.
+- Strengthen typed graph validation, stable task identities, explicit entry behaviors,
+  declared external inputs, bounded cycles, and compare-and-set publication.
+- Preserve per-event consumer semantics; do not treat multiple subscriptions as an implicit
+  join. Keep finite hop/run budgets and terminal execution accounting.
+- Make dedupe claims, event publication, and staged store writes atomic. Separate delivery
+  dedupe from intentional cross-execution record dedupe.
+- Add lease generations and propagate cancellation through both AI and compiled executors.
+  Fence stale database commits and browser commands. Track uncertain browser action outcomes
+  rather than automatically replaying side effects after a crash.
+- Block incompatible store migrations until affected executions, including pauses and queued
+  descendants, drain. Require new execution IDs after the routing cutover.
+
+Acceptance: publishing while A executes cannot move its downstream B into another version.
+Duplicate triggers/deliveries, concurrent publication, crashes around emit, retries, cycles,
+cancel races, and stale-owner writes have deterministic outcomes. Execution completion waits
+for pending outbox delivery and all descendants.
+
+### H3 — Camoufox worker, profiles, and local fleet
+
+- Add a Python browser-worker image with pinned Camoufox/Playwright, Xvfb, and a versioned
+  internal RPC contract implementing the TypeScript browser-driver operations. Validate
+  Firefox perception, frames, popups, secret injection, network bodies, and disconnection.
+- Add durable browser profiles, sessions, allocation requests, profile locks, and generation
+  checks. Bind sessions to verified execution or interactive profile-setup ownership.
+- Implement the Kubernetes fleet controller using account-fair scheduling and the existing
+  Postgres queue. Local limits are one unassigned warm slot, three allocated browsers, and
+  four total pods. Provision only after concurrency and credit admission.
+- Use clean per-session pods; restore encrypted profile snapshots, preserve fingerprint/proxy
+  settings, and atomically publish snapshots after clean browser shutdown. Keep the last
+  clean generation on crashes. Destroy used workers instead of returning them to the warm pool.
+- Retain a fixed-worker Compose mode for fast development. The hosted UI automatically
+  provisions browsers and offers profile setup instead of requiring a pasted CDP endpoint.
+- Use a temporary test reservation adapter until H6 supplies real credit accounting.
+
+Acceptance: a real fixture login survives browser replacement and staging redeployment;
+competing users cannot share a profile lease; a fourth session queues and later starts.
+Killing a worker/controller cannot create duplicate ownership. Browser requests cannot reach
+platform services, cloud metadata, or another session. Chromium compatibility assumptions
+are absent from the hosted driver.
+
+### H4 — Live sessions, playback, and takeover
+
+- Add an authenticated VNC/WebSocket gateway and embedded noVNC viewer. Enforce read-only
+  viewers and exclusive human input at the server, with short-lived session-scoped access.
+- Record Xvfb output into recoverable HLS segments in object storage. Persist manifests,
+  session-relative timestamps, page/tab metadata, and media availability/gap states.
+- Stream durable cursor-addressable activity and periodically flush trace buffers. Add a
+  session inspector with live browser, action timeline, playback controls, and event seeking.
+- Implement pause acknowledgment, input-owner generations, explicit resume, disconnect
+  handling, stop, and takeover timeout. Resume with fresh AI perception; compiled isolates
+  exit at a host-call boundary without restarting completed actions.
+- Suppress recorded media during takeover and explicit secret injection; retain private
+  timeline intervals. Exclude human input values from traces and human-assisted runs from
+  script promotion. Add seven-day recording cleanup.
+
+Acceptance: agent and human cannot issue concurrent input, including during worker/network
+races. MFA fixture takeover resumes correctly. Reconnecting viewers recover missed events.
+Playback seeks to the matching action and remains usable after a crash; expired or foreign
+tokens cannot view media or control input. Cancellation stops further commands.
+
+### H5 — Account model sources and complete metering
+
+- Store encrypted BYO OpenAI/Anthropic credentials and workflow model settings. Resolve one
+  funding source across authoring, schema/graph compilation, runtime, recovery, and trace
+  compilation. Platform-managed credentials implement paid Tabductor models.
+- Unify runtime and compiler usage reporting with operation IDs, provider/model, token
+  categories, purpose, funding source, and pinned rate versions. Remove boot-global customer
+  provider selection and approximate fallback rates from billable paths.
+- Pin compiled artifact/browser compatibility, preserve evidence-only validation, and demote
+  incompatible or repeatedly failing scripts. Meter background compilation after a run ends.
+- Surface BYO failures without changing funding source. Keep raw credentials out of API
+  responses, browser workers, transcripts, logs, and recordings.
+
+Acceptance: every model phase attributes usage to the correct account and selected source.
+A BYO failure never produces a platform-model debit. No billable model runs without a known
+rate. Deterministic fixtures verify usage attribution; bounded live tests verify adapters.
+
+### H6 — Paddle prepaid credits and spending enforcement
+
+- Add configured credit packs, server-created Paddle transactions, checkout, verified
+  webhooks, and a customer billing screen. Use Paddle sandbox in local staging.
+- Implement the append-only credit ledger, payment-event inbox, purchase reconciliation,
+  refunds/adjustments, and atomic credit reservations using integer units.
+- Credit completed transactions exactly once. Derive credit amounts from the server price
+  mapping; reject mismatched purchases. Handle duplicate and out-of-order webhook delivery.
+- Replace H3's test reservation adapter with allocation admission, browser interval charging,
+  model/solver reservations, proxy usage, settlement, and abandoned-operation reconciliation.
+- Expose available/reserved balance and usage breakdown; enforce per-account and execution
+  limits. Queue/warm capacity is unbilled; held human sessions remain billable. Implement
+  compensating refund entries and block new spending when balance is insufficient.
+
+Acceptance: successful, abandoned, failed, duplicate, and refunded sandbox purchases have
+correct balances. Concurrent runs cannot overspend one account. Worker crashes, delayed usage,
+and duplicate settlements do not create free or duplicate usage. Unknown provider outcomes
+remain reconcilable. Checkout redirects alone never credit an account.
+
+### H7 — Managed proxies and challenge recovery
+
+- Integrate platform-owned proxy configuration with stable per-session assignment, profile
+  locale/fingerprint settings, byte metering, and encrypted provider credentials.
+- Implement CapSolver, 2Captcha, and Anti-Captcha adapters with a capability map and configured
+  fallback order. Detect, submit, poll, apply, and verify supported challenges.
+- Persist each provider request, enforce at most three submissions and a two-minute challenge
+  deadline by default, and apply credit limits before calls. Handle ambiguous submissions
+  without immediately creating another paid attempt.
+- Show challenge attempts/costs in the session timeline. Request human assistance for
+  unsupported challenges, exhausted attempts, login, or MFA; resume through H4's controls.
+
+Acceptance: deterministic provider fixtures cover success, unsupported types, timeout,
+provider outage, fallback, invalid solutions, insufficient credits, and duplicate polling.
+Run bounded provider demo/test challenges in explicit live mode. Verify page recovery and
+charge attribution separately; do not claim universal anti-bot coverage.
+
+### H8 — AWS staging, autoscaling, and launch
+
+- Provision one-region EKS, a baseline managed node group, a bounded Karpenter browser
+  NodePool, RDS, S3, ECR, workload identities, encryption, and HTTPS ingress through IaC.
+  Deploy the same Helm chart and image digests used in local staging.
+- Start with On-Demand browser nodes, two warm slots, 25 allocated-browser capacity, and
+  27 total browser pods. Karpenter adds nodes for pending pods; the fleet controller owns
+  session allocation and idle-slot retirement.
+- Configure network isolation, account-scoped storage access, production secret injection,
+  drain-aware deployments, active-session disruption protection, and expired-lease recovery.
+- Add dashboards/alerts for queue age, allocation latency, worker health, stale leases,
+  browser memory, streaming lag, recording loss, provider failures, and ledger reconciliation.
+- Use separate AWS staging credentials/data and Paddle sandbox before enabling production
+  Clerk/Paddle settings. Document backup/restore and rollback; do not roll application code
+  back across an incompatible schema transition.
+
+Acceptance: a 25-browser load test and a larger queued burst preserve account fairness and
+correct billing. Observe real EC2 scale-out and idle scale-in; active sessions survive
+voluntary consolidation. Test forced node loss, draining, S3/RDS disruptions, profile restore,
+and duplicate payment delivery. Measure cold/warm startup and viewing latency before setting
+customer-facing service guarantees.
+
+## 3. Local staging acceptance journey
+
+Automated staging defaults to fixture identities, model responses, provider responses, and
+synthetic payments. These adapters exercise the real ownership and ledger interfaces and
+are unavailable in hosted mode. Fixture websites include login/MFA, popups, changing layouts,
+delayed responses, a side-effect counter, and challenge success/failure pages.
+
+1. Start staging with one command; create two accounts and confirm isolation.
+2. Top up fixture credits, select a BYO or Tabductor model source, publish an intent, and
+   trigger a workflow without configuring a browser endpoint or granting actions.
+3. Observe automatic Camoufox allocation, live activity, successful output, usage settlement,
+   and a replay whose action timestamps match the recorded browser.
+4. Take over a login/MFA flow, resume it, and restore the saved profile in a later session.
+5. Run enough independent profiles to exceed three browsers; verify fair queueing, exclusive
+   profile ownership, warm-slot replenishment, and idle scale-in.
+6. Publish a new graph mid-execution; verify the original descendants remain on their
+   original version. Exercise duplicate events and failures around publication/settlement.
+7. Kill a worker, restart the engine and controller, interrupt object storage, and disconnect
+   the viewer. Verify fencing, bounded recovery, partial recordings, and ledger reconciliation.
+8. Redeploy staging and verify persistence; separately exercise the explicit reset command.
+
+The live journey uses Clerk's development instance and Paddle sandbox with a documented HTTPS
+tunnel for callback delivery. Complete real sign-in and a sandbox checkout, then test a bounded
+workflow using explicit live model/proxy/solver credentials. Replay signed webhook fixtures
+for deterministic regression coverage, but require a real sandbox webhook round trip before
+declaring the Paddle integration complete.
+
+Local kind scales browser pods inside fixed local nodes. It does not prove EC2 autoscaling,
+AWS identity/network rules, managed-service failure behavior, or production capacity. Those
+remain H8 gates. Host sizing checks must fail clearly when local resources cannot support the
+configured limit; a lower test limit cannot be reported as passing the full capacity gate.
+
+## 4. Release and migration gates
+
+- Run TypeScript build, web build, lint, relevant Python worker checks, unit/system tests,
+  and real Camoufox staging tests. Validate Helm rendering and Kubernetes readiness.
+- Test both a fresh database and an upgrade from the current single-user/CDP schema. Preserve
+  workflows, store data, historical runs/traces, and audit records; applied migrations remain
+  immutable. Backfill explicit ownership and drain old routing work before cutover.
+- Complete Clerk development and Paddle sandbox journeys, account isolation tests, secret
+  leak checks, credit reconciliation, recording expiry, and human takeover races.
+- Keep exactly four workflow-level MCP tools; authenticate all of them and return execution
+  identity without exposing graph internals or private browser connection endpoints.
+- Pass local staging H0–H7, then AWS staging H8, before enabling self-service production.
+  Required deployment inputs include provider credentials, credit-pack price mappings,
+  unit rates, model catalog, proxy configuration, AWS region, and domain names.
+
+## 5. S9 — Graph Optimizer after hosted launch
+
+The optimizer observes completed runs and produces a typed Graph Patch IR with a base version.
+It never executes workflow work or mutates active graph rows. Candidate changes include
+splitting/merging tasks, event rerouting, deterministic predicates, and store migrations.
+
+Use evidence such as repeated browser deopts, repeated normalization work, always-coexecuted
+decisions, separable phases, and repeated visits to the same profile. Validate candidates
+against recorded evidence and the publication gates; reject stale base versions and preserve
+active execution pinning. User feedback is attributed evidence for a candidate, not authority
+to mutate runtime state directly.

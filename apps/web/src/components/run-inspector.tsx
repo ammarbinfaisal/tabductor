@@ -47,7 +47,7 @@ function createInspectorStore(runId: string): Store<InspectorState> & {
     try {
       const [detail, ...pages] = await Promise.all([
         api.run.get.query({ runId }),
-        ...before.cursors.map((cursor) => api.run.trace.query({ runId, cursor, limit: 100 })),
+        ...before.cursors.map((cursor) => api.run.trace.query({ runId, cursor, limit: 100, view: "tools" })),
       ]);
       store.setState((state) => ({
         ...state,
@@ -126,25 +126,6 @@ type EmitTracePayload = {
   deduped?: boolean;
 };
 
-/** Cumulative token totals + step count over the trace pages loaded so far (client-side sum,
- * per the spec's explicit permission — no server aggregation needed for numbers this cheap
- * to fold over rows the client already fetched for the timeline). Same "as loaded" honesty as
- * `findFailureDetail`: a run whose LLM calls haven't all been paged in yet under-reports until
- * "Load more" is clicked. */
-function llmStats(trace: TraceItem[]): { steps: number; tokensIn: number; tokensOut: number } {
-  let steps = 0;
-  let tokensIn = 0;
-  let tokensOut = 0;
-  for (const entry of trace) {
-    if (entry.kind !== "llm") continue;
-    const payload = entry.payloadJson as Partial<LlmTracePayload>;
-    steps += 1;
-    tokensIn += payload.usage?.in ?? 0;
-    tokensOut += payload.usage?.out ?? 0;
-  }
-  return { steps, tokensIn, tokensOut };
-}
-
 export function RunInspector({ workflowId, runId }: { workflowId: string; runId: string }) {
   const store = storeFor(runId);
   const state = useStoreBridge(store);
@@ -161,7 +142,7 @@ export function RunInspector({ workflowId, runId }: { workflowId: string; runId:
   const { run, task, trigger } = state.detail;
   const showFailureDetail = run.error !== null && FAILURE_CODES.has(run.error);
   const failure = showFailureDetail ? findFailureDetail(state.trace) : null;
-  const stats = run.modeUsed === "ai" ? llmStats(state.trace) : null;
+  const mode = state.detail.deopted ? "Compiled → AI recovery (deopt)" : run.modeUsed === "ai" ? "Pure AI" : run.modeUsed === "compiled" ? "Compiled" : run.modeUsed;
 
   return (
     <>
@@ -177,20 +158,15 @@ export function RunInspector({ workflowId, runId }: { workflowId: string; runId:
       <div className="entity-card entity-card--node" style={{ marginBottom: "var(--space-5)" }}>
         <div className="row">
           <Stamp kind={run.status} />
-          <span className="mono muted">mode {run.modeUsed}</span>
           <span className="mono muted">attempt {run.attempt}</span>
+          <span className="stamp">{mode}</span>
           <span className="mono muted">
             {run.startedAt ? `started ${run.startedAt.toLocaleString()}` : "not started"}
           </span>
           {run.endedAt ? <span className="mono muted">ended {run.endedAt.toLocaleString()}</span> : null}
         </div>
 
-        {stats ? (
-          <p className="mono muted">
-            {stats.steps} llm step{stats.steps === 1 ? "" : "s"} loaded · {stats.tokensIn}→{stats.tokensOut} tokens
-            in→out
-          </p>
-        ) : null}
+        {state.detail.pageIds.length ? <p className="mono muted">Browser tab: {state.detail.pageIds.join(", ")}</p> : null}
 
         {run.error ? (
           <div className="banner banner--error">
@@ -210,7 +186,7 @@ export function RunInspector({ workflowId, runId }: { workflowId: string; runId:
         {trigger ? (
           <p className="muted">
             triggered by{" "}
-            <Link className="mono" href={`/workflows/${workflowId}/events?event=${trigger.eventId}`}>
+            <Link className="mono" href={`/workflows/${workflowId}?event=${trigger.eventId}`}>
               {trigger.type}
             </Link>
           </p>
@@ -221,9 +197,9 @@ export function RunInspector({ workflowId, runId }: { workflowId: string; runId:
 
       {state.error ? <div className="banner banner--error">Refresh failed. {state.error}</div> : null}
 
-      <h2 style={{ marginBottom: "var(--space-3)" }}>Timeline</h2>
+      <h2 style={{ marginBottom: "var(--space-3)" }}>Tool calls</h2>
       {state.trace.length === 0 ? (
-        <p className="muted">No trace entries yet.</p>
+        <p className="muted">No tool calls recorded yet.</p>
       ) : (
         <div className="stack trace-timeline">
           {state.trace.map((entry) => (
@@ -248,7 +224,7 @@ function TraceRow({ entry, workflowId }: { entry: TraceItem; workflowId: string 
       <span
         className={`chip trace-row-kind${denied ? " trace-row-kind--denied" : ""}${isLlm ? " trace-row-kind--llm" : ""}`}
       >
-        {entry.kind}
+        tool
       </span>
       <div className="stack" style={{ gap: "var(--space-1)", flex: 1, minWidth: 0 }}>
         <TraceSummary kind={entry.kind} payload={payload} workflowId={workflowId} />
@@ -286,6 +262,9 @@ function TraceSummary({
         </span>
       );
     case "action":
+      if (payload.action === "tool.call") {
+        return <span className="mono">{String(payload.tool)} <span className="muted">{payload.ok === false ? `· failed: ${String(payload.error ?? "")}` : "· ok"}{typeof payload.duration_ms === "number" ? ` · ${payload.duration_ms}ms` : ""}</span>{typeof payload.eventId === "string" ? <> · <Link href={`/workflows/${workflowId}?event=${payload.eventId}`}>View packet →</Link></> : null}</span>;
+      }
       if (payload.action === "emit") {
         return <EmitSummary payload={payload as unknown as EmitTracePayload} workflowId={workflowId} />;
       }
@@ -368,7 +347,7 @@ function EmitSummary({ payload, workflowId }: { payload: EmitTracePayload; workf
       {payload.deduped ? (
         <span className="mono muted">deduped — not republished</span>
       ) : payload.ok && payload.eventId ? (
-        <Link className="mono" href={`/workflows/${workflowId}/events?event=${payload.eventId}`}>
+        <Link className="mono" href={`/workflows/${workflowId}?event=${payload.eventId}`}>
           → {payload.eventId.slice(0, 12)}
         </Link>
       ) : payload.ok ? (

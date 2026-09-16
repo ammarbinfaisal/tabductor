@@ -1,4 +1,3 @@
-import { readAssetById } from "@tabductor/assets";
 import {
   createTraceRecorder,
   openRunSession,
@@ -24,11 +23,10 @@ import {
   storageFlagsOf as defaultStorageFlagsOf,
   toRunResult,
   triggerInfoOf,
-  userIdForTask,
 } from "./executor-shared.js";
 import type { Llm } from "./llm.js";
 import { runAgentLoop } from "./loop.js";
-import { buildToolRegistry, type ReadAssetFn } from "./tools.js";
+import { buildToolRegistry } from "./tools.js";
 
 /**
  * `AgentExecutor`: composes the tool registry + loop behind the engine's executor contract
@@ -144,18 +142,9 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
         const [emits, trigger] = await Promise.all([handle.declaredEmits(), triggerInfoOf(db, handle)]);
         const emit = makeEmitFn({ db, taskId: handle.task.id, handleEmit: handle.emit, trace });
         const llm = llmFor({ trace, task: handle.task });
-        // Lazy, memoized: most browser runs never call `page.upload`, so the `userIdForTask`
-        // join only happens for the runs that actually need it — unlike the asset executor,
-        // which always needs the join anyway (its MCP server lookup).
-        let userIdPromise: Promise<string> | undefined;
-        const readAsset: ReadAssetFn = async (assetId) => {
-          userIdPromise ??= userIdForTask(db, handle.task.workflowVersionId);
-          return readAssetById({ db, blobs }, await userIdPromise, assetId);
-        };
         const tools = buildToolRegistry({
           session,
           emit,
-          readAsset,
           ...(deps.secrets
             ? { fillSecret: (secretName, anchor) => deps.secrets!.fill(handle.run.id, secretName, anchor) }
             : {}),
@@ -164,12 +153,13 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
         const result = await runAgentLoop({
           llm,
           tools,
-          // See `asset-executor.ts`: the publish-compiled prompt, with the bare one as fallback.
+          // The publish-compiled prompt, with the bare one as fallback.
           task: { prompt: handle.task.compiledPrompt ?? handle.task.prompt },
           trigger,
           emits,
           trace,
           maxSteps: maxStepsOf(handle.task),
+          signal: handle.signal,
         });
         const runResult = toRunResult(result);
         ok = runResult.ok;

@@ -1,68 +1,22 @@
-# Worked flow — daily expenditure update from Gmail, 07:00
+# Example: daily expenditure
 
-The canonical "real mode" workflow (U3a): a **browser node** reads Gmail in your own
-logged-in Chrome on a cron, emits one event per receipt, and an **asset node** turns the
-day's events into a deliverable. No Gmail API, no OAuth app, no MCP server — the browser
-node *is* the integration, which is the product's premise (§1).
+Intent: “Each morning, collect new card transactions from the bank portal, categorize them,
+remember what was processed, and flag unusual spending.”
 
-## Prerequisites
+One possible internal graph is:
 
-1. `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY`) in `.env` — check `/status` lists
-   `browser:ai` and `asset:ai` (and `tool python.run` if you want the spreadsheet variant,
-   which needs `PYRUNNER_URL`).
-2. `HARNESS_NAV_ALLOWLIST=mail.google.com,accounts.google.com,google.com,localhost` in
-   `.env` — the navigation guard blocks everything unlisted.
-3. A Chrome with your Google session, exposed over CDP and added under the workflow's
-   **Settings → Browser endpoints** (`infra/README.md`, "Driving your own browser").
+```text
+Browser: retrieve transactions
+  emits transaction.raw
+        ↓
+Decision: normalize, categorize, and upsert transactions
+  emits expenditure.flagged when needed
+```
 
-## The graph
+The workflow store contains a `transactions` table keyed by the provider transaction id and an
+optional `category_rules` table. The decision queries existing ids, upserts normalized rows, and
+emits only new anomalies. The browser never performs category semantics or store work.
 
-**Events**
-
-- `expense.found` — *"One receipt or charge found in today's email: merchant, amount as a
-  number, ISO currency code, ISO date, and the email subject it came from."* Publish
-  compiles that description into the packet schema; nothing is hand-written.
-- `expenditure.updated` — *"The daily expenditure report was produced: the asset reference
-  of the report file and the day's total as a number."*
-
-**Node 1 — `gmail-scan`, kind `browser`, mode `ai`**
-
-The editor creates this node as `ai`, with no mode selector. Its first successful execution
-makes its trace eligible for separate post-execution LLM compilation: the compiler separates
-DOM exploration from actual work and validates a reusable script. Once activated, that script
-avoids model calls until a guard fails; the agent can recover within the run, whose completed
-trace then becomes recompilation input. See [trace-compilation.md](../trace-compilation.md)
-for the contract and current gaps; the existing hooks still compile before run settlement.
-
-- Schedule: cron `0 7 * * *`, your tz. Missed policy `skip` (never replay a backlog of
-  mornings against a live site), overlap `skip`.
-- Emits: `expense.found`.
-- Prompt: *"Open https://mail.google.com. Search for receipts, orders, invoices and payment
-  confirmations received in the last 24 hours (query: `newer_than:1d (receipt OR invoice OR
-  \"order confirmation\" OR payment)`). For every distinct charge found, emit one
-  `expense.found` with merchant, amount, currency, date and subject. Use the email's own
-  currency; do not convert. If nothing is found, finish without emitting."*
-
-**Node 2 — `daily-report`, kind `asset`**
-
-- Consumes: `expense.found`. Emits: `expenditure.updated`.
-- Mode `ai`: prompt it to append each expense to the workflow store
-  (`store.upsert`) and write/refresh `reports/expenditure-<date>.md` via `assets.write`,
-  emitting `expenditure.updated` once done.
-- Or, in the same `ai` mode, ask for a spreadsheet: *"keep `reports/expenditure.xlsx` up to
-  date with one row per expense"* — the node reads the current file with `assets.read`, writes
-  and runs a short `openpyxl` program through `python.run` (always on its registry; needs
-  `PYRUNNER_URL` on the engine), and emits `expenditure.updated` with the returned asset ref.
-  There is no separate mode to pick and no program to author.
-
-Note the fan-in shape: `daily-report` runs once **per `expense.found` event**, not once per
-morning — per-task `parallelism: queue` serializes them. If you want one run per day
-instead, put a decision node between: it consumes `expense.found`, and emits a single
-`day.summarized` batch event the asset node consumes.
-
-## Try it without waiting for 07:00
-
-**Trigger now** on `gmail-scan` starts the same chain by hand — a manual start is an event
-source exactly like a schedule fire. Watch the run inspector: navigations to
-`mail.google.com`, `llm` rows, then `expense.found` packets in the event feed and the
-asset under the workflow's assets.
+After enough runs, frequent browser deopts or repeated parsing can cause the Graph Optimizer to
+propose a narrower retrieval browser task plus a dedicated normalization decision. That graph
+change and any new normalized table are one candidate publication.

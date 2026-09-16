@@ -1,5 +1,25 @@
 export { createEngine, type Engine, type EngineDeps } from "./engine.js";
 export {
+  claimBrowserAllocation,
+  createBrowserProfile,
+  endBrowserSession,
+  failBrowserAllocation,
+  fulfillBrowserAllocation,
+  requestBrowserSession,
+  type BrowserAdmission,
+  type ClaimedBrowserAllocation,
+} from "./browser-fleet.js";
+export {
+  accountOwnsWorkflow,
+  accountOwnsTask,
+  accountOwnsRun,
+  accountOwnsEvent,
+  accountOwnsShare,
+  createAccountMcpToken,
+  resolveAccountIdentity,
+  resolveAccountMcpToken,
+} from "./accounts.js";
+export {
   executorKey,
   type ExecutorRegistry,
   type RunHandle,
@@ -7,10 +27,10 @@ export {
   type TaskExecutor,
 } from "./executor.js";
 export { StubExecutor, parseStub, runStubScript, type StubScript } from "./stub-executor.js";
-export { AssetExecutor } from "./asset-executor.js";
 export {
   dispatchEvent,
   dispatchToTask,
+  createWorkflowExecution,
   triggerTask,
   LOOP_BUDGET_EXCEEDED,
   MANUAL_TRIGGER,
@@ -35,6 +55,7 @@ export {
 export { parseRetry, scheduleRetry, RETRIES_EXHAUSTED, type RetryPolicy } from "./retry.js";
 export {
   createScheduler,
+  scheduleValidationError,
   SCHEDULE_FIRED,
   SCHEDULE_SKIPPED,
   type Scheduler,
@@ -112,7 +133,6 @@ export {
   listTraceEntries,
   listVersionTasks,
   listWorkflows,
-  userIdForTask,
   PAGE_LIMIT,
   type CdpEndpointSummary,
   type AddWorkflowEndpointInput,
@@ -143,7 +163,6 @@ export {
   type ShareSummary,
 } from "./shares.js";
 export {
-  publicAssetRef,
   publicEventGet,
   publicEventList,
   publicGraph,
@@ -151,7 +170,6 @@ export {
   publicRunList,
   PUBLIC_PAGE_MAX,
   PUBLIC_ERROR_CLASSES,
-  type PublicAssetRef,
   type PublicErrorClass,
   type PublicEvent,
   type PublicEventDetail,
@@ -167,6 +185,32 @@ export {
   publishStoreSchema,
   STORE_SCHEMA_INVALID,
   STORE_MIGRATION_DESTRUCTIVE,
+  STORE_MIGRATION_BUSY,
   type PublishStoreSchemaInput,
   type PublishStoreSchemaResult,
 } from "./store-schema.js";
+export {
+  AUTHORABLE_GRANT_KEYS,
+  GRAPH_GATE_CHECKS,
+  gateGraphDraft,
+  graphDraftArtifactSchema,
+  graphStoreArtifactSchema,
+  graphCompileReportSchema,
+  graphGateEntrySchema,
+  llmGraphCompiler,
+  persistedGraphCompileReportSchema,
+  proposedGrantSchema,
+  readGraphAuthoring,
+  type AuthorableGrantKey,
+  type GraphCompileReport,
+  type GraphCompileResult,
+  type GraphCompiler,
+  type GraphDraftArtifact,
+  type GraphGateCheck,
+  type GraphGateContext,
+  type GraphGateEntry,
+  type PersistedGraphCompileReport,
+  type ProposedGrant,
+} from "./graph-authoring.js";
+
+export * from "./workflow-chat.js";

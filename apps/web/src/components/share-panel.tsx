@@ -91,11 +91,10 @@ export function SharePanel({ workflowId }: { workflowId: string }) {
       <section>
         <h3>What a viewer can read</h3>
         <p className="muted">
-          Every link always shows: the workflow name, the graph shape — node names, kinds, modes,
-          and edges — schedules, run statuses and timings, and the event timeline. Packet contents
-          appear only for events marked public. Run error messages are never shared — a viewer sees
-          a bounded class such as <code>timeout</code> instead. Change what&apos;s public in the
-          editor; it takes effect when you publish.
+          Every link shows the workflow name, schedule summary, run statuses and timings, and
+          the activity timeline. Internal architecture and prompts are not shown;
+          run entries use a behavior-phase label. Packet contents appear only for outputs marked public. Run error messages are
+          never shared — a viewer sees a bounded class such as <code>timeout</code> instead.
         </p>
         {preview === null ? (
           <p className="muted">Loading…</p>
@@ -109,9 +108,6 @@ export function SharePanel({ workflowId }: { workflowId: string }) {
                   <div key={e.type} className="row row--between">
                     <span className="row">
                       <span className="chip chip--event">◈ {e.type}</span>
-                      <span className="mono muted" style={{ fontSize: "var(--text-xs)" }}>
-                        from {e.emitters.join(", ") || "no emitter yet"}
-                      </span>
                     </span>
                     <span className="mono muted" style={{ fontSize: "var(--text-xs)" }}>
                       {e.fields.length > 0 ? e.fields.join(" · ") : "any object"}
@@ -126,9 +122,6 @@ export function SharePanel({ workflowId }: { workflowId: string }) {
                   <div key={e.type} className="row row--between">
                     <span className="row">
                       <span className="chip chip--event">◈ {e.type}</span>
-                      <span className="mono muted" style={{ fontSize: "var(--text-xs)" }}>
-                        from {e.emitters.join(", ") || "no emitter yet"}
-                      </span>
                     </span>
                     <span className="muted" style={{ fontSize: "var(--text-sm)" }}>
                       packet never shown

@@ -1,0 +1,69 @@
+{{- if and .Values.controlPlane.enabled .Values.fleet.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "tabductor.fullname" . }}-fleet
+  labels:
+    {{- include "tabductor.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "tabductor.fullname" . }}-fleet
+  labels:
+    {{- include "tabductor.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "tabductor.fullname" . }}-fleet
+  labels:
+    {{- include "tabductor.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "tabductor.fullname" . }}-fleet
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "tabductor.fullname" . }}-fleet
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tabductor.fullname" . }}-fleet
+  labels:
+    {{- include "tabductor.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: fleet
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "tabductor.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: fleet
+    spec:
+      serviceAccountName: {{ include "tabductor.fullname" . }}-fleet
+      containers:
+        - name: fleet
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["node", "--import", "tsx", "apps/fleet/src/main.ts"]
+          envFrom:
+            - secretRef: { name: {{ include "tabductor.fullname" . }}-config }
+          env:
+            - { name: BROWSER_NAMESPACE, value: {{ .Release.Namespace | quote }} }
+            - { name: BROWSER_MAX_ALLOCATED, value: {{ .Values.fleet.maxAllocated | quote }} }
+            - { name: BROWSER_WARM_SLOTS, value: {{ .Values.fleet.warmSlots | quote }} }
+            - { name: BROWSER_WORKER_IMAGE, value: {{ .Values.fleet.workerImage | quote }} }
+            - { name: BROWSER_WORKER_PULL_POLICY, value: {{ .Values.fleet.workerPullPolicy | quote }} }
+            - { name: BROWSER_WORKER_TOKEN_KEY, value: {{ required "fleet.workerTokenKey is required" .Values.fleet.workerTokenKey | quote }} }
+          resources: {{- toYaml .Values.resources.fleet | nindent 12 }}
+{{- end }}

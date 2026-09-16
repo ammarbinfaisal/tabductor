@@ -1,16 +1,25 @@
-import { createHash } from "node:crypto";
 import { Ajv } from "ajv";
 import addFormatsModule from "ajv-formats";
 const addFormats = addFormatsModule.default ?? addFormatsModule;
-import { AppError, ASSET_REF_SCHEMA, newId } from "@tabductor/core";
+import {
+  AppError,
+  newId,
+  taskContentBasisHash,
+  taskContentHash,
+} from "@tabductor/core";
 import type { Pool } from "pg";
 import {
   compiledScripts,
+  compileReports,
   eventDefs,
   schedules,
+  secretGrants,
+  storeWriteGrants,
   taskConsumes,
   taskEmits,
+  taskGrants,
   tasks,
+  proposedGrants as proposedGrantRows,
   workflowVersions,
   workflows,
   MISSED_POLICIES,
@@ -23,7 +32,6 @@ import { latestStoreSchema, provision, tablesSpecOf } from "@tabductor/store";
 import { and, eq, inArray, ne } from "drizzle-orm";
 import { z } from "zod";
 import {
-  canonicalJson,
   promptInputHash,
   staticPromptCompiler,
   type PromptCompileInput,
@@ -31,9 +39,12 @@ import {
   type PromptStoreTable,
 } from "./prompt-compiler.js";
 import { promptHashOf, type SchemaGenerator, type SchemaGenInput } from "./schema-generator.js";
+import { publishStoreSchema } from "./store-schema.js";
+import type { GraphCompileReport, GraphDraftArtifact, ProposedGrant } from "./graph-authoring.js";
 
 /**
- * The workflow graph: one document, authored by the editor, validated here, and exploded
+ * The workflow graph: one internal document, produced by the authoring compiler, validated
+ * here, and exploded
  * into the `tasks`/`event_defs`/`task_emits`/`task_consumes`/`schedules` rows the engine
  * routes against.
  *
@@ -52,6 +63,8 @@ import { promptHashOf, type SchemaGenerator, type SchemaGenInput } from "./schem
 /** An event as the author declares it: a name, what the packet means, who may see it. */
 export const graphEventSchema = z.object({
   type: z.string().min(1).max(200),
+  label: z.string().min(1).max(160).optional(),
+  summary: z.string().min(1).max(600).optional(),
   /** The prompt the schema compiler works from — required, because it *is* the schema. */
   description: z.string().min(1).max(4000),
   /**
@@ -71,11 +84,6 @@ export const graphEventSchema = z.object({
 export const NODE_KINDS = TASK_KINDS;
 export type NodeKind = TaskKind;
 
-/** `asset` nodes are event-triggered only (§4); `browser` and `decision` (S5g,
- * graph-compilation-llm §2.1) may hold a schedule — a decision node is the planner that a
- * cron tick drives with an empty packet (§2.2). */
-const SCHEDULABLE: readonly NodeKind[] = ["browser", "decision"];
-
 /**
  * What a document may say about *how* a task runs. `stub` is the permanent graph-testing
  * mode; `ai` is the real one. Everything else the engine decides:
@@ -84,11 +92,9 @@ const SCHEDULABLE: readonly NodeKind[] = ["browser", "decision"];
  *   compiles, loses it after three deopts in ten, and `publishVersion` carries it forward
  *   across versions when the task's content hash is unchanged. A document that names it has
  *   nothing to run — no script comes with a document — so it is rejected here, and
- *   `readGraph` maps a promoted row back to `ai` so a round trip through the editor never
+ *   `readGraph` maps a promoted row back to `ai` so an internal document round trip never
  *   trips this.
- * - `python` is not a mode at all: an asset task runs code through its `python.run` tool, on
- *   the same `ai` executor as everything else it does. The former `(asset, python)` executor
- *   and its authored `code`/`runtime` are gone.
+ * - `python` is retired; there is no Python runner or Python task/tool path.
  *
  * Deliberately *not* a closed enum on `mode` itself — a test-only executor (`scripted`,
  * S3b) still claims a value without a schema change, as the DB check's comment records.
@@ -97,11 +103,11 @@ const ENGINE_ASSIGNED_MODES: ReadonlyMap<string, string> = new Map([
   ["compiled", "the engine assigns it after a clean ai run compiles; publish the task as \"ai\""],
 ]);
 const RETIRED_MODES: ReadonlyMap<string, string> = new Map([
-  ["python", "Python is the asset node's python.run tool now, not a mode; publish the task as \"ai\""],
+  ["python", "Python execution has been removed; publish the task as \"ai\""],
 ]);
 
-/** Mirrors `tasks_kind_mode_check` for the one exclusion the DB still enforces. */
-const NOT_COMPILABLE: readonly NodeKind[] = ["asset"];
+/** Mirrors `tasks_kind_mode_check`: decision work stays semantic and is never script-compiled. */
+const NOT_COMPILABLE: readonly NodeKind[] = ["decision"];
 
 /** The reason a mode cannot be *authored*, or `undefined` when it can. Shared by `checkGraph`
  * and `updateTask` so the in-place edit path cannot admit what publish refuses. */
@@ -123,6 +129,8 @@ export const graphScheduleSchema = z.object({
 export const graphTaskSchema = z.object({
   /** Identity across versions (`tasks.name`), so an edited graph still routes old events. */
   name: z.string().min(1).max(120),
+  label: z.string().min(1).max(160).optional(),
+  summary: z.string().min(1).max(600).optional(),
   kind: z.enum(NODE_KINDS).default("browser"),
   mode: z.string().min(1).default("stub"),
   prompt: z.string().nullable().default(null),
@@ -172,7 +180,7 @@ const invalid = (message: string, details: Record<string, unknown>): AppError =>
 
 /**
  * Everything that makes a graph unpublishable, checked before a single row is written and
- * reported with the node or event at fault so the editor can mark it.
+ * reported with the internal task or event at fault so the authoring report can locate it.
  *
  * Emits must reference declared events — an emit whose type has no entry would sail past
  * publish and then fail every run at `validatePacket`. Consumes are deliberately allowed
@@ -196,13 +204,6 @@ export function checkGraph(graph: Graph): void {
   for (const task of graph.tasks) {
     if (seen.has(task.name)) throw invalid(`duplicate task name "${task.name}"`, { task: task.name });
     seen.add(task.name);
-
-    if (task.schedule && !SCHEDULABLE.includes(task.kind)) {
-      throw invalid(`a schedule may not bind to a "${task.kind}" task`, {
-        task: task.name,
-        kind: task.kind,
-      });
-    }
 
     const unauthorable = unauthorableModeReason(task.mode);
     if (unauthorable) {
@@ -259,11 +260,12 @@ export type PublishedVersion = {
 
 export async function createWorkflow(
   db: Db,
-  input: { name: string; userId: string; maxHops?: number },
+  input: { name: string; userId: string; accountId?: string; maxHops?: number },
 ): Promise<string> {
   const id = newId("wf");
   await db.insert(workflows).values({
     id,
+    accountId: input.accountId ?? "acct_local",
     userId: input.userId,
     name: input.name,
     ...(input.maxHops === undefined ? {} : { maxHops: input.maxHops }),
@@ -314,11 +316,6 @@ async function compileEventSchemas(
   // must know them — an unknown format is a strict-mode failure, which is correct for
   // formats *outside* the allowlist.
   const ajv = addFormats(new Ajv({ allErrors: true, strict: true }));
-  // S5d §18.2: same registration as `packet-schema.ts`'s runtime instance, on the
-  // publish-time strict gate — a stored schema that `$ref`s "assetRef" must compile here
-  // too, or a hand-authored one would pass the runtime validator and fail publish.
-  ajv.addSchema(ASSET_REF_SCHEMA, "assetRef");
-
   const compiled: CompiledEvent[] = graph.events.map((event) => ({
     event,
     promptHash: promptHashOf(genInputFor(graph, event)),
@@ -382,6 +379,7 @@ type CompiledTask = {
   compiledPrompt: string;
   compiledPromptHash: string;
   contentHash: string;
+  contentBasisHash: string;
   /** The mode the row is published with. `compiled` only when carried from the previous version. */
   mode: string;
   /** The previous version's active script to copy onto the new row, when carried. */
@@ -440,9 +438,9 @@ function promptInputFor(
 
 /**
  * graph-compilation-llm §6.3's task content hash: what a compiled *script* was compiled
- * against. Kind, **this task's own** prompt, and the exact schemas of the events crossing it.
- * Limits and schedules are deliberately outside it — a changed timeout does not invalidate a
- * script.
+ * against. Kind, **this task's own** prompt, limits, approved capabilities, touched store
+ * tables, and the exact schemas of the events crossing it. Schedules stay outside it — a
+ * changed cron does not change what the script does once invoked.
  *
  * So are the neighbours, which is the S6e correction. This hash used to be taken over
  * `compiledPrompt`, and `promptInputFor` folds every other node's prose into that — so editing
@@ -452,14 +450,28 @@ function promptInputFor(
  * this hash has to track. Two publishes whose only difference is a neighbour's prompt produce
  * the same hash here, on purpose.
  */
-function contentHashOf(task: GraphTask, schemas: Map<string, Record<string, unknown>>): string {
-  const canonical = canonicalJson({
+type ContentGrant = { grantKey: string; grantValue: string; requiresApproval: boolean };
+
+function contentHashOf(
+  task: GraphTask,
+  schemas: Map<string, Record<string, unknown>>,
+  grants: readonly ContentGrant[],
+  store: PromptStoreTable[],
+): { contentBasisHash: string; contentHash: string } {
+  const touchedStoreTables = new Set(
+    grants.filter((grant) => grant.grantKey === "store.write").map((grant) => grant.grantValue),
+  );
+  const contentBasisHash = taskContentBasisHash({
     kind: task.kind,
     prompt: task.prompt ?? "",
+    limits: task.limits,
     consumes: [...task.consumes].sort().map((type) => ({ type, schema: schemas.get(type) ?? null })),
     emits: [...task.emits].sort().map((type) => ({ type, schema: schemas.get(type) ?? null })),
   });
-  return createHash("sha256").update(canonical).digest("hex");
+  const relevantStore = store
+    .filter((table) => task.kind === "decision" || touchedStoreTables.has(table.name))
+    .map((table) => ({ name: table.name, columns: table.columns, primaryKey: table.primaryKey }));
+  return { contentBasisHash, contentHash: taskContentHash({ basisHash: contentBasisHash, grants, store: relevantStore }) };
 }
 
 /**
@@ -483,6 +495,7 @@ async function compileTaskPrompts(
   schemas: Map<string, Record<string, unknown>>,
   previous: Map<string, PreviousTask>,
   store: PromptStoreTable[],
+  grantsByTask: ReadonlyMap<string, readonly ContentGrant[]>,
   compiler: PromptCompiler,
 ): Promise<CompiledTask[]> {
   const out: CompiledTask[] = [];
@@ -508,7 +521,7 @@ async function compileTaskPrompts(
       }
     }
 
-    const contentHash = contentHashOf(task, schemas);
+    const { contentBasisHash, contentHash } = contentHashOf(task, schemas, grantsByTask.get(task.name) ?? [], store);
     let mode = task.mode;
     let carryScriptFrom: string | null = null;
     let carryHistory: CompiledTask["carryHistory"] = null;
@@ -530,7 +543,7 @@ async function compileTaskPrompts(
       }
     }
 
-    out.push({ task, compiledPrompt, compiledPromptHash, contentHash, mode, carryScriptFrom, carryHistory, entry });
+    out.push({ task, compiledPrompt, compiledPromptHash, contentBasisHash, contentHash, mode, carryScriptFrom, carryHistory, entry });
   }
   return out;
 }
@@ -557,16 +570,29 @@ export type PublishDeps = {
  *
  * Generation happens *before* the transaction: it is the slow, fallible part, and a
  * failed compile must leave the workflow exactly as it was — current version unmoved, no
- * rows written. The whole report rides out on the error so the editor can mark every
+ * rows written. The whole report rides out on the error so the authoring surface can summarize every
  * failed event, not just the first.
  */
 export async function publishVersion(
   db: Db,
-  input: { workflowId: string; graph: Graph },
+  input: {
+    workflowId: string;
+    expectedVersionId?: string | null;
+    graph: Graph;
+    authoring?: {
+      report: GraphCompileReport;
+      proposedGrants: ProposedGrant[];
+      store?: Exclude<GraphDraftArtifact["store"], null>;
+    };
+  },
   deps: PublishDeps,
 ): Promise<PublishedVersion> {
   const graph = graphSchema.parse(input.graph);
   checkGraph(graph);
+  const failedGateChecks = input.authoring?.report.checks.filter((check) => check.status === "fail") ?? [];
+  if (failedGateChecks.length > 0) {
+    throw invalid("the graph-authoring gate has unresolved failures", { checks: failedGateChecks });
+  }
 
   const [workflow] = await db.select().from(workflows).where(eq(workflows.id, input.workflowId));
   if (!workflow) {
@@ -575,8 +601,14 @@ export async function publishVersion(
     });
   }
 
+  if (input.expectedVersionId !== undefined && workflow.currentVersionId !== input.expectedVersionId) {
+    throw invalid("The workflow was published elsewhere. Reload it before publishing this draft.", {});
+  }
+
   const previous = new Map<string, { promptHash: string; schema: Record<string, unknown> }>();
   const previousTasks = new Map<string, PreviousTask>();
+  const carriedGrants = new Map<string, ContentGrant[]>();
+  const priorApprovedProposals = new Set<string>();
   if (workflow.currentVersionId) {
     const rows = await db
       .select()
@@ -602,7 +634,59 @@ export async function publishVersion(
       .from(tasks)
       .where(eq(tasks.workflowVersionId, workflow.currentVersionId));
     for (const row of taskRows) previousTasks.set(row.name, row);
+
+    const [grantRows, proposalRows] = await Promise.all([
+      db
+        .select({
+          taskName: tasks.name,
+          grantKey: taskGrants.grantKey,
+          grantValue: taskGrants.grantValue,
+          requiresApproval: taskGrants.requiresApproval,
+        })
+        .from(taskGrants)
+        .innerJoin(tasks, eq(tasks.id, taskGrants.taskId))
+        .where(eq(tasks.workflowVersionId, workflow.currentVersionId)),
+      db
+        .select({
+          taskRef: proposedGrantRows.taskRef,
+          grantKey: proposedGrantRows.grantKey,
+          grantValue: proposedGrantRows.grantValue,
+          status: proposedGrantRows.status,
+        })
+        .from(proposedGrantRows)
+        .where(eq(proposedGrantRows.workflowVersionId, workflow.currentVersionId)),
+    ]);
+    for (const row of grantRows) {
+      carriedGrants.set(row.taskName, [
+        ...(carriedGrants.get(row.taskName) ?? []),
+        { grantKey: row.grantKey, grantValue: row.grantValue, requiresApproval: row.requiresApproval },
+      ]);
+    }
+    for (const proposal of proposalRows) {
+      if (proposal.status === "approved") {
+        priorApprovedProposals.add(`${proposal.taskRef}\u0000${proposal.grantKey}\u0000${proposal.grantValue}`);
+      }
+    }
   }
+
+  const normalizedProposals = input.authoring?.proposedGrants.map((proposal) => ({
+    ...proposal,
+    status: proposal.status === "stripped_by_baseline"
+      ? "stripped_by_baseline" as const
+      : priorApprovedProposals.has(`${proposal.taskRef}\u0000${proposal.grantKey}\u0000${proposal.grantValue}`)
+        ? "approved" as const
+        : "pending" as const,
+  }));
+  const grantsByTask = input.authoring
+    ? new Map<string, ContentGrant[]>(
+        graph.tasks.map((task) => [
+          task.name,
+          (normalizedProposals ?? [])
+            .filter((proposal) => proposal.taskRef === task.name && proposal.status === "approved")
+            .map(({ grantKey, grantValue, requiresApproval }) => ({ grantKey, grantValue, requiresApproval })),
+        ]),
+      )
+    : carriedGrants;
 
   const compiled = await compileEventSchemas(graph, previous, deps.schemaGenerator);
   const failed = compiled.filter((c) => c.entry.status === "failed");
@@ -619,12 +703,30 @@ export async function publishVersion(
   // (`@tabductor/store`'s own contract) and precedes the transaction like every other slow,
   // external step here.
   let storeTables: PromptStoreTable[] = [];
+  let storeSchemaId: string | null = null;
   if (deps.pool) {
+    if (input.authoring?.store) {
+      const stored = await publishStoreSchema(db, deps.pool, {
+        workflowId: workflow.id,
+        description: input.authoring.store.description,
+        ddl: input.authoring.store.ddl,
+        tablesSpec: input.authoring.store.tablesSpec,
+        confirmDestructive: input.authoring.store.confirmDestructive,
+        forceDestructive: input.authoring.store.forceDestructive,
+      });
+      storeSchemaId = stored.schemaId;
+    }
     await provision(deps.pool, workflow.id);
-    const spec = tablesSpecOf(await latestStoreSchema(db, workflow.id));
+    const latest = await latestStoreSchema(db, workflow.id);
+    storeSchemaId ??= latest?.id ?? null;
+    const spec = tablesSpecOf(latest);
     storeTables = Object.entries(spec)
       .map(([name, table]) => ({ name, columns: columnsOf(asRecord(table.schema)), primaryKey: table.primaryKey }))
       .sort((a, b) => a.name.localeCompare(b.name));
+  } else if (input.authoring?.store) {
+    throw invalid("publishing a compiled store artifact requires a database pool", { workflowId: workflow.id });
+  } else {
+    storeSchemaId = (await latestStoreSchema(db, workflow.id))?.id ?? null;
   }
 
   const schemas = new Map(compiled.map((c) => [c.event.type, c.schema]));
@@ -635,13 +737,23 @@ export async function publishVersion(
     schemas,
     previousTasks,
     storeTables,
+    grantsByTask,
     deps.promptCompiler ?? staticPromptCompiler(),
   );
   const report: CompileReport = { events: compiled.map((c) => c.entry), tasks: compiledTasks.map((t) => t.entry) };
 
   return db.transaction(async (trx) => {
+    const [latest] = await trx.select({ currentVersionId: workflows.currentVersionId }).from(workflows).where(eq(workflows.id, workflow.id)).for("update");
+    if (input.expectedVersionId !== undefined && latest?.currentVersionId !== input.expectedVersionId) {
+      throw invalid("The workflow was published elsewhere. Reload it before publishing this draft.", {});
+    }
     const versionId = newId("wfv");
-    await trx.insert(workflowVersions).values({ id: versionId, workflowId: workflow.id, graphJson: graph });
+    await trx.insert(workflowVersions).values({
+      id: versionId,
+      workflowId: workflow.id,
+      graphJson: graph,
+      storeSchemaId,
+    });
 
     /**
      * A publish *replaces* this workflow's schedules; it does not add to them.
@@ -673,7 +785,7 @@ export async function publishVersion(
 
     const taskIds: Record<string, string> = {};
     const taskModes: Record<string, string> = {};
-    for (const { task, compiledPrompt, compiledPromptHash, contentHash, mode, carryScriptFrom, carryHistory } of compiledTasks) {
+    for (const { task, compiledPrompt, compiledPromptHash, contentBasisHash, contentHash, mode, carryScriptFrom, carryHistory } of compiledTasks) {
       const id = newId("task");
       taskIds[task.name] = id;
       taskModes[task.name] = mode;
@@ -688,6 +800,7 @@ export async function publishVersion(
         compiledPrompt,
         compiledPromptHash,
         contentHash,
+        contentBasisHash,
         // A carried script carries its record: the deopt window is what demotes a script that
         // has quietly stopped working, and resetting it at every publish would hand a failing
         // script a fresh ten runs for free.
@@ -695,6 +808,16 @@ export async function publishVersion(
           ? { cleanAiRuns: carryHistory.cleanAiRuns, recentDeopts: carryHistory.recentDeopts as boolean[] }
           : {}),
       });
+
+      for (const grant of grantsByTask.get(task.name) ?? []) {
+        await trx.insert(taskGrants).values({ taskId: id, ...grant }).onConflictDoNothing();
+        if (grant.grantKey === "secret.use") {
+          await trx.insert(secretGrants).values({ taskId: id, secretName: grant.grantValue }).onConflictDoNothing();
+        }
+        if (grant.grantKey === "store.write") {
+          await trx.insert(storeWriteGrants).values({ taskId: id, tableName: grant.grantValue }).onConflictDoNothing();
+        }
+      }
 
       if (carryScriptFrom) {
         // The previous version's active script, re-shelved under the new row as its own
@@ -736,6 +859,27 @@ export async function publishVersion(
         promptHash: item.promptHash,
         public: item.event.public,
       });
+    }
+
+    if (input.authoring) {
+      await trx.insert(compileReports).values({
+        workflowVersionId: versionId,
+        reportJson: { authoring: input.authoring.report, publish: report },
+      });
+      for (const grant of normalizedProposals ?? []) {
+        if (!taskIds[grant.taskRef]) {
+          throw invalid(`proposed grant names unknown task "${grant.taskRef}"`, { task: grant.taskRef });
+        }
+        await trx.insert(proposedGrantRows).values({
+          id: newId("pgrant"),
+          workflowVersionId: versionId,
+          taskRef: grant.taskRef,
+          grantKey: grant.grantKey,
+          grantValue: grant.grantValue,
+          requiresApproval: grant.requiresApproval,
+          status: grant.status,
+        });
+      }
     }
 
     await trx.update(workflows).set({ currentVersionId: versionId }).where(eq(workflows.id, workflow.id));
@@ -811,7 +955,7 @@ export async function updateTask(
 }
 
 /**
- * The inverse: rows back into the document the editor edits.
+ * The inverse: rows back into the internal document used for recompilation and versioning.
  *
  * Rebuilt from the rows rather than served straight from `graph_json`, because the rows
  * are what the engine actually routes on and `task.update` writes to them. `graph_json`
@@ -838,7 +982,7 @@ export async function readGraph(db: Db, versionId: string): Promise<Graph> {
   const taskRows = await db.select().from(tasks).where(eq(tasks.workflowVersionId, versionId));
   const stored = graphSchema.safeParse(version.graphJson);
   const decoration = new Map(
-    (stored.success ? stored.data.tasks : []).map((t) => [t.name, { position: t.position }]),
+    (stored.success ? stored.data.tasks : []).map((t) => [t.name, { position: t.position, label: t.label, summary: t.summary }]),
   );
 
   const emitRows = await db.select().from(taskEmits).where(eq(taskEmits.workflowVersionId, versionId));
@@ -859,10 +1003,12 @@ export async function readGraph(db: Db, versionId: string): Promise<Graph> {
       const schedule = scheduleOf.get(row.id);
       return {
         name: row.name,
+        ...(decoration.get(row.name)?.label ? { label: decoration.get(row.name)!.label } : {}),
+        ...(decoration.get(row.name)?.summary ? { summary: decoration.get(row.name)!.summary } : {}),
         kind: row.kind,
         // `compiled` is the engine's word, not the author's: a promoted row reads back as the
         // `ai` the author published, and the next publish re-derives `compiled` by content
-        // hash (`compileTaskPrompts`). `listVersionTasks` is where the editor sees the real
+        // hash (`compileTaskPrompts`). `listVersionTasks` is where the control plane reads the real
         // row mode.
         mode: row.mode === "compiled" ? "ai" : row.mode,
         prompt: row.prompt,
@@ -889,14 +1035,20 @@ export async function readGraph(db: Db, versionId: string): Promise<Graph> {
       };
     }),
     events: eventRows
-      .map((e): GraphEvent => ({ type: e.eventType, description: e.description, public: e.public }))
+      .map((e): GraphEvent => {
+        const presentation = stored.success ? stored.data.events.find((event) => event.type === e.eventType) : undefined;
+        return { type: e.eventType, description: e.description, public: e.public,
+          ...(presentation?.label ? { label: presentation.label } : {}),
+          ...(presentation?.summary ? { summary: presentation.summary } : {}),
+        };
+      })
       .sort((a, b) => a.type.localeCompare(b.type)),
   };
 }
 
 /**
  * The compiled schemas for a version, keyed by type — read-only companion to `readGraph`
- * for the editor's schema display. Never part of the document; the client cannot send
+ * for control-plane inspection. Never part of the document; the client cannot send
  * one back.
  */
 export async function readEventSchemas(

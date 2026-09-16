@@ -40,6 +40,7 @@ export async function startRun(db: Db, runId: string, timeoutMs: number | undefi
     .update(runs)
     .set({
       status: "running",
+      leaseGeneration: sql`${runs.leaseGeneration} + 1`,
       startedAt: sql`now()`,
       heartbeatAt: sql`now()`,
       deadlineAt: timeoutMs === undefined ? null : sql`now() + ${`${timeoutMs} milliseconds`}::interval`,
@@ -93,6 +94,7 @@ export type FinishInput = {
   /** The trigger event, so the system event continues the causation chain. */
   causationId?: string | null;
   taskId: string;
+  leaseGeneration: number;
 };
 
 const EVENT_FOR: Record<FinishInput["status"], string | null> = {
@@ -112,7 +114,11 @@ export async function finishRun(db: Db, input: FinishInput): Promise<RunRow | un
     const [row] = await trx
       .update(runs)
       .set({ status: input.status, endedAt: sql`now()`, error: input.error ?? null })
-      .where(and(eq(runs.id, input.runId), eq(runs.status, "running")))
+      .where(and(
+        eq(runs.id, input.runId),
+        eq(runs.status, "running"),
+        eq(runs.leaseGeneration, input.leaseGeneration),
+      ))
       .returning();
     if (!row) return undefined;
 
@@ -120,6 +126,7 @@ export async function finishRun(db: Db, input: FinishInput): Promise<RunRow | un
     if (type) {
       await publish(trx, {
         type,
+        executionId: row.executionId,
         sourceTaskId: input.taskId,
         sourceRunId: input.runId,
         causationId: input.causationId ?? null,
@@ -180,6 +187,7 @@ export async function recoverOrphanedApprovalRuns(db: Db): Promise<RunRow[]> {
         .where(and(eq(approvals.runId, run.id), eq(approvals.status, "pending")));
       await publish(trx, {
         type: RUN_FAILED,
+        executionId: run.executionId,
         sourceTaskId: run.taskId,
         sourceRunId: run.id,
         causationId: run.triggerEventId,
@@ -196,11 +204,17 @@ export async function recoverOrphanedApprovalRuns(db: Db): Promise<RunRow[]> {
  * Liveness ping (§15). Best-effort and guarded on `running`, so a heartbeat that lands
  * after the watchdog already reaped the run cannot un-stale a terminal row.
  */
-export async function heartbeat(db: Db, runId: string): Promise<void> {
-  await db
+export async function heartbeat(db: Db, runId: string, leaseGeneration: number): Promise<boolean> {
+  const updated = await db
     .update(runs)
     .set({ heartbeatAt: sql`now()` })
-    .where(and(eq(runs.id, runId), eq(runs.status, "running")));
+    .where(and(
+      eq(runs.id, runId),
+      eq(runs.status, "running"),
+      eq(runs.leaseGeneration, leaseGeneration),
+    ))
+    .returning({ id: runs.id });
+  return updated.length === 1;
 }
 
 /**
@@ -233,6 +247,7 @@ export async function recoverStaleRuns(db: Db, staleMs: number): Promise<RunRow[
       status: "failed",
       error: ENGINE_RESTART,
       causationId: run.triggerEventId,
+      leaseGeneration: run.leaseGeneration,
     });
     if (row) recovered.push(row);
   }
@@ -260,6 +275,7 @@ export async function reapTimedOutRuns(db: Db): Promise<RunRow[]> {
       status: "timed_out",
       error: "run exceeded its timeout",
       causationId: run.triggerEventId,
+      leaseGeneration: run.leaseGeneration,
     });
     if (row) reaped.push(row);
   }

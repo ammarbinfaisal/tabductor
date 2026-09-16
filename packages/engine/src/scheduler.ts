@@ -4,7 +4,7 @@ import { runs, schedules, type Db, type ScheduleRow } from "@tabductor/db";
 import { context, inSpan, trace, type Metrics, type Tracer } from "@tabductor/telemetry";
 import { Cron } from "croner";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { dispatchToTask } from "./dispatch.js";
+import { triggerTask } from "./dispatch.js";
 
 /**
  * Cron scheduler (§7). Schedules are just another event source: a due fire publishes a
@@ -19,6 +19,16 @@ import { dispatchToTask } from "./dispatch.js";
 
 export const SCHEDULE_FIRED = "schedule.fired";
 export const SCHEDULE_SKIPPED = "system.schedule_skipped";
+
+/** Validate the same cron/timezone pair the scheduler will execute. */
+export function scheduleValidationError(cron: string, timezone: string): string | null {
+  try {
+    new Cron(cron, { timezone });
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
 
 /** Statuses that mean "this task is already working" for the overlap policy. */
 const LIVE = ["queued", "running"] as const;
@@ -182,13 +192,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
 
     // Synthetic trigger: empty packet, no causation — a schedule fire starts a chain, it
     // never continues one, which is also what keeps it off the loop budget.
-    const event = await db.transaction((trx) =>
-      publish(trx, { type: SCHEDULE_FIRED, sourceTaskId: row.taskId, packet: {} }),
-    );
-
-    // The event carries no edge, so it is dispatched *at* the task — same run creation,
-    // same claim, same loop budget as any other trigger.
-    await dispatchToTask(db, row.taskId, event, metrics);
+    // The trigger creates a new execution and pins it to the task's current workflow version.
+    await triggerTask(db, { taskId: row.taskId, type: SCHEDULE_FIRED, packet: {} });
     // `queued` when the overlap policy let this one line up behind a live run; `fired` when
     // it starts alone. The distinction is the whole point of the `queue` policy.
     metrics?.schedulerFires.add(live.length > 0 ? "queued" : "fired");

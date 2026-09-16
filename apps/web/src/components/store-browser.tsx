@@ -168,8 +168,8 @@ export function StoreBrowser({ workflowId }: { workflowId: string }) {
     <>
       <h1 style={{ marginBottom: "var(--space-2)" }}>Store</h1>
       <p className="muted">
-        The workflow&apos;s own state — one Postgres schema, read by decision nodes and written
-        by asset nodes, never edges or trace rows (
+        The workflow&apos;s own state — one Postgres schema, read by planning work and written
+        by data-processing work, never trace rows (
         <code>docs/graph-compilation-llm.md</code> §3). Everything below routes through the
         same fenced read path <code>store.query</code> uses: one SELECT, the reader role, a
         read-only transaction, a row cap. There is no owner shortcut around it.

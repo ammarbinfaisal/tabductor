@@ -1,0 +1,19 @@
+fixtureMode:
+  enabled: false
+
+postgres:
+  enabled: false
+
+minio:
+  enabled: false
+
+service:
+  nodePort: null
+
+image:
+  pullPolicy: IfNotPresent
+
+fleet:
+  maxAllocated: 25
+  warmSlots: 2
+  workerTokenKey: ""

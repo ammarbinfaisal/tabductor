@@ -26,15 +26,15 @@ export const BOOTSTRAP = `
   }
 
   const page = {
-    goto: (url) => call("page.goto", [url]),
+    goto: (url, opts) => call("page.goto", [url, opts]),
     click: (selector) => call("page.click", [selector]),
     type: (selector, text) => call("page.type", [selector, text]),
     scroll: (direction) => call("page.scroll", [direction]),
     waitFor: (selector, opts) => call("page.waitFor", [selector, opts]),
+    waitForLoadState: (state, opts) => call("page.waitForLoadState", [state, opts]),
     query: (selector) => call("page.query", [selector]),
     evalExtract: (selector, fields) => call("page.evalExtract", [selector, fields]),
     screenshot: () => call("page.screenshot", []),
-    upload: (anchor, assetRef) => call("page.upload", [anchor, assetRef]),
     url: () => call("page.url", []),
   };
 
@@ -64,6 +64,7 @@ export const BOOTSTRAP = `
   };
 
   const network = {
+    waitForResponse: (opts) => call("network.waitForResponse", [opts]),
     list: (opts) => call("network.list", [opts]),
     read: (index, parts) => call("network.read", [index, parts]),
   };

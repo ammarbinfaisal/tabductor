@@ -1,8 +1,21 @@
 "use client";
 
-import type { CompileEntry, Graph, GraphEvent, GraphTask, NodeKind, TaskSummary } from "@tabductor/engine";
+import type {
+  ChatToolActivity,
+  CompileEntry,
+  Graph,
+  GraphCompileReport,
+  GraphDraftArtifact,
+  GraphEvent,
+  GraphTask,
+  NodeKind,
+  PersistedGraphCompileReport,
+  ProposedGrant,
+  TaskSummary,
+} from "@tabductor/engine";
 import { createStore } from "zustand/vanilla";
 import { api, asApiError, type ApiError } from "../lib/api.js";
+import { sendWorkflowMessage } from "../lib/workflow-chat-client.js";
 
 /**
  * The declarative editor's client state (U1). One vanilla store: the document being
@@ -31,13 +44,20 @@ export type EditorUi = {
   /** An open chip-adder menu on a node card. */
   chipMenu: { task: string; list: "emits" | "consumes" } | null;
   chipMenuText: string;
-  /** Node name → transient "Run queued" note, cleared after 5s. */
-  triggeredNote: string | null;
   /** Event type to scroll-flash once (banner deep link); consumed by the card's ref. */
   flash: string | null;
 };
 
+export type WorkflowScheduleDraft = {
+  cron: string;
+  timezone: string;
+  enabled: boolean;
+};
+
 export type EditorState = {
+  sidebar: "inspect" | "chat";
+  chatMessages: Array<{ role: "user" | "assistant"; text: string; changes?: string[]; tools?: ChatToolActivity[] }>;
+  chatPending: boolean;
   workflowId: string;
   versionId: string | null;
   graph: Graph;
@@ -55,13 +75,19 @@ export type EditorState = {
   notice: string | null;
   /** The last publish's per-event compile result — `failed` entries mark event cards. */
   compileReport: CompileEntry[] | null;
+  /** S8's conversational source and the gated artifact it most recently produced. */
+  authoringIntent: string;
+  authoringReport: GraphCompileReport | null;
+  authoringStore: GraphDraftArtifact["store"];
+  proposedGrants: ProposedGrant[];
+  publishedProposals: Array<ProposedGrant & { id: string }>;
+  /** Proposal identity → checked in the pre-publish review list. Safe default is false. */
+  proposalApprovals: Record<string, boolean>;
   /**
    * `executorKey` strings the engine registered at boot (U3a), or `null` while unknown.
    * Used to explain when real execution is unavailable; `null` means unknown.
    */
   engineExecutors: string[] | null;
-  /** Tool-level abilities the engine reported (`python.run`), or `null` while unknown. */
-  engineCapabilities: string[] | null;
   /** Event types readable through a share link as of the last load or publish (S2d). */
   publishedPublic: string[];
   /**
@@ -70,6 +96,8 @@ export type EditorState = {
    * before it happens rather than reported after.
    */
   confirmVisibility: { adding: string[]; removing: string[] } | null;
+  /** The workflow-level schedule form. Internal entry behavior schedules collapse here. */
+  scheduleDraft: WorkflowScheduleDraft;
   ui: EditorUi;
 };
 
@@ -78,7 +106,6 @@ const EMPTY_UI: EditorUi = {
   confirmingDelete: null,
   chipMenu: null,
   chipMenuText: "",
-  triggeredNote: null,
   flash: null,
 };
 
@@ -102,25 +129,38 @@ export function createEditorStore(init: {
   graph: Graph;
   tasks: TaskSummary[];
   eventSchemas: Record<string, Record<string, unknown>>;
+  authoring?: {
+    report: PersistedGraphCompileReport | null;
+    proposedGrants: Array<ProposedGrant & { id: string }>;
+  } | null;
 }) {
   const draft = executionDraft(init.graph);
   const store = createStore<EditorState>(() => ({
+    sidebar: "chat",
+    chatMessages: [],
+    chatPending: false,
     workflowId: init.workflowId,
     versionId: init.versionId,
     graph: draft.graph,
     taskIds: Object.fromEntries(init.tasks.map((t) => [t.name, t.id])),
     publishedTasks: Object.fromEntries(init.tasks.map((t) => [t.name, t])),
     eventSchemas: init.eventSchemas,
-    selected: init.graph.tasks[0] ? { kind: "node", id: init.graph.tasks[0].name } : null,
+    selected: null,
     dirty: draft.changed,
     busy: false,
     error: null,
     notice: draft.changed ? EXECUTION_NOTICE : null,
     compileReport: null,
+    authoringIntent: "",
+    authoringReport: init.authoring?.report?.authoring ?? null,
+    authoringStore: null,
+    proposedGrants: init.authoring?.proposedGrants ?? [],
+    publishedProposals: init.authoring?.proposedGrants ?? [],
+    proposalApprovals: {},
     engineExecutors: null,
-    engineCapabilities: null,
     publishedPublic: publicTypesOf(init.graph),
     confirmVisibility: null,
+    scheduleDraft: workflowScheduleOf(init.graph).draft,
     ui: EMPTY_UI,
   }));
 
@@ -128,11 +168,21 @@ export function createEditorStore(init: {
   // as nothing disabled, never as a blocking failure of the editor itself.
   void api.engine.status
     .query()
-    .then((status) => store.setState({ engineExecutors: status.executors, engineCapabilities: status.capabilities }))
+    .then((status) => store.setState({ engineExecutors: status.executors }))
     .catch(() => undefined);
 
+  let chatAbort: AbortController | null = null;
+
   const edit = (fn: (graph: Graph) => Graph): void =>
-    store.setState({ graph: fn(store.getState().graph), dirty: true, notice: null });
+    store.setState({
+      graph: fn(store.getState().graph),
+      dirty: true,
+      notice: null,
+      authoringReport: null,
+      authoringStore: null,
+      proposedGrants: [],
+      proposalApprovals: {},
+    });
 
   const mapTask = (name: string, fn: (task: GraphTask) => GraphTask): void =>
     edit((graph) => ({ ...graph, tasks: graph.tasks.map((t) => (t.name === name ? fn(t) : t)) }));
@@ -144,9 +194,120 @@ export function createEditorStore(init: {
     ...store,
 
     select: (selected: Selection) => store.setState({ selected }),
+    showSidebar: (sidebar: EditorState["sidebar"]) => store.setState({ sidebar }),
 
     setUi: (patch: Partial<EditorUi>) =>
       store.setState({ ui: { ...store.getState().ui, ...patch } }),
+
+    setAuthoringIntent: (authoringIntent: string) => store.setState({ authoringIntent }),
+
+    setScheduleDraft: (patch: Partial<WorkflowScheduleDraft>) =>
+      store.setState({ scheduleDraft: { ...store.getState().scheduleDraft, ...patch } }),
+
+    toggleProposalApproval(grant: ProposedGrant) {
+      const key = proposalKey(grant);
+      const approvals = store.getState().proposalApprovals;
+      store.setState({ proposalApprovals: { ...approvals, [key]: !approvals[key] } });
+    },
+
+    /** Restore only after mount so server markup and hydration use the same graph. */
+    restoreConversation() {
+      if (typeof localStorage === "undefined") return;
+      const key = `tabductor:conversation:v1:${init.workflowId}`;
+      try {
+        const saved = JSON.parse(localStorage.getItem(key) ?? "null") as Partial<EditorState> | null;
+        if (saved && Array.isArray(saved.chatMessages)) {
+          const compatible = saved.versionId === store.getState().versionId;
+          store.setState({ chatMessages: saved.chatMessages.slice(-80).map((message) => ({ ...message, tools: message.tools?.map((tool) => tool.status === "running" ? { ...tool, status: "error" as const } : tool) })),
+            ...(compatible && saved.dirty && saved.graph && Array.isArray(saved.graph.tasks) && Array.isArray(saved.graph.events)
+              ? { graph: saved.graph, dirty: true, authoringReport: { checks: [], attempts: 1 }, authoringStore: saved.authoringStore ?? null, proposedGrants: saved.proposedGrants ?? [], scheduleDraft: workflowScheduleOf(saved.graph).draft, notice: "Your unpublished draft has been restored." }
+              : {}),
+          });
+        }
+      } catch { /* Storage may be unavailable or contain an older format. */ }
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const persist = (): void => {
+        const { versionId, graph, dirty, authoringStore, proposedGrants, chatMessages } = store.getState();
+        try { localStorage.setItem(key, JSON.stringify({ versionId, graph, dirty, authoringStore, proposedGrants, chatMessages: chatMessages.slice(-80) })); } catch { /* A full/private browser does not block editing. */ }
+      };
+      const unsubscribe = store.subscribe(() => { clearTimeout(timer); timer = setTimeout(persist, 250); });
+      return () => { clearTimeout(timer); persist(); unsubscribe(); };
+    },
+
+    async sendMessage() {
+      const state = store.getState();
+      const text = state.authoringIntent.trim();
+      if (!text || state.busy) return;
+      const messages = [...state.chatMessages, { role: "user" as const, text }];
+      const assistantIndex = messages.length;
+      chatAbort = new AbortController();
+      let wasPublished = false;
+      store.setState({ busy: true, chatPending: true, error: null, notice: null, authoringIntent: "", chatMessages: [...messages, { role: "assistant", text: "", tools: [] }] });
+      const updateAssistant = (fn: (message: EditorState["chatMessages"][number]) => EditorState["chatMessages"][number]): void =>
+        store.setState((current) => ({ chatMessages: current.chatMessages.map((message, index) => index === assistantIndex ? fn(message) : message) }));
+      try {
+        await sendWorkflowMessage({ workflowId: state.workflowId, versionId: state.versionId,
+          current: { graph: state.graph, store: state.authoringStore, proposedGrants: state.proposedGrants },
+          messages: messages.slice(-80).map(({ role, text }) => ({ role, text })),
+        }, (event) => {
+          if (event.type === "text") updateAssistant((message) => ({ ...message, text: message.text + event.text }));
+          if (event.type === "tool") updateAssistant((message) => ({ ...message, tools: [...(message.tools ?? []).filter((tool) => tool.id !== event.activity.id), event.activity] }));
+          if (event.type === "draft") store.setState({ graph: event.artifact.graph, authoringStore: event.artifact.store, proposedGrants: event.artifact.proposedGrants, authoringReport: { checks: [], attempts: 1 }, dirty: true, selected: null, scheduleDraft: workflowScheduleOf(event.artifact.graph).draft });
+          if (event.type === "published") {
+            wasPublished = true;
+            store.setState({ versionId: event.versionId, dirty: false, publishedPublic: publicTypesOf(store.getState().graph), notice: "Workflow published. Future runs will use these changes." });
+          }
+          if (event.type === "error") updateAssistant((message) => ({ ...message, text: `${message.text.trim()}\n\n${event.message}`.trim() }));
+        }, chatAbort.signal);
+      } catch (err) {
+        const stopped = chatAbort.signal.aborted;
+        updateAssistant((message) => ({ ...message, text: `${message.text.trim()}\n\n${stopped ? "Stopped. Completed changes are retained." : asApiError(err).message}`.trim(), tools: message.tools?.map((tool) => tool.status === "running" ? { ...tool, status: "error" } : tool) }));
+      } finally {
+        chatAbort = null;
+        if (wasPublished) {
+          try {
+            const got = await api.workflow.get.query({ id: state.workflowId });
+            store.setState({ versionId: got.versionId, graph: got.graph, taskIds: Object.fromEntries(got.tasks.map((task) => [task.name, task.id])), publishedTasks: Object.fromEntries(got.tasks.map((task) => [task.name, task])), eventSchemas: got.eventSchemas, publishedProposals: got.authoring?.proposedGrants ?? [], proposedGrants: got.authoring?.proposedGrants ?? [] });
+          } catch { store.setState({ notice: "Published successfully. Reload to refresh run details." }); }
+        }
+        store.setState({ busy: false, chatPending: false });
+      }
+    },
+
+    stopMessage() { chatAbort?.abort(); },
+
+    async decideProposal(proposalId: string, decision: "approved" | "rejected") {
+      if (store.getState().busy) return;
+      store.setState({ busy: true, error: null, notice: null });
+      try {
+        const result = await api.policy.decideProposedGrant.mutate({ proposalId, decision });
+        if (!("proposal" in result)) {
+          throw new Error(`Proposal could not be updated: ${result.outcome}`);
+        }
+        const proposal: ProposedGrant & { id: string } = {
+          taskRef: result.proposal.taskRef,
+          grantKey: result.proposal.grantKey as ProposedGrant["grantKey"],
+          grantValue: result.proposal.grantValue,
+          requiresApproval: result.proposal.requiresApproval,
+          status: result.proposal.status as ProposedGrant["status"],
+          id: result.proposal.id,
+        };
+        store.setState({
+          busy: false,
+          publishedProposals: store.getState().publishedProposals.map((item) =>
+            item.id === proposal.id ? proposal : item,
+          ),
+          proposedGrants: store.getState().proposedGrants.map((item) =>
+            proposalKey(item) === proposalKey(proposal) ? proposal : item,
+          ),
+          notice: result.outcome === "stripped_by_baseline"
+            ? "The account baseline stripped that proposal."
+            : `Proposal ${result.outcome}.`,
+        });
+      } catch (err) {
+        store.setState({ busy: false, error: asApiError(err) });
+      }
+    },
 
     /** Banner deep link: select the event and arm the one-shot scroll-flash. */
     goToEvent(type: string) {
@@ -258,7 +419,7 @@ export function createEditorStore(init: {
      */
     async save(confirmed = false) {
       if (store.getState().busy) return;
-      const { workflowId, graph, publishedPublic } = store.getState();
+      const { workflowId, graph, publishedPublic, authoringReport, authoringStore, proposedGrants } = store.getState();
 
       const next = publicTypesOf(graph);
       const adding = next.filter((t) => !publishedPublic.includes(t));
@@ -270,8 +431,32 @@ export function createEditorStore(init: {
 
       store.setState({ busy: true, error: null, notice: null, confirmVisibility: null });
       try {
-        const { versionId, taskIds, report } = await api.workflow.publishVersion.mutate({ workflowId, graph });
-        const got = await api.workflow.get.query({ id: workflowId });
+        const { versionId, taskIds, report } = await api.workflow.publishVersion.mutate({
+          workflowId,
+          graph,
+          ...(authoringReport
+            ? {
+                authoring: {
+                  report: authoringReport,
+                  proposedGrants,
+                  ...(authoringStore ? { store: authoringStore } : {}),
+                },
+              }
+            : {}),
+        });
+        let got = await api.workflow.get.query({ id: workflowId });
+        const approvals = store.getState().proposalApprovals;
+        const toApprove = (got.authoring?.proposedGrants ?? []).filter(
+          (proposal) => proposal.status === "pending" && approvals[proposalKey(proposal)],
+        );
+        if (toApprove.length > 0) {
+          await Promise.all(
+            toApprove.map((proposal) =>
+              api.policy.decideProposedGrant.mutate({ proposalId: proposal.id, decision: "approved" }),
+            ),
+          );
+          got = await api.workflow.get.query({ id: workflowId });
+        }
         store.setState({
           versionId,
           taskIds,
@@ -280,8 +465,13 @@ export function createEditorStore(init: {
           dirty: false,
           busy: false,
           publishedPublic: next,
+          scheduleDraft: workflowScheduleOf(got.graph).draft,
           compileReport: report.events,
-          notice: publishNotice(versionId, report.events),
+          authoringReport: got.authoring?.report?.authoring ?? authoringReport,
+          proposedGrants: got.authoring?.proposedGrants ?? proposedGrants,
+          publishedProposals: got.authoring?.proposedGrants ?? [],
+          proposalApprovals: {},
+          notice: "Workflow published. Future runs will use these changes.",
         });
       } catch (err) {
         const error = asApiError(err);
@@ -291,24 +481,59 @@ export function createEditorStore(init: {
 
     cancelVisibilityChange: () => store.setState({ confirmVisibility: null }),
 
-    /**
-     * "Trigger now": publish a synthetic event at the node and let the engine pick the run
-     * up. Only offered for a saved node — an unsaved one has no row to trigger.
-     */
-    async triggerNow(name: string, type?: string) {
-      const taskId = store.getState().taskIds[name];
-      if (!taskId) return;
+    /** Start every externally triggerable entry behavior without exposing internal nodes. */
+    async triggerWorkflow() {
+      const state = store.getState();
+      if (!state.versionId || state.dirty || state.busy) return;
       store.setState({ busy: true, error: null, notice: null });
       try {
-        const result = await api.run.triggerManual.mutate({ taskId, type: type?.trim() || undefined });
+        const result = await api.workflow.trigger.mutate({ workflowId: state.workflowId });
         store.setState({
           busy: false,
-          ui: { ...store.getState().ui, triggeredNote: result.runId ? name : null },
+          notice: `Queued ${result.accepted} run${result.accepted === 1 ? "" : "s"} from the published workflow.`,
         });
-        setTimeout(() => {
-          const { ui } = store.getState();
-          if (ui.triggeredNote === name) store.setState({ ui: { ...ui, triggeredNote: null } });
-        }, 5000);
+      } catch (err) {
+        store.setState({ busy: false, error: asApiError(err) });
+      }
+    },
+
+    /** A schedule edit is a publication: the resulting version becomes current atomically. */
+    async publishSchedule(remove = false) {
+      const state = store.getState();
+      if (!state.versionId || state.dirty || state.busy) return;
+      const cron = state.scheduleDraft.cron.trim();
+      const timezone = state.scheduleDraft.timezone.trim();
+      if (!remove && (!cron || !timezone)) return;
+
+      store.setState({ busy: true, error: null, notice: null });
+      try {
+        const result = await api.workflow.setSchedule.mutate({
+          workflowId: state.workflowId,
+          schedule: remove ? null : { cron, timezone, enabled: state.scheduleDraft.enabled },
+        });
+        const got = await api.workflow.get.query({ id: state.workflowId });
+        const draft = executionDraft(got.graph);
+        store.setState({
+          versionId: got.versionId,
+          graph: draft.graph,
+          taskIds: Object.fromEntries(got.tasks.map((task) => [task.name, task.id])),
+          publishedTasks: Object.fromEntries(got.tasks.map((task) => [task.name, task])),
+          eventSchemas: got.eventSchemas,
+          dirty: draft.changed,
+          busy: false,
+          compileReport: null,
+          authoringReport: got.authoring?.report?.authoring ?? null,
+          authoringStore: null,
+          proposedGrants: got.authoring?.proposedGrants ?? [],
+          publishedProposals: got.authoring?.proposedGrants ?? [],
+          proposalApprovals: {},
+          publishedPublic: publicTypesOf(got.graph),
+          confirmVisibility: null,
+          scheduleDraft: workflowScheduleOf(got.graph).draft,
+          notice: remove
+            ? "Schedule removed."
+            : "Schedule published.",
+        });
       } catch (err) {
         store.setState({ busy: false, error: asApiError(err) });
       }
@@ -327,17 +552,55 @@ export function createEditorStore(init: {
         error: null,
         notice: draft.changed ? EXECUTION_NOTICE : "reloaded",
         compileReport: null,
+        authoringReport: got.authoring?.report?.authoring ?? null,
+        authoringStore: null,
+        proposedGrants: got.authoring?.proposedGrants ?? [],
+        publishedProposals: got.authoring?.proposedGrants ?? [],
+        proposalApprovals: {},
         publishedPublic: publicTypesOf(got.graph),
         confirmVisibility: null,
+        scheduleDraft: workflowScheduleOf(got.graph).draft,
       });
     },
   };
 }
 
-const EXECUTION_NOTICE = "Publish to enable real execution for nodes that previously generated sample events.";
+export type WorkflowScheduleView = {
+  draft: WorkflowScheduleDraft;
+  scheduledEntries: number;
+  distinctSchedules: number;
+};
+
+/** Collapse internal entry schedules into the one workflow-level control the author sees. */
+export function workflowScheduleOf(graph: Graph): WorkflowScheduleView {
+  const internallyEmitted = new Set(graph.tasks.flatMap((task) => task.emits));
+  const entries = graph.tasks.filter(
+    (task) => task.consumes.length === 0 || task.consumes.every((type) => !internallyEmitted.has(type)),
+  );
+  const schedules = entries.flatMap((task) => task.schedule ? [task.schedule] : []);
+  const first = schedules[0];
+  const distinctSchedules = new Set(
+    schedules.map((schedule) => `${schedule.cron}\u0000${schedule.tz}\u0000${schedule.enabled}`),
+  ).size;
+  return {
+    draft: {
+      cron: first?.cron ?? "",
+      timezone: first?.tz ?? "UTC",
+      enabled: first?.enabled ?? true,
+    },
+    scheduledEntries: schedules.length,
+    distinctSchedules,
+  };
+}
+
+export function proposalKey(grant: Pick<ProposedGrant, "taskRef" | "grantKey" | "grantValue">): string {
+  return `${grant.taskRef}\u0000${grant.grantKey}\u0000${grant.grantValue}`;
+}
+
+const EXECUTION_NOTICE = "Publish to replace legacy test behavior with real execution.";
 
 /** Legacy test nodes become real nodes in the draft only. Marking the change dirty keeps
- * Trigger now disabled until the author publishes; opening a workflow changes no live rows. */
+ * Run now disabled until the author publishes; opening a workflow changes no live rows. */
 function executionDraft(graph: Graph): { graph: Graph; changed: boolean } {
   const changed = graph.tasks.some((task) => task.mode === "stub");
   return {
@@ -354,13 +617,6 @@ function publicTypesOf(graph: Graph): string[] {
     .filter((e) => e.public)
     .map((e) => e.type)
     .sort();
-}
-
-function publishNotice(versionId: string, entries: CompileEntry[]): string {
-  const generated = entries.filter((e) => e.status === "generated").length;
-  return generated > 0
-    ? `published ${versionId} — compiled ${generated} schema${generated === 1 ? "" : "s"}`
-    : `published ${versionId}`;
 }
 
 /** The compile report a failed publish carries in `AppError.details`, if this was one. */

@@ -43,11 +43,26 @@ const fieldSchema = z.object({
 });
 
 const stepSchema = z.discriminatedUnion("op", [
-  z.object({ op: z.literal("goto"), url: z.string().min(1), why: z.string().min(1) }),
+  z.object({ op: z.literal("goto"), url: z.string().min(1), waitUntil: z.enum(["domcontentloaded", "load", "networkidle"]).optional(), timeoutMs: z.number().int().positive().max(120_000).optional(), why: z.string().min(1) }),
   z.object({
     op: z.literal("waitFor"),
     selector: z.string().min(1),
     timeoutMs: z.number().int().positive().optional(),
+    state: z.enum(["attached", "detached", "visible", "hidden"]).optional(),
+    why: z.string().min(1),
+  }),
+  z.object({
+    op: z.literal("waitForLoadState"),
+    state: z.enum(["domcontentloaded", "load", "networkidle"]),
+    timeoutMs: z.number().int().positive().max(120_000).optional(),
+    why: z.string().min(1),
+  }),
+  z.object({
+    op: z.literal("waitForResponse"),
+    urlPattern: z.string().min(1),
+    method: z.string().min(1).optional(),
+    status: z.number().int().min(100).max(599).optional(),
+    timeoutMs: z.number().int().positive().max(120_000).optional(),
     why: z.string().min(1),
   }),
   z.object({ op: z.literal("click"), selector: z.string().min(1), why: z.string().min(1) }),
@@ -150,6 +165,21 @@ export function validatePlan(
         // guess about what a button does, made by something that cannot undo it.
         if (!selectors.has(step.selector)) {
           return { ok: false, reason: `${at} uses selector ${JSON.stringify(step.selector)}, which no trace addressed` };
+        }
+        break;
+      case "waitForLoadState":
+        if (!evidence.some((run) => run.actions.some((a) => a.ok &&
+          ((a.action === "waitForLoadState" && a.state === step.state) ||
+           (a.action === "goto" && a.waitUntil === step.state))))) {
+          return { ok: false, reason: `${at} has no successful observed ${step.state} wait` };
+        }
+        break;
+      case "waitForResponse":
+        if (!evidence.some((run) => run.network.some((r) =>
+          r.url.includes(step.urlPattern) && r.status !== null && r.timings.endedAt !== null &&
+          (step.method === undefined || r.method === step.method.toUpperCase()) &&
+          (step.status === undefined || r.status === step.status)))) {
+          return { ok: false, reason: `${at} matches no completed response in the traces` };
         }
         break;
       case "waitFor":

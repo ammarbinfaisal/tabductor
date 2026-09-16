@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { createAssetExecutor, createDecisionExecutor, type Llm, type LlmMessage } from "@tabductor/agent";
+import { createDecisionExecutor, type Llm, type LlmMessage } from "@tabductor/agent";
 import { publish } from "@tabductor/bus";
 import { createWorkflow, executorKey, seedWorkflow, StubExecutor, triggerTask } from "@tabductor/engine";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
@@ -12,7 +12,7 @@ import { publishCandidatesVisitedStore } from "./store-support.js";
 /**
  * The canonical plan/act/record triangle, end to end (S5g deliverable 4;
  * graph-compilation-llm §7): a decision node plans from the store, a browser node acts, an
- * asset node records — writing the store and emitting in one transaction. Two things this
+ * second decision node records — writing the store and emitting in one transaction. Two things this
  * file proves that a lower-level unit test cannot: the *real* `store.query` fence answers a
  * real decision agent loop, and re-firing the planner after the batch is visited genuinely
  * re-derives an empty one rather than replanning (§2.4's philosophy, not merely dedupe
@@ -20,7 +20,7 @@ import { publishCandidatesVisitedStore } from "./store-support.js";
  *
  * The atomic "store write + emit commit together" claim itself (the crash-inject scenario
  * the spec names) is proven as a focused integration test in this same file, directly against
- * `flushStagedWrites`/`db.transaction`/`publish` — the exact mechanism `AssetExecutor` drives
+ * `flushStagedWrites`/`db.transaction`/`publish` — the exact mechanism `DecisionExecutor` drives
  * through the agent loop above it, isolated from LLM turn-taking so the failure injection is
  * unambiguous (a thrown write, not a scripted "pretend to crash" tool call).
  */
@@ -71,7 +71,7 @@ function makeDecisionLlm(): Llm {
 
 /** Fixed three-turn script: upsert `visited`, emit `doc.ready`, done — the "write the doc"
  * step is out of scope here (S5f's territory); this leg only proves the store-write half. */
-function makeAssetLlm(): Llm {
+function makeRecordLlm(): Llm {
   let step = 0;
   return {
     async complete() {
@@ -119,7 +119,7 @@ afterEach(async () => {
   handle = undefined;
 });
 
-it("plan (decision) -> act (browser) -> record (asset), then a re-fire plans nothing new", async () => {
+it("plan (decision) -> act (browser) -> record (decision), then a re-fire plans nothing new", async () => {
   handle = await createMigratedTestDb();
   tb = await createTestBlobStore();
 
@@ -146,17 +146,16 @@ it("plan (decision) -> act (browser) -> record (asset), then a re-fire plans not
         consumes: ["browse.request"],
         stub: { emits: [{ type: "tweet.detected", packet: { tweet_id: "t1", text: "hello", url: "https://x.com/t1" } }] },
       },
-      Record: { kind: "asset", mode: "ai", consumes: ["tweet.detected"], emits: ["doc.ready"] },
+      Record: { kind: "decision", mode: "ai", consumes: ["tweet.detected"], emits: ["doc.ready"] },
     },
   });
 
-  const decisionExecutor = createDecisionExecutor({ db: handle.db, pool: handle.pool, blobs: tb.store, llmFor: () => makeDecisionLlm() });
-  const assetExecutor = createAssetExecutor({
+  const decisionExecutor = createDecisionExecutor({
     gate: new AllowAllGate(),
     blobs: tb.store,
     db: handle.db,
     pool: handle.pool,
-    llmFor: () => makeAssetLlm(),
+    llmFor: ({ task }) => task.name === "Record" ? makeRecordLlm() : makeDecisionLlm(),
   });
 
   rig = await startRig({
@@ -164,7 +163,6 @@ it("plan (decision) -> act (browser) -> record (asset), then a re-fire plans not
     executors: {
       [executorKey("decision", "ai")]: decisionExecutor,
       [executorKey("browser", "stub")]: StubExecutor,
-      [executorKey("asset", "ai")]: assetExecutor,
     },
   });
 

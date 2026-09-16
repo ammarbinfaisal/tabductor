@@ -7,6 +7,7 @@ import {
   runs,
   tasks,
   traceEntries,
+  workflowExecutions,
   workflowVersions,
   workflows,
   type CdpEndpointRow,
@@ -72,7 +73,7 @@ export type WorkflowSummary = WorkflowRow & {
  * subqueries against the *current* version, so a workflow with fifty archived versions
  * still reports the graph you would open.
  */
-export async function listWorkflows(db: Db, userId?: string): Promise<WorkflowSummary[]> {
+export async function listWorkflows(db: Db, userId?: string, accountId?: string): Promise<WorkflowSummary[]> {
   const rows = await db
     // Table and column names are written out rather than interpolated (`${workflows.id}`),
     // and the reason is specific enough to be worth stating.
@@ -107,7 +108,10 @@ export async function listWorkflows(db: Db, userId?: string): Promise<WorkflowSu
       )`,
     })
     .from(workflows)
-    .where(userId ? eq(workflows.userId, userId) : undefined)
+    .where(and(
+      userId ? eq(workflows.userId, userId) : undefined,
+      accountId ? eq(workflows.accountId, accountId) : undefined,
+    ))
     .orderBy(desc(workflows.createdAt), desc(workflows.id));
 
   return rows.map((r) => ({
@@ -151,6 +155,8 @@ export async function listVersionTasks(db: Db, versionId: string): Promise<TaskS
  * spread. The property means the same thing either way; only the call sites differ.
  */
 export type RunListInput = {
+  accountId?: string | undefined;
+  versionId?: string | undefined;
   workflowId?: string | undefined;
   taskId?: string | undefined;
   status?: RunStatus | undefined;
@@ -169,9 +175,12 @@ export async function listRuns(db: Db, input: RunListInput): Promise<Page<RunLis
     .from(runs)
     .innerJoin(tasks, eq(tasks.id, runs.taskId))
     .innerJoin(workflowVersions, eq(workflowVersions.id, runs.workflowVersionId))
+    .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId))
     .where(
       and(
         input.workflowId ? eq(workflowVersions.workflowId, input.workflowId) : undefined,
+        input.accountId ? eq(workflows.accountId, input.accountId) : undefined,
+        input.versionId ? eq(runs.workflowVersionId, input.versionId) : undefined,
         input.taskId ? eq(runs.taskId, input.taskId) : undefined,
         input.status ? eq(runs.status, input.status) : undefined,
         after ? sql`(${runs.createdAt}, ${runs.id}) < (${after.at}, ${after.id})` : undefined,
@@ -187,7 +196,7 @@ export async function listRuns(db: Db, input: RunListInput): Promise<Page<RunLis
   );
 }
 
-export type RunDetail = { run: RunRow; task: TaskSummary; trigger: EventRow | null };
+export type RunDetail = { run: RunRow; task: TaskSummary; trigger: EventRow | null; deopted: boolean; pageIds: string[] };
 
 export async function getRun(db: Db, runId: string): Promise<RunDetail | undefined> {
   const [row] = await db
@@ -197,6 +206,10 @@ export async function getRun(db: Db, runId: string): Promise<RunDetail | undefin
     .where(eq(runs.id, runId));
   if (!row) return undefined;
 
+  const browserEvidence = await db.select({ payload: traceEntries.payloadJson }).from(traceEntries)
+    .where(and(eq(traceEntries.runId, runId), eq(traceEntries.kind, "action"),
+      sql`(${traceEntries.payloadJson}->>'action' = 'deopt' or ${traceEntries.payloadJson}->>'pageId' is not null)`));
+  const payloads = browserEvidence.map((e) => e.payload as Record<string, unknown>);
   const trigger = row.run.triggerEventId
     ? ((await db.select().from(events).where(eq(events.eventId, row.run.triggerEventId)))[0] ?? null)
     : null;
@@ -204,10 +217,14 @@ export async function getRun(db: Db, runId: string): Promise<RunDetail | undefin
     run: row.run,
     task: { id: row.id, name: row.name, kind: row.kind, mode: row.mode, compiledPrompt: row.compiledPrompt },
     trigger,
+    deopted: payloads.some((p) => p.action === "deopt"),
+    pageIds: [...new Set(payloads.flatMap((p) => typeof p.pageId === "string" ? [p.pageId] : []))],
   };
 }
 
 export type EventListInput = {
+  accountId?: string | undefined;
+  versionId?: string | undefined;
   workflowId?: string | undefined;
   type?: string | undefined;
   cursor?: string | null | undefined;
@@ -249,6 +266,11 @@ export async function listEvents(db: Db, input: EventListInput): Promise<Page<Ev
     .where(
       and(
         input.workflowId ? eventOfWorkflow(input.workflowId) : undefined,
+        input.accountId ? sql`${events.executionId} in (
+          select x.id from ${workflowExecutions} x join ${workflows} w on w.id = x.workflow_id
+          where w.account_id = ${input.accountId}
+        )` : undefined,
+        input.versionId ? sql`(${tasks.workflowVersionId} = ${input.versionId} or ${events.causationId} in (select e.event_id from ${events} e join ${tasks} t on t.id = e.source_task_id where t.workflow_version_id = ${input.versionId}))` : undefined,
         input.type ? eq(events.type, input.type) : undefined,
         after ? sql`(${events.occurredAt}, ${events.eventId}) < (${after.at}, ${after.id}::uuid)` : undefined,
       ),
@@ -297,6 +319,7 @@ export async function getEvent(db: Db, eventId: string): Promise<EventDetail | u
  */
 export type TraceListInput = {
   runId: string;
+  view?: "tools" | undefined;
   cursor?: string | null | undefined;
   limit?: number | undefined;
 };
@@ -317,7 +340,13 @@ export async function listTraceEntries(db: Db, input: TraceListInput): Promise<P
       createdAt: traceEntries.createdAt,
     })
     .from(traceEntries)
-    .where(and(eq(traceEntries.runId, input.runId), afterSeq !== undefined ? gt(traceEntries.seq, afterSeq) : undefined))
+    .where(and(eq(traceEntries.runId, input.runId), afterSeq !== undefined ? gt(traceEntries.seq, afterSeq) : undefined,
+      input.view === "tools" ? sql`${traceEntries.kind} = 'action' and (
+        ${traceEntries.payloadJson}->>'action' = 'tool.call' or (
+          ${traceEntries.payloadJson}->>'action' in ('goto','click','type','scroll','waitFor','waitForLoadState','queryAll','emit','network.list','network.read','network.body','network.waitForResponse','agent.done','agent.fail','secrets.fill')
+          and (not exists (select 1 from trace_entries tc where tc.run_id = ${input.runId} and tc.payload_json->>'action' = 'tool.call')
+            or ${traceEntries.seq} < (select min(tc.seq) from trace_entries tc where tc.run_id = ${input.runId} and tc.kind = 'llm'))
+        ))` : undefined))
     .orderBy(asc(traceEntries.seq))
     .limit(limit + 1);
 
@@ -346,8 +375,11 @@ const ENDPOINT_SUMMARY = {
   createdAt: cdpEndpoints.createdAt,
 } as const;
 
-export async function listCdpEndpoints(db: Db): Promise<CdpEndpointSummary[]> {
-  return db.select(ENDPOINT_SUMMARY).from(cdpEndpoints).orderBy(desc(cdpEndpoints.createdAt));
+export async function listCdpEndpoints(db: Db, accountId?: string): Promise<CdpEndpointSummary[]> {
+  return db.select(ENDPOINT_SUMMARY).from(cdpEndpoints)
+    .leftJoin(workflows, eq(workflows.id, cdpEndpoints.workflowId))
+    .where(accountId ? eq(workflows.accountId, accountId) : undefined)
+    .orderBy(desc(cdpEndpoints.createdAt));
 }
 
 // -- U3a: per-workflow endpoints + rotation ----------------------------------------------
@@ -525,15 +557,13 @@ export const ENGINE_STATUS_ID = "engine";
 /** A heartbeat older than this means the engine is down (the watchdog ticks every 250ms). */
 export const ENGINE_STALE_MS = 15_000;
 
-/** `capabilities`: tool-level abilities that are not a `(kind, mode)` pair — `"python.run"`
- * when a `PYRUNNER_URL` is configured. The editor reads it to say what an asset node can do. */
-export async function recordEngineBoot(db: Db, executors: string[], capabilities: string[] = []): Promise<void> {
+export async function recordEngineBoot(db: Db, executors: string[]): Promise<void> {
   await db
     .insert(engineStatus)
-    .values({ id: ENGINE_STATUS_ID, executors, capabilities, bootedAt: sql`now()`, heartbeatAt: sql`now()` })
+    .values({ id: ENGINE_STATUS_ID, executors, bootedAt: sql`now()`, heartbeatAt: sql`now()` })
     .onConflictDoUpdate({
       target: engineStatus.id,
-      set: { executors, capabilities, bootedAt: sql`now()`, heartbeatAt: sql`now()` },
+      set: { executors, bootedAt: sql`now()`, heartbeatAt: sql`now()` },
     });
 }
 
@@ -543,7 +573,6 @@ export async function touchEngineHeartbeat(db: Db): Promise<void> {
 
 export type EngineStatusView = {
   executors: string[];
-  capabilities: string[];
   bootedAt: Date | null;
   heartbeatAt: Date | null;
   stale: boolean;
@@ -551,42 +580,11 @@ export type EngineStatusView = {
 
 export async function getEngineStatus(db: Db, now: Date = new Date()): Promise<EngineStatusView> {
   const [row] = await db.select().from(engineStatus).where(eq(engineStatus.id, ENGINE_STATUS_ID)).limit(1);
-  if (!row) return { executors: [], capabilities: [], bootedAt: null, heartbeatAt: null, stale: true };
+  if (!row) return { executors: [], bootedAt: null, heartbeatAt: null, stale: true };
   return {
     executors: row.executors,
-    capabilities: row.capabilities,
     bootedAt: row.bootedAt,
     heartbeatAt: row.heartbeatAt,
     stale: now.getTime() - row.heartbeatAt.getTime() > ENGINE_STALE_MS,
   };
-}
-
-/**
- * A `RunHandle` carries `task.workflow_version_id`, not `user_id` directly — every per-user
- * lookup a `mode=ai` executor needs (the MCP server list for `AssetExecutor`, the asset-store
- * namespace `page.upload` resolves an asset ref against for `AgentExecutor`, S5f) makes this
- * exact join, so it lives here once rather than once per executor (`asset-executor.ts` was
- * S5c's only caller before S5f gave the browser executor a second reason to need it).
- * `packages/secrets/src/broker.ts`'s `resolveSecretForRun` makes the identical join for the
- * identical reason.
- *
- * Lives here rather than in `packages/agent` because S5h's `PythonExecutor` needs it too and
- * `packages/engine` cannot import `packages/agent` — agent already imports engine. Moving it
- * down leaves one copy, not two; `executor-shared.ts` re-exports it so every existing call
- * site is unchanged.
- */
-export async function userIdForTask(db: Db, workflowVersionId: string): Promise<string> {
-  const rows = await db
-    .select({ userId: workflows.userId })
-    .from(workflowVersions)
-    .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId))
-    .where(eq(workflowVersions.id, workflowVersionId))
-    .limit(1);
-  const row = rows[0];
-  if (!row) {
-    throw new AppError("task_workflow_not_found", `no workflow found for workflow_version ${workflowVersionId}`, {
-      details: { workflowVersionId },
-    });
-  }
-  return row.userId;
 }

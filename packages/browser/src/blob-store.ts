@@ -31,7 +31,7 @@ export type MinioBlobStoreOptions = {
  * `aa/bb/` fanout, that split existed only to keep one filesystem directory from holding too
  * many inodes, and an object store has no such concern. `meta.mime` becomes the object's
  * `Content-Type` (the filesystem predecessor dropped it on the floor, having nowhere to put
- * it), so a future reader — the run inspector, the asset MIME allowlist — gets it back from
+ * it), so a future reader such as the run inspector gets it back from
  * `statObject` instead of a side channel.
  */
 export function createMinioBlobStore(opts: MinioBlobStoreOptions): BlobStore {

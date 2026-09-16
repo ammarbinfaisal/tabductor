@@ -1,3 +1,25 @@
+# Local Kubernetes staging
+
+The production-like local environment uses kind and the shared Helm chart. It keeps a
+dedicated kubeconfig and durable state under `.tabductor-staging/`; it never points at the
+Compose database. Install Docker, kind, kubectl, and Helm, then run:
+
+```sh
+pnpm staging:up
+pnpm staging:test
+pnpm staging:down       # preserves Postgres, MinIO, and the secrets wrapping key
+pnpm staging:reset      # deletes only .tabductor-staging after deleting its kind cluster
+```
+
+`staging:up` creates a three-node cluster, installs Calico, builds and loads the application
+image, runs migrations with the application stopped, then starts the web and engine. It is
+idempotent and exposes the web service on <http://127.0.0.1:3000>. `staging:test:live` is an
+explicit opt-in entry point and refuses to start without Clerk and Paddle sandbox credentials;
+the bounded provider journeys are added with their implementation phases.
+
+The checked-in `values-aws.yaml` disables fixture mode and bundled datastores. AWS deployment
+must supply managed database/object-store endpoints and secrets through the deployment system.
+
 # Running it
 
 Everything — Postgres, migrations, the engine, the control plane — comes from the root

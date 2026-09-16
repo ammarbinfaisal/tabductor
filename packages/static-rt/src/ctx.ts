@@ -4,8 +4,8 @@ import type { ExtractedRecord, ExtractSpec, RunSession } from "@tabductor/browse
  * `ctx` — the compiled script's entire window on the world (techical_plan §12).
  *
  * This is the §4 security boundary expressed as a surface rather than a rule. There is no
- * `ctx.mcp`, no `ctx.assets.write`/`.append`, no `page.evaluate` or any other arbitrary-JS
- * door, and no `page.download` — not because something denies them, but because the isolate
+ * store access, no `page.evaluate` or any other arbitrary-JS door, and no file I/O — not
+ * because something denies them, but because the isolate
  * has no other binding at all. A compiled browser script gets exactly the browser node's
  * capabilities, which is what makes "the compiled fast path and the AI slow path go through
  * the same door" (§2 principle 3) true of the door and not just of the intention.
@@ -39,9 +39,6 @@ export type CtxHost = {
   session: RunSession;
   emit: EmitFn;
   state: StateStore;
-  /** Resolves an asset ref to the bytes `page.upload` needs. Absent = `ctx.page.upload`
-   * rejects, which is what a task with no asset grant should see. */
-  resolveAsset?: (assetRef: unknown) => Promise<{ name: string; mimeType: string; bytes: Buffer }>;
 };
 
 /** `page.evalExtract`'s result, passed back into the isolate by copy. */

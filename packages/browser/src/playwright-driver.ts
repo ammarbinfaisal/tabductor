@@ -76,7 +76,9 @@ type DomNode = {
   querySelectorAll: (sel: string) => ArrayLike<DomNode>;
   parentElement: DomNode | null;
   children: ArrayLike<DomNode>;
+  getClientRects: () => { length: number };
 };
+declare function getComputedStyle(node: DomNode): { visibility: string; display: string };
 declare const document: {
   querySelectorAll: (sel: string) => ArrayLike<DomNode>;
   title: string;
@@ -178,6 +180,7 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
   const guarded = new Set<PwPage>();
   /** Pages this connection opened (plus popups they spawned) — the only ones we may close. */
   const ourPages = new Set<PwPage>();
+  const pageIds = new WeakMap<PwPage, string>();
   /** The URL a `goto` is currently waiting on, so the guard can call that navigation initial. */
   const pendingGoto = new Map<PwPage, string>();
   /** URLs answered with a birth stub, each waiting for its popup to appear. */
@@ -243,6 +246,8 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
     if (existing) return existing;
     const attaching = (async () => {
       const cdp = await context.newCDPSession(page);
+      const target = await cdp.send("Target.getTargetInfo");
+      pageIds.set(page, target.targetInfo.targetId);
       cdp.on("Fetch.requestPaused", (raw) => {
         const event = raw as unknown as RequestPaused;
         void (async () => {
@@ -320,8 +325,10 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
       Promise.resolve(hooks.onStart?.(record)).catch(() => undefined);
     });
 
-    page.on("response", (res) => {
-      const req = res.request();
+    page.on("requestfinished", (req) => {
+      void (async () => {
+      const res = await req.response();
+      if (!res) return;
       const record = pending.get(req);
       // No record means `response` fired for a request from before this listener attached
       // (a service-worker-served response can do this) — nothing to complete.
@@ -329,7 +336,7 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
       record.status = res.status();
       record.timings.endedAt = Date.now();
       record.timings.durationMs = record.timings.endedAt - record.timings.startedAt;
-      Promise.resolve(
+      await Promise.resolve(
         hooks.onSettled?.(record, {
           requestHeaders: () => req.allHeaders(),
           requestBody: () => requestBodyOf(req),
@@ -340,6 +347,7 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
           }),
         }),
       ).catch(() => undefined);
+      })().catch(() => undefined);
     });
 
     page.on("requestfailed", (req) => {
@@ -506,11 +514,12 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
   };
 
   const wrap = (pwPage: PwPage): Page => ({
-    async goto(url) {
+    id: pageIds.get(pwPage),
+    async goto(url, opts) {
       denials.delete(pwPage);
       pendingGoto.set(pwPage, new URL(url).href);
       try {
-        await pwPage.goto(url, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT_MS });
+        await pwPage.goto(url, { waitUntil: opts?.waitUntil ?? "domcontentloaded", timeout: opts?.timeout ?? DEFAULT_TIMEOUT_MS });
       } catch (err) {
         const denial = denials.get(pwPage);
         if (denial) {
@@ -535,9 +544,13 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
 
     async waitFor(selector, opts) {
       await pwPage.waitForSelector(selector, {
-        state: "attached",
+        state: opts?.state ?? "attached",
         timeout: opts?.timeout ?? DEFAULT_TIMEOUT_MS,
       });
+    },
+
+    async waitForLoadState(state, opts) {
+      await pwPage.waitForLoadState(state, { timeout: opts?.timeout ?? DEFAULT_TIMEOUT_MS });
     },
 
     async probeTarget(selector): Promise<TargetProbe | null> {
@@ -644,32 +657,37 @@ async function extract(
   selector: string,
   fields: ExtractSpec,
 ): Promise<ExtractedRecord[]> {
-  return pwPage.locator(selector).evaluateAll(
-    (
-      els: DomNode[],
-      spec: [string, { selector?: string; attr?: string }][],
-    ) => {
-      const out: Record<string, string | null>[] = [];
-      for (const el of els) {
-        const record: Record<string, string | null> = {};
-        for (const [name, field] of spec) {
-          const target = field.selector ? el.querySelector(field.selector) : el;
-          if (!target) {
-            record[name] = null;
-            continue;
-          }
-          record[name] = field.attr
-            ? target.getAttribute(field.attr)
-            : (target.textContent ?? "").trim();
-        }
-        out.push(record);
-      }
-      return out;
-    },
-    // Entries rather than the object itself: the argument crosses into the page as JSON, and
-    // an entry list keeps field order stable, which keeps extracted records diffable.
-    Object.entries(fields),
-  );
+  const root = pwPage.locator(selector);
+  // Validate even when there are no rows. Let Playwright parse its own selector language;
+  // do not mistake a disconnected browser or other infrastructure error for bad syntax.
+  for (const [name, field] of Object.entries(fields)) {
+    if (!field.selector) continue;
+    try {
+      await root.locator(field.selector).count();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/invalid selector|not a valid selector|while parsing|Unknown engine|Unexpected token|Unsupported token|is not a valid XPath/i.test(message)) throw error;
+      throw new AppError("browser.invalid_extract_selector",
+        `Invalid extraction selector for field ${JSON.stringify(name)}: ${JSON.stringify(field.selector)}. Correct this field and retry page.extract; omit it only if optional. This does not mean the page is unavailable.`,
+        { cause: error, details: { field: name, selector: field.selector } });
+    }
+  }
+  const records: ExtractedRecord[] = [];
+  for (let index = 0, count = await root.count(); index < count; index++) {
+    const row = root.nth(index);
+    const record: ExtractedRecord = {};
+    for (const [name, field] of Object.entries(fields)) {
+      const target = field.selector ? row.locator(field.selector).first() : row;
+      // evaluateAll returns immediately for missing optional fields, preserving null
+      // semantics without a locator auto-wait for every absent field.
+      record[name] = await target.evaluateAll((els: DomNode[], attr: string | undefined) => {
+        const el = els[0];
+        return el ? (attr ? el.getAttribute(attr) : (el.textContent ?? "").trim()) : null;
+      }, field.attr);
+    }
+    records.push(record);
+  }
+  return records;
 }
 
 /** Character budget for `perceive()`'s `text` when the caller doesn't set one (§8: ~8k chars). */
@@ -710,6 +728,8 @@ function perceiveInPage(args: { maxChars: number; maxElements: number }): Percep
     if (tag === "select") return "combobox";
     if (/^h[1-6]$/.test(tag)) return "heading";
     if (tag === "article") return "article";
+    if (tag === "main") return "main";
+    if (tag === "nav") return "navigation";
     return null;
   };
 
@@ -767,7 +787,10 @@ function perceiveInPage(args: { maxChars: number; maxElements: number }): Percep
   // `const` this body referenced would arrive as a `ReferenceError`, not a closure.
   const salientSelector =
     'a[href], button, input, textarea, select, [role], [data-testid], h1, h2, h3, h4, h5, h6, article';
-  const nodes = Array.from(document.querySelectorAll(salientSelector)).slice(0, maxElements);
+  const nodes = Array.from(document.querySelectorAll(salientSelector)).filter((el) => {
+    const style = getComputedStyle(el);
+    return style.display !== "none" && style.visibility !== "hidden" && style.visibility !== "collapse" && el.getClientRects().length > 0;
+  }).slice(0, maxElements);
 
   const elements: AnchoredElement[] = [];
   let n = 0;
@@ -789,7 +812,14 @@ function perceiveInPage(args: { maxChars: number; maxElements: number }): Percep
       strategy = "role";
       const base = `[${acc.attr}="${escapeCss(acc.value)}"]`;
       locator = uniqueLocator(base, position(base, el));
-    } else if (text) {
+    } else if (["main", "navigation", "article", "region", "grid", "table", "list", "tablist"].includes(roleOf(el) ?? "")) {
+      // Containers change whenever their contents do. Never anchor them to the entire
+      // timeline/database text: that locator is stale as soon as one item updates.
+      strategy = "role";
+      const role = el.getAttribute("role");
+      const base = role ? `${tag}[role="${escapeCss(role)}"]` : tag;
+      locator = uniqueLocator(base, position(base, el));
+    } else if (text && text.length <= 160) {
       strategy = "text";
       const base = `${tag}:text-is("${escapeCss(text)}")`;
       // `:text-is` is Playwright-only — the DOM's own `querySelectorAll` cannot parse it, so

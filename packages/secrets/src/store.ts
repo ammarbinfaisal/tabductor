@@ -6,8 +6,8 @@ import { randomDek, sealValue, zero, type KeyWrapper } from "./crypto.js";
  * Secret administration: creating and granting, never reading. Separate from `broker.ts` on
  * purpose — this file's functions are called by an operator/admin surface (a future secrets
  * manager, S7/U3) and by this package's own tests to seed fixtures; the broker's `fill`/
- * `injectIntoMcpArg` are the only run-time, run-scoped entry points, and keeping this file's
- * concerns out of `broker.ts` is what keeps that one "one module, two public methods" true.
+ * `fill` is the only run-time, run-scoped entry point, and keeping this file's concerns out
+ * of `broker.ts` preserves that narrow boundary.
  */
 
 export type CreateSecretInput = {

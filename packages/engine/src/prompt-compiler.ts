@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { canonicalJson } from "@tabductor/core";
 import type { NodeKind } from "./graph.js";
 import type { ChatTransport, ChatTurn } from "./schema-generator-llm.js";
 
@@ -74,7 +75,7 @@ export interface PromptCompiler {
 
 /**
  * The tool surface per kind, as the executors actually build it (`packages/agent`'s
- * `buildToolRegistry` / `buildAssetToolRegistry` / `buildDecisionToolRegistry`). Restated
+ * `buildToolRegistry` / `buildDecisionToolRegistry`). Restated
  * here as documentation for the model rather than imported: `packages/engine` cannot import
  * `packages/agent` (agent already imports engine), and the names are a stable contract that
  * `*-registry-isolation.test.ts` pins on the other side.
@@ -86,31 +87,17 @@ export const TOOL_SURFACE: Record<NodeKind, ReadonlyArray<{ name: string; hint: 
     { name: "page.type", hint: "type into an anchored input" },
     { name: "page.scroll", hint: "scroll the page or a container" },
     { name: "page.waitFor", hint: "wait for text or a selector to appear" },
-    { name: "page.extract", hint: "extract structured records from repeated elements" },
-    { name: "page.upload", hint: "attach a stored asset (by asset ref) to a file input" },
+    { name: "page.extract", hint: "extract fields from one item anchor (default: whole page); each field reads its first Playwright selector match or null. For repeated items, extract each anchor separately and emit each validated record immediately. Correct invalid field selectors and retry, omitting only optional fields" },
     { name: "network.list", hint: "list the XHR/fetch responses observed so far" },
     { name: "network.read", hint: "read one observed response body" },
     { name: "emit", hint: "publish one event packet, validated against its schema" },
     { name: "done", hint: "finish the run successfully" },
     { name: "fail", hint: "finish the run as failed, with a reason" },
   ],
-  asset: [
-    { name: "assets.write", hint: "write a file into the asset store at a path" },
-    { name: "assets.append", hint: "append to an existing asset" },
-    { name: "assets.read", hint: "read an asset back" },
-    { name: "assets.list", hint: "list assets under a prefix" },
-    { name: "assets.render", hint: "render a LaTeX asset to PDF" },
-    { name: "python.run", hint: "run a Python program in the compute sandbox (no network); files it writes under out/files/ become assets" },
-    { name: "mcp.<server>.<tool>", hint: "one tool per configured MCP server tool (HTTP APIs, SaaS, anything with a server)" },
+  decision: [
     { name: "store.query", hint: "one SELECT against the workflow store, read-only" },
     { name: "store.insert", hint: "stage a row insert, committed with the next emit" },
     { name: "store.upsert", hint: "stage a row upsert, committed with the next emit" },
-    { name: "emit", hint: "publish one event packet, validated against its schema" },
-    { name: "done", hint: "finish the run successfully" },
-    { name: "fail", hint: "finish the run as failed, with a reason" },
-  ],
-  decision: [
-    { name: "store.query", hint: "one SELECT against the workflow store, read-only" },
     { name: "emit", hint: "publish one event packet, validated against its schema" },
     { name: "done", hint: "finish the run successfully" },
     { name: "fail", hint: "finish the run as failed, with a reason" },
@@ -119,11 +106,9 @@ export const TOOL_SURFACE: Record<NodeKind, ReadonlyArray<{ name: string; hint: 
 
 const KIND_ROLE: Record<NodeKind, string> = {
   browser:
-    "You drive a real, logged-in browser through page.* tools. You have no store and no MCP access; everything you learn leaves this node only as emitted events.",
-  asset:
-    "You produce deliverables and side effects: write and render assets, call MCP servers, run Python, read and write the workflow store. You have no browser.",
+    "You drive a real, logged-in browser through page.* tools. You have no store access; everything you learn leaves this node only as emitted events.",
   decision:
-    "You are the planner: read the workflow store, look at the trigger, and decide what work to emit. You have no browser, no store writes, no MCP.",
+    "You perform semantic work: inspect the trigger, query or update the workflow store, and decide what to emit. You have no browser.",
 };
 
 /**
@@ -132,27 +117,17 @@ const KIND_ROLE: Record<NodeKind, string> = {
  * between the publish that generated a schema and the next one that read it back — and
  * carry-forward would never hit.
  */
-export function canonicalJson(value: unknown): string {
-  return JSON.stringify(sortKeys(value));
-}
-
-function sortKeys(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortKeys);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.keys(value as Record<string, unknown>)
-        .sort()
-        .map((k) => [k, sortKeys((value as Record<string, unknown>)[k])]),
-    );
-  }
-  return value;
-}
+export { canonicalJson };
 
 /** Canonical JSON of everything the compiled prompt depends on. */
 export function promptInputHash(input: PromptCompileInput): string {
   const byName = <T extends { name: string }>(a: T, b: T) => a.name.localeCompare(b.name);
   const byType = <T extends { type: string }>(a: T, b: T) => a.type.localeCompare(b.type);
   const canonical = canonicalJson({
+    // Harness changes must invalidate carried-forward operating instructions too.
+    compilerInstructions: PROMPT_SYSTEM_PROMPT,
+    tools: TOOL_SURFACE[input.task.kind],
+    role: KIND_ROLE[input.task.kind],
     workflow: input.workflow.name,
     task: input.task,
     consumes: [...input.consumes].sort(byType).map((e) => ({ ...e, emitters: [...e.emitters].sort() })),
@@ -266,6 +241,13 @@ no code fences, no preamble. Rules:
 - Turn the author's intent into concrete, ordered steps using only the tools listed.
 - For every event the node must emit, say exactly when to emit it, once or many times, and \
 which packet fields to fill from what — name each event type verbatim.
+- When the declared event represents one record, extract each item within its own anchor and emit \
+that validated record immediately with its stable source id/dedupe key. Downstream runs process \
+their trigger independently; do not wait for a whole scan or assume event ordering, shared tabs, \
+or that multiple consumed event types form a join. Preserve explicit batch contracts when required.
+- For invalid extraction selectors, instruct the agent to correct the named field and retry \
+at most twice within its step budget. Drop only optional fields; never treat selector syntax \
+errors as proof that a visible page is unavailable.
 - Say what to do when the trigger packet is missing or empty, when nothing is found, and when \
 a step fails: prefer finishing without emitting over emitting a guess.
 - Never invent tools, fields, tables or events that the brief does not list.

@@ -238,9 +238,9 @@ it("a task edited while its trace was compiling is not promoted", async () => {
   expect(row?.status).toBe("candidate");
 }, 120_000);
 
-/** The §4 boundary again: an asset task must not accumulate toward a promotion the compiler
- * would refuse. */
-it.each(["asset", "decision"] as const)("a %s task never advances the promotion counter", async (kind) => {
+/** Decision tasks remain semantic and must not accumulate toward browser-script promotion. */
+it("a decision task never advances the promotion counter", async () => {
+  const kind = "decision" as const;
   rig = await startAgentRig({ compiled: {}, fixtureFor: () => "compiled-tweets-script.jsonl" });
   const db = rig.handle.db;
   const wf = await seedWorkflow(db, { tasks: { T: { kind, mode: "ai" } } });

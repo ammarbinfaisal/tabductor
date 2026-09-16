@@ -61,7 +61,7 @@ function hashOf(tag: string): string {
  * exits 0, compose reports `service_completed_successfully`, and the app boots against a
  * schema missing tables. This project builds subphases in parallel worktrees and renumbers
  * migrations at merge, so that is not a hypothetical: it is how a dev volume here ended up
- * with `asset_versions` present and its ledger row unaccounted for.
+ * with a newly-created table present and its ledger row unaccounted for.
  *
  * Lives inside `migrateDb` rather than in the CLI so neither caller — `migrate.ts` or
  * `test-db.ts` — can forget it, and so a future caller inherits it for free.

@@ -14,6 +14,8 @@ const optionalSetting = z.preprocess(
 );
 
 const envSchema = z.object({
+  TABDUCTOR_DEPLOYMENT_MODE: z.enum(["local", "hosted"]).default("local"),
+  TABDUCTOR_FIXTURE_MODE: z.enum(["0", "1"]).default("0").transform((value) => value === "1"),
   DATABASE_URL: z
     .string()
     .min(1)
@@ -22,6 +24,8 @@ const envSchema = z.object({
   BLOB_ACCESS_KEY: z.string().min(1).default("tabductor"),
   BLOB_SECRET_KEY: z.string().min(1).default("tabductor"),
   BLOB_BUCKET: z.string().min(1).default("tabductor-blobs"),
+  /** Includes identity redirects and frames; account deny/approval rules still apply. */
+  POLICY_NAVIGATION_MODE: z.enum(["permissive", "grant_required"]).default("permissive"),
   /**
    * Domains a browser node may navigate to, suffix-matched (`x.com` covers `api.x.com`,
    * never `notx.com`). Empty is the default and means allow all — see
@@ -43,15 +47,15 @@ const envSchema = z.object({
   ANTHROPIC_API_KEY: optionalSetting,
   OPENAI_API_KEY: optionalSetting,
   SCHEMA_MODEL: optionalSetting,
-  /** S5h: `apps/pyrunner`'s base URL. Unset withholds the `(asset, python)` executor, the same
-   * posture the AI executors take without a key — a mode with nowhere to run is declined at
-   * boot with a log line, not registered to fail deep inside a run. */
-  PYRUNNER_URL: optionalSetting,
   // S5c: the secrets broker's KEK-wrapping key store (`fileKeyWrapper`, dev/test — a KMS
   // implementation is a later swap behind the same `KeyWrapper` interface, per S5b's own
   // doc). A clean checkout needs no environment (impl-phases §0's own rule for every other
   // credential here) — `fileKeyWrapper` self-initializes on first use if the file is absent.
   SECRETS_KEK_FILE_PATH: z.string().min(1).default("./data/secrets-kek.json"),
+}).superRefine((config, ctx) => {
+  if (config.TABDUCTOR_DEPLOYMENT_MODE === "hosted" && config.TABDUCTOR_FIXTURE_MODE) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["TABDUCTOR_FIXTURE_MODE"], message: "fixture mode is forbidden in hosted deployments" });
+  }
 });
 
 export type Config = z.output<typeof envSchema>;

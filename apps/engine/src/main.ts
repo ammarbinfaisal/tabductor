@@ -1,6 +1,5 @@
 import {
   createAgentExecutor,
-  createAssetExecutor,
   createCompiledExecutor,
   createCompileLoop,
   createCompileWorker,
@@ -14,7 +13,6 @@ import { createDispatcher, publish } from "@tabductor/bus";
 import { loadConfig } from "@tabductor/core";
 import { createDb, type Db } from "@tabductor/db";
 import {
-  AssetExecutor,
   createEngine,
   executorKey,
   pickWorkflowEndpoint,
@@ -26,8 +24,7 @@ import {
   type RunHandle,
   type TaskExecutor,
 } from "@tabductor/engine";
-import { createPyrunClient } from "@tabductor/engine/python";
-import { DatabasePolicyGate } from "@tabductor/policy";
+import { RuntimeSafetyGate } from "@tabductor/policy";
 import { createSecretsBroker, fileKeyWrapper, type SecretsBrokerRunDeps } from "@tabductor/secrets";
 import { initTelemetry } from "@tabductor/telemetry/init";
 import type { Pool } from "pg";
@@ -69,13 +66,9 @@ const blobs = createMinioBlobStore({
   secretKey: config.BLOB_SECRET_KEY,
   bucket: config.BLOB_BUCKET,
 });
-// S7: one persisted evaluator shared by agent, compiled, MCP, asset and secret paths.
-const gate = new DatabasePolicyGate({ db: handle.db });
+// S7: one persisted evaluator shared by browser, decision-store, and secret paths.
+const gate = new RuntimeSafetyGate({ navAllowlist: config.HARNESS_NAV_ALLOWLIST });
 const liveProvider = providerFromEnv({ ANTHROPIC_API_KEY: config.ANTHROPIC_API_KEY, OPENAI_API_KEY: config.OPENAI_API_KEY });
-/** `python.run`'s client — the asset node's compute tool (`packages/agent`'s `python-tool.ts`).
- * Without a `PYRUNNER_URL` the tool stays on the registry and fails closed per call. */
-const pyrun = config.PYRUNNER_URL ? createPyrunClient({ url: config.PYRUNNER_URL }) : undefined;
-if (!pyrun) log.info("no PYRUNNER_URL configured — python.run will report itself unavailable", {});
 
 /**
  * The compile loop's two halves (`compile-loop.ts`).
@@ -170,16 +163,7 @@ function agentExecutorEntry(db: Db): ReturnType<typeof createAgentExecutor> | un
   return executor;
 }
 
-/**
- * The MCP client's credential path (S5c, §13): `injectIntoMcpArg`/`redeemMcpHandle` only —
- * never the full `SecretsBroker` (`fill` is browser-only and unreachable from an asset run
- * regardless). `resolveRun` always answers "no live session," honestly: nothing in this
- * process registers a browser session with the broker yet (`secrets.fill` is not wired into
- * the browser registry as of S5c either — a later subphase's business), and
- * `injectIntoMcpArg`/`redeemMcpHandle` never call `resolveRun` at all (`broker.ts`'s own
- * comment: "an asset-node run has no page to bind an origin to"), so this is not a stub
- * standing in for missing wiring — it is the correct, permanent answer for this call site.
- */
+/** Browser secret sessions stay host-side and origin-bound. */
 const liveSecretRuns = new Map<string, SecretsBrokerRunDeps>();
 const secretsBroker = createSecretsBroker({
   db: handle.db,
@@ -189,43 +173,10 @@ const secretsBroker = createSecretsBroker({
   metrics: telemetry.metrics,
 });
 
-/**
- * The first asset-node executor this process can run for real (S5c): `createAssetExecutor`
- * under mode `ai` — the mode techical_plan's diagram calls "always ai mode" for this kind.
- * Gated on a live LLM key only, the honest half of `agentExecutorEntry`'s two-part gate
- * above: an asset run acquires no browser session and no CDP endpoint at all (§4), so there
- * is nothing here to check a `cdp_endpoints` row for.
- */
-function assetExecutorEntry(db: Db, pool: Pool): ReturnType<typeof createAssetExecutor> | undefined {
-  const live = providerFromEnv({ ANTHROPIC_API_KEY: config.ANTHROPIC_API_KEY, OPENAI_API_KEY: config.OPENAI_API_KEY });
-  if (!live) {
-    log.info("no ANTHROPIC_API_KEY/OPENAI_API_KEY configured — (asset, ai) has no executor", {});
-    return undefined;
-  }
-  return createAssetExecutor({
-    gate,
-    blobs,
-    db,
-    pool,
-    metrics: telemetry.metrics,
-    secrets: secretsBroker,
-    ...(pyrun ? { pyrun } : {}),
-    llmFor: ({ trace }) =>
-      createLlm("live", {
-        provider: live.provider,
-        apiKey: live.apiKey,
-        trace,
-        metrics: telemetry.metrics,
-        costLabels: { kind: "asset", mode: "ai" },
-      }),
-  });
-}
-
 // -----------------------------------------------------------------------------------------
 // S5g: `(decision, ai)` — the planner kind's executor. Same live-key gate as the other two
 // `*Entry` functions above (nothing to run a live LLM call against without one); no CDP
-// endpoint or MCP-server check, because a decision run acquires neither (§2.1: `store.query`
-// + `emit` only).
+// endpoint check, because a decision run acquires no browser session.
 // -----------------------------------------------------------------------------------------
 function decisionExecutorEntry(db: Db, pool: Pool): ReturnType<typeof createDecisionExecutor> | undefined {
   const live = providerFromEnv({ ANTHROPIC_API_KEY: config.ANTHROPIC_API_KEY, OPENAI_API_KEY: config.OPENAI_API_KEY });
@@ -237,6 +188,7 @@ function decisionExecutorEntry(db: Db, pool: Pool): ReturnType<typeof createDeci
     db,
     pool,
     blobs,
+    gate,
     metrics: telemetry.metrics,
     llmFor: ({ trace }) =>
       createLlm("live", {
@@ -284,22 +236,11 @@ function compiledExecutorEntry(db: Db): TaskExecutor | undefined {
 }
 
 const agentExecutor = agentExecutorEntry(handle.db);
-const assetExecutor = assetExecutorEntry(handle.db, handle.pool);
 const decisionExecutor = decisionExecutorEntry(handle.db, handle.pool);
 const compiledExecutor = compiledExecutorEntry(handle.db);
 const executors: ExecutorRegistry = {
   [executorKey("browser", "stub")]: StubExecutor,
-  // The S5a scripted-behavior skeleton, now at mode `stub` — S5c's real `(asset, ai)`
-  // executor (below) takes over the mode an asset task actually runs in production;
-  // `AssetExecutor` stays registered here for the graph-testing/stub-mode harness the same
-  // way `StubExecutor` does for `(browser, stub)`.
-  [executorKey("asset", "stub")]: AssetExecutor,
   ...(agentExecutor ? { [executorKey("browser", "ai")]: agentExecutor } : {}),
-  ...(assetExecutor ? { [executorKey("asset", "ai")]: assetExecutor } : {}),
-  // S5g: no stub-mode decision registration — a decision task has no scripted-behavior
-  // skeleton to fall back to (nothing analogous to `AssetExecutor`'s S5a-era stand-in was
-  // ever needed for it, since `store.query` + `emit` had no MCP/LaTeX gap to bridge before
-  // being buildable for real).
   ...(decisionExecutor ? { [executorKey("decision", "ai")]: decisionExecutor } : {}),
   ...(compiledExecutor ? { [executorKey("browser", "compiled")]: compiledExecutor } : {}),
 };
@@ -329,7 +270,7 @@ await dispatcher.start();
 compileWorker?.start();
 // U3a: tell the control plane what this process can run, and keep saying so. The editor's
 // mode selector and `/status` read this row; a stale heartbeat reads as "engine down".
-await recordEngineBoot(handle.db, Object.keys(executors), pyrun ? ["python.run"] : []);
+await recordEngineBoot(handle.db, Object.keys(executors));
 const heartbeat = setInterval(() => {
   void touchEngineHeartbeat(handle.db).catch((err) => log.warn("engine heartbeat failed", { error: String(err) }));
 }, 5_000);
@@ -338,11 +279,9 @@ log.info("engine started", {
   database: config.DATABASE_URL.replace(/\/\/[^@]*@/, "//"),
   telemetry: telemetry.enabled ? "exporting" : "disabled",
   aiExecutor: agentExecutor ? "registered" : "not registered",
-  assetAiExecutor: assetExecutor ? "registered" : "not registered",
   decisionAiExecutor: decisionExecutor ? "registered" : "not registered",
   compiledExecutor: compiledExecutor ? "registered" : "not registered",
   compileWorker: compileWorker ? "running" : "not running (no model configured)",
-  pythonTool: pyrun ? "configured" : "not configured",
 });
 
 /**

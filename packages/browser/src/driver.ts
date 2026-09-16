@@ -93,11 +93,18 @@ export type TargetProbe = {
   frameOrigin: string;
 };
 
+export type LoadState = "domcontentloaded" | "load" | "networkidle";
+export type WaitOptions = { timeout?: number; state?: "attached" | "detached" | "visible" | "hidden" };
+export type NavigationOptions = { timeout?: number; waitUntil?: LoadState };
+
 export type Page = {
-  goto: (url: string) => Promise<void>;
+  /** Browser target identity, when supplied by the driver. */
+  id?: string;
+  goto: (url: string, opts?: NavigationOptions) => Promise<void>;
   click: (selector: string) => Promise<void>;
   type: (selector: string, text: string) => Promise<void>;
-  waitFor: (selector: string, opts?: { timeout?: number }) => Promise<void>;
+  waitFor: (selector: string, opts?: WaitOptions) => Promise<void>;
+  waitForLoadState: (state: LoadState, opts?: { timeout?: number }) => Promise<void>;
   queryAll: (selector: string, fields: ExtractSpec) => Promise<ExtractedRecord[]>;
   /**
    * Resolves `selector` across the page's own frame tree (main frame, then children — never
@@ -119,13 +126,7 @@ export type Page = {
    * budgeted main text. One `evaluate`-style call, kept inside this driver rather than issued
    * as arbitrary page-JS from agent/generated code (§12's rule constrains *that*, not us). */
   perceive: (opts?: PerceiveOptions) => Promise<Perception>;
-  /**
-   * `page.upload` (S5f, techical_plan §13.5/§13.5's "assets and the browser node"): sets
-   * `selector`'s file input to `file.bytes`, in memory — no temp file ever touches disk, no
-   * matter how this ends up implemented underneath. The bytes cross from the asset store
-   * straight into the browser process; nothing about this method knows or cares that its
-   * caller resolved them from an asset ref first.
-   */
+  /** Low-level in-memory file-input primitive; not exposed to browser agents or scripts. */
   upload: (selector: string, file: { name: string; mimeType: string; bytes: Buffer }) => Promise<void>;
   /** `page.scroll` (S4b): a keypress, not a JS scroll — `Page.PageDown/PageUp` moves the
    * viewport the way a real user's keyboard would and needs no in-page `evaluate` at all. */

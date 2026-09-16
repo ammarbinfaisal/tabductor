@@ -1,6 +1,12 @@
 import { loadConfig } from "@tabductor/core";
-import { staticPromptCompiler, type PromptCompiler, type SchemaGenerator } from "@tabductor/engine";
-import { aiPromptCompiler, aiSchemaGenerator, providerFromEnv } from "@tabductor/engine/ai";
+import {
+  staticPromptCompiler,
+  type GraphCompiler,
+  type PromptCompiler,
+  type SchemaGenerator,
+} from "@tabductor/engine";
+import { aiWorkflowChatModel, aiGraphCompiler, aiPromptCompiler, aiSchemaGenerator, providerFromEnv } from "@tabductor/engine/ai";
+import type { Pool } from "pg";
 
 /**
  * The publish-time schema compiler, composed once per process like the db pool. The provider
@@ -11,6 +17,12 @@ import { aiPromptCompiler, aiSchemaGenerator, providerFromEnv } from "@tabductor
  * in their compile-report entry telling the operator exactly what to set.
  */
 const store = globalThis as { __tabductorSchemaGen?: SchemaGenerator; __tabductorPromptCompiler?: PromptCompiler };
+
+export function graphCompiler(pool: Pool): GraphCompiler | undefined {
+  const { ANTHROPIC_API_KEY, OPENAI_API_KEY, SCHEMA_MODEL } = loadConfig();
+  const chosen = providerFromEnv({ ANTHROPIC_API_KEY, OPENAI_API_KEY });
+  return chosen ? aiGraphCompiler({ ...chosen, model: SCHEMA_MODEL, pool }) : undefined;
+}
 
 export function schemaGenerator(): SchemaGenerator {
   store.__tabductorSchemaGen ??= build();
@@ -44,4 +56,10 @@ function build(): SchemaGenerator {
         error: "schema generation unavailable: neither ANTHROPIC_API_KEY nor OPENAI_API_KEY is set",
       }),
   };
+}
+
+export function workflowChatModel(): import("@tabductor/engine").WorkflowChatModel | undefined {
+  const { ANTHROPIC_API_KEY, OPENAI_API_KEY, SCHEMA_MODEL } = loadConfig();
+  const chosen = providerFromEnv({ ANTHROPIC_API_KEY, OPENAI_API_KEY });
+  return chosen ? aiWorkflowChatModel({ ...chosen, model: SCHEMA_MODEL }) : undefined;
 }

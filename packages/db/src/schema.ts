@@ -1,4 +1,5 @@
 import {
+  type AnyPgColumn,
   bigserial,
   boolean,
   check,
@@ -60,15 +61,47 @@ export type OverlapPolicy = (typeof OVERLAP_POLICIES)[number];
  * `packages/engine`, so the graph document's zod enum and the `tasks_kind_check` constraint
  * below read from the same list instead of restating it on each side of the publish boundary.
  *
- * `decision` (S5g, graph-compilation-llm §2.1): the planner kind — `store.query` + `emit`
- * only, the smallest registry in the system. Unlike `asset`, a schedule *may* bind to it
- * (§2.1's kind table) — see `SCHEDULABLE` in `packages/engine/src/graph.ts`.
+ * `decision` owns semantic work and the workflow store (`query`/`insert`/`upsert`). Both
+ * kinds may be scheduled; browser alone can be compiled after trace validation.
  */
-export const TASK_KINDS = ["browser", "asset", "decision"] as const;
+export const TASK_KINDS = ["browser", "decision"] as const;
 export type TaskKind = (typeof TASK_KINDS)[number];
+
+export const accounts = pgTable("accounts", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  createdAt: createdAt(),
+});
+
+export const accountIdentities = pgTable(
+  "account_identities",
+  {
+    provider: text("provider").notNull(),
+    subject: text("subject").notNull(),
+    accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (t) => [primaryKey({ columns: [t.provider, t.subject] }), index("account_identities_account_idx").on(t.accountId)],
+);
+
+export const accountMcpTokens = pgTable(
+  "account_mcp_tokens",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }),
+    tokenSha256: text("token_sha256").notNull(),
+    tokenPrefix: text("token_prefix").notNull(),
+    label: text("label").notNull().default("MCP token"),
+    lastUsedAt: ts("last_used_at"),
+    revokedAt: ts("revoked_at"),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex("account_mcp_tokens_hash_key").on(t.tokenSha256), index("account_mcp_tokens_account_idx").on(t.accountId)],
+);
 
 export const workflows = pgTable("workflows", {
   id: text("id").primaryKey(),
+  accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }),
   userId: text("user_id").notNull(),
   name: text("name").notNull(),
   currentVersionId: text("current_version_id"),
@@ -76,12 +109,40 @@ export const workflows = pgTable("workflows", {
   createdAt: createdAt(),
 });
 
+export const EXECUTION_STATUSES = ["running", "succeeded", "failed", "cancelled"] as const;
+export type ExecutionStatus = (typeof EXECUTION_STATUSES)[number];
+
+/** One externally-triggered traversal, pinned to the version that accepted it. */
+export const workflowExecutions = pgTable(
+  "workflow_executions",
+  {
+    id: text("id").primaryKey(),
+    workflowId: text("workflow_id")
+      .notNull()
+      .references(() => workflows.id, { onDelete: "cascade" }),
+    workflowVersionId: text("workflow_version_id")
+      .notNull()
+      .references(() => workflowVersions.id, { onDelete: "restrict" }),
+    status: text("status").$type<ExecutionStatus>().notNull().default("running"),
+    maxHops: integer("max_hops").notNull(),
+    endedAt: ts("ended_at"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("workflow_executions_workflow_created_idx").on(t.workflowId, t.createdAt),
+    index("workflow_executions_status_idx").on(t.status),
+    check("workflow_executions_status_check", sql`${t.status} in ('running','succeeded','failed','cancelled')`),
+  ],
+);
+
 export const workflowVersions = pgTable("workflow_versions", {
   id: text("id").primaryKey(),
   workflowId: text("workflow_id")
     .notNull()
     .references(() => workflows.id, { onDelete: "cascade" }),
   graphJson: jsonb("graph_json").notNull().default({}),
+  /** Store artifact active with this graph publication; null only before a store exists. */
+  storeSchemaId: text("store_schema_id").references((): AnyPgColumn => storeSchemas.id, { onDelete: "set null" }),
   createdAt: createdAt(),
 });
 
@@ -129,6 +190,8 @@ export const tasks = pgTable(
      * sending the task back through AI runs it has already paid for.
      */
     contentHash: text("content_hash"),
+    /** S8: capability-independent half used to recompute content_hash when grants change. */
+    contentBasisHash: text("content_basis_hash"),
     // -------------------------------------------------------------------------------------
     // -- S6c: promotion / demotion counters (§11's binding numbers: K=2, 3-in-10) ----------
     /** Consecutive `ai` runs that succeeded *and* agreed with their predecessor. Reset by any
@@ -145,14 +208,10 @@ export const tasks = pgTable(
   },
   (t) => [
     uniqueIndex("tasks_version_name_key").on(t.workflowVersionId, t.name),
-    check("tasks_kind_check", sql`${t.kind} in ('browser','asset','decision')`),
-    // §11: asset tasks are never compiled — MCP results and LLM prose have no stable
-    // structure for the script compiler's guards to assert on. One exclusion; `mode` stays an
-    // open domain (a bare `z.string()` in `graphTaskSchema`) so a test-only executor can claim
-    // a value without a schema change — `scripted-browser.test.ts` publishes `mode='scripted'`
-    // through the real publish path. The former `python` clause went with the mode: Python is
-    // the asset node's `python.run` tool now, not a way a task executes.
-    check("tasks_kind_mode_check", sql`not (${t.kind} = 'asset' and ${t.mode} = 'compiled')`),
+    check("tasks_kind_check", sql`${t.kind} in ('browser','decision')`),
+    // Only browser tasks may carry an engine-produced compiled script. `mode` stays open so
+    // test-only executors can register without a schema migration.
+    check("tasks_kind_mode_check", sql`not (${t.kind} = 'decision' and ${t.mode} = 'compiled')`),
   ],
 );
 
@@ -381,6 +440,8 @@ export const events = pgTable(
   "events",
   {
     eventId: uuid("event_id").primaryKey(),
+    /** Null only for legacy rows and platform events outside a workflow execution. */
+    executionId: text("execution_id").references(() => workflowExecutions.id, { onDelete: "cascade" }),
     type: text("type").notNull(),
     sourceTaskId: text("source_task_id"),
     sourceRunId: text("source_run_id"),
@@ -391,13 +452,14 @@ export const events = pgTable(
      * was disabled, which is the normal case — a null reads as "start a root span". */
     traceparent: text("traceparent"),
   },
-  (t) => [index("events_causation_idx").on(t.causationId)],
+  (t) => [index("events_causation_idx").on(t.causationId), index("events_execution_idx").on(t.executionId)],
 );
 
 export const runs = pgTable(
   "runs",
   {
     id: text("id").primaryKey(),
+    executionId: text("execution_id").references(() => workflowExecutions.id, { onDelete: "cascade" }),
     taskId: text("task_id")
       .notNull()
       .references(() => tasks.id, { onDelete: "cascade" }),
@@ -409,6 +471,8 @@ export const runs = pgTable(
     /** Open by design: `stub` today, `ai`/`compiled`/`python` later. Not a closed domain. */
     modeUsed: text("mode_used").notNull(),
     attempt: integer("attempt").notNull().default(0),
+    /** Incremented when an engine claims this run; stale owners cannot finish it. */
+    leaseGeneration: integer("lease_generation").notNull().default(0),
     /** Retry backoff gate (§15): a `queued` run is invisible to the engine's pickup poll
      * until now() passes this. Null means "runnable immediately". */
     notBefore: ts("not_before"),
@@ -425,6 +489,7 @@ export const runs = pgTable(
     index("runs_status_heartbeat_idx").on(t.status, t.heartbeatAt),
     index("runs_deadline_idx").on(t.status, t.deadlineAt),
     index("runs_queued_idx").on(t.status, t.notBefore),
+    index("runs_execution_idx").on(t.executionId),
   ],
 );
 
@@ -498,6 +563,49 @@ export const approvals = pgTable(
       .where(sql`${t.status} = 'pending'`),
   ],
 );
+// ---------------------------------------------------------------------------------------
+
+// -- S8: graph-authoring compiler artifacts ----------------------------------------------
+
+export const PROPOSED_GRANT_STATUSES = [
+  "pending",
+  "approved",
+  "rejected",
+  "stripped_by_baseline",
+] as const;
+export type ProposedGrantStatus = (typeof PROPOSED_GRANT_STATUSES)[number];
+
+export const proposedGrants = pgTable(
+  "proposed_grants",
+  {
+    id: text("id").primaryKey(),
+    workflowVersionId: text("workflow_version_id")
+      .notNull()
+      .references(() => workflowVersions.id, { onDelete: "cascade" }),
+    taskRef: text("task_ref").notNull(),
+    grantKey: text("grant_key").notNull(),
+    grantValue: text("grant_value").notNull(),
+    requiresApproval: boolean("requires_approval").notNull().default(false),
+    status: text("status").$type<ProposedGrantStatus>().notNull().default("pending"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("proposed_grants_version_idx").on(t.workflowVersionId),
+    uniqueIndex("proposed_grants_identity_key").on(t.workflowVersionId, t.taskRef, t.grantKey, t.grantValue),
+    check(
+      "proposed_grants_status_check",
+      sql`${t.status} in ('pending','approved','rejected','stripped_by_baseline')`,
+    ),
+  ],
+);
+
+export const compileReports = pgTable("compile_reports", {
+  workflowVersionId: text("workflow_version_id")
+    .primaryKey()
+    .references(() => workflowVersions.id, { onDelete: "cascade" }),
+  reportJson: jsonb("report_json").notNull(),
+  createdAt: createdAt(),
+});
 // ---------------------------------------------------------------------------------------
 
 /** Consumer-side dedupe (§6): one row per (task, event); the unique pk is the claim. */
@@ -658,9 +766,6 @@ export const engineStatus = pgTable("engine_status", {
   id: text("id").primaryKey(),
   /** `executorKey(kind, mode)` strings, e.g. `"browser:ai"`. */
   executors: jsonb("executors").$type<string[]>().notNull().default([]),
-  /** Tool-level abilities that are not a `(kind, mode)` pair — `"python.run"` when the
-   * engine has a `PYRUNNER_URL`. The editor reads this to say what an asset node can do. */
-  capabilities: jsonb("capabilities").$type<string[]>().notNull().default([]),
   bootedAt: ts("booted_at").notNull().defaultNow(),
   heartbeatAt: ts("heartbeat_at").notNull().defaultNow(),
 });
@@ -679,6 +784,104 @@ export const endpointLeases = pgTable("endpoint_leases", {
   runId: text("run_id").notNull(),
   heartbeatAt: ts("heartbeat_at").notNull().defaultNow(),
 });
+
+export const BROWSER_SESSION_STATUSES = [
+  "queued", "allocating", "ready", "running", "stopping", "ended", "failed",
+] as const;
+export type BrowserSessionStatus = (typeof BROWSER_SESSION_STATUSES)[number];
+export const BROWSER_WORKER_STATUSES = ["warm", "allocated", "draining", "dead"] as const;
+export type BrowserWorkerStatus = (typeof BROWSER_WORKER_STATUSES)[number];
+
+export const browserProfiles = pgTable(
+  "browser_profiles",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    snapshotBlobRef: text("snapshot_blob_ref"),
+    snapshotGeneration: integer("snapshot_generation").notNull().default(0),
+    fingerprintJson: jsonb("fingerprint_json").notNull().default({}),
+    proxyRef: text("proxy_ref"),
+    createdAt: createdAt(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("browser_profiles_account_name_key").on(t.accountId, t.name),
+    index("browser_profiles_account_idx").on(t.accountId),
+  ],
+);
+
+export const browserSessions = pgTable(
+  "browser_sessions",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }),
+    executionId: text("execution_id").references(() => workflowExecutions.id, { onDelete: "set null" }),
+    profileId: text("profile_id").notNull().references(() => browserProfiles.id, { onDelete: "restrict" }),
+    status: text("status").$type<BrowserSessionStatus>().notNull().default("queued"),
+    generation: integer("generation").notNull().default(1),
+    workerId: text("worker_id"),
+    podName: text("pod_name"),
+    inputOwner: text("input_owner").notNull().default("ai"),
+    inputOwnerGeneration: integer("input_owner_generation").notNull().default(1),
+    readyAt: ts("ready_at"),
+    heartbeatAt: ts("heartbeat_at"),
+    endedAt: ts("ended_at"),
+    error: text("error"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("browser_sessions_account_created_idx").on(t.accountId, t.createdAt),
+    index("browser_sessions_status_idx").on(t.status),
+    check("browser_sessions_status_check", sql`${t.status} in ('queued','allocating','ready','running','stopping','ended','failed')`),
+    check("browser_sessions_input_owner_check", sql`${t.inputOwner} in ('ai','human','paused')`),
+  ],
+);
+
+export const browserProfileLeases = pgTable("browser_profile_leases", {
+  profileId: text("profile_id").primaryKey().references(() => browserProfiles.id, { onDelete: "cascade" }),
+  sessionId: text("session_id").notNull().references(() => browserSessions.id, { onDelete: "cascade" }),
+  generation: integer("generation").notNull(),
+  heartbeatAt: ts("heartbeat_at").notNull().defaultNow(),
+});
+
+export const browserAllocationRequests = pgTable(
+  "browser_allocation_requests",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }),
+    sessionId: text("session_id").notNull().references(() => browserSessions.id, { onDelete: "cascade" }),
+    status: text("status").notNull().default("queued"),
+    attempts: integer("attempts").notNull().default(0),
+    notBefore: ts("not_before").notNull().defaultNow(),
+    claimedAt: ts("claimed_at"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("browser_allocation_requests_session_key").on(t.sessionId),
+    index("browser_allocation_requests_queue_idx").on(t.status, t.notBefore, t.createdAt),
+    check("browser_allocation_requests_status_check", sql`${t.status} in ('queued','claimed','fulfilled','failed','cancelled')`),
+  ],
+);
+
+export const browserWorkers = pgTable(
+  "browser_workers",
+  {
+    id: text("id").primaryKey(),
+    podName: text("pod_name").notNull(),
+    status: text("status").$type<BrowserWorkerStatus>().notNull().default("warm"),
+    sessionId: text("session_id").references(() => browserSessions.id, { onDelete: "set null" }),
+    generation: integer("generation").notNull().default(0),
+    heartbeatAt: ts("heartbeat_at").notNull().defaultNow(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("browser_workers_pod_key").on(t.podName),
+    uniqueIndex("browser_workers_live_session_key").on(t.sessionId).where(sql`${t.sessionId} is not null and ${t.status} = 'allocated'`),
+    index("browser_workers_status_idx").on(t.status),
+    check("browser_workers_status_check", sql`${t.status} in ('warm','allocated','draining','dead')`),
+  ],
+);
 
 /** `ctx.state` (§12) — per-task key/value, used by emitIfNew and compiled scripts. */
 export const taskState = pgTable(
@@ -789,114 +992,6 @@ export const secretAccessLog = pgTable(
   (t) => [index("secret_access_log_run_idx").on(t.runId)],
 );
 
-// -- S5d: asset store (techical_plan §13.5, §14) --------------------------------------
-//
-// User deliverables, not trace exhaust: no TTL, and nothing here cascades away when a run
-// or a task is deleted. Reads are open across a user's workflows (`assets` carries no
-// workflow id at all, only `user_id`); writes are scoped by `asset_write_grants`, checked
-// in `packages/assets`, not by anything the database enforces — the grant table is data the
-// tool layer consults, the same posture `AllowAllGate` uses everywhere else pre-Phase-7.
-
-/**
- * One row per `(user_id, path)` — the current pointer. `blob_ref`/`sha256`/`size` mirror the
- * *current* version's row in `asset_versions` so a reader wanting only the latest content
- * never joins; `current_version` is the version counter, bumped by every write.
- */
-export const assets = pgTable(
-  "assets",
-  {
-    id: text("id").primaryKey(),
-    userId: text("user_id").notNull(),
-    path: text("path").notNull(),
-    mime: text("mime").notNull(),
-    size: integer("size").notNull(),
-    sha256: text("sha256").notNull(),
-    blobRef: text("blob_ref").notNull(),
-    currentVersion: integer("current_version").notNull().default(1),
-    createdAt: createdAt(),
-    updatedAt: ts("updated_at").notNull().defaultNow(),
-  },
-  (t) => [uniqueIndex("assets_user_path_key").on(t.userId, t.path)],
-);
-
-/**
- * Every write's history. `(asset_id, version)` is the natural key — versions are assigned
- * by the writer as `assets.current_version` is bumped, never reused. **Overwrites never
- * destroy the prior blob**: this table's old rows keep pointing at their own `blob_ref`,
- * which stays a valid `sha256:<hex>` key in the content-addressed store regardless of what
- * `assets.blob_ref` has moved on to — a property of `BlobStore` being content-addressed
- * (`packages/browser/src/blob-store.ts`), not a check this table or any code performs.
- */
-export const assetVersions = pgTable(
-  "asset_versions",
-  {
-    assetId: text("asset_id")
-      .notNull()
-      .references(() => assets.id, { onDelete: "cascade" }),
-    version: integer("version").notNull(),
-    blobRef: text("blob_ref").notNull(),
-    sha256: text("sha256").notNull(),
-    size: integer("size").notNull(),
-    /** No `.references()`, deliberately — same reasoning as `endpointLeases.runId`: an
-     * asset must outlive the run that wrote it (S5f), so this column is never cascade-deleted
-     * when its run is. */
-    runId: text("run_id"),
-    createdAt: createdAt(),
-  },
-  (t) => [primaryKey({ columns: [t.assetId, t.version] })],
-);
-
-/**
- * Per-task write scope (§13.5 decision 14): a task with at least one row here may write only
- * to a path matching one of its globs; a task with none may write anywhere under its own
- * user namespace (the `AllowAllGate` default, pre-Phase-7 — see `packages/assets/src/grants.ts`).
- * Reads are never grant-scoped, so this table has nothing to say about `assets.read`/`list`.
- */
-export const assetWriteGrants = pgTable(
-  "asset_write_grants",
-  {
-    taskId: text("task_id")
-      .notNull()
-      .references(() => tasks.id, { onDelete: "cascade" }),
-    pathGlob: text("path_glob").notNull(),
-  },
-  (t) => [primaryKey({ columns: [t.taskId, t.pathGlob] })],
-);
-// ---------------------------------------------------------------------------------------
-
-// -- S5c: MCP servers (techical_plan §13, §14) ----------------------------------------
-//
-// One row per user-configured MCP server. `config_json` is zod-validated per `transport`
-// in `packages/mcp` (stdio: command/args/env names; http: url) and **never carries a
-// credential value** — a server that needs one names the env var or header it should land
-// in, and the value comes from `secret_name` (nullable: most servers need no credential at
-// all), resolved through the S5b broker at connect/call time. That is a schema-level
-// property (there is no column here shaped to hold a secret), not a convention this table
-// has to be trusted to honour.
-
-export const MCP_TRANSPORTS = ["stdio", "http"] as const;
-export type McpTransport = (typeof MCP_TRANSPORTS)[number];
-
-export const mcpServers = pgTable(
-  "mcp_servers",
-  {
-    id: text("id").primaryKey(),
-    userId: text("user_id").notNull(),
-    label: text("label").notNull(),
-    transport: text("transport").$type<McpTransport>().notNull(),
-    configJson: jsonb("config_json").notNull(),
-    /** Names a row in `secrets` (S5b) — the credential *value* lives there, encrypted, and
-     * never here. `null` for a server that needs no credential. */
-    secretName: text("secret_name"),
-    createdAt: createdAt(),
-  },
-  (t) => [
-    uniqueIndex("mcp_servers_user_label_key").on(t.userId, t.label),
-    check("mcp_servers_transport_check", sql`${t.transport} in ('stdio','http')`),
-  ],
-);
-// ---------------------------------------------------------------------------------------
-
 // -- S5g: workflow data store (graph-compilation-llm §3, §9) --------------------------
 //
 // The *platform* half of the store — the artifact and the write-grant table. The workflow's
@@ -938,8 +1033,7 @@ export const storeSchemas = pgTable(
 );
 
 /**
- * Per-task write scope into the store — the exact `asset_write_grants` pattern (S5d) applied
- * to `store.insert`/`store.upsert` instead of the blob namespace: a task with at least one row
+ * Per-task write scope into the store: a decision with at least one row
  * here may write only the named tables; a task with none may write any table the workflow's
  * store schema declares (the `AllowAllGate`-era default every ungranted write table follows
  * pre-Phase-7). Reads are never grant-scoped — `store.query` is open within the workflow, per
@@ -967,11 +1061,17 @@ export type NewRun = typeof runs.$inferInsert;
 export type TaskGrantRow = typeof taskGrants.$inferSelect;
 export type AccountBaselineRuleRow = typeof accountBaselineRules.$inferSelect;
 export type ApprovalRow = typeof approvals.$inferSelect;
+export type ProposedGrantRow = typeof proposedGrants.$inferSelect;
+export type CompileReportRow = typeof compileReports.$inferSelect;
 export type TaskRow = typeof tasks.$inferSelect;
 export type EventDefRow = typeof eventDefs.$inferSelect;
 export type TaskEmitRow = typeof taskEmits.$inferSelect;
 export type TaskConsumeRow = typeof taskConsumes.$inferSelect;
 export type WorkflowRow = typeof workflows.$inferSelect;
+export type WorkflowExecutionRow = typeof workflowExecutions.$inferSelect;
+export type AccountRow = typeof accounts.$inferSelect;
+export type AccountIdentityRow = typeof accountIdentities.$inferSelect;
+export type AccountMcpTokenRow = typeof accountMcpTokens.$inferSelect;
 export type WorkflowVersionRow = typeof workflowVersions.$inferSelect;
 export type ScheduleRow = typeof schedules.$inferSelect;
 export type WorkflowShareRow = typeof workflowShares.$inferSelect;
@@ -979,15 +1079,15 @@ export type CdpEndpointRow = typeof cdpEndpoints.$inferSelect;
 export type NewCdpEndpoint = typeof cdpEndpoints.$inferInsert;
 export type EngineStatusRow = typeof engineStatus.$inferSelect;
 export type EndpointLeaseRow = typeof endpointLeases.$inferSelect;
+export type BrowserProfileRow = typeof browserProfiles.$inferSelect;
+export type BrowserSessionRow = typeof browserSessions.$inferSelect;
+export type BrowserProfileLeaseRow = typeof browserProfileLeases.$inferSelect;
+export type BrowserAllocationRequestRow = typeof browserAllocationRequests.$inferSelect;
+export type BrowserWorkerRow = typeof browserWorkers.$inferSelect;
 export type SecretRow = typeof secrets.$inferSelect;
 export type NewSecret = typeof secrets.$inferInsert;
 export type SecretGrantRow = typeof secretGrants.$inferSelect;
 export type SecretAccessLogRow = typeof secretAccessLog.$inferSelect;
-export type AssetRow = typeof assets.$inferSelect;
-export type AssetVersionRow = typeof assetVersions.$inferSelect;
-export type AssetWriteGrantRow = typeof assetWriteGrants.$inferSelect;
-export type McpServerRow = typeof mcpServers.$inferSelect;
-export type NewMcpServer = typeof mcpServers.$inferInsert;
 export type StoreSchemaRow = typeof storeSchemas.$inferSelect;
 export type NewStoreSchema = typeof storeSchemas.$inferInsert;
 export type StoreWriteGrantRow = typeof storeWriteGrants.$inferSelect;

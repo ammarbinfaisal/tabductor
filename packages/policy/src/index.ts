@@ -1,7 +1,10 @@
 export {
   AllowAllGate,
   DatabasePolicyGate,
+  RuntimeSafetyGate,
   GRANT_KEYS,
+  baselineRuleSchema,
+  grantValueMatches,
   type PolicyGate,
   type Verdict,
   type TaskCtx,
@@ -17,12 +20,16 @@ export {
 export {
   addBaselineRule,
   decideApproval,
+  decideProposedGrant,
   grantTask,
   listApprovals,
+  listProposedGrants,
   listBaselineRules,
   listTaskGrants,
   removeBaselineRule,
   revokeTaskGrant,
   type ApprovalDecision,
+  type ProposedGrantDecision,
+  type ProposedGrantDecisionResult,
   type TaskGrantInput,
 } from "./store.js";

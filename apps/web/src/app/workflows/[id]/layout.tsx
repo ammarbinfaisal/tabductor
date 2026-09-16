@@ -12,9 +12,8 @@ export default async function WorkflowLayout({
   return (
     <>
       <nav className="tabbar">
-        <Link href={`/workflows/${id}`}>Editor</Link>
+        <Link href={`/workflows/${id}`}>Workflow</Link>
         <Link href={`/workflows/${id}/runs`}>Runs</Link>
-        <Link href={`/workflows/${id}/events`}>Events</Link>
         <Link href={`/workflows/${id}/store`}>Store</Link>
         <Link href={`/workflows/${id}/share`}>Share</Link>
         <Link href={`/workflows/${id}/settings`}>Settings</Link>

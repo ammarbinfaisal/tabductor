@@ -5,6 +5,7 @@ import {
   events,
   runs,
   taskEmits,
+  taskState,
   tasks,
   type Db,
   type EventRow,
@@ -21,7 +22,6 @@ import {
   dueQueuedRuns,
   finishRun,
   heartbeat,
-  recoverOrphanedApprovalRuns,
   reapTimedOutRuns,
   recoverStaleRuns,
   startRun,
@@ -180,11 +180,14 @@ export function createEngine(deps: EngineDeps): Engine {
     const started = await startRun(db, runId, runTimeoutMs(task));
     if (!started) return; // already taken, or still inside its retry backoff
 
-    const ping = setInterval(() => void heartbeat(db, runId).catch(() => {}), heartbeatIntervalMs);
+    const abort = new AbortController();
+    const ping = setInterval(() => void heartbeat(db, runId, started.leaseGeneration)
+      .then((active) => { if (!active) abort.abort("run ownership ended"); })
+      .catch(() => {}), heartbeatIntervalMs);
     ping.unref?.();
     let result: RunResult;
     try {
-      result = await runExecutor(executor, { run: started, task, trigger });
+      result = await runExecutor(executor, { run: started, task, trigger }, abort.signal);
     } finally {
       clearInterval(ping);
     }
@@ -209,6 +212,7 @@ export function createEngine(deps: EngineDeps): Engine {
       status,
       error: result.ok ? undefined : result.error,
       causationId,
+      leaseGeneration: run.leaseGeneration,
     });
     // Only the writer that actually moved the run counts it — the watchdog may have reaped
     // this run first, in which case it is `timed_out` and belongs to whoever reaped it.
@@ -220,11 +224,13 @@ export function createEngine(deps: EngineDeps): Engine {
   const runExecutor = async (
     executor: ExecutorRegistry[string],
     ctx: { run: RunRow; task: TaskRow; trigger: EventRow | null },
+    signal: AbortSignal,
   ): Promise<RunResult> => {
     const handle: RunHandle = {
       run: ctx.run,
       task: ctx.task,
       trigger: ctx.trigger,
+      signal,
       emit: (type, packet, opts) => emitFromRun(db, ctx, type, packet, opts),
       declaredEmits: () => declaredEmitsOf(db, ctx.task),
     };
@@ -267,11 +273,10 @@ export function createEngine(deps: EngineDeps): Engine {
       // the retry policy exactly like any other failure — re-run from the start, never
       // resume, so a half-finished browser run is simply retried.
       const recovered = await recoverStaleRuns(db, staleHeartbeatMs);
-      const orphanedApprovals = await recoverOrphanedApprovalRuns(db);
-      if (recovered.length + orphanedApprovals.length) {
-        metrics?.crashRecoveredRuns.add(recovered.length + orphanedApprovals.length);
+      if (recovered.length) {
+        metrics?.crashRecoveredRuns.add(recovered.length);
       }
-      for (const run of [...recovered, ...orphanedApprovals]) {
+      for (const run of recovered) {
         const [task] = await db.select().from(tasks).where(eq(tasks.id, run.taskId));
         if (task) await scheduleRetry(db, { run, task, error: run.error });
       }
@@ -329,15 +334,23 @@ async function emitFromRun(
   ctx: { run: RunRow; task: TaskRow; trigger: EventRow | null },
   type: string,
   packet: unknown,
-  opts?: { withTx?: (trx: Db) => Promise<void> },
-): Promise<EventRow> {
+  opts?: { withTx?: (trx: Db) => Promise<void>; dedupeKey?: string },
+): Promise<EventRow | null> {
   const check = await validatePacket(db, ctx.task.id, type, packet);
   if (!check.ok) throw new Error(check.error);
 
   return db.transaction(async (trx) => {
+    if (opts?.dedupeKey) {
+      const key = `emit:${type}:${opts.dedupeKey}`;
+      const claimed = await trx.insert(taskState).values({ taskId: ctx.task.id, key, value: {} })
+        .onConflictDoNothing()
+        .returning({ taskId: taskState.taskId });
+      if (claimed.length === 0) return null;
+    }
     if (opts?.withTx) await opts.withTx(trx);
     return publish(trx, {
       type,
+      executionId: ctx.run.executionId,
       sourceTaskId: ctx.task.id,
       sourceRunId: ctx.run.id,
       causationId: ctx.trigger?.eventId ?? null,

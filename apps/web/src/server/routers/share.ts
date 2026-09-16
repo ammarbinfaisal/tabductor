@@ -8,7 +8,7 @@ import {
 } from "@tabductor/engine";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { procedure, router } from "../trpc.js";
+import { procedure, requireShareOwner, requireWorkflowOwner, router } from "../trpc.js";
 
 /**
  * The owner's side of sharing (S2d). Creating and rotating are the only operations in the
@@ -23,16 +23,20 @@ export const shareRouter = router({
    */
   create: procedure
     .input(z.object({ workflowId: z.string().min(1) }))
-    .mutation(async ({ ctx, input }) => ({
-      share: await createShare(ctx.db, input),
-      preview: await visibilityPreview(ctx, input.workflowId),
-    })),
+    .mutation(async ({ ctx, input }) => {
+      await requireWorkflowOwner(ctx, input.workflowId);
+      return { share: await createShare(ctx.db, input), preview: await visibilityPreview(ctx, input.workflowId) };
+    }),
 
   rotate: procedure
     .input(z.object({ shareId: z.string().min(1) }))
-    .mutation(({ ctx, input }) => rotateShare(ctx.db, input)),
+    .mutation(async ({ ctx, input }) => {
+      await requireShareOwner(ctx, input.shareId);
+      return rotateShare(ctx.db, input);
+    }),
 
   revoke: procedure.input(z.object({ shareId: z.string().min(1) })).mutation(async ({ ctx, input }) => {
+    await requireShareOwner(ctx, input.shareId);
     await revokeShare(ctx.db, input);
     return { ok: true } as const;
   }),
@@ -40,7 +44,10 @@ export const shareRouter = router({
   /** Prefixes and timestamps. Never a token. */
   list: procedure
     .input(z.object({ workflowId: z.string().min(1) }))
-    .query(({ ctx, input }) => listShares(ctx.db, input)),
+    .query(async ({ ctx, input }) => {
+      await requireWorkflowOwner(ctx, input.workflowId);
+      return listShares(ctx.db, input);
+    }),
 
   /**
    * What a viewer would see, without creating a link — the diff surface for the moment an
@@ -48,20 +55,21 @@ export const shareRouter = router({
    */
   preview: procedure
     .input(z.object({ workflowId: z.string().min(1) }))
-    .query(({ ctx, input }) => visibilityPreview(ctx, input.workflowId)),
+    .query(async ({ ctx, input }) => {
+      await requireWorkflowOwner(ctx, input.workflowId);
+      return visibilityPreview(ctx, input.workflowId);
+    }),
 });
 
 export type VisibilityPreview = {
-  nodes: string[];
-  publicEvents: Array<{ type: string; emitters: string[]; fields: string[] }>;
-  privateEvents: Array<{ type: string; emitters: string[] }>;
+  publicEvents: Array<{ type: string; fields: string[] }>;
+  privateEvents: Array<{ type: string }>;
 };
 
 /**
- * Built from the same `publicGraph` read model the public view uses, so the preview cannot
- * drift from the thing it previews. Visibility is a property of the *event*, so the
- * preview lists events with their emitters rather than emitters with their events; `fields`
- * comes from the compiled packet schema, which is exactly what a viewer gets to read.
+ * Built from the same minimized read model as the public overview, then reduced to output
+ * contracts. Internal task identities and topology do not cross this owner-facing API either;
+ * `fields` comes from the compiled packet schema, exactly what a viewer can read.
  */
 async function visibilityPreview(
   ctx: { db: Parameters<typeof getWorkflow>[0] },
@@ -69,19 +77,16 @@ async function visibilityPreview(
 ): Promise<VisibilityPreview> {
   const workflow = await getWorkflow(ctx.db, workflowId);
   if (!workflow) throw new TRPCError({ code: "NOT_FOUND", message: `no workflow "${workflowId}"` });
-  if (!workflow.currentVersionId) return { nodes: [], publicEvents: [], privateEvents: [] };
+  if (!workflow.currentVersionId) return { publicEvents: [], privateEvents: [] };
 
   const graph = await publicGraph(ctx.db, { versionId: workflow.currentVersionId });
-  const emittersOf = (type: string): string[] =>
-    graph.tasks.filter((t) => t.emits.includes(type)).map((t) => t.name);
   return {
-    nodes: graph.tasks.map((t) => t.name),
     publicEvents: graph.events
       .filter((e) => e.public)
-      .map((e) => ({ type: e.type, emitters: emittersOf(e.type), fields: schemaFields(e.packetSchema) })),
+      .map((e) => ({ type: e.type, fields: schemaFields(e.packetSchema) })),
     privateEvents: graph.events
       .filter((e) => !e.public)
-      .map((e) => ({ type: e.type, emitters: emittersOf(e.type) })),
+      .map((e) => ({ type: e.type })),
   };
 }
 

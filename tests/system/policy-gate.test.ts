@@ -4,14 +4,12 @@ import { AllowAllGate, type TaskCtx } from "@tabductor/policy";
 const ctx: TaskCtx = { taskId: "task_1", runId: "run_1" };
 
 describe("AllowAllGate", () => {
-  it("allows actions, network reads and MCP calls, and redacts nothing", async () => {
+  it("allows actions and network reads, and redacts nothing", async () => {
     const gate = new AllowAllGate({ navAllowlist: [] });
     expect(await gate.checkAction(ctx, { kind: "click", selector: "#go" })).toEqual({ allow: true });
     expect(await gate.checkNetworkRead(ctx, { index: 0, url: "http://x" }, { body: true })).toEqual({
       allow: true,
     });
-    expect(await gate.checkMcpCall(ctx, "mcp.imagegen.create")).toEqual({ allow: true });
-
     const payload = { headers: { authorization: "Bearer secret" }, body: "hi" };
     await expect(gate.redact(ctx, payload)).resolves.toBe(payload); // identity until Phase 7
   });

@@ -26,8 +26,7 @@ export const PROMOTE_AFTER_CLEAN_RUNS = 1;
 export const DEMOTE_DEOPTS = 3;
 export const DEOPT_WINDOW = 10;
 
-/** Never advance for a kind that is not compiled — an asset task must not accumulate toward a
- * promotion `compileTask`'s selector would refuse anyway. */
+/** Never advance for a kind that is not compiled. */
 const COMPILABLE_KINDS = new Set(["browser"]);
 
 export type EligibilityOutcome = { eligible: boolean; cleanRuns: number; reason: string };

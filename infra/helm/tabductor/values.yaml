@@ -1,0 +1,56 @@
+image:
+  repository: tabductor-app
+  tag: local
+  pullPolicy: IfNotPresent
+
+controlPlane:
+  enabled: true
+  webReplicas: 1
+  engineReplicas: 1
+
+fleet:
+  enabled: true
+  maxAllocated: 3
+  warmSlots: 1
+  workerImage: tabductor-browser-worker:local
+  workerPullPolicy: IfNotPresent
+  workerTokenKey: local-staging-worker-token-key-change-me
+
+migration:
+  enabled: false
+
+postgres:
+  enabled: true
+  image: postgres:16-alpine
+  storagePath: /var/local/tabductor-staging/postgres
+  database: tabductor
+  user: tabductor
+  password: tabductor
+
+minio:
+  enabled: true
+  image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+  storagePath: /var/local/tabductor-staging/minio
+  accessKey: tabductor
+  secretKey: tabductor
+  bucket: tabductor-blobs
+
+secrets:
+  storagePath: /var/local/tabductor-staging/secrets
+
+fixtureMode:
+  enabled: true
+
+service:
+  nodePort: 30080
+
+resources:
+  web:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: "1", memory: 1Gi }
+  engine:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: "1", memory: 1Gi }
+  fleet:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }

@@ -72,6 +72,16 @@ export type NetworkReadResult = {
   response_headers?: NetworkHeaders;
 };
 
+export type NetworkWaitOptions = {
+  /** Literal URL substring, as in network.list. */
+  urlPattern: string;
+  method?: string;
+  status?: number;
+  /** Exclusive session request index; defaults to the last explicit navigation boundary. */
+  afterIndex?: number;
+  timeout?: number;
+};
+
 export type NetworkApi = {
   /**
    * Filtered by substring match on `url` — not glob — because a substring check is the one
@@ -80,6 +90,7 @@ export type NetworkApi = {
    * specific one.
    */
   list: (opts?: { urlPattern?: string; limit?: number }) => Promise<NetworkListResult>;
+  waitForResponse: (opts: NetworkWaitOptions) => Promise<NetworkListRecord>;
   body: (index: number) => Promise<Buffer>;
   /**
    * §9 step 3: each requested part is gated through `PolicyGate.checkNetworkRead`
@@ -166,6 +177,9 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
   const partsOf = new Map<number, NetworkParts>();
   /** Connects a driver-level record (identity, no index) to the slot this session gave it. */
   const indexOf = new WeakMap<NetworkRecord, number>();
+  let navigationBoundary = -1;
+  let closed = false;
+  const networkWaiters = new Set<() => void>();
 
   /**
    * Latched for the life of the session, across every page it opens (S6a). A dialog on a
@@ -202,6 +216,7 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
         status: entry.status,
         timings: entry.timings,
       });
+      for (const notify of networkWaiters) notify();
     },
   };
 
@@ -462,24 +477,86 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
     }
   };
 
+  // Longer AI waits must still fit inside the session's remaining wall-clock budget.
+  const waitWithinBudget = async <T>(action: string, timeout: number | undefined, fn: (ms: number) => Promise<T>): Promise<T> => {
+    const requested = timeout ?? 15_000;
+    if (!Number.isFinite(requested) || requested <= 0 || requested > 120_000) {
+      throw new Error("wait timeout must be between 1 and 120000ms");
+    }
+    const remaining = limits?.maxWallMs === undefined ? Infinity : limits.maxWallMs - (Date.now() - openedAt);
+    if (remaining <= 0) return limitBreach(action, "max_wall_ms", {});
+    try {
+      const result = await fn(Math.min(requested, remaining));
+      if (wallClockExceeded()) return limitBreach(action, "max_wall_ms", {});
+      return result;
+    } catch (err) {
+      if (remaining <= requested && Date.now() - openedAt >= (limits?.maxWallMs ?? Infinity)) {
+        return limitBreach(action, "max_wall_ms", {});
+      }
+      throw err;
+    }
+  };
+
+  const networkWait = (opts: NetworkWaitOptions): Promise<NetworkListRecord> => {
+    const afterIndex = opts.afterIndex ?? navigationBoundary;
+    return act("network.waitForResponse", { ...opts, afterIndex }, () => {
+      if (!opts.urlPattern || !Number.isInteger(afterIndex) || afterIndex < -1) {
+        throw new Error("waitForResponse requires a URL substring and afterIndex >= -1");
+      }
+      return waitWithinBudget("network.waitForResponse", opts.timeout, (timeout) =>
+        new Promise<NetworkListRecord>((resolve, reject) => {
+          const finish = (err?: Error, record?: NetworkListRecord): void => {
+            clearTimeout(timer);
+            networkWaiters.delete(check);
+            if (err) reject(err);
+            else resolve({ ...record!, timings: { ...record!.timings } });
+          };
+          const check = (): void => {
+            if (closed) return finish(new Error("browser session closed while waiting for response"));
+            const match = networkRecords.find((r) =>
+              r.index > afterIndex && r.url.includes(opts.urlPattern) &&
+              r.timings.endedAt !== null && r.status !== null &&
+              (opts.method === undefined || r.method === opts.method.toUpperCase()) &&
+              (opts.status === undefined || r.status === opts.status),
+            );
+            if (match) finish(undefined, match);
+          };
+          const timer = setTimeout(() => finish(new Error(`Timed out after ${timeout}ms waiting for response: ${opts.urlPattern}`)), timeout);
+          networkWaiters.add(check);
+          check(); // Also catches a response that finished between the action and this tool call.
+        }),
+      );
+    }, { detail: (record) => ({ index: record.index, url: record.url, method: record.method, status: record.status, timings: record.timings }) });
+  };
+
   /** Wraps one raw driver page — the initial page and every `openTab()` page share this. */
-  const makePage = (raw: Page): Page => ({
-    async goto(url) {
+  const makePage = (raw: Page): Page => {
+    const pageAct: typeof act = (action, detail, fn, onResult) => act(action, { ...detail, pageId: raw.id }, fn, onResult);
+    return {
+    id: raw.id,
+    async goto(url, opts) {
       visitCount++;
       if (limits?.maxVisits !== undefined && visitCount > limits.maxVisits) {
         return limitBreach("goto", "max_visits", { url });
       }
-      return act("goto", { url }, () => raw.goto(url));
+      return pageAct("goto", { url, ...opts }, () => {
+        navigationBoundary = networkRecords.length - 1;
+        return waitWithinBudget("goto", opts?.timeout, (timeout) => raw.goto(url, { ...opts, timeout }));
+      });
     },
-    click: (selector) => act("click", { selector }, () => raw.click(selector)),
+    click: (selector) => pageAct("click", { selector }, () => raw.click(selector)),
     // The text is the *point* of not tracing it: this is the method `secrets.fill` will
     // reach for in S5b, and a trace that recorded what was typed would be the leak that
     // subphase's central test looks for. Its length is enough to debug with.
     type: (selector, text) =>
-      act("type", { selector, length: text.length }, () => raw.type(selector, text)),
+      pageAct("type", { selector, length: text.length }, () => raw.type(selector, text)),
     waitFor: (selector, opts) =>
-      act("waitFor", { selector, timeout: opts?.timeout }, () => raw.waitFor(selector, opts)),
-    // Untraced passthroughs, deliberately outside `act()`: no policy check, no trace entry —
+      pageAct("waitFor", { selector, ...opts }, () =>
+        waitWithinBudget("waitFor", opts?.timeout, (timeout) => raw.waitFor(selector, { ...opts, timeout }))),
+    waitForLoadState: (state, opts) =>
+      pageAct("waitForLoadState", { state, timeout: opts?.timeout }, () =>
+        waitWithinBudget("waitForLoadState", opts?.timeout, (timeout) => raw.waitForLoadState(state, { timeout }))),
+    // Untraced passthroughs, deliberately outside `pageAct()`: no policy check, no trace entry —
     // the secrets broker (S5b) writes its own `action`/`policy_denied` rows with the outcome
     // it decided, and `insertTextRaw`'s whole point is a call site that leaves nothing in the
     // trace for its `text` argument to leak into (`packages/secrets/src/broker.ts`).
@@ -487,14 +564,14 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
     insertTextRaw: (selector, text) => raw.insertTextRaw(selector, text),
     // Traced by name/mime/size only, never the bytes — the same "count or length, not
     // content" rule `type`/`queryAll`/`perceive` already follow. The bytes' own provenance
-    // and integrity live in the asset store (`sha256`, content-addressed); a second copy in
+    // and integrity belong to the caller; a second copy in
     // the trace would be redundant exhaust, not evidence.
     upload: (selector, file) =>
-      act("upload", { selector, name: file.name, mime: file.mimeType, size: file.bytes.byteLength }, () =>
+      pageAct("upload", { selector, name: file.name, mime: file.mimeType, size: file.bytes.byteLength }, () =>
         raw.upload(selector, file),
       ),
     queryAll: (selector, fields: ExtractSpec) =>
-      act(
+      pageAct(
         "queryAll",
         { selector, fields: Object.keys(fields) },
         () => raw.queryAll(selector, fields),
@@ -503,29 +580,30 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
         { detail: (records) => ({ count: records.length }) },
       ),
     perceive: (opts) =>
-      act(
+      pageAct(
         "perceive",
         { maxChars: opts?.maxChars },
         () => raw.perceive(opts),
         {
           // Counts only, never the elements or the text themselves — the same rule
           // `queryAll` follows above, for the same reason (§14 opt-in page content).
-          detail: (result) => ({ elementCount: result.elements.length, textChars: result.text.length }),
+          detail: (result) => ({ url: result.url, elementCount: result.elements.length, textChars: result.text.length }),
         },
       ).then((result) => {
         anchorMap = new Map(result.elements.map((e) => [e.anchor, e.locator]));
         return result;
       }),
 
-    scroll: (direction) => act("scroll", { direction }, () => raw.scroll(direction)),
+    scroll: (direction) => pageAct("scroll", { direction }, () => raw.scroll(direction)),
     screenshot: () =>
-      act("screenshot", {}, () => raw.screenshot(), {
+      pageAct("screenshot", {}, () => raw.screenshot(), {
         blob: (bytes) => ({ kind: "screenshots", bytes, mime: "image/png" }),
       }),
     title: () => raw.title(),
     url: () => raw.url(),
     close: () => raw.close(),
-  });
+    };
+  };
 
   /** Every page this session has opened — closed together, so nothing outlives the run. */
   const openPages: Page[] = [];
@@ -549,10 +627,12 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
   return {
     page,
     dialogSeen: () => dialogFired,
-    network: { list: networkList, body: networkBody, read: networkRead },
+    network: { list: networkList, body: networkBody, read: networkRead, waitForResponse: networkWait },
     openTab,
     resolveAnchor: (anchor) => anchorMap.get(anchor),
     async close() {
+      closed = true;
+      for (const notify of networkWaiters) notify();
       await Promise.all(openPages.map((p) => p.close().catch(() => undefined)));
       await trace.close();
     },

@@ -1,13 +1,13 @@
 import Link from "next/link";
 import { Stamp } from "../../components/primitives.js";
-import { createCaller } from "../../server/router.js";
+import { createServerCaller } from "../../server/router.js";
 import { CreateWorkflow } from "./create-workflow.js";
 
 /** Server component: the list is read through the same caller the tests drive. */
 export const dynamic = "force-dynamic";
 
 export default async function WorkflowsPage() {
-  const workflows = await createCaller().workflow.list();
+  const workflows = await (await createServerCaller()).workflow.list();
 
   if (workflows.length === 0) {
     return (
@@ -16,7 +16,7 @@ export default async function WorkflowsPage() {
           Describe it. Publish it. Watch it run.
         </h1>
         <p className="muted" style={{ maxWidth: "42ch" }}>
-          A workflow is events you describe and nodes you prompt — no schemas, no wiring.
+          Describe the outcome and constraints. The system compiles and maintains the execution plan.
         </p>
         <CreateWorkflow />
       </div>
@@ -34,9 +34,8 @@ export default async function WorkflowsPage() {
         <thead>
           <tr>
             <th>Name</th>
-            <th>Tasks</th>
             <th>Last run</th>
-            <th>Version</th>
+            <th>Status</th>
           </tr>
         </thead>
         <tbody>
@@ -50,7 +49,6 @@ export default async function WorkflowsPage() {
                   {w.name}
                 </Link>
               </td>
-              <td style={{ textAlign: "right" }}>{w.taskCount}</td>
               <td>
                 {w.lastRunStatus ? (
                   <span className="row">
@@ -63,7 +61,7 @@ export default async function WorkflowsPage() {
                   <span className="muted">—</span>
                 )}
               </td>
-              <td className="mono muted">{w.currentVersionId ?? "draft"}</td>
+              <td className="mono muted">{w.currentVersionId ? "Published" : "Draft"}</td>
             </tr>
           ))}
         </tbody>

@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 /**
  * The Ruled Ink atoms (component-specs §2): stamps, chips, badges. Presentation only —
  * every color is a DESIGN.md token via the classes in globals.css, and the redundancy law
- * holds here (◈ on events, the kind word on nodes, fixed vocabulary inside stamp form)
+ * holds here (◈ on outputs, fixed vocabulary inside stamp form)
  * so no caller can accidentally make color the only cue.
  */
 
@@ -70,8 +70,7 @@ export function VisibilityStamp({ isPublic }: { isPublic: boolean }) {
  * Endpoint health (U1.5). Deliberately not `Stamp` with a `healthy`/`unhealthy` kind: those
  * are run *outcomes*, and reusing that vocabulary for live infrastructure state would blur
  * "this task succeeded" with "this endpoint is up" — two different questions. The color
- * pair is the entity-family ink (ink-blue calm / amber draws-the-eye), same tokens
- * `chip--event`/`badge--node` use, not the status ramp.
+ * pair is the entity-family ink (ink-blue calm / amber draws-the-eye), not the status ramp.
  */
 export function HealthStamp({ healthy }: { healthy: boolean }) {
   return (
@@ -111,40 +110,6 @@ export function EventChip({
         </button>
       ) : null}
     </span>
-  );
-}
-
-/**
- * `decision` gets its own token-family class (`.badge--node-decision`, globals.css) —
- * `browser`/`asset` share `--node-*` (amber, "the machinery that acts"); `decision` is the
- * third family (`--decision-*`, aliased off `--warning-*`, argued in globals.css) because it
- * neither acts on a page nor writes the store — it plans. The kind word itself (the
- * redundancy law's non-color cue) is unchanged either way.
- */
-export function KindBadge({ kind }: { kind: string }) {
-  const classes = kind === "decision" ? "badge--node badge--node-decision" : "badge--node";
-  return <span className={classes}>{kind}</span>;
-}
-
-export function ScheduleChip({ cron, onRemove }: { cron: string; onRemove?: () => void }) {
-  return (
-    <span className="chip chip--schedule">
-      {cron}
-      {onRemove ? (
-        <button className="chip-remove" aria-label="Remove schedule" onClick={onRemove}>
-          ×
-        </button>
-      ) : null}
-    </span>
-  );
-}
-
-/** The dashed add affordance ending every chip row (recognition over recall: it opens a menu). */
-export function GhostChip({ label, onClick }: { label: string; onClick: () => void }) {
-  return (
-    <button className="chip chip--ghost" onClick={onClick}>
-      {label}
-    </button>
   );
 }
 

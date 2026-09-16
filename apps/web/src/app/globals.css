@@ -94,9 +94,8 @@
   --node-text: var(--amber-11);
   --node-solid: var(--amber-9);
   --node-on-solid: var(--amber-on-solid);
-  /* U3.5: `decision` is a third entity family, not a node-badge variant — its registry
-     (store.query + emit only) and its role in the graph (the planner, not an actor) are as
-     distinct from `browser`/`asset` as nodes are from events. No new hex: this reuses the
+  /* `decision` is a separate internal behavior family: its store registry and semantic role
+     are distinct from browser work. No new hex: this reuses the
      already-generated `--warning-*` ramp under its own alias, the same "alias, not raw
      colour" law the two families above already follow. `--warning-*` already does double
      duty by hue in this exact stylesheet (`--map-annotation` and `--status-timed-out` both
@@ -629,6 +628,92 @@ table.ledger td {
   align-items: baseline;
 }
 
+.workflow-automation {
+  display: grid;
+  grid-template-columns: minmax(14rem, 1fr) minmax(28rem, 2fr);
+  gap: var(--space-6);
+  align-items: end;
+  margin: var(--space-4) 0;
+  padding: var(--space-4) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.workflow-automation__summary {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.workflow-automation__summary h2,
+.workflow-automation__summary p {
+  margin: 0;
+}
+
+.workflow-schedule-form {
+  display: grid;
+  grid-template-columns: minmax(10rem, 1fr) minmax(9rem, 1fr) auto auto;
+  gap: var(--space-3);
+  align-items: end;
+}
+
+.workflow-schedule-toggle {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.workflow-schedule-toggle input {
+  width: 1rem;
+  height: 1rem;
+}
+
+.workflow-schedule-actions {
+  min-height: 44px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+@media (max-width: 880px) {
+  .workflow-automation {
+    grid-template-columns: 1fr;
+  }
+
+  .workflow-schedule-form {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .workflow-schedule-actions {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 560px) {
+  .workflow-schedule-form {
+    grid-template-columns: 1fr;
+  }
+}
+
+.intent-compiler {
+  display: grid;
+  gap: var(--space-3);
+  margin: var(--space-4) 0;
+  padding: var(--space-4);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface);
+}
+
+.intent-compiler textarea {
+  width: 100%;
+  min-height: 6rem;
+}
+
+.intent-compiler__review {
+  display: grid;
+  gap: var(--space-2);
+}
+
 .editor-panels {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -946,3 +1031,160 @@ table.ledger td {
   border-top: var(--rule);
   padding: var(--space-2) 0;
 }
+
+/* Workflow canvas: topology first, packet evidence alongside, authoring in context. */
+main:has(.workflow-workspace) { max-width: 1680px; }
+.workflow-workspace { display: grid; grid-template-columns: minmax(0, 2.3fr) minmax(320px, 1fr); gap: var(--space-4); align-items: start; }
+.workflow-workspace__main { min-width: 0; display: grid; gap: var(--space-4); }
+.flow-panel, .flow-activity, .flow-sidebar { border: var(--rule-strong); border-radius: 8px; overflow: hidden; background: var(--background); }
+.flow-toolbar { min-height: 58px; padding: 6px var(--space-4); display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); border-bottom: var(--rule); }
+.flow-toolbar > div:first-child > strong { display: block; font-size: var(--text-lg); }
+.flow-toolbar .muted { font-size: var(--text-xs); }
+.flow-toolbar button { min-height: 44px; }
+.flow-toolbar [aria-pressed="true"] { color: var(--text); background: var(--surface-active); box-shadow: inset 0 -2px var(--accent-text); }
+.flow-zoom { font-size: var(--text-xs); min-width: 38px; text-align: center; }
+.flow-viewport { height: 430px; overflow: auto; position: relative; background-color: var(--surface); background-image: radial-gradient(var(--border-subtle) 0.8px, transparent 0.8px); background-size: 20px 20px; overscroll-behavior: contain; }
+.flow-stage { position: relative; transform-origin: top left; }
+.flow-connections { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+.flow-edge { fill: none; stroke: var(--map-edge); stroke-width: 1.8; }
+.flow-edge--loop { stroke-dasharray: 6 4; }
+.flow-edge--selected { stroke: var(--accent-text); stroke-width: 3; }
+.flow-node { position: absolute; width: 196px; height: 120px; padding: 12px 14px; display: flex; flex-direction: column; justify-content: center; align-items: stretch; gap: 7px; text-align: left; border: 1.5px solid var(--node-border); border-radius: 8px; background: var(--background); box-shadow: 0 3px 0 var(--neutral-4); color: var(--text); line-height: 1.3; }
+.flow-node:hover { background: var(--node-bg); }
+.flow-node--event { border-color: var(--event-border); background: var(--event-bg); border-radius: 22px; }
+.flow-node--event:hover { background: var(--accent-4); }
+.flow-node--selected { outline: 3px solid var(--accent-solid); outline-offset: 4px; }
+.flow-node > strong { flex: 0 0 auto; font-family: var(--font-body); font-size: 17px; font-weight: 600; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.flow-node__kind { font-family: var(--font-mono); color: var(--node-text); font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; }
+.flow-node--event .flow-node__kind { color: var(--event-text); }
+.flow-node__meta { font-size: 11px; font-family: var(--font-mono); color: var(--text-secondary); }
+.flow-node__meta .stamp { font-size: 10px; }
+.flow-legend { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 10px 16px; font-size: 11px; font-family: var(--font-mono); color: var(--text-secondary); border-top: var(--rule); }
+.flow-draft-note { padding: 8px 16px; margin: 0; color: var(--warning-11); background: var(--warning-3); font-size: var(--text-sm); }
+.flow-empty { min-height: 370px; display: grid; place-content: center; padding: 32px; text-align: center; }
+.flow-empty h2 { font-size: var(--text-xl); }
+.flow-empty p { max-width: 410px; color: var(--text-secondary); }
+.flow-empty-note { padding: var(--space-5); color: var(--text-secondary); }
+.flow-filter { display: flex; justify-content: space-between; align-items: center; padding: 4px 16px; background: var(--surface); font-size: var(--text-sm); }
+.flow-filter > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow-activity__scroll { max-height: 350px; overflow: auto; }
+.flow-activity .ledger { margin: 0; min-width: 500px; }
+.flow-activity td, .flow-activity th { padding: 10px 16px; }
+.flow-activity td { vertical-align: top; }
+.flow-activity th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
+.flow-row--selected { background: var(--accent-bg-subtle); }
+.flow-packet-button { border: 0; padding: 0; min-height: 30px; text-align: left; background: transparent; color: var(--event-text); font-size: var(--text-sm); overflow-wrap: anywhere; }
+.flow-packet-preview { display: block; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 0; padding: 4px 0; background: transparent; text-align: left; font-size: 11px; min-height: 32px; }
+.flow-cell-note { display: block; max-width: 260px; overflow: hidden; text-overflow: ellipsis; font-size: var(--text-xs); color: var(--text-secondary); }
+.flow-sidebar { position: sticky; top: var(--space-4); }
+.flow-sidebar__body { padding: var(--space-5); max-height: calc(100vh - 180px); overflow: auto; }
+.flow-sidebar__body h2 { margin: 8px 0 16px; overflow-wrap: anywhere; font-size: var(--text-xl); }
+.flow-sidebar__body h3 { margin-top: var(--space-5); }
+.flow-sidebar__body p { overflow-wrap: anywhere; }
+.flow-sidebar__body details { margin: var(--space-5) 0; border-top: var(--rule); padding-top: var(--space-3); }
+.flow-sidebar__body summary { cursor: pointer; font-size: var(--text-sm); }
+.flow-sidebar__body pre { font-size: 11px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface); border: var(--rule); border-radius: 4px; padding: var(--space-3); max-height: 400px; overflow: auto; }
+.flow-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.flow-chips button { min-height: 36px; text-align: left; overflow-wrap: anywhere; font-size: var(--text-xs); }
+.flow-sidebar .intent-compiler { border: 0; margin: 0; padding: 0; }
+.flow-sidebar .intent-compiler__review { margin-top: var(--space-5); font-size: var(--text-sm); }
+.flow-sidebar .intent-compiler__review .row { flex-wrap: wrap; }
+.flow-sidebar .intent-compiler__review .mono { overflow-wrap: anywhere; }
+.graph-chat-log { max-height: 380px; overflow-y: auto; margin: 20px 0; }
+.graph-chat-message { margin-bottom: 16px; border-left: 2px solid var(--border); padding: 8px 12px; }
+.graph-chat-message--user { background: var(--accent-bg-subtle); border-color: var(--accent-text); }
+.graph-chat-message p { margin: 4px 0; white-space: pre-wrap; font-size: var(--text-sm); }
+.graph-chat-message ul { padding-left: 16px; font-size: var(--text-sm); }
+.graph-chat-form { display: grid; gap: 8px; }
+.graph-chat-form textarea { width: 100%; min-height: 110px; resize: vertical; }
+.graph-chat-form button { min-height: 44px; justify-self: end; }
+.chat-context { font-family: var(--font-mono); font-size: var(--text-xs); background: var(--surface); border-radius: 4px; padding: 8px; }
+.packet-lineage { list-style: none; padding: 0; margin: 0; }
+.packet-lineage li { position: relative; padding-bottom: 18px; }
+.packet-lineage li:not(:last-child)::after { content: "↓"; position: absolute; left: 12px; bottom: -1px; color: var(--text-secondary); }
+.packet-lineage button { max-width: 100%; text-align: left; overflow-wrap: anywhere; min-height: 36px; font-size: var(--text-xs); background: var(--surface); }
+.packet-lineage [aria-current] { border-color: var(--accent-text); background: var(--accent-bg-subtle); }
+.packet-consumers { padding: 0; list-style: none; }
+.packet-consumers li { display: flex; justify-content: space-between; gap: 12px; margin: 10px 0; font-size: var(--text-sm); }
+.workflow-schedule-details { margin-top: var(--space-5); border-top: var(--rule); padding: var(--space-4) 0; }
+.workflow-schedule-details > summary { cursor: pointer; color: var(--text-secondary); }
+@media (max-width: 1000px) {
+  .workflow-workspace { grid-template-columns: minmax(0, 1fr); }
+  .flow-sidebar { position: static; }
+  .flow-sidebar__body { max-height: none; }
+  .flow-viewport { height: 360px; }
+  .editor-header { gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+}
+@media (max-width: 600px) {
+  main:has(.workflow-workspace) { padding: 12px; }
+  .flow-toolbar { padding: 6px 10px; flex-wrap: wrap; }
+  .flow-legend { font-size: 10px; gap: 8px; }
+  .flow-sidebar__body { padding: 16px; }
+  .flow-packet-button, .flow-packet-preview, .flow-chips button { min-height: 44px; }
+  .tabbar { overflow-x: auto; gap: 20px; }
+  .editor-header h1 { font-size: 25px; }
+}
+@media (max-width: 600px) {
+  .topbar { gap: 16px; padding: 12px; }
+  .topbar nav { min-width: 0; overflow-x: auto; flex: 1; white-space: nowrap; }
+  .flow-node > strong { flex: 0 0 auto; }
+}
+
+/* One continuous conversation; graph inspection never replaces the composer. */
+.workflow-workspace { grid-template-columns: minmax(340px, 2fr) minmax(0, 3fr); }
+.workflow-workspace__main { grid-column: 2; grid-row: 1; }
+.flow-sidebar { grid-column: 1; grid-row: 1; border-color: var(--border); }
+.workflow-chat { height: calc(100dvh - 215px); min-height: 540px; max-height: 950px; display: flex; flex-direction: column; }
+.workflow-chat__header { display: flex; align-items: center; gap: 12px; padding: 20px 24px; border-bottom: var(--rule); }
+.workflow-chat__header h2 { font-size: 20px; margin: 0; }
+.workflow-chat__header p { font-size: 13px; color: var(--text-secondary); margin: 4px 0 0; }
+.chat-avatar { font-size: 26px; color: var(--accent-text); }
+.graph-chat-log { flex: 1; min-height: 0; max-height: none; margin: 0; overflow-y: auto; overscroll-behavior: contain; padding: 24px; }
+.chat-welcome { padding: 20px 0; }
+.chat-welcome h3 { font-size: 24px; margin: 0 0 12px; }
+.chat-welcome p { color: var(--text-secondary); font-size: 15px; line-height: 1.65; }
+.chat-suggestions { display: grid; gap: 10px; margin-top: 28px; }
+.chat-suggestions button { min-height: 44px; text-align: left; font-size: 13px; padding: 12px 14px; display: flex; justify-content: space-between; white-space: normal; }
+.graph-chat-message { border: 0; padding: 0; margin: 0 0 28px; overflow-wrap: anywhere; }
+.graph-chat-message--user { background: var(--surface); border-radius: 16px 16px 4px 16px; padding: 14px 18px; margin-left: 32px; }
+.chat-message-author { font-size: 12px; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 10px; }
+.graph-chat-message p, .graph-chat-message li { font-size: 15px; line-height: 1.7; }
+.graph-chat-message p { margin: 0 0 12px; }
+.graph-chat-message p:last-child { margin-bottom: 0; }
+.chat-text code { font-size: .86em; background: var(--surface); padding: 1px 4px; border-radius: 3px; }
+.chat-text ul, .chat-text ol { padding-left: 22px; }
+.chat-tool-list { display: grid; gap: 8px; margin: 12px 0; }
+.chat-tool { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 10px 12px; border: var(--rule); border-radius: 8px; }
+.chat-tool > .muted { margin-left: auto; font-size: 11px; }
+.chat-tool[data-status="running"] > span:first-child { animation: chat-working 1.5s linear infinite; }
+.chat-tool[data-status="error"] { color: var(--warning-11); }
+@keyframes chat-working { to { transform: rotate(360deg); } }
+.graph-chat-form { border: var(--rule-strong); border-radius: 16px; margin: 0 18px 18px; padding: 12px; gap: 8px; background: var(--background); }
+.graph-chat-form:focus-within { outline: 2px solid var(--accent-solid); outline-offset: 2px; }
+.graph-chat-form textarea { min-height: 76px; max-height: 220px; border: 0; resize: vertical; padding: 4px; font: inherit; font-size: 15px; background: transparent; box-shadow: none; }
+.graph-chat-form textarea:focus { outline: none; }
+.chat-composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.chat-composer-footer > span { color: var(--text-secondary); font-size: 11px; }
+.chat-composer-footer button { border-radius: 10px; min-width: 72px; }
+.flow-selection { padding: 20px 24px; background: var(--background); border: var(--rule); border-radius: 8px; overflow-wrap: anywhere; }
+.flow-selection h2 { font-size: 23px; margin: 8px 0 12px; }
+.flow-selection h3 { font-size: 14px; margin: 16px 0 8px; }
+.flow-selection p { font-size: 15px; line-height: 1.65; color: var(--text-secondary); }
+.flow-overview-routes { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.flow-selection pre { font-size: 12px; padding: 16px; background: var(--surface); white-space: pre-wrap; max-height: 320px; overflow: auto; }
+.flow-selection details { margin-top: 16px; }
+@media (max-width: 1000px) {
+  .workflow-workspace { grid-template-columns: minmax(0, 1fr); }
+  .flow-sidebar { grid-column: 1; grid-row: 1; }
+  .workflow-workspace__main { grid-column: 1; grid-row: 2; }
+  .workflow-chat { height: 65dvh; min-height: 480px; }
+}
+@media (max-width: 600px) {
+  .workflow-chat__header, .graph-chat-log { padding: 18px; }
+  .graph-chat-form { margin: 0 12px 12px; }
+  .flow-selection { padding: 16px; }
+  .flow-overview-routes { grid-template-columns: 1fr; gap: 8px; }
+}
+@media (prefers-reduced-motion: reduce) { .chat-tool[data-status="running"] > span:first-child { animation: none; } }
+.chat-welcome h3 { font-family: var(--font-display); text-transform: none; letter-spacing: normal; font-weight: 500; }
+@media (min-width: 1001px) { .workflow-chat { height: calc(100dvh - 265px); } }

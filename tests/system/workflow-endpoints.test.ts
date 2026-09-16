@@ -199,9 +199,9 @@ describe("the agent executor fails no_endpoint_configured permanently", () => {
 
 describe("engine status (U3a)", () => {
   it("reports what boot recorded and goes stale when the heartbeat stops", async () => {
-    await recordEngineBoot(handle.db, ["browser:stub", "asset:stub", "browser:ai"]);
+    await recordEngineBoot(handle.db, ["browser:stub", "browser:ai", "decision:ai"]);
     const fresh = await getEngineStatus(handle.db);
-    expect(fresh.executors).toEqual(["browser:stub", "asset:stub", "browser:ai"]);
+    expect(fresh.executors).toEqual(["browser:stub", "browser:ai", "decision:ai"]);
     expect(fresh.stale).toBe(false);
 
     // Staleness is a pure time comparison — probe it by asking from the future.
@@ -212,11 +212,9 @@ describe("engine status (U3a)", () => {
     expect((await getEngineStatus(handle.db)).stale).toBe(false);
 
     // A re-boot replaces the executor list — the row describes the current process only.
-    await recordEngineBoot(handle.db, ["browser:stub"], ["python.run"]);
+    await recordEngineBoot(handle.db, ["browser:stub"]);
     const status = await api.engine.status();
     expect(status.executors).toEqual(["browser:stub"]);
-    // S6d: tool-level abilities ride beside the executors — what an asset node can do.
-    expect(status.capabilities).toEqual(["python.run"]);
   });
 
   it("answers 'never reported' as stale with no executors", async () => {
@@ -224,7 +222,6 @@ describe("engine status (U3a)", () => {
     try {
       expect(await getEngineStatus(fresh.db)).toEqual({
         executors: [],
-        capabilities: [],
         bootedAt: null,
         heartbeatAt: null,
         stale: true,
@@ -232,33 +229,5 @@ describe("engine status (U3a)", () => {
     } finally {
       await fresh.close();
     }
-  });
-});
-
-describe("the mcp router (settings)", () => {
-  it("creates a parseable server, lists without config, and removes", async () => {
-    const created = await api.mcp.create({
-      label: "echo",
-      transport: "stdio",
-      configJson: { command: "node", args: ["echo-server.js"] },
-    });
-    expect(created).toMatchObject({ label: "echo", transport: "stdio", secretName: null });
-
-    const list = await api.mcp.list();
-    expect(list.map((s) => s.label)).toContain("echo");
-    // The row's config never rides out through the list — nothing for the UI to do with it.
-    expect(JSON.stringify(list)).not.toContain("echo-server.js");
-
-    expect(await api.mcp.remove({ id: created.id })).toEqual({ removed: true });
-    expect((await api.mcp.list()).map((s) => s.label)).not.toContain("echo");
-  });
-
-  it("rejects a config the client could not load later", async () => {
-    await expect(
-      api.mcp.create({ label: "broken", transport: "http", configJson: { nope: true } }),
-    ).rejects.toThrow(/invalid http mcp config/);
-    await expect(
-      api.mcp.create({ label: "broken2", transport: "stdio", configJson: {} }),
-    ).rejects.toThrow(/invalid stdio mcp config/);
   });
 });

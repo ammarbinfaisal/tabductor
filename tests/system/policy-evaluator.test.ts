@@ -3,7 +3,6 @@ import { newId } from "@tabductor/core";
 import {
   accountBaselineRules,
   approvals,
-  assetWriteGrants,
   events,
   runs,
   secretGrants,
@@ -39,7 +38,7 @@ beforeEach(async () => {
   userId = newId("user");
   versionId = newId("wfv");
   taskId = newId("task");
-  await handle.db.insert(workflows).values({ id: workflowId, userId, name: "Policy test" });
+  await handle.db.insert(workflows).values({ id: workflowId, accountId: "acct_local", userId, name: "Policy test" });
   await handle.db.insert(workflowVersions).values({ id: versionId, workflowId });
   await handle.db.insert(tasks).values({
     id: taskId,
@@ -51,8 +50,40 @@ beforeEach(async () => {
 });
 
 describe("DatabasePolicyGate", () => {
-  it("uses explicit navigation grants and lets the account baseline override them", async () => {
+  it("allows navigation dependencies by default without emitting policy.denied", async () => {
     const gate = new DatabasePolicyGate({ db: handle.db });
+    const ctx = { taskId, runId: newId("run") };
+    for (const cause of ["initial", "redirect", "window_open", "script"] as const) {
+      for (const host of ["app.notion.com", "identity.notion.com", "aif.notion.so", "x.com"]) {
+        await expect(gate.checkNavigation(ctx, new URL(`https://${host}/`), cause))
+          .resolves.toEqual({ allow: true });
+      }
+    }
+    expect(await handle.db.select().from(events).where(eq(events.sourceRunId, ctx.runId))).toEqual([]);
+    await addBaselineRule(handle.db, userId, {
+      effect: "deny", grantKey: "navigation", value: "blocked.example",
+    });
+    await expect(gate.checkNavigation(ctx, new URL("https://blocked.example/"), "redirect"))
+      .resolves.toEqual({ allow: false, rule: "baseline_deny:navigation:blocked.example" });
+  });
+
+  it("still requires navigation approval in permissive mode when the baseline requests it", async () => {
+    const runId = newId("run");
+    await handle.db.insert(runs).values({
+      id: runId, taskId, workflowVersionId: versionId, modeUsed: "ai", status: "running",
+    });
+    await addBaselineRule(handle.db, userId, {
+      effect: "require_approval", grantKey: "navigation", value: "example.com",
+    });
+    const gate = new DatabasePolicyGate({ db: handle.db, approvalPollMs: 2, approvalTtlMs: 10 });
+    await expect(gate.checkNavigation({ taskId, runId }, new URL("https://example.com/"), "initial"))
+      .resolves.toEqual({ allow: false, rule: "approval_expired" });
+    expect((await handle.db.select().from(approvals).where(eq(approvals.runId, runId)))[0]?.status)
+      .toBe("expired");
+  });
+
+  it("uses explicit navigation grants and lets the account baseline override them", async () => {
+    const gate = new DatabasePolicyGate({ db: handle.db, navigationMode: "grant_required" });
     const ctx = { taskId, runId: newId("run") };
 
     await expect(gate.checkNavigation(ctx, new URL("https://example.com/a"), "initial")).resolves.toEqual({
@@ -80,24 +111,7 @@ describe("DatabasePolicyGate", () => {
     });
   });
 
-  it("hides ungranted MCP tools before the model sees the registry", async () => {
-    const gate = new DatabasePolicyGate({ db: handle.db });
-    const ctx = { taskId, runId: newId("run") };
-    await grantTask(handle.db, taskId, { grantKey: "mcp.call", grantValue: "mcp.media.*" });
-
-    const visible = await gate.allowedMcpTools(ctx, [
-      "mcp.media.resize",
-      "mcp.media.render",
-      "mcp.mail.send",
-    ]);
-    expect([...visible].sort()).toEqual(["mcp.media.render", "mcp.media.resize"]);
-    await expect(gate.checkMcpCall(ctx, "mcp.mail.send")).resolves.toEqual({
-      allow: false,
-      rule: "grant_missing:mcp.call",
-    });
-  });
-
-  it("enforces the dedicated secret and asset grant tables", async () => {
+  it("enforces the dedicated secret grant table", async () => {
     const gate = new DatabasePolicyGate({ db: handle.db });
     const ctx = { taskId, runId: newId("run") };
     await expect(gate.checkSecretUse(ctx, "login")).resolves.toEqual({
@@ -106,17 +120,6 @@ describe("DatabasePolicyGate", () => {
     });
     await handle.db.insert(secretGrants).values({ taskId, secretName: "login" });
     await expect(gate.checkSecretUse(ctx, "login")).resolves.toEqual({ allow: true });
-
-    await expect(gate.checkAssetWrite(ctx, "/reports/today.pdf")).resolves.toEqual({
-      allow: false,
-      rule: "grant_missing:asset.write",
-    });
-    await handle.db.insert(assetWriteGrants).values({ taskId, pathGlob: "/reports/**" });
-    await expect(gate.checkAssetWrite(ctx, "/reports/today.pdf")).resolves.toEqual({ allow: true });
-    await expect(gate.checkAssetWrite(ctx, "/private/today.pdf")).resolves.toEqual({
-      allow: false,
-      rule: "grant_missing:asset.write",
-    });
   });
 
   it("masks credentials even with header access until secrets.read is separately granted", async () => {

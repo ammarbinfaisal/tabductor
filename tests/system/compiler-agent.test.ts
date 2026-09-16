@@ -87,7 +87,7 @@ function otherPathTrace(runId: string): RunTrace {
 }
 
 async function taskOf(
-  kind: "browser" | "asset" | "decision",
+  kind: "browser" | "decision",
   emits: string[] = ["post.detected"],
 ): Promise<{ db: MigratedTestDb["db"]; taskId: string }> {
   handle = await createMigratedTestDb();
@@ -276,12 +276,10 @@ it("a trace with no action evidence is refused without calling the model", async
 }, 120_000);
 
 /**
- * The §4 boundary. `asset` is a permanent exclusion — MCP results and LLM prose have no stable
- * structure for a guard to assert on. `decision` is "not yet": it joins the list when
- * `ctx.store` lands in the static runtime, which is why the filter is an allowlist and not
- * `!== 'asset'`.
+ * The §4 boundary. Decision work remains semantic until a guarded store runtime exists.
  */
-it.each(["asset", "decision"] as const)("a %s task is not compiled, even with clean evidence", async (kind) => {
+it("a decision task is not compiled, even with clean evidence", async () => {
+  const kind = "decision" as const;
   const { db, taskId } = await taskOf(kind);
   const result = await compileTask(
     { db, llm: refusingLlm },

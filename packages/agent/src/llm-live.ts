@@ -40,8 +40,7 @@ export type LiveLlmOptions = {
 const toolCallArgsSchema = z.record(z.string(), z.unknown());
 
 /**
- * Every S4b tool is named `page.goto`/`network.read`/… — the dotted convention the whole
- * design doc uses (`mcp.imagegen.create`, `assets.write`, …) — but both providers' function-
+ * Tools use dotted names such as `page.goto`, `network.read`, and `store.query`, but both providers' function-
  * name field is constrained to `^[a-zA-Z0-9_-]+$` and rejects a literal `.` outright (a live-
  * only failure: replay never sends a name through either provider's validator, so nothing
  * before this caught it). The registry's names stay exactly as designed; only the wire
@@ -122,6 +121,7 @@ function languageModel(opts: LiveLlmOptions): LanguageModel {
  * means neither, which the caller must treat as "no live/record mode available."
  */
 export function providerFromEnv(env: {
+  [key: string]: string | undefined;
   ANTHROPIC_API_KEY?: string | undefined;
   OPENAI_API_KEY?: string | undefined;
 }): { provider: LlmProvider; apiKey: string } | null {

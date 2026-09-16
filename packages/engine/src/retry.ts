@@ -59,6 +59,7 @@ export async function scheduleRetry(
       await db.transaction((trx) =>
         publish(trx, {
           type: RETRIES_EXHAUSTED,
+          executionId: run.executionId,
           sourceTaskId: run.taskId,
           sourceRunId: run.id,
           causationId: run.triggerEventId,
@@ -78,6 +79,7 @@ export async function scheduleRetry(
   const runId = newId("run");
   await db.insert(runs).values({
     id: runId,
+    executionId: run.executionId,
     taskId: run.taskId,
     workflowVersionId: run.workflowVersionId,
     triggerEventId: run.triggerEventId,

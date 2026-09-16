@@ -3,20 +3,32 @@ import { createTraceRecorder, type BlobStore, type StorageFlags, type TraceRecor
 import { AppError } from "@tabductor/core";
 import { workflowVersions, workflows, type Db, type TaskRow } from "@tabductor/db";
 import type { RunHandle, RunResult, TaskExecutor } from "@tabductor/engine";
+import type { PolicyGate } from "@tabductor/policy";
+import {
+  createWriteStager,
+  flushStagedWrites,
+  latestStoreSchema,
+  tablesSpecOf,
+} from "@tabductor/store";
 import type { Metrics } from "@tabductor/telemetry";
 import { eq } from "drizzle-orm";
 import { buildDecisionToolRegistry } from "./decision-tools.js";
-import { makeEmitFn, maxStepsOf, storageFlagsOf as defaultStorageFlagsOf, toRunResult, triggerInfoOf } from "./executor-shared.js";
+import {
+  flushRemainingWrites,
+  makeEmitFn,
+  maxStepsOf,
+  storageFlagsOf as defaultStorageFlagsOf,
+  toRunResult,
+  triggerInfoOf,
+} from "./executor-shared.js";
 import type { Llm } from "./llm.js";
 import { runAgentLoop } from "./loop.js";
 
 /**
  * `(decision, ai)` — the planner kind's executor (S5g, graph-compilation-llm §2). The
- * smallest of the three: no browser session, no MCP connections, no asset store, no store
- * *write* stager — a decision run's "session" is `store.query` + `emit` + `done`/`fail` and
- * nothing underneath any of them needs acquiring or releasing. Everything about running
- * `runAgentLoop` behind the engine's `TaskExecutor` contract that has nothing to do with
- * *which* tools exist is `executor-shared.ts`, shared verbatim with `AssetExecutor`.
+ * non-browser executor. It owns semantic work and workflow-store query/insert/upsert;
+ * writes are staged and commit with the next emit, or on successful completion when there
+ * is no later emit. It has no browser session, external MCP tools, files, or Python runtime.
  *
  * `RunHandle.trigger` here is `null` for a cron fire (§2.2: "the fire carries an empty
  * packet") and populated for an event-triggered decision node exactly as for any consumer —
@@ -26,6 +38,7 @@ import { runAgentLoop } from "./loop.js";
 export type DecisionExecutorDeps = {
   db: Db;
   pool: Pool;
+  gate: PolicyGate;
   blobs: BlobStore;
   llmFor: (opts: { trace: TraceRecorder; task: TaskRow }) => Llm;
   metrics?: Metrics;
@@ -54,22 +67,45 @@ function mapDecisionError(err: unknown): RunResult {
 }
 
 export function createDecisionExecutor(deps: DecisionExecutorDeps): TaskExecutor {
-  const { db, pool, blobs, llmFor, metrics } = deps;
+  const { db, pool, blobs, gate, llmFor, metrics } = deps;
   const storageFlagsOf = deps.storageFlagsOf ?? defaultStorageFlagsOf;
 
   return {
     async execute(handle: RunHandle): Promise<RunResult> {
       const trace = createTraceRecorder(db, blobs, handle.run.id, storageFlagsOf(handle.task));
+      const stager = createWriteStager();
 
       try {
         const workflowId = await workflowIdForTask(db, handle.task.workflowVersionId);
-        const [emits, trigger] = await Promise.all([handle.declaredEmits(), triggerInfoOf(db, handle)]);
+        const [emits, trigger, storeSchema] = await Promise.all([
+          handle.declaredEmits(),
+          triggerInfoOf(db, handle),
+          latestStoreSchema(db, workflowId),
+        ]);
 
-        // No `drainPendingWrites`/`wrapPendingWrites` — a decision task has no store-write
-        // tools at all (§2.1's kind table: "store access: read only"), so `emit` here is a
-        // plain publish, identical in shape to a browser task's.
-        const emit = makeEmitFn({ db, taskId: handle.task.id, handleEmit: handle.emit, trace });
-        const tools = buildDecisionToolRegistry({ pool, workflowId, emit, ...(metrics ? { metrics } : {}) });
+        const emit = makeEmitFn({
+          db,
+          taskId: handle.task.id,
+          handleEmit: handle.emit,
+          trace,
+          drainPendingWrites: () => stager.drain(),
+          wrapPendingWrites: (writes) => flushStagedWrites(workflowId, writes),
+        });
+        const taskCtx = { taskId: handle.task.id, runId: handle.run.id };
+        const tools = buildDecisionToolRegistry({
+          pool,
+          workflowId,
+          emit,
+          ...(metrics ? { metrics } : {}),
+          write: {
+            db,
+            workflowId,
+            taskId: handle.task.id,
+            tablesSpec: tablesSpecOf(storeSchema),
+            stager,
+            policy: { gate, taskCtx },
+          },
+        });
         const llm = llmFor({ trace, task: handle.task });
 
         const result = await runAgentLoop({
@@ -81,6 +117,13 @@ export function createDecisionExecutor(deps: DecisionExecutorDeps): TaskExecutor
           trace,
           maxSteps: maxStepsOf(handle.task),
         });
+        if (result.outcome === "done") {
+          await flushRemainingWrites({
+            db,
+            drainPendingWrites: () => stager.drain(),
+            wrapPendingWrites: (writes) => flushStagedWrites(workflowId, writes),
+          });
+        }
         return toRunResult(result);
       } catch (err) {
         return mapDecisionError(err);

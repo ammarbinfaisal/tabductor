@@ -10,11 +10,10 @@ import {
   createSecretsBroker,
   fileKeyWrapper,
   rotateFileKek,
-  zero,
   type SecretsBrokerRunDeps,
 } from "@tabductor/secrets";
 import { startFixtures, type Fixtures } from "@tabductor/testkit";
-import { newRun, openSession, startBrowserRig, traceRows, type BrowserRig, type SessionRig } from "./browser-support.js";
+import { openSession, startBrowserRig, traceRows, type BrowserRig, type SessionRig } from "./browser-support.js";
 
 /**
  * The subphase's central test suite (§16 Threat 4). The value-leak test below is
@@ -266,37 +265,6 @@ it("fails further fills once a run exceeds its per-run rate limit", async () => 
   expect(logRows.some((r) => r.action === "rate_limited")).toBe(true);
 });
 
-it("injectIntoMcpArg hands back a plaintext-free handle; redeemMcpHandle resolves it exactly once, host-side only", async () => {
-  const keyWrapper = newKeyWrapper();
-  const { broker } = makeBroker(keyWrapper);
-  const plaintext = "mcp-arg-secret-value";
-  await createSecret(rig.handle.db, keyWrapper, {
-    userId: "user_test",
-    name: "mcp_secret",
-    value: plaintext,
-    allowedOrigins: [],
-  });
-  const runId = await newRun(rig); // no page needed — injectIntoMcpArg never binds an origin
-
-  const handle = await broker.injectIntoMcpArg(runId, "mcp_secret");
-  expect(handle.token).toBeTruthy();
-  expect(JSON.stringify(handle)).not.toContain(plaintext);
-
-  const buf = await broker.redeemMcpHandle(handle);
-  try {
-    expect(buf.toString("utf8")).toBe(plaintext);
-  } finally {
-    zero(buf);
-  }
-
-  // Single-use: the same handle cannot be redeemed twice.
-  await expect(broker.redeemMcpHandle(handle)).rejects.toMatchObject({ code: "secret_handle_invalid" });
-
-  const logRows = await accessLogRows(runId);
-  expect(logRows.some((r) => r.action === "injected")).toBe(true);
-  expect(JSON.stringify(logRows)).not.toContain(plaintext);
-});
-
 it("a secret survives a KEK rotation — old ciphertext still resolves via its own stored kek_ref", async () => {
   const kekPath = join(kekDir, `kek-${kekCounter++}-rotate.json`);
   const rotatingWrapper = fileKeyWrapper(kekPath);
@@ -306,23 +274,21 @@ it("a secret survives a KEK rotation — old ciphertext still resolves via its o
     userId: "user_test",
     name: "rotate_secret",
     value: plaintext,
-    allowedOrigins: [],
+    allowedOrigins: [originOf(rig.fx.url)],
   });
 
   const newRef = rotateFileKek(kekPath);
   expect(newRef).toBeTruthy();
 
-  const { broker } = makeBroker(rotatingWrapper);
-  const runId = await newRun(rig);
-  const handle = await broker.injectIntoMcpArg(runId, "rotate_secret");
-  const buf = await broker.redeemMcpHandle(handle);
-  try {
-    expect(buf.toString("utf8")).toBe(plaintext);
-  } finally {
-    zero(buf);
-  }
+  const { broker, register } = makeBroker(rotatingWrapper);
+  sess = await openSession(rig);
+  register(sess.runId, { session: sess.session, trace: sess.trace });
+  await sess.session.page.goto(`${rig.fx.url}/fake-gram`);
+  const perception = await sess.session.page.perceive();
+  const passwordAnchor = perception.elements.find((e) => e.name === "password")!.anchor;
+  await expect(broker.fill(sess.runId, "rotate_secret", passwordAnchor)).resolves.toEqual({ ok: true });
 
-  const logRows = await accessLogRows(runId);
+  const logRows = await accessLogRows(sess.runId);
   expect(logRows.length).toBeGreaterThan(0);
   for (const row of logRows) {
     expect(Object.keys(row).some((k) => /value/i.test(k))).toBe(false);

@@ -40,17 +40,20 @@ function rowId(ctx: ShareContext, value: string): string {
 }
 
 export const publicRouter = router({
-  /** The graph as a viewer sees it: shape, kinds, schedules, and which events are shared. */
+  /** Behavior-level workflow overview. Internal graph structure never crosses this boundary. */
   graph: shareProcedure.input(shareTokenSchema).query(async ({ ctx }) => {
     const workflow = await getWorkflow(ctx.db, ctx.view.workflowId);
     if (!workflow) throw gone();
+    const internal = workflow.currentVersionId
+      ? await publicGraph(ctx.db, { versionId: workflow.currentVersionId })
+      : { tasks: [], events: [], edges: [] };
     return {
       name: workflow.name,
-      /** The loop-budget cap — already viewer-visible via the map's LOOP annotation. */
       maxHops: workflow.maxHops,
-      graph: workflow.currentVersionId
-        ? await publicGraph(ctx.db, { versionId: workflow.currentVersionId })
-        : { tasks: [], events: [], edges: [] },
+      overview: {
+        scheduledTriggers: internal.tasks.filter((task) => task.schedule?.enabled).length,
+        sharedOutputs: internal.events.filter((event) => event.public),
+      },
     };
   }),
 

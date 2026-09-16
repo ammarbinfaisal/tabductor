@@ -1,22 +1,18 @@
 import type { StorageFlags, TraceRecorder } from "@tabductor/browser";
 import { AppError } from "@tabductor/core";
-import { taskState, workflowVersions, workflows, type Db, type TaskRow } from "@tabductor/db";
-import { readEventSchemas, userIdForTask, type RunHandle, type RunResult } from "@tabductor/engine";
-import { and, eq } from "drizzle-orm";
+import { workflowVersions, workflows, type Db, type TaskRow } from "@tabductor/db";
+import { readEventSchemas, type RunHandle, type RunResult } from "@tabductor/engine";
+import { eq } from "drizzle-orm";
 import type { AgentLoopResult, TriggerInfo } from "./loop.js";
 import type { EmitFn, EmitOutcome } from "./tools.js";
 
-/** Re-exported, not redefined: it moved to `packages/engine` when S5h's `PythonExecutor`
- * needed it too (engine cannot import agent). Every call site here is unchanged. */
-export { userIdForTask };
-
 /**
- * What `AgentExecutor` (browser) and `AssetExecutor`'s real path (S5c) share: everything about
+ * What the browser and decision executors share: everything about
  * running `runAgentLoop` behind the engine's `TaskExecutor` contract that has nothing to do
  * with *how* a run's session comes to exist — reading the trigger's compiled schema, the
  * `emit` tool's host half (dedupe-claim then publish), the step-budget limit, and translating
  * an `AgentLoopResult` into the engine's `RunResult`. A browser run acquires a pool lease and
- * opens a page; an asset run acquires nothing but a tool registry — everything below this line
+ * opens a page; a decision run acquires only a store-aware tool registry — everything below this line
  * is the part that was never about a page to begin with.
  */
 
@@ -32,7 +28,7 @@ export function asNumber(value: unknown): number | undefined {
 
 /** `limits_json.storage` — every kind's trace goes through the identical `StorageFlags`
  * opt-out mechanism (`packages/browser/src/trace.ts`), so reading them is not browser-specific
- * either: an asset run's LLM calls and tool actions are opted in/out exactly like a browser
+ * either: a decision run's LLM calls and tool actions are opted in/out exactly like a browser
  * run's. Absent field = on, matching every other storage default in this codebase. */
 export function storageFlagsOf(task: TaskRow): StorageFlags {
   const storage = asRecord(asRecord(task.limitsJson)?.storage);
@@ -84,13 +80,20 @@ export function makeEmitFn(opts: {
    * knows *that* something is pending, never how to execute it under the right role. */
   wrapPendingWrites?: (writes: Array<(trx: Db) => Promise<void>>) => (trx: Db) => Promise<void>;
 }): EmitFn {
-  const { db, taskId, handleEmit, trace } = opts;
+  const { handleEmit, trace } = opts;
 
   const publish = async (type: string, packet: unknown, dedupeKey: string | undefined): Promise<EmitOutcome> => {
     try {
       const pending = opts.drainPendingWrites?.() ?? [];
       const withTx = pending.length > 0 && opts.wrapPendingWrites ? opts.wrapPendingWrites(pending) : undefined;
-      const event = await handleEmit(type, packet, withTx ? { withTx } : undefined);
+      const event = await handleEmit(type, packet, {
+        ...(withTx ? { withTx } : {}),
+        ...(dedupeKey ? { dedupeKey } : {}),
+      });
+      if (!event) {
+        await trace.record("action", { action: "emit", type, dedupeKey: dedupeKey ?? null, ok: true, deduped: true });
+        return { outcome: "deduped" };
+      }
       await trace.record("action", { action: "emit", type, dedupeKey: dedupeKey ?? null, ok: true, eventId: event.eventId });
       return { outcome: "published", eventId: event.eventId };
     } catch (err) {
@@ -100,26 +103,7 @@ export function makeEmitFn(opts: {
     }
   };
 
-  return async (type, packet, dedupeKey) => {
-    if (dedupeKey === undefined) return publish(type, packet, undefined);
-
-    const key = `emit:${type}:${dedupeKey}`;
-    const claimed = await db
-      .insert(taskState)
-      .values({ taskId, key, value: {} })
-      .onConflictDoNothing()
-      .returning({ taskId: taskState.taskId });
-    if (claimed.length === 0) {
-      await trace.record("action", { action: "emit", type, dedupeKey, ok: true, deduped: true });
-      return { outcome: "deduped" };
-    }
-
-    const result = await publish(type, packet, dedupeKey);
-    if (result.outcome === "rejected") {
-      await db.delete(taskState).where(and(eq(taskState.taskId, taskId), eq(taskState.key, key))).catch(() => undefined);
-    }
-    return result;
-  };
+  return (type, packet, dedupeKey) => publish(type, packet, dedupeKey);
 }
 
 /**

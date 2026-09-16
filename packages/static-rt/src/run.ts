@@ -51,7 +51,7 @@ function buildDispatch(
   return async (path, args) => {
     switch (path) {
       case "page.goto":
-        return session.page.goto(args[0] as string);
+        return session.page.goto(args[0] as string, args[1] as Parameters<typeof session.page.goto>[1]);
       case "page.click":
         return session.page.click(args[0] as string);
       case "page.type":
@@ -59,7 +59,11 @@ function buildDispatch(
       case "page.scroll":
         return session.page.scroll(args[0] as "up" | "down");
       case "page.waitFor":
-        return session.page.waitFor(args[0] as string, args[1] as { timeout?: number } | undefined);
+        return session.page.waitFor(args[0] as string, args[1] as Parameters<typeof session.page.waitFor>[1]);
+      case "page.waitForLoadState":
+        return session.page.waitForLoadState(args[0] as Parameters<typeof session.page.waitForLoadState>[0], args[1] as { timeout?: number } | undefined);
+      case "network.waitForResponse":
+        return session.network.waitForResponse(args[0] as Parameters<typeof session.network.waitForResponse>[0]);
       // Existence/count only — no fields, exactly §12's split between `query` and `evalExtract`.
       case "page.query":
         return session.page.queryAll(args[0] as string, {});
@@ -69,14 +73,6 @@ function buildDispatch(
         return (await session.page.screenshot()).toString("base64");
       case "page.url":
         return session.page.url();
-      case "page.upload": {
-        if (!host.resolveAsset) {
-          throw new Error("page.upload is unavailable: this task has no asset resolver");
-        }
-        const selector = session.resolveAnchor(args[0] as string) ?? (args[0] as string);
-        return session.page.upload(selector, await host.resolveAsset(args[1]));
-      }
-
       case "guard.url": {
         const pattern = args[0] as string;
         const actual = session.page.url();

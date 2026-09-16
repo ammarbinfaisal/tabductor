@@ -11,16 +11,15 @@ import { untrustedBlock, type AgentTool, type ToolResult } from "./tools.js";
  * carrying the tool results) — so a transcript's per-turn message count is `1 + 2*step`,
  * predictable for `replayLlm`'s divergence check regardless of which branch a turn takes.
  *
- * **Kind-agnostic by construction (S5c):** this file's only coupling to "browser" used to be
+ * **Kind-agnostic by construction:** this file's only coupling to "browser" used to be
  * one line — building the tool registry from a `RunSession` — and nothing else here reads a
- * page, a network observer, or perception. S5c's asset node has none of those (§4: "no
- * browser, no CDP endpoint"), so rather than fork a second loop that duplicates this file's
+ * page, a network observer, or perception. Decision work has none of those, so rather than
+ * fork a second loop that duplicates this file's
  * turn-taking/step-budget/transcript-shape logic for a registry that differs only in *which*
  * tools it holds, the loop now takes a prebuilt `tools: AgentTool[]` and knows nothing about
  * where they came from. `AgentExecutor` (browser) calls `buildToolRegistry` itself before
- * invoking this function; the asset executor calls its own registry builder the same way. One
- * loop, two registries, exactly the "share the engine, the bus, the trace format... differ
- * only in which tools exist above the line" split techical_plan §3 draws for the two kinds.
+ * invoking this function; the decision executor calls its own registry builder the same way.
+ * One loop, two structurally disjoint registries.
  */
 
 export type TriggerInfo = { type: string; packet: unknown; schema: Record<string, unknown> };
@@ -29,7 +28,7 @@ export type EmitDecl = { type: string; schema: Record<string, unknown> };
 export type RunAgentLoopOptions = {
   llm: Llm;
   /** This run's tool list, already built for its kind (`buildToolRegistry` for browser,
-   * `buildAssetToolRegistry` for asset) — the loop calls `execute` uniformly and never
+   * `buildDecisionToolRegistry` for decision) — the loop calls `execute` uniformly and never
    * constructs a registry itself. */
   tools: AgentTool[];
   task: { prompt: string | null };
@@ -40,6 +39,7 @@ export type RunAgentLoopOptions = {
   trace: TraceRecorder;
   /** `limits_json.agent.max_steps` — default 30 when omitted. */
   maxSteps?: number;
+  signal?: AbortSignal;
 };
 
 export type AgentLoopResult =
@@ -57,11 +57,25 @@ const LOOP_INSTRUCTIONS_CORE = [
 ].join(" ");
 
 /** Browser-only guidance — appended only when the registry actually has `page.*` tools, so
- * an asset-node run's system prompt does not reference a step ("look at the page") that kind
- * has no tool for at all (§4: no `page.*` on `kind=asset`). The loop stays kind-agnostic by
+ * a decision run's system prompt does not reference a step ("look at the page") it has no
+ * tool for. The loop stays kind-agnostic by
  * reading the registry it was given rather than being told which kind it is. */
 const PAGE_PERCEPTION_NOTE =
-  "Perception (the page's current state) is returned as the result of every page.* call — there is no separate 'look at the page' step.";
+  "Page navigation and interaction tools return current perception; page.extract returns records. " +
+  "A failed locator or wait is a harness observation about that target, not proof the page is unavailable. " +
+  "On a page-tool error, use the attached fresh perception or page.perceive, then explore a different target or extract already visible task data. " +
+  "Never repeat the same failed wait or emit page_unavailable immediately after it. A missing optional tab does not invalidate visible timeline items. " +
+  "Check each anchor's tag and role: a main/article container is not a tab or button. Hidden skip-navigation links are not application readiness signals. " +
+  "A loading screen, progress indicator, or empty app shell is not evidence that the task is impossible. " +
+  "On slow client-rendered apps, use page.waitForLoadState and page.waitFor (visible UI or hidden loading indicator), allowing 60-120 seconds within the run budget before concluding the page is unavailable. " +
+  "Inspect network.list for actual pending data requests and use network.waitForResponse with an observed URL substring, then wait for the required visible UI. Never invent endpoint names. " +
+  "If networkidle times out because the app polls, switch to a specific response and visible-element wait. Do not repeatedly navigate or scroll to simulate waiting. " +
+  "These explicit waits and completed network observations teach the trace compiler the readiness conditions to preserve. " +
+  "If extraction reports an invalid selector, correct the named field and retry before emitting an unavailable event or failing. " +
+  "You may omit a field only if it is optional for the task and output schema; never invent missing values. " +
+  "Make at most two corrected extraction attempts within the remaining step budget. A selector error is not evidence that the page is unavailable. " +
+  "For repeated items, scope extraction to each item's anchor so fields belong to the same record. " +
+  "Emit each validated record as soon as it is ready when the declared event contract is per-record; downstream consumers run asynchronously.";
 
 function loopInstructions(tools: AgentTool[]): string {
   const hasPageTools = tools.some((t) => t.name.startsWith("page."));
@@ -129,7 +143,9 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<AgentLoop
   const messages: LlmMessage[] = [{ role: "user", content: "Begin." }];
 
   for (let step = 0; step < maxSteps; step++) {
+    if (opts.signal?.aborted) return { outcome: "fail", reason: "run_cancelled" };
     const res = await opts.llm.complete({ system, messages, tools: wireTools });
+    if (opts.signal?.aborted) return { outcome: "fail", reason: "run_cancelled" };
 
     messages.push({
       role: "assistant",
@@ -154,11 +170,23 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<AgentLoop
     // *previous* call in this same turn just re-perceived, and a session's page is one
     // mutable thing this loop drives one action at a time (§8's model, not this file's).
     for (const call of res.toolCalls) {
+      if (opts.signal?.aborted) return { outcome: "fail", reason: "run_cancelled" };
       const tool = toolByName.get(call.name);
+      const started = Date.now();
       const result: ToolResult = tool
         ? await tool.execute(call.args)
         : { ok: false, error: `unknown tool "${call.name}" — not in this task's registry` };
       results.push({ id: call.id, name: call.name, result });
+      // Record the actual model-facing call separately from driver observations. Never
+      // store raw arguments/results here: type/fill/emit can carry credentials or packets.
+      const value = result.ok && typeof result.value === "object" && result.value !== null
+        ? result.value as Record<string, unknown> : {};
+      await opts.trace.record("action", {
+        action: "tool.call", tool: call.name, callId: call.id, ok: result.ok,
+        duration_ms: Date.now() - started,
+        ...(!result.ok ? { error: result.error } : {}),
+        ...(typeof value.eventId === "string" ? { eventId: value.eventId } : {}),
+      });
 
       if (result.ok && call.name === "done") terminal = { outcome: "done", result: result.value };
       if (result.ok && call.name === "fail") terminal = { outcome: "fail", reason: String(result.value) };

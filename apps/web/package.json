@@ -11,6 +11,8 @@
     "lint": "eslint src"
   },
   "dependencies": {
+    "@clerk/nextjs": "^7.9.4",
+    "@modelcontextprotocol/sdk": "^1.0.0",
     "@tabductor/browser": "workspace:*",
     "@tabductor/bus": "workspace:*",
     "@tabductor/core": "workspace:*",

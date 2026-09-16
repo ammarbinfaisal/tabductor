@@ -5,26 +5,31 @@ import {
   listTraceEntries,
   PAGE_LIMIT,
   RUN_STATUSES,
-  triggerTask,
 } from "@tabductor/engine";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { procedure, router } from "../trpc.js";
+import { procedure, requireRunOwner, requireWorkflowOwner, router } from "../trpc.js";
+import { LOCAL_ACCOUNT } from "../auth-context.js";
 
 export const runRouter = router({
   list: procedure
     .input(
       z.object({
         workflowId: z.string().min(1).optional(),
+        versionId: z.string().min(1).optional(),
         taskId: z.string().min(1).optional(),
         status: z.enum(RUN_STATUSES).optional(),
         cursor: z.string().nullish(),
         limit: z.number().int().min(PAGE_LIMIT.min).max(PAGE_LIMIT.max).optional(),
       }),
     )
-    .query(({ ctx, input }) => listRuns(ctx.db, input)),
+    .query(async ({ ctx, input }) => {
+      if (input.workflowId) await requireWorkflowOwner(ctx, input.workflowId);
+      return listRuns(ctx.db, { ...input, accountId: ctx.accountId ?? LOCAL_ACCOUNT });
+    }),
 
   get: procedure.input(z.object({ runId: z.string().min(1) })).query(async ({ ctx, input }) => {
+    await requireRunOwner(ctx, input.runId);
     const detail = await getRun(ctx.db, input.runId);
     if (!detail) throw new TRPCError({ code: "NOT_FOUND", message: `no run "${input.runId}"` });
     return detail;
@@ -39,14 +44,19 @@ export const runRouter = router({
     .input(
       z.object({
         runId: z.string().min(1),
+        view: z.literal("tools").optional(),
         cursor: z.string().nullish(),
         limit: z.number().int().min(PAGE_LIMIT.min).max(PAGE_LIMIT.max).optional(),
       }),
     )
-    .query(({ ctx, input }) => listTraceEntries(ctx.db, input)),
+    .query(async ({ ctx, input }) => {
+      await requireRunOwner(ctx, input.runId);
+      return listTraceEntries(ctx.db, input);
+    }),
 
   /** Legal from `queued|running` only; anything terminal is a conflict, not a silent no-op. */
   cancel: procedure.input(z.object({ runId: z.string().min(1) })).mutation(async ({ ctx, input }) => {
+    await requireRunOwner(ctx, input.runId);
     const cancelled = await cancelRun(ctx.db, input.runId);
     if (cancelled) return cancelled;
 
@@ -58,21 +68,4 @@ export const runRouter = router({
     });
   }),
 
-  /**
-   * "Trigger now" (U0). The packet is not validated against the task's declared events on
-   * purpose: a manual start is an event *source*, like a schedule fire, not an emit from a
-   * node — the same reason `schedule.fired` carries an empty packet nobody declared.
-   */
-  triggerManual: procedure
-    .input(
-      z.object({
-        taskId: z.string().min(1),
-        type: z.string().min(1).max(200).optional(),
-        packet: z.unknown().optional(),
-      }),
-    )
-    .mutation(async ({ ctx, input }) => {
-      const { event, dispatched } = await triggerTask(ctx.db, input);
-      return { eventId: event.eventId, type: event.type, runId: dispatched?.runId ?? null };
-    }),
 });

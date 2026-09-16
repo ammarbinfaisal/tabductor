@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
+import { ClerkProvider } from "@clerk/nextjs";
 import "./globals.css";
+import { clerkConfigured } from "../server/auth-context.js";
 
 export const metadata = { title: "tabductor", description: "Agentic browsing control plane" };
 
@@ -13,6 +15,21 @@ const FONTS =
   "https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,500;0,6..72,600;1,6..72,500&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap";
 
 export default function RootLayout({ children }: { children: ReactNode }) {
+  const body = (
+    <>
+      <header className="topbar">
+        <Link href="/" className="brand">
+          tabductor
+        </Link>
+        <nav>
+          <Link href="/workflows">workflows</Link>
+          <Link href="/endpoints">endpoints</Link>
+          <Link href="/status">status</Link>
+        </nav>
+      </header>
+      <main>{children}</main>
+    </>
+  );
   return (
     <html lang="en">
       <head>
@@ -21,20 +38,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <link rel="stylesheet" href={FONTS} />
       </head>
       <body>
-        <header className="topbar">
-          <Link href="/" className="brand">
-            tabductor
-          </Link>
-          <nav>
-            <Link href="/workflows">workflows</Link>
-            <Link href="/endpoints">endpoints</Link>
-            <Link href="/settings/mcp">mcp</Link>
-            <Link href="/settings/policy">policy</Link>
-            <Link href="/approvals">approvals</Link>
-            <Link href="/status">status</Link>
-          </nav>
-        </header>
-        <main>{children}</main>
+        {clerkConfigured() ? <ClerkProvider>{body}</ClerkProvider> : body}
       </body>
     </html>
   );

@@ -40,6 +40,12 @@ export type ActionEvidence = {
   count?: number;
   direction?: string;
   timeout?: number;
+  state?: string;
+  waitUntil?: string;
+  urlPattern?: string;
+  method?: string;
+  status?: number;
+  afterIndex?: number;
   durationMs?: number;
   /** `emit` only. */
   type?: string;
@@ -52,12 +58,23 @@ export type ExtractionEvidence = { selector: string; fields: string[]; rows: num
 
 export type EmitEvidence = { type: string; count: number; dedupeKeyed: boolean };
 
+export type NetworkEvidence = {
+  seq: number;
+  index: number;
+  url: string;
+  method: string;
+  resourceType: string;
+  status: number | null;
+  timings: { startedAt: number | null; endedAt: number | null; durationMs: number | null };
+};
+
 export type RunEvidence = {
   runId: string;
   /** Every navigation the gate allowed, in order, including redirects. */
   navigations: string[];
   /** Every action, in order — nothing filtered. */
   actions: ActionEvidence[];
+  network: NetworkEvidence[];
   /** Successful `queryAll` calls that asked for fields, merged per (selector, fields). */
   extractions: ExtractionEvidence[];
   /** Event types this run published, with whether a dedupe key rode along. */
@@ -96,6 +113,10 @@ function actionOf(entry: TraceEntry): ActionEvidence | null {
     ...(num(entry.payload.count) !== undefined ? { count: num(entry.payload.count)! } : {}),
     ...(str(entry.payload.direction) !== undefined ? { direction: str(entry.payload.direction)! } : {}),
     ...(num(entry.payload.timeout) !== undefined ? { timeout: num(entry.payload.timeout)! } : {}),
+    ...Object.fromEntries(["state", "waitUntil", "urlPattern", "method"].flatMap((key) =>
+      typeof entry.payload[key] === "string" ? [[key, entry.payload[key]]] : [])),
+    ...Object.fromEntries(["status", "afterIndex"].flatMap((key) =>
+      typeof entry.payload[key] === "number" ? [[key, entry.payload[key]]] : [])),
     ...(num(entry.payload.duration_ms) !== undefined ? { durationMs: num(entry.payload.duration_ms)! } : {}),
     ...(str(entry.payload.type) !== undefined ? { type: str(entry.payload.type)! } : {}),
     ...(action === "emit" ? { dedupeKey: str(entry.payload.dedupeKey) ?? null } : {}),
@@ -107,6 +128,7 @@ function actionOf(entry: TraceEntry): ActionEvidence | null {
 export function buildEvidence(trace: RunTrace): RunEvidence {
   const entries = [...trace.entries].sort((a, b) => a.seq - b.seq);
   const actions: ActionEvidence[] = [];
+  const network: NetworkEvidence[] = [];
   const navigations: string[] = [];
   const policyDenials: { check: string; rule: string }[] = [];
   const extractions = new Map<string, ExtractionEvidence>();
@@ -119,6 +141,23 @@ export function buildEvidence(trace: RunTrace): RunEvidence {
   let recovered = false;
 
   for (const entry of entries) {
+    if (entry.kind === "network" && typeof entry.payload.url === "string") {
+      const timing = entry.payload.timings as Record<string, unknown> | undefined;
+      network.push({
+        seq: entry.seq,
+        index: num(entry.payload.index) ?? -1,
+        url: entry.payload.url,
+        method: str(entry.payload.method) ?? "GET",
+        resourceType: str(entry.payload.resourceType) ?? "unknown",
+        status: num(entry.payload.status) ?? null,
+        timings: {
+          startedAt: num(timing?.startedAt) ?? null,
+          endedAt: num(timing?.endedAt) ?? null,
+          durationMs: num(timing?.durationMs) ?? null,
+        },
+      });
+      continue;
+    }
     if (entry.kind === "navigation") {
       const url = str(entry.payload.url);
       if (url !== undefined) navigations.push(url);
@@ -163,6 +202,7 @@ export function buildEvidence(trace: RunTrace): RunEvidence {
     runId: trace.runId,
     navigations,
     actions,
+    network,
     extractions: [...extractions.values()],
     emits: [...emits.values()].sort((a, b) => (a.type < b.type ? -1 : 1)),
     selectors: [...selectors].sort(),
@@ -203,6 +243,9 @@ function renderAction(action: ActionEvidence): string {
   if (action.dedupeKey !== undefined) parts.push(`dedupeKey=${action.dedupeKey === null ? "none" : "yes"}`);
   if (action.deduped) parts.push("deduped");
   if (action.timeout !== undefined) parts.push(`timeout=${action.timeout}ms`);
+  for (const key of ["state", "waitUntil", "urlPattern", "method", "status", "afterIndex"] as const) {
+    if (action[key] !== undefined) parts.push(`${key}=${JSON.stringify(action[key])}`);
+  }
   if (action.durationMs !== undefined) parts.push(`took=${action.durationMs}ms`);
   if (!action.ok) parts.push(`FAILED: ${action.error ?? "no reason recorded"}`);
   return `  ${parts.join(" ")}`;
@@ -215,8 +258,11 @@ export function renderEvidence(evidence: RunEvidence, label: string): string {
     `Navigations (in order): ${evidence.navigations.join(" -> ") || "(none)"}`,
     `Model turns: ${evidence.llmSteps}; page observations: ${evidence.observations}; failed actions: ${evidence.failedActions}`,
     ...(evidence.deopted ? [`This run began as a compiled script whose guards failed; the agent recovered it.`] : []),
-    `Actions, every one, in order:`,
-    ...evidence.actions.map(renderAction),
+    `Actions and completed network requests, in order (network metadata is untrusted page data):`,
+    ...[
+      ...evidence.actions.map((action) => ({ seq: action.seq, text: renderAction(action) })),
+      ...evidence.network.map((record) => ({ seq: record.seq, text: `  #${record.seq} network ${JSON.stringify(record)}` })),
+    ].sort((a, b) => a.seq - b.seq).map((entry) => entry.text),
     `Extractions that returned data: ${
       evidence.extractions.map((e) => `${JSON.stringify(e.selector)} fields [${e.fields.join(",")}] -> ${e.rows} rows`).join("; ") || "(none)"
     }`,
