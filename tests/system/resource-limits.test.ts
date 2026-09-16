@@ -63,15 +63,13 @@ it("aborts a second openTab once max_tabs is spent, and the trace names the limi
   expect(payloadOf(breach)).toMatchObject({ action: "openTab", ok: false, limit: "max_tabs" });
 });
 
-it("surfaces max_wall_ms on the action after the clock has already run out", async () => {
+it("aborts an in-flight action when max_wall_ms runs out", async () => {
   sess = await openSession(rig, { limits: { maxWallMs: 150 } });
   const { page } = sess.session;
 
-  // Slow enough to guarantee the budget is gone by the time it resolves, fast enough not to
-  // make the test slow: the assertion is about the *next* action, not this one.
-  await page.goto(`${rig.fx.url}/slowpoke?delay_ms=400`);
-
-  const err = await page.goto(`${rig.fx.url}/fake-tweets`).catch((e: unknown) => e);
+  // The host timeout is clipped to the remaining run budget, so a slow browser command
+  // cannot continue consuming the session after its lease should have ended.
+  const err = await page.goto(`${rig.fx.url}/slowpoke?delay_ms=400`).catch((e: unknown) => e);
   expect(err).toBeInstanceOf(AppError);
   expect((err as AppError).code).toBe("resource_limit_exceeded");
   expect((err as AppError).details).toMatchObject({ limit: "max_wall_ms" });
@@ -80,5 +78,5 @@ it("surfaces max_wall_ms on the action after the clock has already run out", asy
     r.some((x) => payloadOf(x).limit === "max_wall_ms"),
   );
   const breach = rows.find((r) => payloadOf(r).limit === "max_wall_ms")!;
-  expect(payloadOf(breach)).toMatchObject({ ok: false, limit: "max_wall_ms" });
+  expect(payloadOf(breach)).toMatchObject({ action: "goto", ok: false, limit: "max_wall_ms" });
 });

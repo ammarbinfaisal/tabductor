@@ -173,14 +173,22 @@ it("refuses a hidden field", async () => {
   });
 
   sess = await openSession(rig);
-  register(sess.runId, { session: sess.session, trace: sess.trace });
-
   await sess.session.page.goto(`${rig.fx.url}/fake-gram`);
   const perception = await sess.session.page.perceive();
-  const hiddenAnchor = perception.elements.find((e) => e.name === "csrfHidden")?.anchor;
-  expect(hiddenAnchor).toBeDefined();
+  expect(perception.elements.some((e) => e.name === "csrfHidden")).toBe(false);
 
-  await expect(broker.fill(sess.runId, "hidden_target_secret", hiddenAnchor!)).rejects.toMatchObject({
+  // Perception must not advertise hidden fields. Still probe the broker boundary with a
+  // forged/stale anchor so target validation remains defense in depth rather than relying on
+  // the model-visible element list.
+  const opened = sess;
+  const fakeSession: RunSession = {
+    ...opened.session,
+    resolveAnchor: (anchor) =>
+      anchor === "attack-hidden" ? '[data-testid="csrfHidden"]' : opened.session.resolveAnchor(anchor),
+  };
+  register(opened.runId, { session: fakeSession, trace: opened.trace });
+
+  await expect(broker.fill(sess.runId, "hidden_target_secret", "attack-hidden")).rejects.toMatchObject({
     code: "secret_denied_target",
   });
 
