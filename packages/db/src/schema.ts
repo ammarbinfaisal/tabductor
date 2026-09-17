@@ -791,6 +791,10 @@ export const BROWSER_SESSION_STATUSES = [
 export type BrowserSessionStatus = (typeof BROWSER_SESSION_STATUSES)[number];
 export const BROWSER_WORKER_STATUSES = ["warm", "allocated", "draining", "dead"] as const;
 export type BrowserWorkerStatus = (typeof BROWSER_WORKER_STATUSES)[number];
+export const BROWSER_RECORDING_STATUSES = ["unavailable", "recording", "partial", "complete", "expired"] as const;
+export type BrowserRecordingStatus = (typeof BROWSER_RECORDING_STATUSES)[number];
+export const BROWSER_RECORDING_SEGMENT_STATUSES = ["ready", "gap", "private"] as const;
+export type BrowserRecordingSegmentStatus = (typeof BROWSER_RECORDING_SEGMENT_STATUSES)[number];
 
 export const browserProfiles = pgTable(
   "browser_profiles",
@@ -824,6 +828,12 @@ export const browserSessions = pgTable(
     podName: text("pod_name"),
     inputOwner: text("input_owner").notNull().default("ai"),
     inputOwnerGeneration: integer("input_owner_generation").notNull().default(1),
+    pauseRequestedAt: ts("pause_requested_at"),
+    pauseAcknowledgedAt: ts("pause_acknowledged_at"),
+    takeoverExpiresAt: ts("takeover_expires_at"),
+    recordingStatus: text("recording_status").$type<BrowserRecordingStatus>().notNull().default("unavailable"),
+    recordingStartedAt: ts("recording_started_at"),
+    recordingEndedAt: ts("recording_ended_at"),
     readyAt: ts("ready_at"),
     heartbeatAt: ts("heartbeat_at"),
     endedAt: ts("ended_at"),
@@ -835,6 +845,50 @@ export const browserSessions = pgTable(
     index("browser_sessions_status_idx").on(t.status),
     check("browser_sessions_status_check", sql`${t.status} in ('queued','allocating','ready','running','stopping','ended','failed')`),
     check("browser_sessions_input_owner_check", sql`${t.inputOwner} in ('ai','human','paused')`),
+    check("browser_sessions_recording_status_check", sql`${t.recordingStatus} in ('unavailable','recording','partial','complete','expired')`),
+  ],
+);
+
+/** Durable, cursor-addressable session activity. Payloads are metadata only: callers must
+ * never put credential values, human keystrokes, or page bodies in this table. */
+export const browserSessionActivity = pgTable(
+  "browser_session_activity",
+  {
+    cursor: bigserial("cursor", { mode: "number" }).primaryKey(),
+    sessionId: text("session_id").notNull().references(() => browserSessions.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    offsetMs: integer("offset_ms").notNull().default(0),
+    pageId: text("page_id"),
+    payloadJson: jsonb("payload_json").$type<Record<string, unknown>>().notNull().default({}),
+    private: boolean("private").notNull().default(false),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("browser_session_activity_session_cursor_idx").on(t.sessionId, t.cursor),
+    check("browser_session_activity_offset_check", sql`${t.offsetMs} >= 0`),
+  ],
+);
+
+/** Recoverable HLS metadata. A gap/private row intentionally has no object reference and
+ * keeps playback time aligned without claiming media exists for that interval. */
+export const browserRecordingSegments = pgTable(
+  "browser_recording_segments",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id").notNull().references(() => browserSessions.id, { onDelete: "cascade" }),
+    sequence: integer("sequence").notNull(),
+    startMs: integer("start_ms").notNull(),
+    endMs: integer("end_ms").notNull(),
+    status: text("status").$type<BrowserRecordingSegmentStatus>().notNull(),
+    objectRef: text("object_ref"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("browser_recording_segments_session_sequence_key").on(t.sessionId, t.sequence),
+    index("browser_recording_segments_session_time_idx").on(t.sessionId, t.startMs),
+    check("browser_recording_segments_time_check", sql`${t.startMs} >= 0 and ${t.endMs} > ${t.startMs}`),
+    check("browser_recording_segments_status_check", sql`${t.status} in ('ready','gap','private')`),
+    check("browser_recording_segments_object_check", sql`(${t.status} = 'ready' and ${t.objectRef} is not null) or (${t.status} <> 'ready' and ${t.objectRef} is null)`),
   ],
 );
 
@@ -1084,6 +1138,8 @@ export type BrowserSessionRow = typeof browserSessions.$inferSelect;
 export type BrowserProfileLeaseRow = typeof browserProfileLeases.$inferSelect;
 export type BrowserAllocationRequestRow = typeof browserAllocationRequests.$inferSelect;
 export type BrowserWorkerRow = typeof browserWorkers.$inferSelect;
+export type BrowserSessionActivityRow = typeof browserSessionActivity.$inferSelect;
+export type BrowserRecordingSegmentRow = typeof browserRecordingSegments.$inferSelect;
 export type SecretRow = typeof secrets.$inferSelect;
 export type NewSecret = typeof secrets.$inferInsert;
 export type SecretGrantRow = typeof secretGrants.$inferSelect;
