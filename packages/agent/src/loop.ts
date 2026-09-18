@@ -146,7 +146,7 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<AgentLoop
 
   for (let step = 0; step < maxSteps; step++) {
     if (opts.signal?.aborted) return { outcome: "fail", reason: "run_cancelled" };
-    const res = await opts.llm.complete({ system, messages, tools: wireTools });
+    const res = await opts.llm.complete({ system, messages, tools: wireTools, ...(opts.signal ? { signal: opts.signal } : {}) });
     if (opts.signal?.aborted) return { outcome: "fail", reason: "run_cancelled" };
 
     messages.push({

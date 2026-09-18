@@ -2,6 +2,7 @@ import { chainDepth, claim, publish } from "@tabductor/bus";
 import { AppError, newId } from "@tabductor/core";
 import {
   runs,
+  modelSelections,
   taskConsumes,
   tasks,
   workflowExecutions,
@@ -54,11 +55,14 @@ export async function createWorkflowExecution(
     if (!version) throw new AppError("execution_version_mismatch", "execution version must belong to its workflow");
     const declaredBudget = (version.graph as { maxRuns?: unknown } | null)?.maxRuns;
     const versionBudget = typeof declaredBudget === "number" && Number.isSafeInteger(declaredBudget) && declaredBudget > 0 && declaredBudget <= 1000 ? declaredBudget : 1000;
+    const selections = await db.select().from(modelSelections).where(eq(modelSelections.accountId, workflow.accountId));
+    const selection = selections.find((s) => s.scope === workflow.id) ?? selections.find((s) => s.scope === "account");
     const executionId = newId("exec");
     await db.insert(workflowExecutions).values({
       id: executionId,
       workflowId: workflow.id,
       workflowVersionId: versionId,
+      modelSelectionJson: selection ? { funding: selection.funding, provider: selection.provider, model: selection.model, credentialId: selection.credentialId } : null,
       maxHops: workflow.maxHops,
       maxRuns: Math.min(input.maxRuns ?? 1000, versionBudget),
     });

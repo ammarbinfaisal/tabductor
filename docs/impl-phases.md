@@ -184,8 +184,11 @@ metered operations cover authoring, compilation, execution, and recovery. BYO fa
 switch funding sources. Browser traces now identify the actual browser build and script
 runtime ABI; compilation requires that evidence and pins it in the artifact. The executor
 invalidates incompatible or unversioned scripts before any compiled action and continues in
-AI mode. Promotion locks the task and commits activation with its mode change. Provider
-round trips and the remaining execution-level funding and cancellation checks are still open.
+AI mode. Promotion locks the task and commits activation with its mode change. Each new execution captures its non-secret model selection at trigger admission. Runtime,
+recovery, and background compilation reuse it; revoked BYO credentials fail without fallback.
+Migration 0039 leaves legacy executions without a pinned source: start a new execution after
+choosing a model. Run cancellation reaches the model SDK's HTTP request. Deterministic
+funding and transport-cancellation tests pass; bounded provider round trips remain open.
 
 - Store encrypted BYO OpenAI/Anthropic credentials and workflow model settings. Resolve one
   funding source across authoring, schema/graph compilation, runtime, recovery, and trace

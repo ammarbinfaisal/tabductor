@@ -25,6 +25,7 @@ export type ToolDef = {
 };
 
 export type LlmRequest = {
+  signal?: AbortSignal;
   system: string;
   messages: LlmMessage[];
   tools: ToolDef[];

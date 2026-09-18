@@ -1,0 +1,1 @@
+ALTER TABLE "workflow_executions" ADD COLUMN "model_selection_json" jsonb;

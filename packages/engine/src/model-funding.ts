@@ -1,5 +1,5 @@
 import { AppError, newId } from "@tabductor/core";
-import { modelCredentials, modelSelections, modelOperations, workflows, workflowVersions, runs, tasks, type Db } from "@tabductor/db";
+import { modelCredentials, modelSelections, modelOperations, workflowExecutions, workflows, workflowVersions, runs, tasks, type Db } from "@tabductor/db";
 import { encryptEnvelope, withEnvelope, zero, type KeyWrapper } from "@tabductor/secrets";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -100,14 +100,21 @@ export function createModelResolver(deps: { db: Db; wrapper: KeyWrapper; rates: 
       call: (config: ModelCallConfig) => Promise<{ value: T; usage: ModelUsage }>): Promise<T> {
       if (!Number.isSafeInteger(input.inputTokenBound) || input.inputTokenBound <= 0) throw new AppError("model_input_invalid", "model input bound must be positive");
       if (scope.workflowId) await assertWorkflow(deps.db, scope.accountId, scope.workflowId);
+      let pinned: typeof workflowExecutions.$inferSelect.modelSelectionJson | undefined;
       if (scope.runId) {
-        const [run] = await deps.db.select({ taskId: runs.taskId }).from(runs).where(eq(runs.id, scope.runId));
+        const [run] = await deps.db.select({ taskId: runs.taskId, executionId: runs.executionId }).from(runs).where(eq(runs.id, scope.runId));
         if (!run) throw new AppError("run_not_found", "model run not found");
         const owner = await modelScopeForTask(deps.db, run.taskId, scope.purpose);
         if (owner.accountId !== scope.accountId || owner.workflowId !== scope.workflowId) throw new AppError("run_not_found", "model run not found");
+        if (run.executionId) {
+          const [execution] = await deps.db.select({ selection: workflowExecutions.modelSelectionJson }).from(workflowExecutions)
+            .where(and(eq(workflowExecutions.id, run.executionId), eq(workflowExecutions.workflowId, owner.workflowId!)));
+          if (!execution) throw new AppError("execution_not_found", "model execution not found");
+          pinned = execution.selection;
+        }
       }
       const selections = await deps.db.select().from(modelSelections).where(eq(modelSelections.accountId, scope.accountId));
-      const selection = selections.find((s) => s.scope === scope.workflowId) ?? selections.find((s) => s.scope === "account");
+      const selection = pinned !== undefined ? pinned : selections.find((s) => s.scope === scope.workflowId) ?? selections.find((s) => s.scope === "account");
       if (!selection) throw new AppError("model_selection_missing", "Choose a model source in account settings before using AI");
       const rate = deps.rates.find((r) => r.provider === selection.provider && r.model === selection.model);
       if (selection.funding === "platform" && !rate) throw new AppError("model_rate_unknown", "this platform model has no configured rate");

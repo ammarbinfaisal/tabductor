@@ -283,6 +283,10 @@ export const workflowExecutions = pgTable(
     maxHops: integer("max_hops").notNull(),
     maxRuns: integer("max_runs").notNull().default(1000),
     admittedRuns: integer("admitted_runs").notNull().default(0),
+    /** Non-secret model selection captured at trigger admission; null means no model was selected. */
+    modelSelectionJson: jsonb("model_selection_json").$type<{
+      funding: "byo" | "platform"; provider: "openai" | "anthropic"; model: string; credentialId: string | null;
+    }>(),
     endedAt: ts("ended_at"),
     createdAt: createdAt(),
   },

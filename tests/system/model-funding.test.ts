@@ -6,7 +6,7 @@ import { modelCredentials, modelOperations } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import { fileKeyWrapper } from "@tabductor/secrets";
 import { appendCreditAdjustment, createModelResolver, expireCreditReservations, getCreditBalance, modelCreditUnits,
-  parseModelRates, resolveAccountIdentity, saveModelCredential, setModelSelection, settleModelOperation, staticSchemaGenerator, type ModelRate } from "@tabductor/engine";
+  createWorkflow, seedWorkflow, triggerTask, parseModelRates, resolveAccountIdentity, saveModelCredential, setModelSelection, settleModelOperation, staticSchemaGenerator, type ModelRate } from "@tabductor/engine";
 import { eq } from "drizzle-orm";
 import { createCaller } from "../../apps/web/src/server/router.js";
 
@@ -82,4 +82,37 @@ it("does not expire uncertain paid operations and serializes duplicate admission
   await expireCreditReservations(db.db, new Date(Date.now() + 86_400_000));
   expect(await getCreditBalance(db.db, a)).toMatchObject({ availableUnits: 8, reservedUnits: 2 });
   expect(() => parseModelRates(JSON.stringify([rate, rate]))).toThrow();
+});
+
+
+it("pins funding and credentials at trigger admission across setting changes and background compilation", async () => {
+  const a = await account("model-pinned");
+  const key = await saveModelCredential(db.db, wrapper(), { accountId: a, provider: "openai", label: "Original", apiKey: "pinned-byo-fixture" });
+  await setModelSelection(db.db, a, { funding: "byo", provider: "openai", model: rate.model, credentialId: key.id });
+  const workflowId = await createWorkflow(db.db, { accountId: a, userId: "fixture", name: "Pinned" });
+  const wf = await seedWorkflow(db.db, { workflowId, tasks: { T: { kind: "decision" } } });
+  const first = await triggerTask(db.db, { taskId: wf.taskIds.T! });
+  await setModelSelection(db.db, a, { funding: "platform", provider: "openai", model: rate.model });
+  await appendCreditAdjustment(db.db, { accountId: a, kind: "purchase", units: 100, idempotencyKey: "pinned-topup" });
+  const invoke = vi.fn(async (config) => ({ value: config.apiKey, usage: { input: 100, output: 10 } }));
+  for (const purpose of ["runtime", "recovery", "trace_compilation"] as const) {
+    expect(await resolver().execute({ accountId: a, workflowId, runId: first.dispatched!.runId, purpose }, { inputTokenBound: 100 }, invoke)).toBe("pinned-byo-fixture");
+  }
+  expect((await getCreditBalance(db.db, a)).totalUnits).toBe(100);
+  const second = await triggerTask(db.db, { taskId: wf.taskIds.T! });
+  expect(await resolver().execute({ accountId: a, workflowId, runId: second.dispatched!.runId, purpose: "runtime" }, { inputTokenBound: 100 }, invoke)).toBe("platform-fixture");
+  await db.db.update(modelCredentials).set({ revokedAt: new Date() }).where(eq(modelCredentials.id, key.id));
+  await expect(resolver().execute({ accountId: a, workflowId, runId: first.dispatched!.runId, purpose: "recovery" }, { inputTokenBound: 100 }, invoke)).rejects.toMatchObject({ code: "model_credential_missing" });
+  expect(invoke).toHaveBeenCalledTimes(4);
+});
+
+it("does not adopt a later model selection for an execution admitted without one", async () => {
+  const a = await account("model-missing-at-admission");
+  const workflowId = await createWorkflow(db.db, { accountId: a, userId: "fixture", name: "No source" });
+  const wf = await seedWorkflow(db.db, { workflowId, tasks: { T: { kind: "decision" } } });
+  const started = await triggerTask(db.db, { taskId: wf.taskIds.T! });
+  await setModelSelection(db.db, a, { funding: "platform", provider: "openai", model: rate.model });
+  const invoke = vi.fn();
+  await expect(resolver().execute({ accountId: a, workflowId, runId: started.dispatched!.runId, purpose: "runtime" }, { inputTokenBound: 100 }, invoke)).rejects.toMatchObject({ code: "model_selection_missing" });
+  expect(invoke).not.toHaveBeenCalled();
 });

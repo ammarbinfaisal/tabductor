@@ -76,6 +76,7 @@ export function liveLlm(opts: LiveLlmOptions): Llm {
       const result = await generateText({
         model,
         maxRetries: 0,
+        ...(req.signal ? { abortSignal: req.signal } : {}),
         ...(opts.maxOutputTokens ? { maxOutputTokens: opts.maxOutputTokens } : {}),
         system: req.system,
         messages: req.messages.map((m) => ({ role: m.role, content: m.content })),
