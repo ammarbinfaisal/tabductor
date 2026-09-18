@@ -26,7 +26,7 @@ const START_TIMEOUT_MS = 30_000;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-export type Chrome = { wsUrl: string; close: () => Promise<void> };
+export type Chrome = { wsUrl: string; version: string; close: () => Promise<void> };
 
 /**
  * Spawns local Chrome headless with `--remote-debugging-port=0` on a fresh temp
@@ -95,13 +95,13 @@ export async function launchChrome(): Promise<Chrome> {
       const parsed = Number(raw?.split("\n")[0]?.trim());
       return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
     });
-    const wsUrl = await poll("/json/version", async () => {
+    const info = await poll("/json/version", async () => {
       const res = await fetch(`http://127.0.0.1:${port}/json/version`).catch(() => null);
       if (!res?.ok) return null;
-      const body = (await res.json()) as { webSocketDebuggerUrl?: string };
-      return body.webSocketDebuggerUrl ?? null;
+      const body = (await res.json()) as { webSocketDebuggerUrl?: string; Browser?: string };
+      return body.webSocketDebuggerUrl && body.Browser ? { wsUrl: body.webSocketDebuggerUrl, version: body.Browser.split("/").at(-1)! } : null;
     });
-    return { wsUrl, close };
+    return { ...info, close };
   } catch (err) {
     await close();
     throw err;

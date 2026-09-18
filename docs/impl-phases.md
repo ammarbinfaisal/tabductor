@@ -179,6 +179,14 @@ tokens cannot view media or control input. Cancellation stops further commands.
 
 ### H5 — Account model sources and complete metering
 
+Implementation notes (2026-09-18): encrypted account/workflow model selections and durable
+metered operations cover authoring, compilation, execution, and recovery. BYO failures never
+switch funding sources. Browser traces now identify the actual browser build and script
+runtime ABI; compilation requires that evidence and pins it in the artifact. The executor
+invalidates incompatible or unversioned scripts before any compiled action and continues in
+AI mode. Promotion locks the task and commits activation with its mode change. Provider
+round trips and the remaining execution-level funding and cancellation checks are still open.
+
 - Store encrypted BYO OpenAI/Anthropic credentials and workflow model settings. Resolve one
   funding source across authoring, schema/graph compilation, runtime, recovery, and trace
   compilation. Platform-managed credentials implement paid Tabductor models.

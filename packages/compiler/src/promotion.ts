@@ -1,4 +1,4 @@
-import { tasks, type Db, type TaskRow } from "@tabductor/db";
+import { compiledScripts, tasks, type Db, type TaskRow } from "@tabductor/db";
 import type { Metrics } from "@tabductor/telemetry";
 import { eq } from "drizzle-orm";
 import { activateScript, getActiveScript, invalidateScript } from "./registry.js";
@@ -70,17 +70,22 @@ export async function promoteTask(
   deps: { db: Db; metrics?: Metrics },
   input: { taskId: string; scriptId: string; expectContentHash: string | null },
 ): Promise<{ promoted: boolean; reason: string }> {
-  const [task] = await deps.db.select().from(tasks).where(eq(tasks.id, input.taskId));
-  if (!task) return { promoted: false, reason: `task ${input.taskId} is gone` };
-  if (task.contentHash !== input.expectContentHash) {
-    return { promoted: false, reason: "the task changed while its trace was being compiled" };
-  }
-  if (!COMPILABLE_KINDS.has(task.kind)) return { promoted: false, reason: `kind ${task.kind} is never compiled` };
-
-  await activateScript(deps.db, input.scriptId);
-  await deps.db.update(tasks).set({ mode: "compiled", cleanAiRuns: 0 }).where(eq(tasks.id, input.taskId));
-  deps.metrics?.promotions.add();
-  return { promoted: true, reason: "promoted" };
+  return deps.db.transaction(async (trx) => {
+    const [task] = await trx.select().from(tasks).where(eq(tasks.id, input.taskId)).for("update");
+    if (!task) return { promoted: false, reason: `task ${input.taskId} is gone` };
+    if (task.contentHash !== input.expectContentHash) {
+      return { promoted: false, reason: "the task changed while its trace was being compiled" };
+    }
+    if (!COMPILABLE_KINDS.has(task.kind)) return { promoted: false, reason: `kind ${task.kind} is never compiled` };
+    const [script] = await trx.select().from(compiledScripts).where(eq(compiledScripts.id, input.scriptId)).for("update");
+    if (!script || script.taskId !== task.id || script.status === "invalidated") {
+      return { promoted: false, reason: "script is absent, retired, or belongs to another task" };
+    }
+    await activateScript(trx, input.scriptId);
+    await trx.update(tasks).set({ mode: "compiled", cleanAiRuns: 0 }).where(eq(tasks.id, task.id));
+    deps.metrics?.promotions.add();
+    return { promoted: true, reason: "promoted" };
+  });
 }
 
 export type DemotionOutcome = { demoted: boolean; deoptsInWindow: number };

@@ -1,3 +1,4 @@
+import { SCRIPT_RUNTIME_VERSION } from "@tabductor/core";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -203,7 +204,7 @@ it("a recovered deopt queues a recompile, and the replacement script runs on the
   )
     .replaceAll("__FX_URL__", rig.fx.url)
     .replace("/fake-tweets", "/mutator?layout=v2");
-  const v1 = await insertCandidateScript(db, { taskId, source: stale, fromRuns: ["run_old"] });
+  const v1 = await insertCandidateScript(db, { taskId, source: stale, guardsMeta: { compatibility: { browserVersion: rig!.chrome.version, runtimeVersion: SCRIPT_RUNTIME_VERSION } }, fromRuns: ["run_old"] });
   await activateScript(db, v1.id);
   await db.update(tasks).set({ mode: "compiled" }).where(eq(tasks.id, taskId));
 

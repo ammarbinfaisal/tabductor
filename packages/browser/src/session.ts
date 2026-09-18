@@ -1,4 +1,4 @@
-import { AppError } from "@tabductor/core";
+import { AppError, SCRIPT_RUNTIME_VERSION } from "@tabductor/core";
 import type { PolicyGate, TaskCtx } from "@tabductor/core";
 import type { Metrics } from "@tabductor/telemetry";
 import type {
@@ -131,6 +131,8 @@ const DEFAULT_NETWORK_LIST_LIMIT = 50;
 export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
   const { conn, gate, taskCtx, trace, metrics, limits } = deps;
   const openedAt = Date.now();
+  const browserVersion = await conn.version();
+  await trace.record("runtime", { browserVersion, runtimeVersion: SCRIPT_RUNTIME_VERSION });
 
   // ---- resource limits (§8): runtime-enforced, checked before policy. A run that has
   // already spent its budget gets nothing from learning whether the action it can't afford

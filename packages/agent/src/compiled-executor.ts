@@ -1,4 +1,4 @@
-import { AppError } from "@tabductor/core";
+import { AppError, SCRIPT_RUNTIME_VERSION } from "@tabductor/core";
 import {
   createTraceRecorder,
   openRunSession,
@@ -10,7 +10,7 @@ import {
   type StorageFlags,
   type TraceRecorder,
 } from "@tabductor/browser";
-import { getActiveScript } from "@tabductor/compiler";
+import { getActiveScript, invalidateScript } from "@tabductor/compiler";
 import { taskState, tasks, type Db, type RunRow, type TaskRow } from "@tabductor/db";
 import { assertRunLease, type RunHandle, type RunResult, type TaskExecutor } from "@tabductor/engine";
 import type { PolicyGate } from "@tabductor/core";
@@ -186,11 +186,22 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
           state: taskStateStore(db, handle),
         };
 
-        const result = await runCompiledScript(script.source, host, {
+        const compatibility = asRecord(asRecord(script.guardsMeta)?.compatibility);
+        const browserVersion = await lease.conn.version();
+        const compatible = compatibility?.runtimeVersion === SCRIPT_RUNTIME_VERSION && compatibility?.browserVersion === browserVersion;
+        if (!compatible) {
+          await db.transaction(async (trx) => {
+            await assertRunLease(trx, handle.run.id, handle.run.leaseGeneration);
+            await invalidateScript(trx, script.id);
+            await trx.update(tasks).set({ mode: "ai", cleanAiRuns: 0 }).where(eq(tasks.id, handle.task.id));
+          });
+        }
+        const result = compatible ? await runCompiledScript(script.source, host, {
           ...staticRtLimitsOf(handle.task),
           signal: handle.signal,
           ...(metrics ? { metrics } : {}),
-        });
+        }) : { outcome: "deopt" as const, prompt: "The browser or script runtime changed. Start from fresh perception; no compiled actions have run.",
+          evidence: { reason: "runtime_incompatible", expected: compatibility ?? null, actual: { browserVersion, runtimeVersion: SCRIPT_RUNTIME_VERSION } } };
 
         if (result.outcome === "completed") {
           ok = true;
@@ -205,10 +216,10 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
 
         // -- deopt: the same run, continued by the agent ---------------------------------
         deopted = true;
-        metrics?.deopts.add({ trigger: "guard_failure" });
+        metrics?.deopts.add({ trigger: compatible ? "guard_failure" : "runtime_incompatible" });
         await trace.record("action", {
           action: "deopt",
-          trigger: "guard_failure",
+          trigger: compatible ? "guard_failure" : "runtime_incompatible",
           evidence: result.evidence,
           ok: true,
         });

@@ -41,6 +41,7 @@ export type CompileOutcome = "ok" | "kind" | "evidence" | "llm" | "plan" | "lint
 /** §11's deopt trigger classes. `guard_failure` is the in-script one; the rest are the
  * executor's own detections. */
 export type DeoptTrigger =
+  | "runtime_incompatible"
   | "guard_failure"
   | "missing_element"
   | "unexpected_dialog"

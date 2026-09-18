@@ -50,7 +50,7 @@ type Entry = { seq: number; kind: string; payload: Record<string, unknown> };
 
 function trace(runId: string, entries: (seq: () => number) => Entry[]): RunTrace {
   let n = 0;
-  return { runId, entries: entries(() => n++) };
+  return { runId, entries: [{ seq: -1, kind: "runtime", payload: { browserVersion: "test-browser-v1", runtimeVersion: "tabductor-static-v1" } }, ...entries(() => n++)] };
 }
 
 /** What a first exploratory run actually leaves behind: looking, guessing, one dead end, then
@@ -290,3 +290,12 @@ it("a decision task is not compiled, even with clean evidence", async () => {
   expect(result.stage).toBe("kind");
   expect(await rowsFor(db, taskId)).toHaveLength(0);
 }, 120_000);
+
+it("refuses to spend compilation tokens when source browser/runtime evidence is absent", async () => {
+  const { db, taskId } = await taskOf("browser");
+  const source = exploratoryTrace("legacy");
+  source.entries = source.entries.filter((entry) => entry.kind !== "runtime");
+  const result = await compileTask({ db, llm: refusingLlm }, { taskId, sourceRunId: source.runId, traces: [source] });
+  expect(result).toMatchObject({ ok: false, stage: "evidence" });
+  expect(await rowsFor(db, taskId)).toEqual([]);
+});

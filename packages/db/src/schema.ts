@@ -835,6 +835,7 @@ export const schedules = pgTable("schedules", {
  * category the user turned off is never written, rather than written and later deleted.
  */
 export const TRACE_KINDS = [
+  "runtime",
   "navigation",
   "action",
   "network",

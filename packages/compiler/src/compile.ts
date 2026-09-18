@@ -1,3 +1,4 @@
+import { SCRIPT_RUNTIME_VERSION } from "@tabductor/core";
 import { taskEmits, tasks, type CompiledScriptRow, type Db } from "@tabductor/db";
 import type { Metrics } from "@tabductor/telemetry";
 import { eq } from "drizzle-orm";
@@ -183,11 +184,17 @@ export async function compileTask(deps: CompileDeps, input: CompileInput): Promi
 
     const sourceTrace = input.traces.find((t) => t.runId === input.sourceRunId);
     if (!sourceTrace) return fail("evidence", `no trace loaded for source run ${input.sourceRunId}`);
+    const runtime = sourceTrace.entries.find((entry) => entry.kind === "runtime")?.payload;
+    if (!runtime || typeof runtime.browserVersion !== "string" || !runtime.browserVersion || runtime.runtimeVersion !== SCRIPT_RUNTIME_VERSION) {
+      return fail("evidence", "source trace lacks compatible browser/runtime evidence; run in AI mode again");
+    }
+    const compatibility = { browserVersion: runtime.browserVersion, runtimeVersion: SCRIPT_RUNTIME_VERSION };
     const source = buildEvidence(sourceTrace);
     const gap = missingEvidence(source);
     if (gap) return fail("evidence", gap);
     const supporting = input.traces
-      .filter((t) => t.runId !== input.sourceRunId)
+      .filter((t) => t.runId !== input.sourceRunId && t.entries.some((entry) => entry.kind === "runtime" &&
+        entry.payload.browserVersion === compatibility.browserVersion && entry.payload.runtimeVersion === compatibility.runtimeVersion))
       .map(buildEvidence)
       .filter((run) => missingEvidence(run) === null);
 
@@ -266,7 +273,7 @@ export async function compileTask(deps: CompileDeps, input: CompileInput): Promi
       const row = await insertCandidateScript(deps.db, {
         taskId: task.id,
         source: script,
-        guardsMeta: { plan, validatedEmits: validation.emitted },
+        guardsMeta: { plan, validatedEmits: validation.emitted, compatibility },
         fromRuns: [input.sourceRunId, ...supporting.map((run) => run.runId)],
       });
       outcome = "ok";

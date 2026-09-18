@@ -1,3 +1,4 @@
+import { SCRIPT_RUNTIME_VERSION } from "@tabductor/core";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, it } from "vitest";
@@ -50,6 +51,7 @@ async function compiledTask(): Promise<{ taskId: string; scriptId: string }> {
   const taskId = wf.taskIds.Scrape!;
   const script = await insertCandidateScript(rig!.handle.db, {
     taskId,
+    guardsMeta: { compatibility: { browserVersion: rig!.chrome.version, runtimeVersion: SCRIPT_RUNTIME_VERSION } },
     source: SCRIPT.replaceAll("__FX_URL__", rig!.fx.url),
     fromRuns: ["run_a", "run_b"],
   });
@@ -254,4 +256,29 @@ it("a decision task never advances the promotion counter", async () => {
   }
   expect((await taskRow()).cleanAiRuns).toBe(0);
   expect((await taskRow()).mode).toBe("ai");
+}, 120_000);
+
+it.each(["missing", "browser", "runtime"])("demotes %s compatibility before running any compiled browser action", async (mismatch) => {
+  let modelCalls = 0;
+  rig = await startAgentRig({ compiled: {}, llmFor: () => ({ complete: async () => {
+    modelCalls++;
+    return { toolCalls: [{ id: "finish", name: "done", args: {} }], usage: { in: 0, out: 0 } };
+  } }) });
+  const { taskId, scriptId } = await compiledTask();
+  await rig.handle.db.update(compiledScripts).set({ guardsMeta: mismatch === "missing" ? {} : {
+    compatibility: { browserVersion: mismatch === "browser" ? "old-browser" : rig.chrome.version,
+      runtimeVersion: mismatch === "runtime" ? "old-runtime" : SCRIPT_RUNTIME_VERSION },
+  } }).where(eq(compiledScripts.id, scriptId));
+  await triggerTask(rig.handle.db, { taskId });
+  await waitForQuiet(rig as never);
+  const runs = await runsForTask(rig as never, taskId);
+  expect(runs).toHaveLength(1);
+  expect(runs[0]!.status).toBe("succeeded");
+  expect(modelCalls).toBe(1);
+  expect(await eventsOfType(rig as never, "tweet.detected")).toEqual([]);
+  const rows = await traceRowsFor(rig, runs[0]!.id);
+  expect(rows.some((row) => (row.payloadJson as { action?: string }).action === "goto")).toBe(false);
+  expect(rows.some((row) => (row.payloadJson as { trigger?: string }).trigger === "runtime_incompatible")).toBe(true);
+  expect((await rig.handle.db.select().from(compiledScripts).where(eq(compiledScripts.id, scriptId)))[0]!.status).toBe("invalidated");
+  expect((await rig.handle.db.select().from(tasks).where(eq(tasks.id, taskId)))[0]!.mode).toBe("ai");
 }, 120_000);

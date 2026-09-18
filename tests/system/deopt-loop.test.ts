@@ -1,3 +1,4 @@
+import { SCRIPT_RUNTIME_VERSION } from "@tabductor/core";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,7 +59,7 @@ it("guards fail on a changed layout, the agent finishes the same run, and the tr
   // The compiled script points at the v2 layout, where its `article` guard cannot hold — the
   // site-redesign case, reproduced exactly.
   const source = SCRIPT.replaceAll("__FX_URL__", rig.fx.url).replace("/fake-tweets", "/mutator?layout=v2");
-  const script = await insertCandidateScript(rig.handle.db, { taskId, source, fromRuns: ["run_a", "run_b"] });
+  const script = await insertCandidateScript(rig.handle.db, { taskId, source, guardsMeta: { compatibility: { browserVersion: rig!.chrome.version, runtimeVersion: SCRIPT_RUNTIME_VERSION } }, fromRuns: ["run_a", "run_b"] });
   await activateScript(rig.handle.db, script.id);
 
   await triggerTask(rig.handle.db, { taskId });
@@ -106,7 +107,7 @@ it("LLM cost lands on the deopted run and nowhere else", async () => {
   const taskId = wf.taskIds.Scrape!;
   await rig.handle.db.update(tasks).set({ mode: "compiled" }).where(eq(tasks.id, taskId));
   const source = SCRIPT.replaceAll("__FX_URL__", rig.fx.url).replace("/fake-tweets", "/mutator?layout=v2");
-  const script = await insertCandidateScript(rig.handle.db, { taskId, source, fromRuns: ["r"] });
+  const script = await insertCandidateScript(rig.handle.db, { taskId, source, guardsMeta: { compatibility: { browserVersion: rig!.chrome.version, runtimeVersion: SCRIPT_RUNTIME_VERSION } }, fromRuns: ["r"] });
   await activateScript(rig.handle.db, script.id);
 
   await triggerTask(rig.handle.db, { taskId });
@@ -117,7 +118,7 @@ it("LLM cost lands on the deopted run and nowhere else", async () => {
 
   // Now the same task on the layout its script *was* compiled for: no model call at all.
   const clean = SCRIPT.replaceAll("__FX_URL__", rig.fx.url);
-  const v2 = await insertCandidateScript(rig.handle.db, { taskId, source: clean, fromRuns: ["r2"] });
+  const v2 = await insertCandidateScript(rig.handle.db, { taskId, source: clean, guardsMeta: { compatibility: { browserVersion: rig!.chrome.version, runtimeVersion: SCRIPT_RUNTIME_VERSION } }, fromRuns: ["r2"] });
   await activateScript(rig.handle.db, v2.id);
   await triggerTask(rig.handle.db, { taskId });
   await waitForQuiet(rig as never);
