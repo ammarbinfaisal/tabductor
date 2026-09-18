@@ -112,6 +112,13 @@ for pending outbox delivery and all descendants.
 
 ### H3 — Camoufox worker, profiles, and local fleet
 
+Implementation notes (2026-09-18): session requests validate execution/account ownership.
+Profile leases are acquired at allocation, so competing profile requests queue. Database
+admission serializes controller capacity decisions and accepts a transactional credit adapter;
+queued requests reserve no credits. Failure callbacks fence the allocation generation.
+Worker readiness/restart reconciliation, warm slots, encrypted snapshots, and automatic engine
+allocation remain open; these service-level tests do not satisfy the real-browser gate.
+
 - Add a Python browser-worker image with pinned Camoufox/Playwright, Xvfb, and a versioned
   internal RPC contract implementing the TypeScript browser-driver operations. Validate
   Firefox perception, frames, popups, secret injection, network bodies, and disconnection.

@@ -75,7 +75,7 @@ async function allocatedCount(): Promise<number> {
 async function reconcile(): Promise<void> {
   let capacity = maxAllocated - await allocatedCount();
   while (!stopping && capacity-- > 0) {
-    const allocation = await claimBrowserAllocation(handle.db);
+    const allocation = await claimBrowserAllocation(handle.db, { maxAllocated });
     if (!allocation) break;
     const workerId = newId("worker");
     const podName = `browser-${allocation.sessionId.replaceAll("_", "-").slice(-42)}-g${allocation.generation}`.toLowerCase();
