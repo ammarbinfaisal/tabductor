@@ -123,8 +123,13 @@ Implementation notes (2026-09-18): session requests validate execution/account o
 Profile leases are acquired at allocation, so competing profile requests queue. Database
 admission serializes controller capacity decisions and accepts a transactional credit adapter;
 queued requests reserve no credits. Failure callbacks fence the allocation generation.
-Worker readiness/restart reconciliation, warm slots, encrypted snapshots, and automatic engine
-allocation remain open; these service-level tests do not satisfy the real-browser gate.
+Worker reconciliation, warm slots, encrypted snapshots, and automatic engine allocation are
+implemented. The disposable Docker acceptance (`python3 scripts/browser/smoke.py`) passes
+real fixture login across browser replacement, identical persisted fingerprint configuration,
+perception, duplicate/stale command rejection, takeover/resume, and playable/private recording.
+The worker pins Camoufox `official/stable/152.0.4-beta.30`, Python package 0.5.6, and Playwright
+1.55.0. Standard pointer input avoids a reproducible Xvfb stall in animated cursor movement.
+The Kubernetes concurrency, isolation, and redeployment acceptance gate remains open.
 
 - Add a Python browser-worker image with pinned Camoufox/Playwright, Xvfb, and a versioned
   internal RPC contract implementing the TypeScript browser-driver operations. Validate

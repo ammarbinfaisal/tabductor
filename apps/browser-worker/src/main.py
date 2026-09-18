@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import json
 import tarfile
 import time
 import secrets
@@ -92,6 +93,18 @@ async def stop_control_vnc():
 async def start_control_vnc():
     global control_vnc
     control_vnc = await asyncio.create_subprocess_exec("x11vnc", "-display", os.environ.get("DISPLAY", ":99"), "-localhost", "-rfbport", "5901", "-forever", "-shared", "-nopw", "-quiet", stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+    for _ in range(50):
+        if control_vnc.returncode is not None:
+            raise RuntimeError("human input server failed to start")
+        try:
+            _, writer = await asyncio.open_connection("127.0.0.1", 5901)
+            writer.close()
+            await writer.wait_closed()
+            return
+        except OSError:
+            await asyncio.sleep(0.1)
+    await stop_control_vnc()
+    raise RuntimeError("human input server did not become ready")
 app = FastAPI(title="Tabductor Camoufox worker", version=RPC_VERSION)
 
 
@@ -178,17 +191,34 @@ async def start_session(
             archive.extractall(profile, members=members, filter="data")
     options: dict[str, Any] = {
         "headless": False,
-        "persistent_context": True,
         "user_data_dir": str(profile),
-        "humanize": True,
+        # Animated cursor movement stalls pointer clicks under Xvfb. Use normal
+        # Playwright pointer input; never replay a timed-out click via DOM activation.
+        "humanize": False,
+        "os": "linux",
+        "window": (1366, 768),
     }
-    if request.fingerprint:
-        options["config"] = request.fingerprint
+    fingerprint_path = profile / ".tabductor-fingerprint.json"
+    options["config"] = json.loads(fingerprint_path.read_text()) if fingerprint_path.exists() else request.fingerprint
     if request.locale:
         options["locale"] = request.locale
     if request.proxy:
         options["proxy"] = request.proxy
-    manager = AsyncCamoufox(**options)
+    from camoufox.utils import launch_options
+    prepared = await asyncio.to_thread(launch_options, **options)
+    fragments = [(int(key.removeprefix("CAMOU_CONFIG_")), value) for key, value in prepared["env"].items() if key.startswith("CAMOU_CONFIG_")]
+    if fingerprint_path.exists():
+        # launch_options regenerates some random seeds even with config supplied. Restore
+        # the complete original browser configuration after preparing OS launch settings.
+        encoded = fingerprint_path.read_text()
+        for key in list(prepared["env"]):
+            if key.startswith("CAMOU_CONFIG_"):
+                del prepared["env"][key]
+        for offset in range(0, len(encoded), 32767):
+            prepared["env"][f"CAMOU_CONFIG_{offset // 32767 + 1}"] = encoded[offset:offset + 32767]
+    else:
+        fingerprint_path.write_text("".join(value for _, value in sorted(fragments)))
+    manager = AsyncCamoufox(from_options=prepared, persistent_context=True)
     context = await manager.__aenter__()
     session = Session(request.session_id, request.generation, manager, context, profile=profile)
     recorder = Recorder(PROFILE_ROOT / "recordings")
@@ -287,7 +317,7 @@ async def command(
     params = request.params
 
     if request.method == "browser.version":
-        return {"value": "camoufox"}
+        return {"value": f"camoufox:{os.environ.get('CAMOUFOX_BROWSER', 'unknown')}/rpc:{RPC_VERSION}"}
     if request.method == "page.create":
         page = await current.context.new_page()
         return {"value": {"page_id": current.add_page(page)}}

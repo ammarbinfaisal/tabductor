@@ -1,6 +1,6 @@
 FROM python:3.12-slim-bookworm
 
-ARG CAMOUFOX_BROWSER=official/stable/135.0.1-beta.24
+ARG CAMOUFOX_BROWSER=official/stable/152.0.4-beta.30
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 CAMOUFOX_BROWSER=${CAMOUFOX_BROWSER} XDG_CACHE_HOME=/opt/browser-cache XDG_DATA_HOME=/opt/browser-data
 WORKDIR /worker
 
