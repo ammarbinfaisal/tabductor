@@ -1,12 +1,13 @@
 import { AppError, newId } from "@tabductor/core";
 import {
+  paymentAdjustments,
   paymentPurchases,
   paymentWebhookEvents,
   type Db,
   type PaymentPurchaseRow,
   type PaymentWebhookStatus,
 } from "@tabductor/db";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import { appendCreditAdjustmentLocked, lockCreditAccount } from "./credits.js";
 
@@ -151,6 +152,31 @@ const completedTransactionSchema = z.object({
   items: z.array(z.object({ price_id: z.string().min(1), quantity: z.number().int().positive() })).length(1),
 });
 
+const adjustmentSchema = z.object({
+  id: z.string().min(1),
+  action: z.string().min(1),
+  status: z.enum(["pending_approval", "approved", "rejected", "reversed"]),
+  transaction_id: z.string().min(1),
+  currency_code: z.string().length(3),
+  totals: z.object({ total: z.string().regex(/^\d+$/) }),
+});
+
+const SUPPORTED_ADJUSTMENT_ACTIONS = new Set(["refund", "credit", "chargeback"]);
+
+function proportionalRefundedUnits(amountMinor: number, totalMinor: number, creditUnits: number): number {
+  if (amountMinor >= totalMinor) return creditUnits;
+  // Round the cumulative money ratio up once, rather than each adjustment independently:
+  // no refunded money retains a fractional credit, while several small adjustments cannot
+  // compound rounding and remove more than the pack's configured units.
+  const numerator = BigInt(amountMinor) * BigInt(creditUnits);
+  const units = (numerator + BigInt(totalMinor) - 1n) / BigInt(totalMinor);
+  const result = Number(units);
+  if (!Number.isSafeInteger(result)) {
+    throw new AppError("paddle_adjustment_invalid", "adjustment credit amount is outside the supported range");
+  }
+  return result;
+}
+
 async function setEventStatus(
   db: Db,
   notificationId: string,
@@ -176,6 +202,9 @@ export async function processPaddleWebhookEvent(
     if (!event) throw new AppError("paddle_event_not_found", "Paddle webhook event does not exist");
     if (event.status === "processed") return "processed";
     if (event.status === "failed") return "failed";
+    if (event.eventType === "adjustment.created" || event.eventType === "adjustment.updated") {
+      return processAdjustmentEvent(trx, event, notificationId);
+    }
     if (event.eventType !== "transaction.completed") {
       await setEventStatus(trx, notificationId, "processed");
       return "processed";
@@ -231,6 +260,176 @@ export async function processPaddleWebhookEvent(
     await setEventStatus(trx, notificationId, "processed");
     return "processed";
   });
+}
+
+async function processAdjustmentEvent(
+  db: Db,
+  event: typeof paymentWebhookEvents.$inferSelect,
+  notificationId: string,
+): Promise<PaymentWebhookStatus> {
+  const envelope = event.payloadJson as { data?: unknown };
+  const parsed = adjustmentSchema.safeParse(envelope.data);
+  if (!parsed.success) {
+    await setEventStatus(db, notificationId, "failed", "invalid adjustment payload");
+    return "failed";
+  }
+  const adjustment = parsed.data;
+  if (!SUPPORTED_ADJUSTMENT_ACTIONS.has(adjustment.action)) {
+    await setEventStatus(db, notificationId, "failed", `unsupported adjustment action ${adjustment.action}`);
+    return "failed";
+  }
+  if (adjustment.status === "reversed") {
+    await setEventStatus(db, notificationId, "failed", "reversed adjustments require explicit reversal reconciliation");
+    return "failed";
+  }
+  const amountMinor = Number(adjustment.totals.total);
+  if (!Number.isSafeInteger(amountMinor) || amountMinor <= 0) {
+    await setEventStatus(db, notificationId, "failed", "adjustment total is outside the supported range");
+    return "failed";
+  }
+
+  const [purchase] = await db.select().from(paymentPurchases)
+    .where(eq(paymentPurchases.paddleTransactionId, adjustment.transaction_id)).for("update");
+  if (!purchase || !purchase.creditedAt || purchase.totalMinor === null || purchase.currencyCode === null ||
+      !["completed", "partially_refunded", "refunded"].includes(purchase.status)) {
+    await setEventStatus(db, notificationId, "pending", "completed local purchase has not arrived yet");
+    return "pending";
+  }
+  if (purchase.currencyCode !== adjustment.currency_code) {
+    await setEventStatus(db, notificationId, "failed", "adjustment currency does not match the purchase");
+    return "failed";
+  }
+
+  const [existing] = await db.select().from(paymentAdjustments)
+    .where(eq(paymentAdjustments.paddleAdjustmentId, adjustment.id)).for("update");
+  if (existing && (
+    existing.purchaseId !== purchase.id ||
+    existing.paddleTransactionId !== adjustment.transaction_id ||
+    existing.action !== adjustment.action ||
+    existing.amountMinor !== amountMinor ||
+    existing.currencyCode !== adjustment.currency_code
+  )) {
+    await setEventStatus(db, notificationId, "failed", "adjustment identity was reused with different terms");
+    return "failed";
+  }
+  if (existing && existing.lastOccurredAt.getTime() > event.occurredAt.getTime()) {
+    await setEventStatus(db, notificationId, "processed");
+    return "processed";
+  }
+  if (existing?.status === "approved" && adjustment.status !== "approved") {
+    await setEventStatus(db, notificationId, "failed", "approved adjustment cannot move to a non-approved state");
+    return "failed";
+  }
+  if (existing?.status === "rejected" && adjustment.status !== "rejected") {
+    await setEventStatus(db, notificationId, "failed", "rejected adjustment cannot change state");
+    return "failed";
+  }
+
+  if (adjustment.status !== "approved") {
+    if (existing) {
+      await db.update(paymentAdjustments).set({
+        status: adjustment.status,
+        lastEventId: event.eventId,
+        lastOccurredAt: event.occurredAt,
+        updatedAt: sql`now()`,
+      }).where(eq(paymentAdjustments.paddleAdjustmentId, adjustment.id));
+    } else {
+      await db.insert(paymentAdjustments).values({
+        paddleAdjustmentId: adjustment.id,
+        purchaseId: purchase.id,
+        paddleTransactionId: adjustment.transaction_id,
+        action: adjustment.action as "refund" | "credit" | "chargeback",
+        status: adjustment.status,
+        amountMinor,
+        currencyCode: adjustment.currency_code,
+        lastEventId: event.eventId,
+        lastOccurredAt: event.occurredAt,
+      });
+    }
+    await setEventStatus(db, notificationId, "processed");
+    return "processed";
+  }
+
+  if (existing?.status === "approved") {
+    await db.update(paymentAdjustments).set({
+      lastEventId: event.eventId,
+      lastOccurredAt: event.occurredAt,
+      updatedAt: sql`now()`,
+    }).where(eq(paymentAdjustments.paddleAdjustmentId, adjustment.id));
+    await setEventStatus(db, notificationId, "processed");
+    return "processed";
+  }
+
+  const [approved] = await db.select({
+    amountMinor: sql<number>`coalesce(sum(${paymentAdjustments.amountMinor}), 0)::double precision`,
+  }).from(paymentAdjustments).where(and(
+    eq(paymentAdjustments.purchaseId, purchase.id),
+    eq(paymentAdjustments.status, "approved"),
+    ne(paymentAdjustments.paddleAdjustmentId, adjustment.id),
+  ));
+  const cumulativeAmount = (approved?.amountMinor ?? 0) + amountMinor;
+  if (!Number.isSafeInteger(cumulativeAmount) || cumulativeAmount > purchase.totalMinor) {
+    await setEventStatus(db, notificationId, "failed", "approved adjustments exceed the purchase total");
+    return "failed";
+  }
+  const targetRefundedUnits = proportionalRefundedUnits(
+    cumulativeAmount,
+    purchase.totalMinor,
+    purchase.creditUnits,
+  );
+  const debitedUnits = targetRefundedUnits - purchase.refundedUnits;
+  if (!Number.isSafeInteger(debitedUnits) || debitedUnits < 0) {
+    await setEventStatus(db, notificationId, "failed", "adjustment credit accounting conflicts with the purchase");
+    return "failed";
+  }
+
+  await lockCreditAccount(db, purchase.accountId);
+  if (debitedUnits > 0) {
+    await appendCreditAdjustmentLocked(db, {
+      accountId: purchase.accountId,
+      kind: "refund",
+      units: -debitedUnits,
+      idempotencyKey: `paddle:adjustment:${adjustment.id}:approved`,
+      metadata: {
+        adjustmentId: adjustment.id,
+        transactionId: adjustment.transaction_id,
+        purchaseId: purchase.id,
+        action: adjustment.action,
+        amountMinor,
+        currencyCode: adjustment.currency_code,
+      },
+    });
+  }
+  if (existing) {
+    await db.update(paymentAdjustments).set({
+      status: "approved",
+      debitedUnits,
+      lastEventId: event.eventId,
+      lastOccurredAt: event.occurredAt,
+      updatedAt: sql`now()`,
+    }).where(eq(paymentAdjustments.paddleAdjustmentId, adjustment.id));
+  } else {
+    await db.insert(paymentAdjustments).values({
+      paddleAdjustmentId: adjustment.id,
+      purchaseId: purchase.id,
+      paddleTransactionId: adjustment.transaction_id,
+      action: adjustment.action as "refund" | "credit" | "chargeback",
+      status: "approved",
+      amountMinor,
+      currencyCode: adjustment.currency_code,
+      debitedUnits,
+      lastEventId: event.eventId,
+      lastOccurredAt: event.occurredAt,
+    });
+  }
+  await db.update(paymentPurchases).set({
+    refundedUnits: targetRefundedUnits,
+    status: targetRefundedUnits === purchase.creditUnits ? "refunded" : "partially_refunded",
+    lastError: null,
+    updatedAt: sql`now()`,
+  }).where(eq(paymentPurchases.id, purchase.id));
+  await setEventStatus(db, notificationId, "processed");
+  return "processed";
 }
 
 /** Retries durable received/pending deliveries so arrival order never determines crediting. */

@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
-import { creditLedgerEntries, paymentPurchases, paymentWebhookEvents } from "@tabductor/db";
+import { creditLedgerEntries, paymentAdjustments, paymentPurchases, paymentWebhookEvents } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import {
   createPaddleCreditPurchase,
@@ -8,7 +8,9 @@ import {
   ingestPaddleWebhook,
   processPaddleWebhookEvent,
   processPendingPaddleWebhookEvents,
+  reserveCredits,
   resolveAccountIdentity,
+  settleCreditReservation,
   type PaddleCreditPack,
   type PaddleTransactionClient,
 } from "@tabductor/engine";
@@ -45,6 +47,67 @@ async function completedDelivery(input: { eventId: string; notificationId: strin
     secret,
     now,
   });
+}
+
+async function adjustmentDelivery(input: {
+  eventId: string;
+  notificationId: string;
+  adjustmentId: string;
+  transactionId: string;
+  action: "refund" | "credit" | "chargeback" | "chargeback_reverse";
+  status: "pending_approval" | "approved" | "rejected" | "reversed";
+  total: string;
+  currencyCode?: string;
+  eventType?: "adjustment.created" | "adjustment.updated";
+}) {
+  const rawBody = JSON.stringify({
+    event_id: input.eventId,
+    event_type: input.eventType ?? "adjustment.created",
+    occurred_at: now.toISOString(),
+    notification_id: input.notificationId,
+    data: {
+      id: input.adjustmentId,
+      action: input.action,
+      status: input.status,
+      type: input.total === "500" ? "full" : "partial",
+      transaction_id: input.transactionId,
+      currency_code: input.currencyCode ?? "USD",
+      totals: { total: input.total },
+      items: [{
+        id: `${input.adjustmentId}_item`,
+        item_id: "txnitm_credit_pack",
+        type: input.total === "500" ? "full" : "partial",
+        totals: { total: input.total, subtotal: input.total, tax: "0" },
+      }],
+    },
+  });
+  const h1 = createHmac("sha256", secret).update(`${timestamp}:${rawBody}`, "utf8").digest("hex");
+  return ingestPaddleWebhook(handle.db, {
+    rawBody,
+    signatureHeader: `ts=${timestamp};h1=${h1}`,
+    secret,
+    now,
+  });
+}
+
+async function completedPurchase(subject: string, transactionId: string) {
+  const accountId = await resolveAccountIdentity(handle.db, { provider: "fixture", subject });
+  const purchase = await createPaddleCreditPurchase(handle.db, {
+    accountId,
+    operationId: `checkout-${subject}`,
+    priceId: "pri_100",
+  }, {
+    packs,
+    client: { createTransaction: async () => ({ transactionId }) },
+  });
+  const completion = await completedDelivery({
+    eventId: `evt_${subject}_completed`,
+    notificationId: `ntf_${subject}_completed`,
+    purchaseId: purchase.id,
+    transactionId,
+  });
+  expect(await processPaddleWebhookEvent(handle.db, completion.event.notificationId, packs)).toBe("processed");
+  return { accountId, purchase };
 }
 
 it("creates one server-owned transaction per idempotent purchase operation", async () => {
@@ -144,4 +207,171 @@ it("keeps an out-of-order completion pending and rejects price mismatches", asyn
   });
   expect(await processPaddleWebhookEvent(handle.db, mismatch.event.notificationId, packs)).toBe("failed");
   expect((await getCreditBalance(handle.db, accountId)).availableUnits).toBe(0);
+});
+
+it("accounts for approved partial credits, chargebacks, and refunds cumulatively", async () => {
+  const { accountId, purchase } = await completedPurchase("paddle_partial_adjustments", "txn_partial_adjustments");
+  const adjustments = [
+    { id: "adj_partial_credit", action: "credit" as const, total: "101", debit: -21 },
+    { id: "adj_partial_chargeback", action: "chargeback" as const, total: "99", debit: -19 },
+    { id: "adj_partial_refund", action: "refund" as const, total: "300", debit: -60 },
+  ];
+  for (const [index, adjustment] of adjustments.entries()) {
+    const delivery = await adjustmentDelivery({
+      eventId: `evt_partial_${index}`,
+      notificationId: `ntf_partial_${index}`,
+      adjustmentId: adjustment.id,
+      transactionId: "txn_partial_adjustments",
+      action: adjustment.action,
+      status: "approved",
+      total: adjustment.total,
+    });
+    expect(await processPaddleWebhookEvent(handle.db, delivery.event.notificationId, packs)).toBe("processed");
+  }
+
+  expect(await getCreditBalance(handle.db, accountId)).toMatchObject({ availableUnits: 0, totalUnits: 0 });
+  const [updated] = await handle.db.select().from(paymentPurchases).where(eq(paymentPurchases.id, purchase.id));
+  expect(updated).toMatchObject({ status: "refunded", refundedUnits: 100 });
+  const rows = await handle.db.select().from(paymentAdjustments).where(eq(paymentAdjustments.purchaseId, purchase.id));
+  expect(rows.map((row) => ({ action: row.action, amount: row.amountMinor, units: row.debitedUnits })))
+    .toEqual(expect.arrayContaining([
+      { action: "credit", amount: 101, units: 21 },
+      { action: "chargeback", amount: 99, units: 19 },
+      { action: "refund", amount: 300, units: 60 },
+    ]));
+  for (const adjustment of adjustments) {
+    const [entry] = await handle.db.select().from(creditLedgerEntries).where(eq(
+      creditLedgerEntries.idempotencyKey,
+      `paddle:adjustment:${adjustment.id}:approved`,
+    ));
+    expect(entry?.units).toBe(adjustment.debit);
+  }
+});
+
+it("waits for refund approval and debits an approved adjustment exactly once", async () => {
+  const { accountId, purchase } = await completedPurchase("paddle_approval", "txn_approval");
+  const pending = await adjustmentDelivery({
+    eventId: "evt_refund_pending",
+    notificationId: "ntf_refund_pending",
+    adjustmentId: "adj_refund_approval",
+    transactionId: "txn_approval",
+    action: "refund",
+    status: "pending_approval",
+    total: "200",
+  });
+  expect(await processPaddleWebhookEvent(handle.db, pending.event.notificationId, packs)).toBe("processed");
+  expect((await getCreditBalance(handle.db, accountId)).availableUnits).toBe(100);
+
+  const approved = await adjustmentDelivery({
+    eventId: "evt_refund_approved",
+    notificationId: "ntf_refund_approved",
+    adjustmentId: "adj_refund_approval",
+    transactionId: "txn_approval",
+    action: "refund",
+    status: "approved",
+    total: "200",
+    eventType: "adjustment.updated",
+  });
+  expect(await processPaddleWebhookEvent(handle.db, approved.event.notificationId, packs)).toBe("processed");
+  expect(await processPaddleWebhookEvent(handle.db, approved.event.notificationId, packs)).toBe("processed");
+  expect((await getCreditBalance(handle.db, accountId)).availableUnits).toBe(60);
+  const [updated] = await handle.db.select().from(paymentPurchases).where(eq(paymentPurchases.id, purchase.id));
+  expect(updated).toMatchObject({ status: "partially_refunded", refundedUnits: 40 });
+  expect(await handle.db.select().from(creditLedgerEntries).where(eq(
+    creditLedgerEntries.idempotencyKey,
+    "paddle:adjustment:adj_refund_approval:approved",
+  ))).toHaveLength(1);
+});
+
+it("allows an approved chargeback to create debt after purchased credits were spent", async () => {
+  const { accountId } = await completedPurchase("paddle_debt", "txn_debt");
+  const reservation = await reserveCredits(handle.db, {
+    accountId,
+    operationId: "paddle-debt-spend",
+    category: "browser",
+    units: 80,
+  });
+  await settleCreditReservation(handle.db, { accountId, reservationId: reservation.id, actualUnits: 80 });
+  const chargeback = await adjustmentDelivery({
+    eventId: "evt_debt_chargeback",
+    notificationId: "ntf_debt_chargeback",
+    adjustmentId: "adj_debt_chargeback",
+    transactionId: "txn_debt",
+    action: "chargeback",
+    status: "approved",
+    total: "500",
+  });
+  expect(await processPaddleWebhookEvent(handle.db, chargeback.event.notificationId, packs)).toBe("processed");
+  expect(await getCreditBalance(handle.db, accountId)).toEqual({
+    availableUnits: -80,
+    reservedUnits: 0,
+    totalUnits: -80,
+  });
+});
+
+it("retries adjustments that arrive before completion and rejects inconsistent money", async () => {
+  const accountId = await resolveAccountIdentity(handle.db, { provider: "fixture", subject: "paddle_adjustment_early" });
+  const purchase = await createPaddleCreditPurchase(handle.db, {
+    accountId,
+    operationId: "checkout-adjustment-early",
+    priceId: "pri_100",
+  }, {
+    packs,
+    client: { createTransaction: async () => ({ transactionId: "txn_adjustment_early" }) },
+  });
+  const early = await adjustmentDelivery({
+    eventId: "evt_adjustment_early",
+    notificationId: "ntf_adjustment_early",
+    adjustmentId: "adj_adjustment_early",
+    transactionId: "txn_adjustment_early",
+    action: "refund",
+    status: "approved",
+    total: "100",
+  });
+  expect(await processPaddleWebhookEvent(handle.db, early.event.notificationId, packs)).toBe("pending");
+
+  const completion = await completedDelivery({
+    eventId: "evt_adjustment_early_completed",
+    notificationId: "ntf_adjustment_early_completed",
+    purchaseId: purchase.id,
+    transactionId: "txn_adjustment_early",
+  });
+  expect(await processPaddleWebhookEvent(handle.db, completion.event.notificationId, packs)).toBe("processed");
+  expect(await processPendingPaddleWebhookEvents(handle.db, packs)).toMatchObject({ processed: 1 });
+  expect((await getCreditBalance(handle.db, accountId)).availableUnits).toBe(80);
+
+  const wrongCurrency = await adjustmentDelivery({
+    eventId: "evt_adjustment_currency",
+    notificationId: "ntf_adjustment_currency",
+    adjustmentId: "adj_adjustment_currency",
+    transactionId: "txn_adjustment_early",
+    action: "refund",
+    status: "approved",
+    total: "10",
+    currencyCode: "EUR",
+  });
+  expect(await processPaddleWebhookEvent(handle.db, wrongCurrency.event.notificationId, packs)).toBe("failed");
+
+  const excessive = await adjustmentDelivery({
+    eventId: "evt_adjustment_excessive",
+    notificationId: "ntf_adjustment_excessive",
+    adjustmentId: "adj_adjustment_excessive",
+    transactionId: "txn_adjustment_early",
+    action: "refund",
+    status: "approved",
+    total: "450",
+  });
+  expect(await processPaddleWebhookEvent(handle.db, excessive.event.notificationId, packs)).toBe("failed");
+
+  const unsupportedReversal = await adjustmentDelivery({
+    eventId: "evt_adjustment_reversal",
+    notificationId: "ntf_adjustment_reversal",
+    adjustmentId: "adj_adjustment_reversal",
+    transactionId: "txn_adjustment_early",
+    action: "chargeback_reverse",
+    status: "approved",
+    total: "100",
+  });
+  expect(await processPaddleWebhookEvent(handle.db, unsupportedReversal.event.notificationId, packs)).toBe("failed");
+  expect((await getCreditBalance(handle.db, accountId)).availableUnits).toBe(80);
 });

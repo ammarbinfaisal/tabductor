@@ -225,6 +225,13 @@
       "when": 1789710689739,
       "tag": "0031_freezing_masked_marvel",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1789711502402,
+      "tag": "0032_breezy_marvex",
+      "breakpoints": true
     }
   ]
 }

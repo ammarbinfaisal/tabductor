@@ -27,6 +27,7 @@ const EXPECTED_TABLES = [
   "event_defs",
   "events",
   "outbox",
+  "payment_adjustments",
   "payment_purchases",
   "payment_webhook_events",
   "proposed_grants",

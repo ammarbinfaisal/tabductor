@@ -117,6 +117,10 @@ export const PAYMENT_WEBHOOK_STATUSES = ["received", "pending", "processed", "fa
 export type PaymentWebhookStatus = (typeof PAYMENT_WEBHOOK_STATUSES)[number];
 export const PAYMENT_PURCHASE_STATUSES = ["creating", "pending", "completed", "failed", "partially_refunded", "refunded"] as const;
 export type PaymentPurchaseStatus = (typeof PAYMENT_PURCHASE_STATUSES)[number];
+export const PAYMENT_ADJUSTMENT_ACTIONS = ["refund", "credit", "chargeback"] as const;
+export type PaymentAdjustmentAction = (typeof PAYMENT_ADJUSTMENT_ACTIONS)[number];
+export const PAYMENT_ADJUSTMENT_STATUSES = ["pending_approval", "approved", "rejected"] as const;
+export type PaymentAdjustmentStatus = (typeof PAYMENT_ADJUSTMENT_STATUSES)[number];
 
 /** A mutable operation record; money movement itself lives only in `credit_ledger_entries`. */
 export const creditReservations = pgTable(
@@ -221,6 +225,33 @@ export const paymentPurchases = pgTable(
     check("payment_purchases_credit_units_check", sql`${t.creditUnits} > 0`),
     check("payment_purchases_refunded_units_check", sql`${t.refundedUnits} >= 0 and ${t.refundedUnits} <= ${t.creditUnits}`),
     check("payment_purchases_total_check", sql`${t.totalMinor} is null or ${t.totalMinor} > 0`),
+  ],
+);
+
+/** Mutable Paddle adjustment state; the corresponding credit debit remains append-only. */
+export const paymentAdjustments = pgTable(
+  "payment_adjustments",
+  {
+    paddleAdjustmentId: text("paddle_adjustment_id").primaryKey(),
+    purchaseId: text("purchase_id").notNull().references(() => paymentPurchases.id, { onDelete: "restrict" }),
+    paddleTransactionId: text("paddle_transaction_id").notNull(),
+    action: text("action").$type<PaymentAdjustmentAction>().notNull(),
+    status: text("status").$type<PaymentAdjustmentStatus>().notNull(),
+    amountMinor: bigint("amount_minor", { mode: "number" }).notNull(),
+    currencyCode: text("currency_code").notNull(),
+    debitedUnits: bigint("debited_units", { mode: "number" }).notNull().default(0),
+    lastEventId: text("last_event_id").notNull(),
+    lastOccurredAt: ts("last_occurred_at").notNull(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("payment_adjustments_purchase_idx").on(t.purchaseId, t.createdAt),
+    index("payment_adjustments_transaction_idx").on(t.paddleTransactionId),
+    check("payment_adjustments_action_check", sql`${t.action} in ('refund','credit','chargeback')`),
+    check("payment_adjustments_status_check", sql`${t.status} in ('pending_approval','approved','rejected')`),
+    check("payment_adjustments_amount_check", sql`${t.amountMinor} > 0`),
+    check("payment_adjustments_debited_check", sql`${t.debitedUnits} >= 0`),
   ],
 );
 
@@ -1257,6 +1288,7 @@ export type CreditReservationRow = typeof creditReservations.$inferSelect;
 export type CreditLedgerEntryRow = typeof creditLedgerEntries.$inferSelect;
 export type PaymentWebhookEventRow = typeof paymentWebhookEvents.$inferSelect;
 export type PaymentPurchaseRow = typeof paymentPurchases.$inferSelect;
+export type PaymentAdjustmentRow = typeof paymentAdjustments.$inferSelect;
 export type WorkflowVersionRow = typeof workflowVersions.$inferSelect;
 export type ScheduleRow = typeof schedules.$inferSelect;
 export type WorkflowShareRow = typeof workflowShares.$inferSelect;
