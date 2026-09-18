@@ -15,6 +15,9 @@ scripts after successful execution; decision tasks remain AI-driven.
 
 ## Run locally
 
+Copy `.env.example` to `.env` if it does not exist, then set `CLERK_SECRET_KEY` and
+`NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` from the same Clerk development instance.
+
 ```sh
 docker compose up -d --build
 open http://localhost:3000
@@ -23,6 +26,10 @@ open http://localhost:3000
 Compose starts Postgres, MinIO, one-shot migrations, the engine, and the Next.js control plane.
 Set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` to compile new workflow intent and run AI tasks.
 MinIO stores browser trace blobs.
+
+After changing Clerk keys in `.env`, run `docker compose up -d --no-deps web` to
+recreate the web container with the new values. A container restart alone does not reload
+Compose environment variables.
 
 Browser navigation defaults to `POLICY_NAVIGATION_MODE=permissive`: pages, redirects,
 popups, and embedded frames can load without per-host task grants, including identity
