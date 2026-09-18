@@ -116,10 +116,13 @@ export function createDecisionExecutor(deps: DecisionExecutorDeps): TaskExecutor
           emits,
           trace,
           maxSteps: maxStepsOf(handle.task),
+          signal: handle.signal,
         });
         if (result.outcome === "done") {
           await flushRemainingWrites({
             db,
+            runId: handle.run.id,
+            leaseGeneration: handle.run.leaseGeneration,
             drainPendingWrites: () => stager.drain(),
             wrapPendingWrites: (writes) => flushStagedWrites(workflowId, writes),
           });

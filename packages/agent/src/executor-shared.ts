@@ -1,7 +1,7 @@
 import type { StorageFlags, TraceRecorder } from "@tabductor/browser";
 import { AppError } from "@tabductor/core";
 import { workflowVersions, workflows, type Db, type TaskRow } from "@tabductor/db";
-import { readEventSchemas, type RunHandle, type RunResult } from "@tabductor/engine";
+import { assertRunLease, readEventSchemas, type RunHandle, type RunResult } from "@tabductor/engine";
 import { eq } from "drizzle-orm";
 import type { AgentLoopResult, TriggerInfo } from "./loop.js";
 import type { EmitFn, EmitOutcome } from "./tools.js";
@@ -116,13 +116,18 @@ export function makeEmitFn(opts: {
  */
 export async function flushRemainingWrites(opts: {
   db: Db;
+  runId: string;
+  leaseGeneration: number;
   drainPendingWrites?: () => Array<(trx: Db) => Promise<void>>;
   wrapPendingWrites?: (writes: Array<(trx: Db) => Promise<void>>) => (trx: Db) => Promise<void>;
 }): Promise<void> {
   const pending = opts.drainPendingWrites?.() ?? [];
   if (pending.length === 0 || !opts.wrapPendingWrites) return;
   const withTx = opts.wrapPendingWrites(pending);
-  await opts.db.transaction((trx) => withTx(trx));
+  await opts.db.transaction(async (trx) => {
+    await assertRunLease(trx, opts.runId, opts.leaseGeneration);
+    await withTx(trx);
+  });
 }
 
 export function toRunResult(result: AgentLoopResult): RunResult {

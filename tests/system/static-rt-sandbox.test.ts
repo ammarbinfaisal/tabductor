@@ -2,6 +2,23 @@ import { expect, it } from "vitest";
 import { runCompiledScript } from "@tabductor/static-rt";
 import { hostWith, memoryState, recordingEmit, script } from "./static-rt-support.js";
 
+it("cancellation fences every subsequent host call, even when the script catches errors", async () => {
+  const abort = new AbortController();
+  const state = memoryState();
+  const emit = recordingEmit();
+  const result = await runCompiledScript(script(`
+    await ctx.state.set("first", true);
+    try { await ctx.state.set("second", true); } catch {}
+    try { await ctx.emit("side.effect", {}); } catch {}
+  `), hostWith({ emit, state: {
+    get: state.get,
+    set: async (key, value) => { await state.set(key, value); abort.abort(); },
+  } }), { signal: abort.signal });
+  expect(result).toEqual({ outcome: "error", error: "run_cancelled" });
+  expect(state.all()).toEqual({ first: true });
+  expect(emit.calls).toHaveLength(0);
+});
+
 /**
  * The hostile corpus, and the deopt semantics the whole self-healing loop turns on.
  *

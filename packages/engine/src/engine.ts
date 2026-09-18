@@ -28,6 +28,7 @@ import {
 } from "./run-state.js";
 import { createScheduler, type Scheduler } from "./scheduler.js";
 import { StubExecutor } from "./stub-executor.js";
+import { assertRunLease } from "./run-lease.js";
 
 export type EngineDeps = {
   db: Db;
@@ -340,6 +341,7 @@ async function emitFromRun(
   if (!check.ok) throw new Error(check.error);
 
   return db.transaction(async (trx) => {
+    await assertRunLease(trx, ctx.run.id, ctx.run.leaseGeneration);
     if (opts?.dedupeKey) {
       const key = `emit:${type}:${opts.dedupeKey}`;
       const claimed = await trx.insert(taskState).values({ taskId: ctx.task.id, key, value: {} })

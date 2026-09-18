@@ -26,12 +26,14 @@ export type RunOptions = {
   wallClockMs?: number;
   memoryMb?: number;
   metrics?: Metrics;
+  signal?: AbortSignal;
 };
 
 /** Everything the isolate may ask the host to do, by the path the bootstrap calls it with. */
 function buildDispatch(
   host: CtxHost,
   onDeopt: (prompt: string, evidence: unknown) => void,
+  signal?: AbortSignal,
 ): (path: string, args: unknown[]) => Promise<unknown> {
   const { session } = host;
   // `guard.all` correlates its results array against this log **by index**, so the log has to
@@ -49,6 +51,7 @@ function buildDispatch(
   };
 
   return async (path, args) => {
+    if (signal?.aborted) throw new Error("run_cancelled");
     switch (path) {
       case "page.goto":
         return session.page.goto(args[0] as string, args[1] as Parameters<typeof session.page.goto>[1]);
@@ -164,7 +167,7 @@ export async function runCompiledScript(
   let deopted: { prompt: string; evidence: unknown } | undefined;
   const dispatch = buildDispatch(host, (prompt, evidence) => {
     deopted = { prompt, evidence };
-  });
+  }, opts.signal);
 
   const isolate = new ivm.Isolate({ memoryLimit: memoryMb });
   let timedOut = false;
@@ -184,7 +187,13 @@ export async function runCompiledScript(
     const bootstrapFn = await context.eval(BOOTSTRAP, { reference: true });
     const ctxRef = await bootstrapFn.apply(
       undefined,
-      [new ivm.Reference(dispatch)],
+      [new ivm.Reference((path: string, args: unknown[]) => {
+        const pending = dispatch(path, args);
+        // The isolate attaches its rejection handler across a thread boundary. Mark the
+        // host promise handled immediately, while returning the original rejection to it.
+        void pending.catch(() => undefined);
+        return pending;
+      })],
       { result: { reference: true } },
     );
 
@@ -212,9 +221,11 @@ export async function runCompiledScript(
 
     // Checked *before* how the guest settled: a script that deopts and then returns normally
     // is a deopt, not a completion.
+    if (opts.signal?.aborted) return finish({ outcome: "error", error: "run_cancelled" });
     if (deopted) return finish({ outcome: "deopt", ...deopted });
     return finish({ outcome: "completed" });
   } catch (err) {
+    if (opts.signal?.aborted) return finish({ outcome: "error", error: "run_cancelled" });
     if (deopted) return finish({ outcome: "deopt", ...deopted });
     const message = err instanceof Error ? err.message : String(err);
     if (timedOut || /script execution timed out/i.test(message)) {

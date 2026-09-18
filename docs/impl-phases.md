@@ -68,6 +68,12 @@ Secret hygiene, registry separation, store isolation, and resource-limit tests s
 
 ### H2 — Durable workflow executions and robust graphs
 
+Implementation notes (2026-09-18): event/store commits and compiled task-state writes now
+lock and validate the active run generation in their committing transaction. Decision AI
+observes cancellation; compiled scripts fence every host call after cancellation. Regression
+coverage includes cancelled/replaced owners and rollback of emit dedupe claims with writes.
+These checks are part of H2; the full acceptance gate below remains required.
+
 - Add execution identity to triggers, events, task attempts, and system events. Atomically
   create roots and pin the complete execution to one published graph version.
 - Strengthen typed graph validation, stable task identities, explicit entry behaviors,

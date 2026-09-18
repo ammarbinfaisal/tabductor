@@ -12,7 +12,7 @@ import {
 } from "@tabductor/browser";
 import { getActiveScript } from "@tabductor/compiler";
 import { taskState, tasks, type Db, type RunRow, type TaskRow } from "@tabductor/db";
-import type { RunHandle, RunResult, TaskExecutor } from "@tabductor/engine";
+import { assertRunLease, type RunHandle, type RunResult, type TaskExecutor } from "@tabductor/engine";
 import type { PolicyGate } from "@tabductor/policy";
 import { runCompiledScript, type CtxHost, type StateStore } from "@tabductor/static-rt";
 import type { Metrics } from "@tabductor/telemetry";
@@ -94,7 +94,8 @@ function browserLimitsOf(task: TaskRow): ResourceLimits | undefined {
 }
 
 /** `ctx.state`, on the same `task_state` table `emitIfNew`'s dedupe claim already rides. */
-function taskStateStore(db: Db, taskId: string): StateStore {
+function taskStateStore(db: Db, handle: RunHandle): StateStore {
+  const taskId = handle.task.id;
   return {
     async get(key) {
       const [row] = await db
@@ -104,13 +105,16 @@ function taskStateStore(db: Db, taskId: string): StateStore {
       return row?.value ?? null;
     },
     async set(key, value) {
-      await db
+      await db.transaction(async (trx) => {
+        await assertRunLease(trx, handle.run.id, handle.run.leaseGeneration);
+        await trx
         .insert(taskState)
         .values({ taskId, key: `state:${key}`, value: value as Record<string, unknown> })
         .onConflictDoUpdate({
           target: [taskState.taskId, taskState.key],
           set: { value: value as Record<string, unknown> },
         });
+      });
     },
   };
 }
@@ -179,11 +183,12 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
             if (result.outcome === "deduped") return { ok: true, deduped: true };
             return { ok: false, error: result.error };
           },
-          state: taskStateStore(db, handle.task.id),
+          state: taskStateStore(db, handle),
         };
 
         const result = await runCompiledScript(script.source, host, {
           ...staticRtLimitsOf(handle.task),
+          signal: handle.signal,
           ...(metrics ? { metrics } : {}),
         });
 
