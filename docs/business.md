@@ -10,32 +10,36 @@ capability is generally available today. Delivery status is tied to the
 
 ## Executive thesis
 
-Do not compete as a cheaper browser API, a generic web-search product, or a more autonomous
-one-shot agent. Browserbase is already a broad platform with cloud browsers, Stagehand,
-natural-language Agents, Director, Functions, Search, Fetch, persistent contexts, live view,
-replay, proxies, and CAPTCHA handling. Its Agents are asynchronous and its documentation
-includes a production workflow pattern using Temporal. A claim that Browserbase is merely
-browser infrastructure would be inaccurate.
+Tabductor's use-case scope is any browser automation that needs to run on a cron or recurring
+schedule. A job may check one page, click one button, submit a form, perform a sequential
+routine, collect a report, monitor a condition, reconcile accounts, or stream thousands of
+records between systems. It may use a public page or an authenticated application. Neither
+item discovery, multiple systems, large batches, nor a login is required to qualify.
 
 Tabductor's best position is:
 
-> The durable operations system for authenticated work on the web: describe the business
-> outcome, process each discovered item as an event, recover safely, involve a human only for
-> exceptions, and automatically turn repeated successful work into a cheaper guarded path.
+> Describe what your browser should do and when. Tabductor runs it on schedule, verifies the
+> result, handles interruptions, and learns a cheaper, reliable path for repeated work.
 
-The unit of value is not a browser session or an agent run. It is a completed business
-operation: a migrated record, reconciled transaction, updated listing, verified registration,
-or resolved exception.
+The unit of value is a verified scheduled outcome: a daily check completed, a weekly form
+submitted, a report refreshed, a setting updated, a reconciled transaction, or a synchronized
+record. A successful run that finds no change or correctly takes no action is also valuable.
 
-This creates a defensible wedge when a workflow has most of these properties:
+The opportunity starts with repetition. Differentiation becomes stronger when a job has one
+or more of these needs:
 
-- it crosses multiple pages, accounts, or web applications;
-- useful records arrive incrementally rather than as one final result;
-- downstream normalization, decisions, and writes should begin while browsing continues;
-- the work must resume after crashes, rate limits, MFA, or human intervention;
-- duplicate external actions would be costly;
-- the same pattern runs often enough for AI-to-script compilation to matter; and
-- the buyer needs spend and outcome attribution at workflow or record level.
+- the user wants to describe a recurring task without maintaining scripts and infrastructure;
+- a missed, late, overlapping, or duplicated occurrence creates work or loss;
+- browser state, login, UI changes, or transient failures make unattended execution difficult;
+- the same routine runs often enough for AI-to-script compilation to reduce cost;
+- the buyer needs run history, verified outcomes, recovery, and predictable spending; or
+- the job benefits from branching, parallel work, durable decisions, or incremental records.
+
+Browserbase already offers scheduling through
+[Director](https://www.browserbase.com/director). Scheduling is therefore a core customer
+requirement, with the competitive opportunity in how easily users create, maintain, recover,
+and operate recurring jobs. The rankings below prioritize where to prove that advantage;
+they do not restrict the product to those segments.
 
 ## Competitive reality
 
@@ -61,8 +65,8 @@ shows:
   start small and scale browser concurrency without building a fleet.
 
 Accordingly, Tabductor wins only if it removes operational glue or produces materially better
-economics and correctness for a focused class of business process. “We also host browsers” is
-not enough.
+economics and correctness across recurring browser jobs. A cron trigger alone does not
+establish superiority over Browserbase.
 
 ## The remaining customer pains
 
@@ -72,6 +76,7 @@ Browserbase defects.
 
 | Pain | Evidence and interpretation | Customer consequence | Tabductor gain |
 | --- | --- | --- | --- |
+| A recurring job needs more than a timer | [Director already supports daily and weekly schedules](https://www.browserbase.com/director). Our hypothesis is that the harder recurring costs are maintaining the automation, handling failed occurrences, and verifying results. | Even a one-page job needs an owner when login expires, a form changes, or an occurrence is missed. | Intent authoring, scheduled execution, run history, recovery, and guarded compilation in one experience; compare maintenance effort across repeated occurrences. |
 | A run is not a complete multi-stage business process | A Browserbase Agent run is one task on one dedicated session and ends in a terminal result. Browserbase supports progress messages, but [custom Agent tools are not yet supported](https://docs.browserbase.com/platform/agents/how-it-works). | Teams still connect agent results to databases, decision logic, other sessions, queues, retries, and exception handling. | A versioned browser/decision graph owns the whole operation and exposes only workflow-level APIs. |
 | Incremental results need application orchestration | Agent progress can be polled while active, but the documented contract centers on a terminal structured result. This does not prevent a custom solution; it makes per-record fan-out an application concern. | A long source scan delays useful downstream work, or engineers build streaming consumers and checkpoints themselves. | Every discovered record is a durable event. Independent consumers can transform, store, or act on it while the source continues browsing. |
 | Durability is available, but compositional | Browserbase's [Temporal quickstart](https://docs.browserbase.com/integrations/temporal/quickstart) requires a Temporal server, workers, workflow/activity definitions, monitoring, and separate credentials. | Customers own another orchestration layer and must align its retry semantics with browser side effects. | Execution identity, version pinning, outbox publication, leases, cancellation, dedupe, and uncertain-outcome recovery are one managed contract. |
@@ -81,47 +86,71 @@ Browserbase defects.
 | Infrastructure usage is not the same as operation economics | Browserbase's [usage tracking](https://docs.browserbase.com/optimizations/cost/measuring-usage) reports sessions, browser minutes, proxy traffic, duration, and status. | A vertical SaaS or operations team still maps infrastructure consumption to customer, workflow, record, and successful outcome. | A single operation ledger attributes browser, model, proxy, solver, reservation, adjustment, and reconciliation costs to an account and execution. |
 | Long-lived work must be split and resumed | A Browserbase [browser session has a six-hour maximum](https://docs.browserbase.com/platform/browser/long-sessions/timeouts). The limit is reasonable for a browser lifetime, but some business processes last days because of queues or human gates. | Treating the session as the workflow lifetime creates fragile long-running sessions or bespoke checkpoints. | Tabductor separates durable execution lifetime from finite browser-session lifetime and can restore a profile into a later session. |
 
-### The asynchronous paradigm is the product, not a special connector
+### A common asynchronous harness for every job shape
 
-“Read N posts from several timelines and store them in a workspace database” is an example,
-not a bespoke X-to-Notion integration. The common execution contract is:
+The graph remains asynchronous whether a scheduled job performs one action or processes a
+large collection. Events can represent a schedule occurrence, a completed step, a condition,
+an exception, or a discovered item. An automation does not need a source-to-sink data pipeline
+to use this model.
 
-1. A source browser task emits a typed item as soon as it is discovered.
-2. Scrolling and discovery continue without waiting for all downstream work.
-3. Each emitted item independently triggers matching decision or browser consumers.
-4. Consumers normalize, deduplicate, enrich, store, or act concurrently where profile and
-   resource constraints permit.
-5. Progress, retries, cancellation, and human messages are durable events rather than
-   synchronous calls between nodes.
-6. The execution completes only when source work, descendants, retries, and outbox delivery
-   have settled.
+| Job shape | Example | Execution behavior |
+| --- | --- | --- |
+| Single action | Set a portal's availability every weekday morning | A schedule starts a browser task that performs and verifies the action. |
+| Sequential routine | Open a dashboard, select the reporting period, refresh, and check completion | Necessary browser actions remain ordered; completion can trigger another task asynchronously. |
+| Conditional check | Check one product page hourly and act only when availability changes | A browser observation feeds a decision; an unchanged result completes without further action. |
+| Independent parallel work | Check several sites every morning | Separate profiles can run independently; shared browser input remains serialized. |
+| Incremental processing | Read timelines or portal records and update another system | Emit complete items as discovered so downstream work proceeds while collection continues. |
 
-This applies equally to job candidates moving into an ATS, products moving between seller
-portals, registrations moving into a compliance system, or remittance lines moving into a
-reconciliation queue. System prompts and compilation gates must preserve this behavior:
-emit complete records early, never accumulate an entire collection unless an explicit join is
-declared, never turn an event edge into a blocking RPC, and keep browser tasks separate from
-durable store decisions.
+System prompts and compilation gates must choose the shape required by the intent. Preserve
+necessary ordering, trigger independent consumers through events, and keep browser work
+separate from durable store decisions. Emit incremental results promptly when there are
+results to stream; use explicit aggregation when the outcome requires the whole collection.
+Never require artificial item extraction or extra graph stages for a simple scheduled action.
 
-Browserbase runs are asynchronous too. Tabductor's proposed advantage is finer-grained:
-workflow-wide, event-level asynchronous continuation with durable semantics and business
-state, not merely “start a run and poll it.”
+Progress, retries, cancellation, and human communication retain asynchronous lifecycle
+semantics. Execution completion accounts for all outstanding descendants and deliveries.
+Browserbase also supports asynchronous runs; the proposed advantage is the integrated
+execution and recovery contract across these job shapes.
+
+### Scheduled browser automation use cases
+
+These are proposed customer scenarios to validate, not claims of shipped vertical packages.
+Cadences are illustrative and configurable; outcomes stay within browser and workflow-store
+capabilities unless an additional integration is explicitly built.
+
+| Use case | Example cadence | Existing pain to validate | Gain we aim to provide |
+| --- | --- | --- | --- |
+| Recurring form submission | Weekly | Someone repeats the same form and checks whether submission succeeded. | Reuse a published routine, fill current values, and verify confirmation each occurrence. |
+| Scheduled setting or availability changes | Every weekday at opening and closing | A forgotten toggle leaves hours, availability, or campaign settings wrong. | Perform a small timed action and verify the resulting state, with visible failures. |
+| Dashboard refresh and snapshot | Every morning | A person logs in, selects a period, refreshes a report, and copies totals. | Repeat the sequence and retain structured results and run evidence. File processing is a separate capability. |
+| Price, stock, or appointment checks | Every hour | Repeated manual checks are easy to miss even when only one page matters. | Check on schedule, remember prior state, and run a configured branch when conditions change. |
+| Website and application health checks | Every few minutes | A reachable homepage does not prove that login or a key user journey works. | Exercise the browser journey on schedule and record its outcome; broad cross-browser testing remains a separate product. |
+| Scheduled content publication or updates | Weekly or daily | Publishing and updating web content requires repetitive timed UI work. | Execute the configured publishing routine and verify the visible result. |
+| Portal housekeeping | Nightly | Stale drafts, expired entries, and outdated settings accumulate. | Apply the defined maintenance routine with bounded work and a result history. |
+| Scheduled registration or renewal checks | Weekly or monthly | Deadlines and status changes are tracked by repeatedly visiting portals. | Recheck status and perform the configured next step or surface an exception. |
+| Recurring browser-based data collection | Daily | Public or authenticated pages need revisiting, even for a single value. | Save observations over time and verify each collection occurrence. |
+| Cross-system synchronization | Hourly or nightly | Systems without usable integrations drift apart. | Normalize and update records, streaming them when useful and preserving partial progress. |
+| Account or settlement reconciliation | Daily or monthly | Balances and adjustments require repeated comparison and exception review. | Retain evidence and match refunds, credits, chargebacks, and partial adjustments. |
+
+Scheduled checks and single actions are first-class use cases even when they have no
+downstream consumer, no discovered records, and no authenticated profile.
 
 ## Ranked use-case portfolio
 
-Ranking weighs pain intensity, fit with the event graph, repeat frequency, willingness to pay,
-and how much custom orchestration a Browserbase customer would otherwise build. It is a
-strategic score, not measured market share.
+Ranking weighs recurring maintenance effort, pain intensity, repeat frequency, willingness to
+pay, and potential advantage over Browserbase. It is a strategic priority, not measured market
+share or an eligibility rule. Simple scheduled jobs belong in the product from the outset.
 
 ### Tier A: beachhead use cases
 
 | Rank | Use case | Likely buyer | Existing pain | Gain from Tabductor | Winning condition |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Authenticated bulk migration and ongoing synchronization between systems without usable APIs | Vertical SaaS vendors, implementation firms, RevOps/Recruiting Ops | Source records arrive over many pages; each must be normalized, deduplicated, written, retried, and audited. A monolithic run loses partial progress. | Records flow downstream as discovered; execution resumes from durable state; per-record failures enter an exception path without blocking the batch. | Demonstrate lower operator minutes and fewer duplicate/missing records than an agent-plus-custom-queue implementation. |
+| 1 | Recurring browser routines, including single actions and sequential jobs | Individuals, small teams, operations managers, agencies | Someone must remember each occurrence, maintain a script, and notice when it fails. A job may involve only one form, setting, or check. | Describe the routine and schedule once; inspect outcomes, recover exceptions, and reuse guarded execution over repeated runs. | Beat Director on measured setup time, maintenance effort, verified scheduled completion, or cost per successful occurrence. |
 | 2 | Recurring authenticated monitoring followed by targeted action | Marketplace operators, procurement, property management, account operations | A watcher must revisit logged-in portals, detect meaningful changes, remember prior state, and update another system or take action. | Persistent profiles plus workflow state distinguish “new” from “already handled”; schedules create version-pinned executions; only changed items fan out. | Win on reliable change detection, bounded spend, and recovery across repeated runs—not raw public-web scraping. |
 | 3 | High-volume repetitive portal operations | Operations teams handling orders, returns, claims, applications, or account changes | Pure agents repeatedly pay perception/reasoning cost; deterministic scripts break when the UI changes. | AI explores first, successful traces become guarded scripts, and guard failures deopt to AI in the same session. | Prove a sustained reduction in cost per successful operation without reducing completion rate. |
 | 4 | Exception-heavy work with login, MFA, CAPTCHA, or ambiguous site state | BPOs, managed-service providers, internal operations teams | Human takeover often sits outside the run's state machine; resumption can repeat a side effect or lose context. | One input owner, command-boundary pause, private intervention interval, fresh-perception resume, and durable exception queues. | Prove safe pause/resume under races and show that an operator can manage many workflows by exception. |
 | 5 | Reconciliation across portals and an internal book of record | Finance operations, marketplace settlements, subscription or commerce platforms | Partial refunds, credits, chargebacks, fees, and out-of-order changes make “scrape a total” insufficient. Teams need evidence, matching rules, adjustments, and unresolved cases. | Event-sourced adjustments, idempotent ingestion, partial-refund accounting, durable matching decisions, and a review path for uncertain external outcomes. | Start with non-custodial read/reconcile workflows; demonstrate exact ledger invariants and auditable differences before automating monetary actions. |
+| 6 | Recurring synchronization and bulk migration between systems without usable APIs | Vertical SaaS vendors, implementation firms, RevOps/Recruiting Ops | Source records must be normalized, deduplicated, written, retried, and audited. A monolithic run loses partial progress. | Records flow downstream as discovered; execution resumes from durable state; per-record failures follow an exception path. | Demonstrate lower operator minutes and fewer duplicate or missing records than an agent-plus-custom-queue implementation. |
 
 Use case 5 is especially aligned with the current payment-ledger work, but it is high trust.
 The initial product should reconcile and surface exceptions before it initiates irreversible
@@ -149,23 +178,27 @@ Tabductor absorbs browser lifecycle and recovery complexity.
 The embedded case becomes compelling only after tenancy, billing, isolation, observability,
 and service reliability are proven. It is not the first design-partner motion.
 
-## Where not to compete
+## Infrastructure products outside the initial focus
 
 Tabductor should deliberately avoid early head-to-head competition in areas where Browserbase
 has a structural lead or where Tabductor's architecture is intentionally narrower:
 
 - commodity Playwright/Puppeteer/Selenium browser sessions;
-- generic public-web search, fetch, or one-page extraction;
+- a standalone public-web Search/Fetch API;
 - one-shot autonomous research agents that need files and shell tools;
 - arbitrary hosted functions or customer Python;
-- cross-browser testing and Chrome-extension workflows;
+- a comprehensive cross-browser testing grid or Chrome-extension runtime;
 - maximum global browser concurrency before the fleet is proven;
-- a general model gateway; and
-- simple automations backed by a stable first-party API.
+- a general model gateway.
+
+Recurring public-page extraction, single-page checks, and scheduled browser smoke tests remain
+in scope. Authentication, batch size, and number of steps do not determine product fit. Where
+a supported API exists, compare its economics and reliability with browser execution rather
+than excluding the customer's recurring task from the use-case portfolio.
 
 The [technical plan](techical_plan.md) intentionally defers Search/Fetch, arbitrary hosted
 functions, public browser connections, and a general model gateway. That focus is a business
-advantage only if the event-driven workflow experience is substantially better.
+advantage only if creating and operating recurring browser jobs is substantially easier.
 
 ## Customer gains and how to measure them
 
@@ -173,8 +206,10 @@ Avoid ROI claims based only on browser-hour price. Measure the full operation.
 
 | Gain | Primary metric | Test method |
 | --- | --- | --- |
+| Reliable scheduled outcomes | Expected schedule occurrences with one verified outcome by the required deadline, divided by all expected occurrences | Count missing, late, failed, and duplicated outcomes as failures; test overlap policy, timezone boundaries, downtime, and slow runs. |
+| Lower maintenance burden | Operator and engineering minutes per active scheduled job per month | Run simple and complex jobs repeatedly through UI changes, expired sessions, and transient failures. |
 | Faster time to a working automation | Median elapsed time from approved intent to first successful production-like execution | Give the same scoped workflow to a Tabductor user and a Browserbase/Stagehand implementation team. Include orchestration and destination writes. |
-| Earlier useful output | Time to first accepted record and records completed while source discovery remains active | Run a paginated source with intentionally slow browsing and independent downstream consumers. |
+| Earlier useful output where streaming applies | Time to first accepted record and records completed while source discovery remains active | Run a paginated source with intentionally slow browsing and independent downstream consumers. |
 | Better recovery | Percentage of injected failures recovered without lost progress or duplicate side effect | Kill workers before/after emit, during navigation, and around an ambiguous submit; verify store and external counters. |
 | Lower steady-state cost | Total browser, model, proxy, solver, and operator cost per successful operation | Compare initial AI mode with promoted guarded execution over a representative run set. Include fallback costs. |
 | Less human effort | Operator minutes and interventions per 100 completed operations | Track takeover, review, retry, reauthentication, and manual reconciliation separately. |
@@ -231,14 +266,18 @@ AWS fleet capacity is live merely because it is designed.
 
 ### Initial ideal customer profile
 
-Prioritize a design partner that has:
+The addressable user includes an individual with one recurring browser task, a small team
+with several routines, and an enterprise with many workflows. For design-partner selection,
+prioritize measurable recurring pain:
 
-- five or more people performing the same authenticated portal process;
-- no reliable API for at least one critical system;
-- hundreds or thousands of records per recurring batch;
-- visible rework from timeouts, duplicates, session expiry, or manual handoffs;
-- a measurable book of record against which correctness can be verified; and
+- an hourly, daily, weekly, or monthly browser routine someone currently owns;
+- recurring manual effort or script maintenance whose cost can justify automation;
+- meaningful consequences when an occurrence is missed or its result is wrong;
+- observable completion criteria, including valid “no change” outcomes; and
 - enough repetition to demonstrate compilation economics within weeks.
+
+Large record counts, multiple operators, authentication, and unavailable APIs can strengthen
+the business case, but they are not prerequisites.
 
 Implementation consultancies, vertical SaaS vendors, marketplace operators, recruiting
 operations, and property/vendor operations are stronger first prospects than highly regulated
@@ -247,11 +286,10 @@ certification and liability the first blocker.
 
 ### Beachhead offer
 
-Sell one narrow outcome:
+Lead with the recurring job:
 
-> We automate one authenticated, multi-record process end to end. Records move as they are
-> found, interrupted work resumes, exceptions reach a human with context, and every operation
-> has a verifiable result and cost.
+> Tell us what you do in the browser and when it should happen. We run it on schedule, show
+> whether it succeeded, and help it recover when the website or session changes.
 
 Start with a paid design-partner engagement and a fixed success definition. Do not lead with
 the graph, Camoufox, Kubernetes, or MCP. Those are mechanisms. Lead with recovered operator
@@ -259,24 +297,25 @@ hours, lower error/rework, and throughput per operator.
 
 ### Discovery questions
 
-1. Where does work wait for a long browser job to finish before the next system can begin?
-2. What happens to the first 900 records if a 1,000-record run fails near the end?
+1. What browser task do you repeat, on what schedule, and who owns it today?
+2. What counts as success, and what does a missed, late, or duplicated occurrence cost?
 3. Which actions are unsafe to repeat after a timeout or lost connection?
 4. How are logins, MFA, and expired sessions handled today?
 5. What percentage of cases need a human, and can the human resume rather than restart?
-6. What is the loaded cost per completed record, including engineering and exception labor?
+6. What is the loaded cost per successful occurrence, including engineering and exception labor?
 7. How often does a stable process change enough to break scripts?
-8. Can the customer identify one authoritative result against which we can score accuracy?
+8. For jobs with many records, how is partial progress recovered and correctness checked?
 
 ## Product priorities implied by this research
 
-1. Preserve the per-event asynchronous contract in prompts, compilation, tests, and runtime.
-   This is the horizontal product primitive behind every priority use case.
+1. Make recurring execution a first-class product experience: intent, cron/timezone, enable or
+   disable, occurrence history, and verified results. Specify overlap, missed-occurrence, and
+   retry policies, and validate them before claiming production scheduling reliability.
 2. Finish H2 before broadening connectors. Version pinning, atomic emit/store behavior,
    fencing, and uncertain-outcome handling are the basis of the business claim.
-3. Prove one source-to-many-consumers workflow with slow scrolling, concurrent decisions,
-   independent failure, cancellation, and recovery. Use fixture systems, not an X-to-Notion
-   special case.
+3. Preserve the asynchronous harness across single-action, sequential, conditional, parallel,
+   and streaming jobs. Prompts and compilation should select the appropriate shape; validate
+   both a simple cron action and a source-to-many-consumers workflow under failure and recovery.
 4. Make the AI-to-guarded-script lifecycle automatic and measurable. This is the clearest
    potential economic advantage over Browserbase's current advisory/manual optimization path.
 5. Build profile leases and workflow-aware takeover as an operational system, not merely a
@@ -309,15 +348,15 @@ hours, lower error/rework, and throughput per operator.
 
 ## Decision
 
-The strongest commercial thesis is not “better browser infrastructure than Browserbase.” It
-is “less engineering and operational risk for recurring authenticated business processes.”
+Tabductor serves browser automation that needs to run on a schedule. The commercial promise
+is less effort to create, maintain, and trust those recurring jobs, from a single timed action
+to a complex asynchronous workflow.
 
-The first proof should be an authenticated, multi-record synchronization or monitoring
-workflow with a measurable book of record. It must demonstrate all of the differentiators in
-one small surface area: early per-item emission, concurrent downstream work, durable resume,
-no duplicate side effects, human exception handling, and declining cost after guarded-script
-promotion. If Tabductor cannot materially improve cost per verified successful operation on
-that test, expanding into more browser features will not create a durable advantage.
+Validate that promise with a small portfolio: a single scheduled action, a sequential browser
+routine, a conditional monitor, and an incremental synchronization job. Measure verified
+scheduled completion, maintenance time, recovery behavior, and cost per successful occurrence
+against Browserbase. Streaming is an important capability within that portfolio; the product
+scope is the full range of schedulable browser automation.
 
 ## Primary research sources
 
@@ -331,4 +370,3 @@ that test, expanding into more browser features will not create a durable advant
 - [Browserbase Temporal integration](https://docs.browserbase.com/integrations/temporal/quickstart)
 - [Browserbase session timeouts](https://docs.browserbase.com/platform/browser/long-sessions/timeouts)
 - [Camoufox stealth overview and maintenance status](https://camoufox.com/stealth/)
-
