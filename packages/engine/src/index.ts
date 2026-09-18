@@ -41,6 +41,15 @@ export {
   type PaddleWebhookEvent,
 } from "./paddle-webhooks.js";
 export {
+  createPaddleCreditPurchase,
+  createPaddleTransactionClient,
+  parsePaddleCreditPacks,
+  processPendingPaddleWebhookEvents,
+  processPaddleWebhookEvent,
+  type PaddleCreditPack,
+  type PaddleTransactionClient,
+} from "./paddle-payments.js";
+export {
   accountOwnsWorkflow,
   accountOwnsTask,
   accountOwnsRun,

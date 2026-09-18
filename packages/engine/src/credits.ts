@@ -33,7 +33,7 @@ function assertSettlementUnits(units: number, reservedUnits: number): void {
   }
 }
 
-async function lockAccount(db: Db, accountId: string): Promise<void> {
+export async function lockCreditAccount(db: Db, accountId: string): Promise<void> {
   await db.execute(sql`select pg_advisory_xact_lock(hashtextextended(${accountId}, 0))`);
 }
 
@@ -66,6 +66,40 @@ export type CreditAdjustmentInput = {
   metadata?: Record<string, unknown>;
 };
 
+export async function appendCreditAdjustmentLocked(
+  db: Db,
+  input: CreditAdjustmentInput,
+): Promise<CreditLedgerEntryRow> {
+  const [prior] = await db.select().from(creditLedgerEntries)
+    .where(eq(creditLedgerEntries.idempotencyKey, input.idempotencyKey));
+  if (prior) {
+    if (prior.accountId !== input.accountId || prior.kind !== input.kind || prior.units !== input.units) {
+      throw new AppError("credit_idempotency_conflict", "idempotency key was already used for a different credit movement");
+    }
+    return prior;
+  }
+  const nextBalance = await availableUnits(db, input.accountId) + input.units;
+  if (!Number.isSafeInteger(nextBalance)) {
+    throw new AppError("credit_balance_overflow", "credit movement would exceed the supported integer range");
+  }
+  const [inserted] = await db.insert(creditLedgerEntries).values({
+    id: newId("credit"),
+    accountId: input.accountId,
+    kind: input.kind,
+    units: input.units,
+    idempotencyKey: input.idempotencyKey,
+    metadataJson: input.metadata ?? {},
+  }).onConflictDoNothing({ target: creditLedgerEntries.idempotencyKey }).returning();
+  if (inserted) return inserted;
+
+  const [existing] = await db.select().from(creditLedgerEntries)
+    .where(eq(creditLedgerEntries.idempotencyKey, input.idempotencyKey));
+  if (!existing || existing.accountId !== input.accountId || existing.kind !== input.kind || existing.units !== input.units) {
+    throw new AppError("credit_idempotency_conflict", "idempotency key was already used for a different credit movement");
+  }
+  return existing;
+}
+
 /** Adds an externally-authorized movement exactly once. Callers derive units server-side. */
 export async function appendCreditAdjustment(db: Db, input: CreditAdjustmentInput): Promise<CreditLedgerEntryRow> {
   assertUnits(input.units);
@@ -78,35 +112,8 @@ export async function appendCreditAdjustment(db: Db, input: CreditAdjustmentInpu
   if (!input.idempotencyKey.trim()) throw new AppError("credit_idempotency_invalid", "idempotency key is required");
 
   return db.transaction(async (trx) => {
-    await lockAccount(trx, input.accountId);
-    const [prior] = await trx.select().from(creditLedgerEntries)
-      .where(eq(creditLedgerEntries.idempotencyKey, input.idempotencyKey));
-    if (prior) {
-      if (prior.accountId !== input.accountId || prior.kind !== input.kind || prior.units !== input.units) {
-        throw new AppError("credit_idempotency_conflict", "idempotency key was already used for a different credit movement");
-      }
-      return prior;
-    }
-    const nextBalance = await availableUnits(trx, input.accountId) + input.units;
-    if (!Number.isSafeInteger(nextBalance)) {
-      throw new AppError("credit_balance_overflow", "credit movement would exceed the supported integer range");
-    }
-    const [inserted] = await trx.insert(creditLedgerEntries).values({
-      id: newId("credit"),
-      accountId: input.accountId,
-      kind: input.kind,
-      units: input.units,
-      idempotencyKey: input.idempotencyKey,
-      metadataJson: input.metadata ?? {},
-    }).onConflictDoNothing({ target: creditLedgerEntries.idempotencyKey }).returning();
-    if (inserted) return inserted;
-
-    const [existing] = await trx.select().from(creditLedgerEntries)
-      .where(eq(creditLedgerEntries.idempotencyKey, input.idempotencyKey));
-    if (!existing || existing.accountId !== input.accountId || existing.kind !== input.kind || existing.units !== input.units) {
-      throw new AppError("credit_idempotency_conflict", "idempotency key was already used for a different credit movement");
-    }
-    return existing;
+    await lockCreditAccount(trx, input.accountId);
+    return appendCreditAdjustmentLocked(trx, input);
   });
 }
 
@@ -128,7 +135,7 @@ export async function reserveCredits(db: Db, input: ReserveCreditsInput): Promis
   }
 
   return db.transaction(async (trx) => {
-    await lockAccount(trx, input.accountId);
+    await lockCreditAccount(trx, input.accountId);
     const [existing] = await trx.select().from(creditReservations).where(and(
       eq(creditReservations.accountId, input.accountId),
       eq(creditReservations.operationId, input.operationId),
@@ -184,7 +191,7 @@ export async function settleCreditReservation(
   input: { accountId: string; reservationId: string; actualUnits: number },
 ): Promise<CreditReservationRow> {
   return db.transaction(async (trx) => {
-    await lockAccount(trx, input.accountId);
+    await lockCreditAccount(trx, input.accountId);
     const reservation = await getLockedReservation(trx, input.reservationId, input.accountId);
     assertSettlementUnits(input.actualUnits, reservation.reservedUnits);
     if (reservation.status === "settled") {
@@ -227,7 +234,7 @@ async function closeCreditReservation(
   input: { accountId: string; reservationId: string; expired: boolean },
 ): Promise<CreditReservationRow> {
   return db.transaction(async (trx) => {
-    await lockAccount(trx, input.accountId);
+    await lockCreditAccount(trx, input.accountId);
     const reservation = await getLockedReservation(trx, input.reservationId, input.accountId);
     const targetStatus = input.expired ? "expired" : "released";
     if (reservation.status === targetStatus) return reservation;

@@ -16,6 +16,8 @@ import {
   createEngine,
   executorKey,
   pickWorkflowEndpoint,
+  parsePaddleCreditPacks,
+  processPendingPaddleWebhookEvents,
   recordEngineBoot,
   StubExecutor,
   touchEngineHeartbeat,
@@ -275,6 +277,14 @@ const heartbeat = setInterval(() => {
   void touchEngineHeartbeat(handle.db).catch((err) => log.warn("engine heartbeat failed", { error: String(err) }));
 }, 5_000);
 heartbeat.unref();
+const paddlePacks = config.PADDLE_CREDIT_PACKS_JSON
+  ? parsePaddleCreditPacks(config.PADDLE_CREDIT_PACKS_JSON)
+  : undefined;
+const paymentReconciler = paddlePacks ? setInterval(() => {
+  void processPendingPaddleWebhookEvents(handle.db, paddlePacks)
+    .catch((err) => log.warn("payment webhook reconciliation failed", { error: String(err) }));
+}, 2_000) : undefined;
+paymentReconciler?.unref();
 log.info("engine started", {
   database: config.DATABASE_URL.replace(/\/\/[^@]*@/, "//"),
   telemetry: telemetry.enabled ? "exporting" : "disabled",
@@ -299,6 +309,7 @@ const shutdown = async (signal: string): Promise<void> => {
   log.info("shutting down", { signal });
   try {
     clearInterval(heartbeat);
+    if (paymentReconciler) clearInterval(paymentReconciler);
     await compileWorker?.stop();
     await dispatcher.stop();
     await engine.stop();

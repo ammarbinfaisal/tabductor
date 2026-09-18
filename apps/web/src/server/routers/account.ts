@@ -1,5 +1,12 @@
 import { accountMcpTokens } from "@tabductor/db";
-import { createAccountMcpToken, getCreditBalance } from "@tabductor/engine";
+import { AppError, loadConfig } from "@tabductor/core";
+import {
+  createAccountMcpToken,
+  createPaddleCreditPurchase,
+  createPaddleTransactionClient,
+  getCreditBalance,
+  parsePaddleCreditPacks,
+} from "@tabductor/engine";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { LOCAL_ACCOUNT } from "../auth-context.js";
@@ -9,6 +16,32 @@ const accountIdOf = (accountId: string | undefined) => accountId ?? LOCAL_ACCOUN
 
 export const accountRouter = router({
   creditBalance: procedure.query(({ ctx }) => getCreditBalance(ctx.db, accountIdOf(ctx.accountId))),
+
+  createCreditPurchase: procedure.input(z.object({
+    operationId: z.string().trim().min(1).max(200),
+    priceId: z.string().trim().min(1).max(100),
+  })).mutation(async ({ ctx, input }) => {
+    const config = loadConfig(process.env);
+    if (!config.PADDLE_API_KEY || !config.PADDLE_CREDIT_PACKS_JSON) {
+      throw new AppError("paddle_unconfigured", "Paddle billing is not configured");
+    }
+    const environment = config.PADDLE_ENVIRONMENT
+      ?? (config.PADDLE_API_KEY.startsWith("pdl_sdbx_") ? "sandbox" : "live");
+    const purchase = await createPaddleCreditPurchase(ctx.db, {
+      accountId: accountIdOf(ctx.accountId),
+      ...input,
+      ...(config.PADDLE_CHECKOUT_URL ? { checkoutUrl: config.PADDLE_CHECKOUT_URL } : {}),
+    }, {
+      packs: parsePaddleCreditPacks(config.PADDLE_CREDIT_PACKS_JSON),
+      client: createPaddleTransactionClient({ apiKey: config.PADDLE_API_KEY, environment }),
+    });
+    return {
+      id: purchase.id,
+      status: purchase.status,
+      checkoutUrl: purchase.checkoutUrl,
+      creditUnits: purchase.creditUnits,
+    };
+  }),
 
   mcpTokens: procedure.query(({ ctx }) => ctx.db.select({
     id: accountMcpTokens.id,

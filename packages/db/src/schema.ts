@@ -115,6 +115,8 @@ export const CREDIT_LEDGER_KINDS = [
 export type CreditLedgerKind = (typeof CREDIT_LEDGER_KINDS)[number];
 export const PAYMENT_WEBHOOK_STATUSES = ["received", "pending", "processed", "failed"] as const;
 export type PaymentWebhookStatus = (typeof PAYMENT_WEBHOOK_STATUSES)[number];
+export const PAYMENT_PURCHASE_STATUSES = ["creating", "pending", "completed", "failed", "partially_refunded", "refunded"] as const;
+export type PaymentPurchaseStatus = (typeof PAYMENT_PURCHASE_STATUSES)[number];
 
 /** A mutable operation record; money movement itself lives only in `credit_ledger_entries`. */
 export const creditReservations = pgTable(
@@ -188,6 +190,37 @@ export const paymentWebhookEvents = pgTable(
     index("payment_webhook_events_status_created_idx").on(t.status, t.createdAt),
     check("payment_webhook_events_status_check", sql`${t.status} in ('received','pending','processed','failed')`),
     check("payment_webhook_events_attempts_check", sql`${t.attempts} >= 0`),
+  ],
+);
+
+/** A server-created one-time credit-pack checkout. Credit quantity is pinned before Paddle is called. */
+export const paymentPurchases = pgTable(
+  "payment_purchases",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "restrict" }),
+    operationId: text("operation_id").notNull(),
+    paddleTransactionId: text("paddle_transaction_id"),
+    priceId: text("price_id").notNull(),
+    creditUnits: bigint("credit_units", { mode: "number" }).notNull(),
+    refundedUnits: bigint("refunded_units", { mode: "number" }).notNull().default(0),
+    status: text("status").$type<PaymentPurchaseStatus>().notNull().default("creating"),
+    checkoutUrl: text("checkout_url"),
+    totalMinor: bigint("total_minor", { mode: "number" }),
+    currencyCode: text("currency_code"),
+    lastError: text("last_error"),
+    creditedAt: ts("credited_at"),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("payment_purchases_account_operation_key").on(t.accountId, t.operationId),
+    uniqueIndex("payment_purchases_transaction_key").on(t.paddleTransactionId).where(sql`${t.paddleTransactionId} is not null`),
+    index("payment_purchases_account_created_idx").on(t.accountId, t.createdAt),
+    check("payment_purchases_status_check", sql`${t.status} in ('creating','pending','completed','failed','partially_refunded','refunded')`),
+    check("payment_purchases_credit_units_check", sql`${t.creditUnits} > 0`),
+    check("payment_purchases_refunded_units_check", sql`${t.refundedUnits} >= 0 and ${t.refundedUnits} <= ${t.creditUnits}`),
+    check("payment_purchases_total_check", sql`${t.totalMinor} is null or ${t.totalMinor} > 0`),
   ],
 );
 
@@ -1223,6 +1256,7 @@ export type AccountMcpTokenRow = typeof accountMcpTokens.$inferSelect;
 export type CreditReservationRow = typeof creditReservations.$inferSelect;
 export type CreditLedgerEntryRow = typeof creditLedgerEntries.$inferSelect;
 export type PaymentWebhookEventRow = typeof paymentWebhookEvents.$inferSelect;
+export type PaymentPurchaseRow = typeof paymentPurchases.$inferSelect;
 export type WorkflowVersionRow = typeof workflowVersions.$inferSelect;
 export type ScheduleRow = typeof schedules.$inferSelect;
 export type WorkflowShareRow = typeof workflowShares.$inferSelect;

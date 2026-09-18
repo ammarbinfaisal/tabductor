@@ -6,6 +6,7 @@ export {
   creditReservations,
   creditLedgerEntries,
   paymentWebhookEvents,
+  paymentPurchases,
   events,
   outbox,
   runs,
@@ -68,6 +69,7 @@ export {
   CREDIT_USAGE_CATEGORIES,
   CREDIT_LEDGER_KINDS,
   PAYMENT_WEBHOOK_STATUSES,
+  PAYMENT_PURCHASE_STATUSES,
   EXECUTION_STATUSES,
 } from "./schema.js";
 export type {
@@ -105,6 +107,8 @@ export type {
   CreditLedgerKind,
   PaymentWebhookEventRow,
   PaymentWebhookStatus,
+  PaymentPurchaseRow,
+  PaymentPurchaseStatus,
   WorkflowExecutionRow,
   ExecutionStatus,
   WorkflowVersionRow,
