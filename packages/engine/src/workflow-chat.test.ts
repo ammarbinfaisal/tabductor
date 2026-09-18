@@ -1,4 +1,5 @@
 import { expect, it, vi } from "vitest";
+import { AppError } from "@tabductor/core";
 import { runWorkflowChat, type WorkflowChatEvent, type WorkflowChatInput, type WorkflowChatModel } from "./workflow-chat.js";
 import type { GraphCompileResult, GraphDraftArtifact } from "./graph-authoring.js";
 
@@ -8,6 +9,36 @@ const request: WorkflowChatInput = { workflowId: "wf", versionId: "v1", current:
 const editCall = { id: "edit", name: "mutate_graph", args: { operation: "add_event", target: "review.ready", instruction: "Add a review event carrying a title" } };
 const publishCall = { id: "publish", name: "publish_draft", args: {} };
 const success: GraphCompileResult = { ok: true, artifact: edited, report: { checks: [], attempts: 1 } };
+
+it.each([
+  ["model_selection_missing", "/settings/models"],
+  ["model_credential_missing", "unavailable or revoked"],
+  ["credit_insufficient", "not enough available credits"],
+  ["model_operation_uncertain", "Check model usage in Billing before retrying"],
+])("explains %s without exposing exception details", async (code, expected) => {
+  const events: WorkflowChatEvent[] = [];
+  const privateValue = "private-provider-key-and-prompt";
+  const complete = vi.fn().mockRejectedValue(new AppError(code, privateValue, { cause: new Error(privateValue), details: { key: privateValue } }));
+  const compiler = { compile: vi.fn() };
+  const publish = vi.fn();
+  await runWorkflowChat(request, { model: { complete }, compiler, publish, gateContext: {}, onEvent: (event) => events.push(event) });
+  expect(events).toEqual([{ type: "error", message: expect.stringContaining(expected) }, { type: "done" }]);
+  expect(JSON.stringify(events)).not.toContain(privateValue);
+  expect(compiler.compile).not.toHaveBeenCalled();
+  expect(publish).not.toHaveBeenCalled();
+});
+
+it("keeps completed drafts and hides unknown provider errors", async () => {
+  const events: WorkflowChatEvent[] = [];
+  const complete = vi.fn().mockResolvedValueOnce({ text: "", toolCalls: [editCall] })
+    .mockRejectedValueOnce(new Error("private-provider-key-and-prompt"));
+  await runWorkflowChat(request, { model: { complete }, compiler: { compile: vi.fn().mockResolvedValue(success) },
+    publish: vi.fn(), gateContext: {}, onEvent: (event) => events.push(event) });
+  expect(events).toContainEqual({ type: "draft", artifact: edited });
+  expect(events.at(-2)).toEqual({ type: "error", message: expect.stringContaining("Your completed changes are retained") });
+  expect(events.at(-1)).toEqual({ type: "done" });
+  expect(JSON.stringify(events)).not.toContain("private-provider-key-and-prompt");
+});
 
 it("answers a question without invoking compilation or publication", async () => {
   const compiler = { compile: vi.fn() };

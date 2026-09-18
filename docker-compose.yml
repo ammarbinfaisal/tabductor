@@ -125,6 +125,9 @@ services:
       # contents into containers. Clerk keys are runtime configuration for web only.
       CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
+    # Account model keys saved by web must survive recreation and be decryptable
+    # by the engine using the same local encryption key.
+    volumes: ["kek:/app/data"]
     ports: ["${BIND_ADDR:-127.0.0.1}:3000:3000"]
     init: true
     healthcheck:

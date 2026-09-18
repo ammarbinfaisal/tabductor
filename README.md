@@ -24,7 +24,11 @@ open http://localhost:3000
 ```
 
 Compose starts Postgres, MinIO, one-shot migrations, the engine, and the Next.js control plane.
-Set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` to compile new workflow intent and run AI tasks.
+After signing in, open **Models**, save your provider key, and select a model under
+**Use your own key**. This account selection enables chat, workflow compilation, and AI tasks.
+Server `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` values configure the platform provider;
+they do not automatically select a model for a signed-in account. Platform models also
+require configured rates and account credits.
 MinIO stores browser trace blobs.
 
 After changing Clerk keys in `.env`, run `docker compose up -d --no-deps web` to

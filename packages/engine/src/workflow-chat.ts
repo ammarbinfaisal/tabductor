@@ -1,4 +1,5 @@
 import type { ModelMessage } from "ai";
+import { AppError } from "@tabductor/core";
 import { z } from "zod";
 import { graphDraftArtifactSchema, type GraphCompiler, type GraphDraftArtifact, type GraphGateContext } from "./graph-authoring.js";
 
@@ -31,6 +32,17 @@ const mutationSchema = z.object({
   instruction: z.string().min(1).max(12000).describe("Precise requested behavior, data contract or routing change. Include all related edits needed to keep the workflow coherent."),
 });
 const emptySchema = z.object({});
+// Only known codes get actionable messages. Provider errors can contain credentials,
+// prompts or request bodies, so never forward their message, cause or details.
+const MODEL_ERRORS: Record<string, string> = {
+  model_selection_missing: "Choose a model in Models settings (/settings/models) before using the assistant. A server API key alone does not select a model for your account.",
+  model_credential_missing: "Your selected model key is unavailable or revoked. Save a key and select it in Models settings (/settings/models).",
+  model_rate_unknown: "The selected Tabductor model has no configured rate. Choose another model or use your own key in Models settings (/settings/models).",
+  model_platform_unavailable: "The selected model provider is not configured on this server. Choose another model or use your own key in Models settings (/settings/models).",
+  model_input_limit: "This conversation exceeds the selected model's input limit. Start a shorter conversation or choose a model with a larger limit.",
+  credit_insufficient: "There are not enough available credits for this model call. Add credits in Billing or select your own key in Models settings (/settings/models).",
+  model_operation_uncertain: "The model request failed and its usage could not be confirmed. Your completed changes are retained. Check model usage in Billing before retrying.",
+};
 const tools: WorkflowChatTool[] = [
   { name: "inspect_workflow", description: "Read the complete current draft, including internal execution instructions and event packet contracts. Use these privately to explain behavior in plain language.", parameters: emptySchema },
   { name: "mutate_graph", description: "Add, remove or update steps, events, packet definitions or routes in the draft. Packet edits change what future events carry, including adding/removing fields or output packet types; historical execution packets remain trace evidence. Can make a coherent multi-node change in one call. Does not publish or run the workflow.", parameters: mutationSchema },
@@ -118,7 +130,8 @@ export async function runWorkflowChat(input: WorkflowChatInput, deps: {
     }
     deps.onEvent({ type: "error", message: "I reached the editing limit for this message. Your completed changes are saved in the draft; send another message to continue." });
   } catch (error) {
-    if (!deps.signal?.aborted) deps.onEvent({ type: "error", message: "The assistant could not finish this message. Your completed changes are retained. Please try again." });
+    const message = error instanceof AppError && Object.hasOwn(MODEL_ERRORS, error.code) ? MODEL_ERRORS[error.code] : undefined;
+    if (!deps.signal?.aborted) deps.onEvent({ type: "error", message: message ?? "The assistant could not finish this message. Your completed changes are retained. Please try again." });
   }
   deps.onEvent({ type: "done" });
 }
