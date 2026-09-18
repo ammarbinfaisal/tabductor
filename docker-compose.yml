@@ -43,6 +43,9 @@ x-app: &app
     ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     SCHEMA_MODEL: ${SCHEMA_MODEL:-}
+    # Next starts from /app/apps/web while the engine starts from /app. Use the
+    # same absolute path so every process wraps credentials with the persisted key.
+    SECRETS_KEK_FILE_PATH: /app/data/secrets-kek.json
   depends_on:
     migrate:
       condition: service_completed_successfully
@@ -110,7 +113,7 @@ services:
     # if the file is absent. Left on the container's writable layer, every `--build` or
     # recreation would mint a *new* v1 KEK and orphan every already-wrapped `secrets` row —
     # permanently, and with no error until a `fill` fails. `SECRETS_KEK_FILE_PATH` defaults to
-    # ./data/secrets-kek.json, which is what this mounts.
+    # ./data/secrets-kek.json; the absolute override above points into this mount.
     volumes: ["kek:/app/data"]
 
   # Control plane: Next.js + tRPC. Reads and writes definitions and run rows; never executes.
