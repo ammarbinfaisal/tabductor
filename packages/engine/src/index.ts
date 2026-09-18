@@ -34,6 +34,13 @@ export {
   type ReserveCreditsInput,
 } from "./credits.js";
 export {
+  ingestPaddleWebhook,
+  parsePaddleWebhook,
+  verifyPaddleWebhookSignature,
+  type IngestPaddleWebhookResult,
+  type PaddleWebhookEvent,
+} from "./paddle-webhooks.js";
+export {
   accountOwnsWorkflow,
   accountOwnsTask,
   accountOwnsRun,

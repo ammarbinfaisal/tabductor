@@ -63,6 +63,7 @@ const envSchema = z.object({
     z.enum(["sandbox", "live"]).optional(),
   ),
   PADDLE_CHECKOUT_URL: optionalUrl,
+  PADDLE_CREDIT_PACKS_JSON: optionalSetting,
   CAPSOLVER_API_KEY: optionalSetting,
   TWO_CAPTCHA_API_KEY: optionalSetting,
   // S5c: the secrets broker's KEK-wrapping key store (`fileKeyWrapper`, dev/test — a KMS

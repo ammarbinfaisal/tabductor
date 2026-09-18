@@ -113,6 +113,8 @@ export const CREDIT_LEDGER_KINDS = [
   "reservation_settlement",
 ] as const;
 export type CreditLedgerKind = (typeof CREDIT_LEDGER_KINDS)[number];
+export const PAYMENT_WEBHOOK_STATUSES = ["received", "pending", "processed", "failed"] as const;
+export type PaymentWebhookStatus = (typeof PAYMENT_WEBHOOK_STATUSES)[number];
 
 /** A mutable operation record; money movement itself lives only in `credit_ledger_entries`. */
 export const creditReservations = pgTable(
@@ -162,6 +164,30 @@ export const creditLedgerEntries = pgTable(
     index("credit_ledger_entries_reservation_idx").on(t.reservationId),
     check("credit_ledger_entries_kind_check", sql`${t.kind} in ('purchase','adjustment','refund','reservation_hold','reservation_release','reservation_settlement')`),
     check("credit_ledger_entries_units_check", sql`${t.units} <> 0`),
+  ],
+);
+
+/** Verified Paddle deliveries. The exact parsed payload is retained for deterministic retry. */
+export const paymentWebhookEvents = pgTable(
+  "payment_webhook_events",
+  {
+    notificationId: text("notification_id").primaryKey(),
+    eventId: text("event_id").notNull(),
+    eventType: text("event_type").notNull(),
+    occurredAt: ts("occurred_at").notNull(),
+    payloadSha256: text("payload_sha256").notNull(),
+    payloadJson: jsonb("payload_json").$type<Record<string, unknown>>().notNull(),
+    status: text("status").$type<PaymentWebhookStatus>().notNull().default("received"),
+    attempts: integer("attempts").notNull().default(0),
+    lastError: text("last_error"),
+    processedAt: ts("processed_at"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("payment_webhook_events_event_key").on(t.eventId),
+    index("payment_webhook_events_status_created_idx").on(t.status, t.createdAt),
+    check("payment_webhook_events_status_check", sql`${t.status} in ('received','pending','processed','failed')`),
+    check("payment_webhook_events_attempts_check", sql`${t.attempts} >= 0`),
   ],
 );
 
@@ -1196,6 +1222,7 @@ export type AccountIdentityRow = typeof accountIdentities.$inferSelect;
 export type AccountMcpTokenRow = typeof accountMcpTokens.$inferSelect;
 export type CreditReservationRow = typeof creditReservations.$inferSelect;
 export type CreditLedgerEntryRow = typeof creditLedgerEntries.$inferSelect;
+export type PaymentWebhookEventRow = typeof paymentWebhookEvents.$inferSelect;
 export type WorkflowVersionRow = typeof workflowVersions.$inferSelect;
 export type ScheduleRow = typeof schedules.$inferSelect;
 export type WorkflowShareRow = typeof workflowShares.$inferSelect;

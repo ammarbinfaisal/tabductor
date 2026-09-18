@@ -5,6 +5,7 @@ export {
   accountMcpTokens,
   creditReservations,
   creditLedgerEntries,
+  paymentWebhookEvents,
   events,
   outbox,
   runs,
@@ -66,6 +67,7 @@ export {
   CREDIT_RESERVATION_STATUSES,
   CREDIT_USAGE_CATEGORIES,
   CREDIT_LEDGER_KINDS,
+  PAYMENT_WEBHOOK_STATUSES,
   EXECUTION_STATUSES,
 } from "./schema.js";
 export type {
@@ -101,6 +103,8 @@ export type {
   CreditReservationStatus,
   CreditUsageCategory,
   CreditLedgerKind,
+  PaymentWebhookEventRow,
+  PaymentWebhookStatus,
   WorkflowExecutionRow,
   ExecutionStatus,
   WorkflowVersionRow,

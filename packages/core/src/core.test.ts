@@ -59,12 +59,14 @@ describe("loadConfig", () => {
     const cfg = loadConfig({
       PADDLE_API_KEY: "pdl_sdbx_apikey_example",
       PADDLE_CLIENT_TOKEN: "test_client-token",
+      PADDLE_CREDIT_PACKS_JSON: '[{"priceId":"pri_pack","creditUnits":1000}]',
       CAPSOLVER_API_KEY: "capsolver-secret",
       TWO_CAPTCHA_API_KEY: "two-captcha-secret",
     });
     expect(cfg).toMatchObject({
       PADDLE_API_KEY: "pdl_sdbx_apikey_example",
       PADDLE_CLIENT_TOKEN: "test_client-token",
+      PADDLE_CREDIT_PACKS_JSON: '[{"priceId":"pri_pack","creditUnits":1000}]',
       CAPSOLVER_API_KEY: "capsolver-secret",
       TWO_CAPTCHA_API_KEY: "two-captcha-secret",
     });
