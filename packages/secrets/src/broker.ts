@@ -14,7 +14,7 @@ import {
   type SecretRow,
 } from "@tabductor/db";
 import type { Metrics } from "@tabductor/telemetry";
-import type { PolicyGate } from "@tabductor/policy";
+import type { PolicyGate } from "@tabductor/core";
 import { unsealValue, zero, type KeyWrapper } from "./crypto.js";
 
 /**

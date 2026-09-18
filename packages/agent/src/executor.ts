@@ -12,7 +12,7 @@ import {
 import { AppError } from "@tabductor/core";
 import type { Db, RunRow, TaskRow } from "@tabductor/db";
 import type { RunHandle, RunResult, TaskExecutor } from "@tabductor/engine";
-import type { PolicyGate } from "@tabductor/policy";
+import type { PolicyGate } from "@tabductor/core";
 import type { SecretsBroker, SecretsBrokerRunDeps } from "@tabductor/secrets";
 import type { Metrics } from "@tabductor/telemetry";
 import {

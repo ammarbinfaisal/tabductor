@@ -18,7 +18,6 @@
     "@tabductor/core": "workspace:*",
     "@tabductor/db": "workspace:*",
     "@tabductor/engine": "workspace:*",
-    "@tabductor/policy": "workspace:*",
     "@tabductor/secrets": "workspace:*",
     "@tabductor/store": "workspace:*",
     "@tabductor/telemetry": "workspace:*",

@@ -66,4 +66,11 @@ spec:
             - { name: BROWSER_WORKER_PULL_POLICY, value: {{ .Values.fleet.workerPullPolicy | quote }} }
             - { name: BROWSER_WORKER_TOKEN_KEY, value: {{ required "fleet.workerTokenKey is required" .Values.fleet.workerTokenKey | quote }} }
           resources: {{- toYaml .Values.resources.fleet | nindent 12 }}
+          volumeMounts:
+            - { name: kek, mountPath: /app/data }
+      volumes:
+        - name: kek
+          hostPath:
+            path: {{ .Values.secrets.storagePath | quote }}
+            type: DirectoryOrCreate
 {{- end }}

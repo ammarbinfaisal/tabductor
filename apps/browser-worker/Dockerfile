@@ -11,8 +11,9 @@ RUN pip install --no-cache-dir -r requirements.txt \
   && camoufox set "${CAMOUFOX_BROWSER}" \
   && camoufox fetch
 COPY apps/browser-worker/src ./src
+COPY apps/browser-worker/entrypoint.sh ./entrypoint.sh
 
 RUN useradd --create-home --uid 10001 worker && mkdir -p /profiles && chown -R worker:worker /worker /profiles
 USER worker
 EXPOSE 8080
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["sh", "entrypoint.sh"]

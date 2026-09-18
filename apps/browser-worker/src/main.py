@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import base64
+import io
+import tarfile
+import time
+import secrets
 import ipaddress
 import os
 import re
@@ -26,11 +31,21 @@ class StartRequest(BaseModel):
     profile_dir: str
     locale: str | None = None
     proxy: dict[str, str] | None = None
+    snapshot: str | None = None
+    fingerprint: dict[str, Any] = Field(default_factory=dict)
+
+
+class ControlRequest(BaseModel):
+    generation: int = Field(ge=1)
+    input_generation: int = Field(ge=1)
+    owner: str
 
 
 class CommandRequest(BaseModel):
     generation: int = Field(ge=1)
     method: str = Field(min_length=1, max_length=80)
+    command_id: str = Field(min_length=1, max_length=160)
+    input_generation: int = Field(ge=1)
     page_id: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
 
@@ -43,6 +58,10 @@ class Session:
     context: Any
     pages: dict[str, Any] = field(default_factory=dict)
     next_page: int = 1
+    input_generation: int = 1
+    input_owner: str = "ai"
+    commands: set[str] = field(default_factory=set)
+    profile: Path | None = None
 
     def add_page(self, page: Any) -> str:
         page_id = f"p{self.next_page}"
@@ -52,13 +71,16 @@ class Session:
 
 
 session: Session | None = None
+command_lock = asyncio.Lock()
+used = False
+clean_snapshot: str | None = None
 app = FastAPI(title="Tabductor Camoufox worker", version=RPC_VERSION)
 
 
 def authorize(authorization: str | None, rpc_version: str | None) -> None:
     if rpc_version != RPC_VERSION:
         raise HTTPException(426, f"RPC version {RPC_VERSION} required")
-    if not TOKEN or authorization != f"Bearer {TOKEN}":
+    if not TOKEN or not secrets.compare_digest(authorization or "", f"Bearer {TOKEN}"):
         raise HTTPException(401, "invalid worker token")
 
 
@@ -105,13 +127,12 @@ async def healthz() -> dict[str, Any]:
     return {"ok": True, "rpc_version": RPC_VERSION, "allocated": session is not None}
 
 
-@app.post("/v1/sessions")
 async def start_session(
     request: StartRequest,
     authorization: str | None = Header(default=None),
     x_tabductor_rpc_version: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    global session
+    global session, used
     authorize(authorization, x_tabductor_rpc_version)
     if not ID.fullmatch(request.session_id):
         raise HTTPException(400, "invalid session id")
@@ -119,47 +140,108 @@ async def start_session(
         if session.session_id == request.session_id and session.generation == request.generation:
             return {"session_id": session.session_id, "generation": session.generation, "idempotent": True}
         raise HTTPException(409, "worker is already allocated")
+    if used:
+        raise HTTPException(409, "used workers cannot be allocated again")
+    used = True
     profile = safe_profile(request.profile_dir)
     profile.mkdir(parents=True, exist_ok=True)
+    if request.snapshot:
+        raw = base64.b64decode(request.snapshot, validate=True)
+        if len(raw) > 128 * 1024 * 1024:
+            raise HTTPException(413, "profile snapshot is too large")
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as archive:
+            members = archive.getmembers()
+            if sum(member.size for member in members) > 512 * 1024 * 1024 or len(members) > 100000:
+                raise HTTPException(413, "expanded profile exceeds its limit")
+            for member in members:
+                target = (profile / member.name).resolve()
+                if profile not in target.parents or not (member.isfile() or member.isdir()):
+                    raise HTTPException(400, "unsafe profile archive")
+            archive.extractall(profile, members=members, filter="data")
     options: dict[str, Any] = {
-        "headless": "virtual",
+        "headless": False,
         "persistent_context": True,
         "user_data_dir": str(profile),
         "humanize": True,
     }
+    if request.fingerprint:
+        options["config"] = request.fingerprint
     if request.locale:
         options["locale"] = request.locale
     if request.proxy:
         options["proxy"] = request.proxy
     manager = AsyncCamoufox(**options)
     context = await manager.__aenter__()
-    session = Session(request.session_id, request.generation, manager, context)
+    session = Session(request.session_id, request.generation, manager, context, profile=profile)
     for page in context.pages:
         session.add_page(page)
     return {"session_id": request.session_id, "generation": request.generation, "idempotent": False}
 
 
+@app.post("/v1/sessions")
+async def start_locked(request: StartRequest, authorization: str | None = Header(default=None), x_tabductor_rpc_version: str | None = Header(default=None)) -> dict[str, Any]:
+    async with command_lock:
+        return await start_session(request, authorization, x_tabductor_rpc_version)
+
+
 @app.delete("/v1/sessions/{session_id}")
-async def stop_session(
-    session_id: str,
-    generation: int,
-    authorization: str | None = Header(default=None),
-    x_tabductor_rpc_version: str | None = Header(default=None),
-) -> dict[str, bool]:
-    global session
+async def stop_session(session_id: str, generation: int, authorization: str | None = Header(default=None), x_tabductor_rpc_version: str | None = Header(default=None)) -> dict[str, Any]:
+    global session, clean_snapshot
     authorize(authorization, x_tabductor_rpc_version)
-    current = require_session(generation)
-    if current.session_id != session_id:
-        raise HTTPException(404, "session not found")
-    try:
+    async with command_lock:
+        if session is None and clean_snapshot is not None:
+            return {"closed": True, "snapshot": clean_snapshot}
+        current = require_session(generation)
+        if current.session_id != session_id:
+            raise HTTPException(404, "session not found")
+        current.input_owner = "paused"
         await current.context.close()
-    finally:
         await current.manager.__aexit__(None, None, None)
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output, mode="w:gz") as archive:
+            for path in current.profile.rglob("*"):
+                if path.is_file() and not path.is_symlink() and path.name not in {"lock", ".parentlock"}:
+                    archive.add(path, arcname=str(path.relative_to(current.profile)), recursive=False)
+        if output.tell() > 128 * 1024 * 1024:
+            raise HTTPException(413, "profile snapshot exceeds its limit")
+        clean_snapshot = base64.b64encode(output.getvalue()).decode("ascii")
         session = None
-    return {"closed": True}
+        return {"closed": True, "snapshot": clean_snapshot}
+
+
+@app.post("/v1/sessions/{session_id}/control")
+async def control(session_id: str, request: ControlRequest, authorization: str | None = Header(default=None), x_tabductor_rpc_version: str | None = Header(default=None)) -> dict[str, Any]:
+    authorize(authorization, x_tabductor_rpc_version)
+    async with command_lock:
+        current = require_session(request.generation)
+        if current.session_id != session_id:
+            raise HTTPException(404, "session not found")
+        if request.input_generation < current.input_generation or request.owner not in {"ai", "human", "paused"}:
+            raise HTTPException(409, "stale input owner")
+        if request.input_generation == current.input_generation and request.owner != current.input_owner:
+            raise HTTPException(409, "input generation already assigned")
+        current.input_generation = request.input_generation
+        current.input_owner = request.owner
+        return {"acknowledged": True, "input_generation": current.input_generation}
 
 
 @app.post("/v1/sessions/{session_id}/commands")
+async def command_locked(session_id: str, request: CommandRequest, authorization: str | None = Header(default=None), x_tabductor_rpc_version: str | None = Header(default=None)) -> dict[str, Any]:
+    authorize(authorization, x_tabductor_rpc_version)
+    async with command_lock:
+        current = require_session(request.generation)
+        if current.session_id != session_id:
+            raise HTTPException(404, "session not found")
+        if current.input_owner != "ai" or current.input_generation != request.input_generation:
+            raise HTTPException(409, "input ownership was revoked")
+        if request.command_id in current.commands:
+            raise HTTPException(409, "command already submitted; outcome must be reconciled")
+        if len(current.commands) >= 10000:
+            raise HTTPException(429, "session command budget exhausted")
+        current.commands.add(request.command_id)
+        return await command(session_id, request, authorization, x_tabductor_rpc_version)
+
+
 async def command(
     session_id: str,
     request: CommandRequest,
@@ -242,7 +324,8 @@ async def command(
               const testid = el.getAttribute('data-testid'); const role = el.getAttribute('role');
               const name = el.getAttribute('aria-label') || el.getAttribute('alt') || el.getAttribute('placeholder') || null;
               const text = (el.textContent || '').trim().slice(0, 300) || null;
-              const locator = testid ? `[data-testid="${CSS.escape(testid)}"]` : `:nth-match(${el.tagName.toLowerCase()}, ${i + 1})`;
+              el.setAttribute("data-tabductor-anchor", `e${i + 1}`);
+              const locator = testid ? `[data-testid="${CSS.escape(testid)}"]` : `[data-tabductor-anchor="e${i + 1}"]`;
               return {anchor:`e${i + 1}`, tag:el.tagName.toLowerCase(), role, name, text,
                 strategy:testid?'testid':role?'role':text?'text':'css-path', locator};
             });

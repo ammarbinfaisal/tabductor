@@ -15,7 +15,6 @@
     "@tabductor/core": "workspace:*",
     "@tabductor/db": "workspace:*",
     "@tabductor/engine": "workspace:*",
-    "@tabductor/policy": "workspace:*",
     "@tabductor/telemetry": "workspace:*",
     "minio": "^8.0.0",
     "pg": "^8.13.0",

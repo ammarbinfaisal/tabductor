@@ -13,7 +13,7 @@ import {
 import { getActiveScript } from "@tabductor/compiler";
 import { taskState, tasks, type Db, type RunRow, type TaskRow } from "@tabductor/db";
 import { assertRunLease, type RunHandle, type RunResult, type TaskExecutor } from "@tabductor/engine";
-import type { PolicyGate } from "@tabductor/policy";
+import type { PolicyGate } from "@tabductor/core";
 import { runCompiledScript, type CtxHost, type StateStore } from "@tabductor/static-rt";
 import type { Metrics } from "@tabductor/telemetry";
 import { and, eq } from "drizzle-orm";

@@ -110,9 +110,6 @@ importers:
       '@tabductor/engine':
         specifier: workspace:*
         version: link:../../packages/engine
-      '@tabductor/policy':
-        specifier: workspace:*
-        version: link:../../packages/policy
       '@tabductor/secrets':
         specifier: workspace:*
         version: link:../../packages/secrets
@@ -138,6 +135,9 @@ importers:
       '@kubernetes/client-node':
         specifier: ^2.0.0
         version: 2.0.0
+      '@tabductor/browser':
+        specifier: workspace:*
+        version: link:../../packages/browser
       '@tabductor/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -147,6 +147,9 @@ importers:
       '@tabductor/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@tabductor/secrets':
+        specifier: workspace:*
+        version: link:../../packages/secrets
       drizzle-orm:
         specifier: ^0.44.0
         version: 0.44.7(@opentelemetry/api@1.9.1)(@types/pg@8.20.3)(pg@8.22.0)
@@ -175,9 +178,6 @@ importers:
       '@tabductor/engine':
         specifier: workspace:*
         version: link:../../packages/engine
-      '@tabductor/policy':
-        specifier: workspace:*
-        version: link:../../packages/policy
       '@tabductor/telemetry':
         specifier: workspace:*
         version: link:../../packages/telemetry
@@ -230,6 +230,9 @@ importers:
       '@tabductor/mcp':
         specifier: workspace:*
         version: link:../../packages/mcp
+      '@tabductor/secrets':
+        specifier: workspace:*
+        version: link:../../packages/secrets
       '@tabductor/telemetry':
         specifier: workspace:*
         version: link:../../packages/telemetry
@@ -254,6 +257,9 @@ importers:
       react-dom:
         specifier: ^19.0.0
         version: 19.2.8(react@19.2.8)
+      sodium-native:
+        specifier: ^5.1.0
+        version: 5.1.0(bare-events@2.9.1)(bare-url@2.5.4)
       superjson:
         specifier: ^2.2.0
         version: 2.2.6
@@ -306,9 +312,6 @@ importers:
       '@tabductor/engine':
         specifier: workspace:*
         version: link:../engine
-      '@tabductor/policy':
-        specifier: workspace:*
-        version: link:../policy
       '@tabductor/secrets':
         specifier: workspace:*
         version: link:../secrets
@@ -355,9 +358,6 @@ importers:
       '@tabductor/db':
         specifier: workspace:*
         version: link:../db
-      '@tabductor/policy':
-        specifier: workspace:*
-        version: link:../policy
       '@tabductor/telemetry':
         specifier: workspace:*
         version: link:../telemetry
@@ -594,9 +594,6 @@ importers:
       '@tabductor/db':
         specifier: workspace:*
         version: link:../db
-      '@tabductor/policy':
-        specifier: workspace:*
-        version: link:../policy
       '@tabductor/telemetry':
         specifier: workspace:*
         version: link:../telemetry
@@ -650,9 +647,6 @@ importers:
       '@tabductor/db':
         specifier: workspace:*
         version: link:../db
-      '@tabductor/policy':
-        specifier: workspace:*
-        version: link:../policy
       '@tabductor/telemetry':
         specifier: workspace:*
         version: link:../telemetry

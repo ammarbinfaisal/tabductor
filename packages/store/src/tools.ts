@@ -1,7 +1,7 @@
 import type { Pool } from "pg";
 import type { Metrics } from "@tabductor/telemetry";
 import type { Db } from "@tabductor/db";
-import type { PolicyGate, TaskCtx } from "@tabductor/policy";
+import type { PolicyGate, TaskCtx } from "@tabductor/core";
 import { z } from "zod";
 import type { StoreTablesSpec } from "./ddl.js";
 import { runStoreQuery } from "./query.js";

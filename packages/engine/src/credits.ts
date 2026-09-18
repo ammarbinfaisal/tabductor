@@ -1,5 +1,6 @@
 import { AppError, newId } from "@tabductor/core";
 import {
+  browserBilling,
   modelOperations,
   creditLedgerEntries,
   creditReservations,
@@ -278,6 +279,7 @@ export async function expireCreditReservations(db: Db, now = new Date(), limit =
       eq(creditReservations.status, "active"),
       lt(creditReservations.expiresAt, now),
       sql`not exists (select 1 from ${modelOperations} where ${modelOperations.reservationId} = ${creditReservations.id})`,
+      sql`not exists (select 1 from ${browserBilling} where ${browserBilling.reservationId} = ${creditReservations.id})`,
     )).orderBy(asc(creditReservations.expiresAt)).limit(boundedLimit);
   let count = 0;
   for (const reservation of expired) {

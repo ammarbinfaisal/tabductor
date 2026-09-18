@@ -1,4 +1,4 @@
-import type { NavCause } from "@tabductor/policy";
+import type { NavCause } from "@tabductor/core";
 
 /**
  * The driver interface (§20). One of the few sanctioned abstractions in this codebase, and

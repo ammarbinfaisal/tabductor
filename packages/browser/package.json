@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./blob-store": "./src/blob-store.ts"
+    "./blob-store": "./src/blob-store.ts",
+    "./worker-driver": "./src/camoufox-worker-driver.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json"
@@ -14,7 +15,6 @@
     "@tabductor/bus": "workspace:*",
     "@tabductor/core": "workspace:*",
     "@tabductor/db": "workspace:*",
-    "@tabductor/policy": "workspace:*",
     "@tabductor/telemetry": "workspace:*",
     "drizzle-orm": "^0.44.0",
     "minio": "^8.0.0",

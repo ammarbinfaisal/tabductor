@@ -1,5 +1,5 @@
 import { AppError } from "@tabductor/core";
-import type { PolicyGate, TaskCtx } from "@tabductor/policy";
+import type { PolicyGate, TaskCtx } from "@tabductor/core";
 import type { Metrics } from "@tabductor/telemetry";
 import type {
   Anchor,

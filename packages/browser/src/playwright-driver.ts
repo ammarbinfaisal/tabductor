@@ -25,7 +25,7 @@ import type {
   PerceiveOptions,
   TargetProbe,
 } from "./driver.js";
-import type { NavCause } from "@tabductor/policy";
+import type { NavCause } from "@tabductor/core";
 
 /**
  * The only file in the codebase that imports Playwright. Everything it returns is a plain

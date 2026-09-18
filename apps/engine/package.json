@@ -15,7 +15,6 @@
     "@tabductor/core": "workspace:*",
     "@tabductor/db": "workspace:*",
     "@tabductor/engine": "workspace:*",
-    "@tabductor/policy": "workspace:*",
     "@tabductor/secrets": "workspace:*",
     "@tabductor/telemetry": "workspace:*",
     "drizzle-orm": "^0.44.0",

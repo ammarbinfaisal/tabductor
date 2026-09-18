@@ -12,7 +12,6 @@
   "dependencies": {
     "@tabductor/core": "workspace:*",
     "@tabductor/db": "workspace:*",
-    "@tabductor/policy": "workspace:*",
     "@tabductor/telemetry": "workspace:*",
     "ajv": "^8.17.0",
     "drizzle-orm": "^0.44.0",

@@ -1,7 +1,7 @@
 import { Ajv, type ValidateFunction } from "ajv";
 import { sql, eq } from "drizzle-orm";
 import { storeWriteGrants, type Db } from "@tabductor/db";
-import type { PolicyGate, TaskCtx } from "@tabductor/policy";
+import type { PolicyGate, TaskCtx } from "@tabductor/core";
 import type { StoreTableSpec } from "./ddl.js";
 import { wfIdsOf, type WorkflowStoreIds } from "./ids.js";
 

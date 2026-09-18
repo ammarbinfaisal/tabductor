@@ -1084,6 +1084,7 @@ export const browserWorkers = pgTable(
   {
     id: text("id").primaryKey(),
     podName: text("pod_name").notNull(),
+    endpointUrl: text("endpoint_url"),
     status: text("status").$type<BrowserWorkerStatus>().notNull().default("warm"),
     sessionId: text("session_id").references(() => browserSessions.id, { onDelete: "set null" }),
     generation: integer("generation").notNull().default(0),
@@ -1359,3 +1360,32 @@ export const modelOperations = pgTable("model_operations", {
   completedAt: ts("completed_at"),
 }, (t) => [index("model_operations_account_created_idx").on(t.accountId, t.createdAt),
   check("model_operations_status_check", sql`${t.status} in ('pending','succeeded','uncertain')`)]);
+
+export const workflowBrowserProfiles = pgTable("workflow_browser_profiles", {
+  workflowId: text("workflow_id").primaryKey().references(() => workflows.id, { onDelete: "cascade" }),
+  profileId: text("profile_id").notNull().references(() => browserProfiles.id, { onDelete: "restrict" }),
+});
+
+/** Metadata only; neither command arguments nor results may contain persisted secrets. */
+export const browserCommands = pgTable("browser_commands", {
+  id: text("id").primaryKey(),
+  sessionId: text("session_id").notNull().references(() => browserSessions.id, { onDelete: "restrict" }),
+  runId: text("run_id").references(() => runs.id, { onDelete: "restrict" }),
+  runGeneration: integer("run_generation"),
+  generation: integer("generation").notNull(),
+  inputGeneration: integer("input_generation").notNull(),
+  method: text("method").notNull(),
+  status: text("status").$type<"pending" | "succeeded" | "uncertain" | "rejected">().notNull().default("pending"),
+  createdAt: createdAt(),
+  completedAt: ts("completed_at"),
+}, (t) => [index("browser_commands_session_idx").on(t.sessionId, t.createdAt)]);
+
+export const browserBilling = pgTable("browser_billing", {
+  sessionId: text("session_id").primaryKey().references(() => browserSessions.id, { onDelete: "restrict" }),
+  reservationId: text("reservation_id").notNull().references(() => creditReservations.id, { onDelete: "restrict" }),
+  rateVersion: text("rate_version").notNull(),
+  unitsPerMinute: integer("units_per_minute").notNull(),
+  maxSeconds: integer("max_seconds").notNull(),
+  startedAt: ts("started_at").notNull().defaultNow(),
+  endedAt: ts("ended_at"),
+});

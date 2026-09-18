@@ -155,7 +155,7 @@ export async function fulfillBrowserAllocation(
       status: "allocated",
       sessionId: input.sessionId,
       generation: input.generation,
-    });
+    }).onConflictDoUpdate({ target: browserWorkers.id, set: { status: "allocated", sessionId: input.sessionId, generation: input.generation } });
     const updated = await trx.update(browserSessions).set({
       status: "ready",
       inputOwner: "ai",

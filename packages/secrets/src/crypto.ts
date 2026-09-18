@@ -111,8 +111,14 @@ function readOrInitKekFile(path: string): KekFileShape {
     const initial: KekFileShape = { current: ref, keys: { [ref]: key.toString("base64") } };
     zero(key);
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify(initial, null, 2), { mode: 0o600 });
-    return initial;
+    try {
+      writeFileSync(path, JSON.stringify(initial, null, 2), { mode: 0o600, flag: "wx" });
+      return initial;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      // Another control-plane process won initialization; never overwrite its wrapping key.
+      return JSON.parse(readFileSync(path, "utf8")) as KekFileShape;
+    }
   }
   return JSON.parse(readFileSync(path, "utf8")) as KekFileShape;
 }

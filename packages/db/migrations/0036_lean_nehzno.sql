@@ -1,0 +1,1 @@
+ALTER TABLE "browser_workers" ADD COLUMN "endpoint_url" text;

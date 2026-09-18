@@ -10,6 +10,9 @@ controlPlane:
 
 fleet:
   enabled: true
+  rateVersion: local-fixture-v1
+  unitsPerMinute: 1
+  maxSeconds: 1800
   maxAllocated: 3
   warmSlots: 1
   workerImage: tabductor-browser-worker:local
@@ -54,3 +57,6 @@ resources:
   fleet:
     requests: { cpu: 50m, memory: 128Mi }
     limits: { cpu: 500m, memory: 512Mi }
+
+# Additional server-only settings (Clerk, Paddle, model rates and provider credentials).
+environment: {}

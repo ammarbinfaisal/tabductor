@@ -13,3 +13,12 @@ stringData:
   BLOB_BUCKET: {{ .Values.minio.bucket | default .Values.blobBucket | quote }}
   TABDUCTOR_FIXTURE_MODE: {{ ternary "1" "0" .Values.fixtureMode.enabled | quote }}
   TABDUCTOR_DEPLOYMENT_MODE: {{ ternary "local" "hosted" .Values.fixtureMode.enabled | quote }}
+  BROWSER_MODE: {{ ternary "fleet" "cdp" .Values.fleet.enabled | quote }}
+  BROWSER_WORKER_TOKEN_KEY: {{ .Values.fleet.workerTokenKey | quote }}
+  BROWSER_RATE_VERSION: {{ .Values.fleet.rateVersion | quote }}
+  BROWSER_UNITS_PER_MINUTE: {{ .Values.fleet.unitsPerMinute | quote }}
+  BROWSER_MAX_SECONDS: {{ .Values.fleet.maxSeconds | quote }}
+  SECRETS_KEK_FILE_PATH: /app/data/secrets-kek.json
+{{- range $key, $value := .Values.environment }}
+  {{ $key }}: {{ $value | quote }}
+{{- end }}

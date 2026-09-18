@@ -246,6 +246,20 @@
       "when": 1789723560718,
       "tag": "0034_yummy_cable",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1789724204398,
+      "tag": "0035_steady_patriot",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1789724421957,
+      "tag": "0036_lean_nehzno",
+      "breakpoints": true
     }
   ]
 }

@@ -181,7 +181,7 @@ export async function stopBrowserSession(
     if (session.status === "ended" || session.status === "failed") return controlState(session);
     if (session.status === "stopping") return controlState(session);
 
-    const canEndNow = session.status === "queued" || session.status === "allocating";
+    const canEndNow = session.status === "queued";
     const [updated] = await trx.update(browserSessions).set({
       status: canEndNow ? "ended" : "stopping",
       inputOwner: "paused",

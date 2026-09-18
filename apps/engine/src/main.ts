@@ -1,3 +1,4 @@
+import { eq } from "drizzle-orm";
 import {
   createAgentExecutor,
   createCompiledExecutor,
@@ -12,9 +13,10 @@ import {
 import { createEndpointPool, createMinioBlobStore, playwrightDriver } from "@tabductor/browser";
 import { createDispatcher, publish } from "@tabductor/bus";
 import { loadConfig } from "@tabductor/core";
-import { createDb, type Db } from "@tabductor/db";
+import { browserWorkers, createDb, type Db } from "@tabductor/db";
 import {
   createEngine,
+  createHostedBrowserPool,
   createModelResolver,
   modelScopeForTask,
   parseModelRates,
@@ -30,7 +32,7 @@ import {
   type RunHandle,
   type TaskExecutor,
 } from "@tabductor/engine";
-import { RuntimeSafetyGate } from "@tabductor/policy";
+import { RuntimeSafetyGate } from "@tabductor/core";
 import { createSecretsBroker, fileKeyWrapper, type SecretsBrokerRunDeps } from "@tabductor/secrets";
 import { initTelemetry } from "@tabductor/telemetry/init";
 import type { Pool } from "pg";
@@ -60,12 +62,18 @@ const handle = createDb(config.DATABASE_URL);
  * mode being withheld at boot because the *table* was empty.
  */
 const endpointFor = (db: Db) => async (handle: RunHandle) =>
-  pickWorkflowEndpoint(db, await workflowIdForVersion(db, handle.task.workflowVersionId));
+  config.TABDUCTOR_DEPLOYMENT_MODE === "hosted" || process.env.BROWSER_MODE === "fleet" ? handle.run.id : pickWorkflowEndpoint(db, await workflowIdForVersion(db, handle.task.workflowVersionId));
 
 /** One pool, one blob store, one gate for every browser-facing piece below — the compile
  * loop's dry run borrows an endpoint through the same pool the runs do, so the two never
  * hold one endpoint twice. */
-const browserPool = createEndpointPool({ db: handle.db, driver: playwrightDriver, metrics: telemetry.metrics, logger: log });
+const browserPool = config.TABDUCTOR_DEPLOYMENT_MODE === "hosted" || process.env.BROWSER_MODE === "fleet"
+  ? createHostedBrowserPool({ db: handle.db, tokenKey: process.env.BROWSER_WORKER_TOKEN_KEY ?? "", workerUrl: async (podName) => {
+      const [worker] = await handle.db.select().from(browserWorkers).where(eq(browserWorkers.podName, podName));
+      if (!worker?.endpointUrl) throw new Error("worker endpoint is unavailable");
+      return worker.endpointUrl;
+    } })
+  : createEndpointPool({ db: handle.db, driver: playwrightDriver, metrics: telemetry.metrics, logger: log });
 const blobs = createMinioBlobStore({
   endpoint: config.BLOB_ENDPOINT,
   accessKey: config.BLOB_ACCESS_KEY,
@@ -322,6 +330,7 @@ const shutdown = async (signal: string): Promise<void> => {
     await compileWorker?.stop();
     await dispatcher.stop();
     await engine.stop();
+    await browserPool.close();
     await handle.close();
     // Last, so spans and metrics from the shutdown itself are flushed with everything else.
     await telemetry.shutdown();

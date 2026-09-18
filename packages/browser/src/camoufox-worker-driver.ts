@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   BrowserConn,
   CreatePageOptions,
@@ -44,6 +45,8 @@ export function createCamoufoxWorkerDriver(options: CamoufoxWorkerDriverOptions)
             },
             body: JSON.stringify({
               generation: options.generation,
+              input_generation: 1,
+              command_id: randomUUID(),
               method,
               ...(pageId ? { page_id: pageId } : {}),
               params,

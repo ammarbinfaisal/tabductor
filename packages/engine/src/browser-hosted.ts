@@ -1,0 +1,116 @@
+import { createHmac } from "node:crypto";
+import { AppError, newId } from "@tabductor/core";
+import type { EndpointPool } from "@tabductor/browser";
+import { createCamoufoxWorkerDriver } from "@tabductor/browser/worker-driver";
+import { browserSessions, browserCommands, workflowBrowserProfiles, workflows, runs, workflowVersions, tasks, browserBilling, type Db } from "@tabductor/db";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { createBrowserProfile, requestBrowserSession, type BrowserAdmission } from "./browser-fleet.js";
+import { stopBrowserSession } from "./browser-session-control.js";
+import { assertRunLease } from "./run-lease.js";
+import { reserveCredits, settleCreditReservation } from "./credits.js";
+
+export function browserWorkerToken(key: string, podName: string): string {
+  if (key.length < 32) throw new AppError("worker_key_invalid", "worker signing key must contain at least 32 characters");
+  return createHmac("sha256", key).update(`worker:${podName}`).digest("base64url");
+}
+
+/** Creates a stable profile once, so replacing a browser retains its authenticated state. */
+export async function ensureWorkflowBrowserProfile(db: Db, accountId: string, workflowId: string): Promise<string> {
+  return db.transaction(async (trx) => {
+    const [workflow] = await trx.select().from(workflows).where(and(eq(workflows.id, workflowId), eq(workflows.accountId, accountId))).for("update");
+    if (!workflow) throw new AppError("workflow_not_found", "workflow not found");
+    const [binding] = await trx.select().from(workflowBrowserProfiles).where(eq(workflowBrowserProfiles.workflowId, workflowId));
+    if (binding) return binding.profileId;
+    const profileId = await createBrowserProfile(trx, { accountId, name: `Workflow ${workflowId}` });
+    await trx.insert(workflowBrowserProfiles).values({ workflowId, profileId });
+    return profileId;
+  });
+}
+
+export function browserCreditAdmission(rate: { version: string; unitsPerMinute: number; maxSeconds: number }): BrowserAdmission {
+  if (!rate.version || !Number.isSafeInteger(rate.unitsPerMinute) || rate.unitsPerMinute <= 0 || !Number.isSafeInteger(rate.maxSeconds) || rate.maxSeconds < 60 || rate.maxSeconds > 86400) {
+    throw new AppError("browser_rate_invalid", "browser allocation requires a versioned rate and a bounded session duration");
+  }
+  return { async reserve(input, trx) {
+    const reservation = await reserveCredits(trx, { accountId: input.accountId, operationId: `browser:${input.sessionId}`, category: "browser", units: Math.ceil(rate.maxSeconds / 60) * rate.unitsPerMinute, ttlMs: 86400_000 });
+    await trx.insert(browserBilling).values({ sessionId: input.sessionId, reservationId: reservation.id, rateVersion: rate.version, unitsPerMinute: rate.unitsPerMinute, maxSeconds: rate.maxSeconds });
+  } };
+}
+
+export async function settleBrowserUsage(db: Db, sessionId: string): Promise<void> {
+  await db.transaction(async (trx) => {
+    const [session] = await trx.select().from(browserSessions).where(eq(browserSessions.id, sessionId));
+    const [billing] = await trx.select().from(browserBilling).where(eq(browserBilling.sessionId, sessionId)).for("update");
+    if (!billing || billing.endedAt || !session?.endedAt) return;
+    const seconds = Math.min(billing.maxSeconds, Math.max(0, (session.endedAt.getTime() - billing.startedAt.getTime()) / 1000));
+    await settleCreditReservation(trx, { accountId: session.accountId, reservationId: billing.reservationId,
+      actualUnits: Math.ceil(seconds / 60) * billing.unitsPerMinute });
+    await trx.update(browserBilling).set({ endedAt: session.endedAt }).where(eq(browserBilling.sessionId, sessionId));
+  });
+}
+
+/** The engine's hosted pool has the same executor interface as the development CDP pool. */
+export function createHostedBrowserPool(deps: { db: Db; tokenKey: string; workerUrl: (podName: string) => Promise<string>;
+  fetch?: typeof fetch; allocationTimeoutMs?: number }): EndpointPool {
+  let closed = false;
+  const active = new Map<string, () => Promise<void>>();
+  const request = deps.fetch ?? fetch;
+  return {
+    async acquire(_endpointId, runId) {
+      const [row] = await deps.db.select({ run: runs, accountId: workflows.accountId, workflowId: workflows.id }).from(runs)
+        .innerJoin(tasks, eq(tasks.id, runs.taskId)).innerJoin(workflowVersions, eq(workflowVersions.id, tasks.workflowVersionId))
+        .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId)).where(eq(runs.id, runId));
+      if (!row || !row.run.executionId || row.run.status !== "running") throw new AppError("run_lease_lost", "active execution is required for a hosted browser");
+      const profileId = await ensureWorkflowBrowserProfile(deps.db, row.accountId, row.workflowId);
+      const sessionId = await requestBrowserSession(deps.db, { accountId: row.accountId, profileId, executionId: row.run.executionId });
+      const release = async () => { await stopBrowserSession(deps.db, { accountId: row.accountId, sessionId }); active.delete(sessionId); };
+      active.set(sessionId, release);
+      const started = Date.now();
+      try {
+        while (!closed && Date.now() - started < (deps.allocationTimeoutMs ?? 120_000)) {
+          await deps.db.transaction((trx) => assertRunLease(trx, runId, row.run.leaseGeneration));
+          const [session] = await deps.db.select().from(browserSessions).where(eq(browserSessions.id, sessionId));
+          if (!session || ["ended", "failed", "stopping"].includes(session.status)) throw new AppError("browser_allocation_failed", "browser allocation ended");
+          if (session.status === "ready" && session.podName) {
+            const url = await deps.workerUrl(session.podName);
+            const driver = createCamoufoxWorkerDriver({ token: browserWorkerToken(deps.tokenKey, session.podName), sessionId, generation: session.generation,
+              fetch: async (target, init) => {
+                const command = JSON.parse(String(init?.body)) as Record<string, unknown>;
+                const commandId = newId("command");
+                await deps.db.insert(browserCommands).values({ id: commandId, sessionId, runId, runGeneration: row.run.leaseGeneration,
+                  generation: session.generation, inputGeneration: session.inputOwnerGeneration, method: String(command.method) });
+                let dispatched = false;
+                try {
+                  const response = await deps.db.transaction(async (trx) => {
+                    await assertRunLease(trx, runId, row.run.leaseGeneration);
+                    const [owner] = await trx.select().from(browserSessions).where(and(eq(browserSessions.id, sessionId),
+                      eq(browserSessions.generation, session.generation), inArray(browserSessions.status, ["ready", "running"]))).for("update");
+                    if (!owner || owner.inputOwner !== "ai" || owner.inputOwnerGeneration !== session.inputOwnerGeneration) {
+                      throw new AppError("browser_input_revoked", "browser input changed; automation must resume with fresh perception");
+                    }
+                    dispatched = true;
+                    const result = await request(target, { ...init, signal: AbortSignal.timeout(60_000), body: JSON.stringify({ ...command, command_id: commandId, input_generation: owner.inputOwnerGeneration }) });
+                    // Consume the body while the lease is locked; headers alone do not mean the action finished.
+                    const bytes = await result.arrayBuffer();
+                    return new Response(bytes, { status: result.status, headers: result.headers });
+                  });
+                  await deps.db.update(browserCommands).set({ status: response.ok ? "succeeded" : "uncertain", completedAt: sql`now()` }).where(eq(browserCommands.id, commandId));
+                  return response;
+                } catch (error) {
+                  await deps.db.update(browserCommands).set({ status: dispatched ? "uncertain" : "rejected", completedAt: sql`now()` }).where(eq(browserCommands.id, commandId));
+                  throw error;
+                }
+              },
+            });
+            const conn = await driver.connect(url);
+            await deps.db.update(browserSessions).set({ status: "running" }).where(and(eq(browserSessions.id, sessionId), eq(browserSessions.status, "ready")));
+            return { conn, release: async () => { await conn.close(); await release(); } };
+          }
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+        throw new AppError("browser_allocation_timeout", "browser capacity did not become available in time");
+      } catch (error) { await release(); throw error; }
+    },
+    async close() { closed = true; await Promise.allSettled([...active.values()].map((release) => release())); },
+  };
+}

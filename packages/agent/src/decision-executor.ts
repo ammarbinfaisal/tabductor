@@ -3,7 +3,7 @@ import { createTraceRecorder, type BlobStore, type StorageFlags, type TraceRecor
 import { AppError } from "@tabductor/core";
 import { workflowVersions, workflows, type Db, type TaskRow } from "@tabductor/db";
 import type { RunHandle, RunResult, TaskExecutor } from "@tabductor/engine";
-import type { PolicyGate } from "@tabductor/policy";
+import type { PolicyGate } from "@tabductor/core";
 import {
   createWriteStager,
   flushStagedWrites,
