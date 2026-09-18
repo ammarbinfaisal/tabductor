@@ -111,6 +111,11 @@ const KIND_ROLE: Record<NodeKind, string> = {
     "You perform semantic work: inspect the trigger, query or update the workflow store, and decide what to emit. You have no browser.",
 };
 
+const ASYNC_EXECUTION_CONTRACT =
+  "Runs communicate only through durable events. Every emitted packet schedules each matching consumer independently and asynchronously. " +
+  "Emit a complete per-record packet as soon as that record is ready and continue this node's own work; never wait for, poll, or coordinate downstream completion. " +
+  "Do not assume event ordering, shared memory, or a shared browser tab between runs. Use stable record ids and idempotent store upserts or destination operations.";
+
 /**
  * JSON with object keys sorted at every depth. Schemas come back from `jsonb` with Postgres's
  * own key order, not the generator's, so a hash over plain `JSON.stringify` would change
@@ -151,6 +156,7 @@ export function assemblePromptBrief(input: PromptCompileInput): string {
     [
       `# Node "${task.name}" (kind: ${task.kind}) in workflow "${input.workflow.name}"`,
       KIND_ROLE[task.kind],
+      ASYNC_EXECUTION_CONTRACT,
       task.schedule
         ? `This node also runs on a schedule (cron "${task.schedule.cron}", ${task.schedule.tz}); a scheduled run arrives with no trigger packet.`
         : "",
@@ -243,8 +249,11 @@ no code fences, no preamble. Rules:
 which packet fields to fill from what — name each event type verbatim.
 - When the declared event represents one record, extract each item within its own anchor and emit \
 that validated record immediately with its stable source id/dedupe key. Downstream runs process \
-their trigger independently; do not wait for a whole scan or assume event ordering, shared tabs, \
-or that multiple consumed event types form a join. Preserve explicit batch contracts when required.
+their trigger independently and asynchronously; emitting acknowledges durable acceptance, not \
+consumer completion. Continue scrolling or processing this node's remaining records after each emit. \
+Do not wait for a whole scan before emitting, wait for downstream completion, or assume event ordering, \
+shared tabs, or that multiple consumed event types form a join. Preserve explicit batch contracts \
+only when the requested result genuinely requires aggregation and defines completion/correlation.
 - For invalid extraction selectors, instruct the agent to correct the named field and retry \
 at most twice within its step budget. Drop only optional fields; never treat selector syntax \
 errors as proof that a visible page is unavailable.

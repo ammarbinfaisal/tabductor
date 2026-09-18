@@ -21,6 +21,13 @@ not implicit joins across their consumes list. Do not assume ordering or shared 
 carry record ids, URLs and required data in packets; destination browser tasks open their own target page.
 Independent setup tasks are not prerequisites unless readiness is represented by an explicit persisted
 state and event protocol. Keep schedules on the source task; downstream work runs from emitted events.
+Treat emit as durable asynchronous handoff, never as a downstream call that the producer waits for.
+The producer must continue scrolling or reading toward its requested item limit after every emit while
+independent consumers process earlier records. Split work on different sites into separate browser nodes:
+for example, reading N X timeline tweets is one scrolling producer and writing each tweet to a Notion
+database is a separate event-triggered browser consumer. They communicate only through a typed per-tweet
+event carrying a stable tweet id/URL and destination fields; never make one browser task alternate between
+X and Notion, and never delay Notion writes until all N tweets have been collected.
 Browser page.extract accepts an optional item anchor and fields; each field reads only its first match.
 Its default root is the whole page, not a repeated-item iterator. Instruct producers to extract each
 item anchor separately, keeping fields associated with that item, then emit its validated record.

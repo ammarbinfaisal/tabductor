@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { RUN_FAILED, seedWorkflow } from "@tabductor/engine";
+import { executorKey, RUN_FAILED, seedWorkflow, type TaskExecutor } from "@tabductor/engine";
 import { runs } from "@tabductor/db";
 import {
   allRuns,
@@ -105,6 +105,51 @@ it("fans one event out to three tasks; a failing sibling does not disturb the ot
   expect(failures).toHaveLength(1);
   expect(failures[0]!.sourceRunId).toBe(boom!.id);
   expect(failures[0]!.packet).toMatchObject({ runId: boom!.id, error: "stub asked to fail" });
+});
+
+it("streams emitted records to downstream runs while the producer is still working", async () => {
+  let releaseProducer!: () => void;
+  const downstreamStarted = new Promise<void>((resolve) => { releaseProducer = resolve; });
+  let sourceFinished = false;
+  const executor: TaskExecutor = {
+    async execute(handle) {
+      if (handle.task.name === "Timeline") {
+        await handle.emit("tweet.discovered", { tweetId: "1" }, { dedupeKey: "1" });
+        await Promise.race([
+          downstreamStarted,
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("downstream did not overlap producer")), 5_000)),
+        ]);
+        await handle.emit("tweet.discovered", { tweetId: "2" }, { dedupeKey: "2" });
+        sourceFinished = true;
+        return { ok: true };
+      }
+      expect(sourceFinished).toBe(false);
+      releaseProducer();
+      return { ok: true };
+    },
+  };
+  rig = await startRig({ executors: { [executorKey("browser", "stub")]: executor } });
+  const wf = await seedWorkflow(rig.handle.db, {
+    tasks: { Start: {}, Timeline: { emits: ["tweet.discovered"] }, NotionWriter: {} },
+    edges: [
+      ["Start", "scan.requested", "Timeline"],
+      ["Timeline", "tweet.discovered", "NotionWriter"],
+    ],
+    events: {
+      "tweet.discovered": { schema: {
+        type: "object",
+        properties: { tweetId: { type: "string" } },
+        required: ["tweetId"],
+        additionalProperties: false,
+      } },
+    },
+  });
+
+  await trigger(rig, wf.taskIds.Start!, "scan.requested", { limit: 2 });
+  await waitForQuiet(rig);
+
+  expect(sourceFinished).toBe(true);
+  expect(await runsForTask(rig, wf.taskIds.NotionWriter!)).toHaveLength(2);
 });
 
 it("pins every descendant of an execution to the version that accepted its trigger", async () => {
