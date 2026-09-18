@@ -6,14 +6,9 @@ import { wfIdsOf } from "./ids.js";
 /**
  * Provisioning and DDL application — the migrator (§3.3, §6.2): **the sole DDL holder**
  * against `wfdata_*` (style constraint, grep-able: this file, and only this file, ever sends
- * `CREATE`/`ALTER`/`DROP` to a `wfdata_*` schema or its role pair). Everything here runs
- * through a raw `pg.Pool` rather than the Drizzle `Db` the rest of the codebase uses, on
- * purpose: DDL blocks here are genuinely multi-statement (several `CREATE TABLE`s, a whole
- * role-and-grant sequence), and Drizzle's node-postgres session always sends queries over the
- * extended protocol, which is single-statement by design (the same property `query.ts` relies
- * on for the read fence). A raw client's plain-string `query(text)` uses the *simple* protocol,
- * which is the only way to execute a checked-in multi-statement DDL block atomically without
- * splitting and resubmitting it by hand.
+ * `CREATE`/`ALTER`/`DROP` to a `wfdata_*` schema or its role pair). Role/schema provisioning
+ * uses raw pg transactions. Generated migrations can instead use the caller's Drizzle
+ * transaction, keeping physical DDL atomic with its platform metadata and graph version.
  *
  * `store_schemas`/`store_write_grants` — the *platform* rows recording what was provisioned —
  * are still written through Drizzle by the caller (`graph.ts`'s publish path); this module

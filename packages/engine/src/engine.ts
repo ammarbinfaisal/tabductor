@@ -270,10 +270,9 @@ export function createEngine(deps: EngineDeps): Engine {
       if (running) return;
       running = true;
 
-      // Crash recovery first (§15): a run this process is about to pick up must not be
-      // mistaken for one the *previous* process abandoned. Each recovered run goes through
-      // the retry policy exactly like any other failure — re-run from the start, never
-      // resume, so a half-finished browser run is simply retried.
+      // Recover before accepting work. Safe retry decisions commit with the failure;
+      // abandoned real-browser attempts remain failed with an uncertain outcome rather
+      // than automatically repeating website effects.
       const recovered = await recoverStaleRuns(db, staleHeartbeatMs);
       if (recovered.length) {
         metrics?.crashRecoveredRuns.add(recovered.length);

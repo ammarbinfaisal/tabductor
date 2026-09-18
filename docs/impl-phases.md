@@ -275,6 +275,19 @@ configured limit; a lower test limit cannot be reported as passing the full capa
 
 ## 4. Release and migration gates
 
+Validation checkpoint (2026-09-18): the deterministic suite passed 468 tests, with one live
+model smoke test skipped. Additional editor/MCP/schedule checks passed after threading base
+versions through every publication entry point. TypeScript build, production web build,
+repository lint, and Python worker syntax checks passed. This workspace had no kind, kubectl,
+or Helm, so no Kubernetes, real Camoufox staging, Clerk development, Paddle sandbox, or AWS
+acceptance result is claimed.
+
+Remaining H2 work includes explicit graph entry/external-input contracts, trigger request
+idempotency, durable browser command intent/outcome records, and remote command fencing.
+The H1/H3/H4 implementation notes above identify additional open integration work; H5–H8
+are not complete. In particular, the ledger and Paddle reconciliation foundations do not
+yet provide end-to-end model/browser/proxy/solver metering or a customer billing journey.
+
 - Run TypeScript build, web build, lint, relevant Python worker checks, unit/system tests,
   and real Camoufox staging tests. Validate Helm rendering and Kubernetes readiness.
 - Test both a fresh database and an upgrade from the current single-user/CDP schema. Preserve

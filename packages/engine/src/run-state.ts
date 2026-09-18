@@ -229,8 +229,8 @@ export async function heartbeat(db: Db, runId: string, leaseGeneration: number):
 /**
  * Crash recovery (§15), run once on engine start: a run left `running` by a process that
  * died has a heartbeat that stopped ticking, so anything older than `staleMs` is fabricated
- * back into `failed(engine_restart)`. Returns the runs it recovered, for the caller to put
- * through the retry policy — the design says re-run from the start, never resume mid-page.
+ * back into a failure. Safe retries commit with that failure. Real-browser attempts get
+ * `browser_outcome_uncertain` and require recovery instead of automatic replay.
  *
  * `heartbeat_at` is nullable for runs that never got their first ping; `started_at` is the
  * fallback, and a run with neither is too young to judge.

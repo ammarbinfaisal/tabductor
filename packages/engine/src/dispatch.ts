@@ -242,8 +242,8 @@ async function latestVersionId(db: Db, workflow: WorkflowRow): Promise<string> {
  * turn every redelivery into a `duplicate` and lose the trigger for good. Together they are
  * atomic: either the event is claimed *and* has its run, or neither, and it is redelivered.
  *
- * The budget check stays outside — it only reads, and it comes first so an over-budget
- * event never burns its claim.
+ * Hop checks precede admission. Rejected deliveries are claimed with their budget notice
+ * so redelivery cannot multiply notices; run-count admission shares the run transaction.
  */
 async function createRun(
   db: Db,
