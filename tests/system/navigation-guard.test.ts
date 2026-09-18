@@ -197,5 +197,5 @@ it("a denial is recorded even when the task opted out of storing navigations", a
   // `navigations`/`actions`, and a failed request is not a security signal the way the
   // denial itself is, so it is not exempt from the `network` flag the way `policy_denied` is
   // exempt from every flag.
-  expect(rows.map((r) => r.kind)).toEqual(["policy_denied", "network"]);
+  expect(rows.map((r) => r.kind)).toEqual(["runtime", "policy_denied", "network"]);
 });

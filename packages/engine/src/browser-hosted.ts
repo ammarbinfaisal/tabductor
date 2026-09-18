@@ -103,7 +103,7 @@ export function createHostedBrowserPool(deps: { db: Db; tokenKey: string; worker
                   });
                   await deps.db.update(browserCommands).set({ status: response.ok ? "succeeded" : "uncertain", completedAt: sql`now()` }).where(eq(browserCommands.id, commandId));
                   completed = true;
-                  await deps.db.insert(browserSessionActivity).values({ sessionId, kind: String(command.method),
+                  if (command.method !== "browser.events") await deps.db.insert(browserSessionActivity).values({ sessionId, kind: String(command.method),
                     offsetMs: Math.max(0, Date.now() - (session.readyAt ?? session.createdAt).getTime()),
                     private: command.method === "page.insert_text", payloadJson: { commandId, outcome: response.ok ? "succeeded" : "uncertain" } });
                   if (response.ok && command.method === "page.perceive") {

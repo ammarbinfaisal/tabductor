@@ -60,6 +60,7 @@ it("drives a real CDP endpoint end to end and traces what it did", async () => {
   // XHR fake-tweets fires — landing wherever their response settled relative to the action
   // that was in flight when it did, which is not necessarily after that action's own entry.
   expect(rows.map((r) => `${r.kind}:${payloadOf(r).action ?? payloadOf(r).cause ?? ""}`)).toEqual([
+    "runtime:",
     "navigation:initial",
     "network:",
     "action:goto",

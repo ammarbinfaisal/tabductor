@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 from camoufox.async_api import AsyncCamoufox
 from .recording import Recorder
+from .observations import Observations
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
@@ -48,6 +49,7 @@ class CommandRequest(BaseModel):
     method: str = Field(min_length=1, max_length=80)
     command_id: str = Field(min_length=1, max_length=160)
     input_generation: int = Field(ge=1)
+    event_cursor: int = Field(default=-1, ge=-1)
     page_id: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
 
@@ -64,11 +66,15 @@ class Session:
     input_owner: str = "ai"
     commands: set[str] = field(default_factory=set)
     profile: Path | None = None
+    observations: Any = None
+    frames: dict[str, Any] = field(default_factory=dict)
 
     def add_page(self, page: Any) -> str:
         page_id = f"p{self.next_page}"
         self.next_page += 1
         self.pages[page_id] = page
+        if self.observations:
+            self.observations.attach(page, page_id)
         return page_id
 
 
@@ -136,6 +142,25 @@ def require_page(current: Session, page_id: str | None) -> Any:
         raise HTTPException(404, "page not found")
     return page
 
+
+def locator_for(current, page, selector):
+    match = re.match(r"^@frame:(f[0-9]+) >> (.+)$", selector, re.S)
+    if not match:
+        return page.locator(selector)
+    frame = current.frames.get(match.group(1))
+    if frame is None or frame.is_detached() or frame.page is not page:
+        raise HTTPException(409, "frame is no longer available")
+    return frame.locator(match.group(2))
+
+async def secret_target(current, page, selector):
+    if selector.startswith("@frame:"):
+        locator = locator_for(current, page, selector)
+        return locator if await locator.count() == 1 else None
+    for frame in page.frames:
+        locator = frame.locator(selector)
+        if await locator.count() == 1:
+            return locator
+    return None
 
 def public_url(value: str) -> str:
     parsed = urlparse(value)
@@ -221,6 +246,7 @@ async def start_session(
     manager = AsyncCamoufox(from_options=prepared, persistent_context=True)
     context = await manager.__aenter__()
     session = Session(request.session_id, request.generation, manager, context, profile=profile)
+    session.observations = Observations(session)
     recorder = Recorder(PROFILE_ROOT / "recordings")
     recording_session_id = session.session_id
     await recorder.start()
@@ -301,7 +327,11 @@ async def command_locked(session_id: str, request: CommandRequest, authorization
         current.commands.add(request.command_id)
         if request.method == "page.insert_text" and recorder:
             await recorder.private()
-        return await command(session_id, request, authorization, x_tabductor_rpc_version)
+        result = await command(session_id, request, authorization, x_tabductor_rpc_version)
+        if current.observations:
+            result["events"] = current.observations.read(request.event_cursor)
+            result["event_cursor"] = len(current.observations.events) - 1
+        return result
 
 
 async def command(
@@ -318,7 +348,13 @@ async def command(
 
     if request.method == "browser.version":
         return {"value": f"camoufox:{os.environ.get('CAMOUFOX_BROWSER', 'unknown')}/rpc:{RPC_VERSION}"}
+    if request.method == "browser.events":
+        return {"value": None}
+    if request.method == "network.part":
+        return {"value": await current.observations.part(str(params["request_id"]), str(params["part"]))}
     if request.method == "page.create":
+        if len(current.context.pages) >= 16:
+            raise HTTPException(429, "session tab budget exhausted")
         page = await current.context.new_page()
         return {"value": {"page_id": current.add_page(page)}}
 
@@ -327,19 +363,19 @@ async def command(
         await page.goto(public_url(str(params["url"])), wait_until=params.get("wait_until"), timeout=params.get("timeout"))
         return {"value": None}
     if request.method == "page.click":
-        await page.locator(str(params["selector"])).click()
+        await locator_for(current, page, str(params["selector"])).click()
         return {"value": None}
     if request.method == "page.type":
-        await page.locator(str(params["selector"])).fill(str(params["text"]))
+        await locator_for(current, page, str(params["selector"])).fill(str(params["text"]))
         return {"value": None}
     if request.method == "page.insert_text":
-        locator = page.locator(str(params["selector"]))
-        if await locator.count() != 1:
+        locator = await secret_target(current, page, str(params["selector"]))
+        if locator is None:
             raise HTTPException(409, "target is absent or ambiguous")
         await locator.press_sequentially(str(params["text"]))
         return {"value": None}
     if request.method == "page.wait_for":
-        await page.locator(str(params["selector"])).wait_for(state=params.get("state"), timeout=params.get("timeout"))
+        await locator_for(current, page, str(params["selector"])).wait_for(state=params.get("state"), timeout=params.get("timeout"))
         return {"value": None}
     if request.method == "page.wait_for_load_state":
         await page.wait_for_load_state(params["state"], timeout=params.get("timeout"))
@@ -358,21 +394,24 @@ async def command(
         current.pages.pop(request.page_id or "", None)
         return {"value": None}
     if request.method == "page.upload":
-        await page.locator(str(params["selector"])).set_input_files({
+        await locator_for(current, page, str(params["selector"])).set_input_files({
             "name": str(params["name"]),
             "mimeType": str(params["mime_type"]),
             "buffer": base64.b64decode(str(params["bytes"])),
         })
         return {"value": None}
     if request.method == "page.query_all":
-        return {"value": await page.locator(str(params["selector"])).evaluate_all("""
+        return {"value": await locator_for(current, page, str(params["selector"])).evaluate_all("""
           (nodes, fields) => nodes.map((root) => Object.fromEntries(Object.entries(fields).map(([name, spec]) => {
             const node = spec.selector ? root.querySelector(spec.selector) : root;
             return [name, node ? (spec.attr ? node.getAttribute(spec.attr) : (node.textContent || '').trim()) : null];
           })))
         """, params.get("fields", {}))}
     if request.method == "page.probe":
-        return {"value": await page.locator(str(params["selector"])).evaluate_all("""
+        locator = await secret_target(current, page, str(params["selector"]))
+        if locator is None:
+            return {"value": None}
+        return {"value": await locator.evaluate_all("""
           (nodes) => nodes.length === 1 ? {
             tag: nodes[0].tagName.toLowerCase(), type: nodes[0].getAttribute('type'),
             contentEditable: nodes[0].isContentEditable, frameOrigin: location.origin
@@ -413,6 +452,33 @@ async def command(
             return {url:location.href, title:document.title, elements, text:(document.body?.innerText || '').slice(0, maxChars)};
           }
         """, int(params.get("max_chars", 8000)))
+        for frame in page.frames:
+            if frame is page.main_frame or frame.is_detached():
+                continue
+            frame_id = next((key for key, value in current.frames.items() if value is frame), None)
+            if frame_id is None:
+                if len(current.frames) >= 1024:
+                    raise HTTPException(429, "session frame budget exhausted")
+                frame_id = f"f{len(current.frames) + 1}"
+                current.frames[frame_id] = frame
+            remaining = max(0, min(int(params.get("max_chars", 8000)), 32000) - len(value["text"]))
+            try:
+                child = await frame.evaluate("""(budget) => {
+                  const elements = [...document.querySelectorAll('a,button,input,textarea,select,[role],[data-testid]')].slice(0, 100).map((el,i) => {
+                    el.setAttribute('data-tabductor-anchor', `e${i+1}`);
+                    return {anchor:`e${i+1}`,tag:el.tagName.toLowerCase(),role:el.getAttribute('role'),
+                      name:el.getAttribute('aria-label')||el.getAttribute('placeholder'),text:(el.textContent||'').trim().slice(0,300)||null,
+                      strategy:'css-path',locator:`[data-tabductor-anchor="e${i+1}"]`};
+                  });
+                  return {elements,text:(document.body?.innerText||'').slice(0,budget)};
+                }""", remaining)
+            except Exception:
+                continue  # A detached/navigating frame is perceived again on the next step.
+            for element in child["elements"]:
+                element["anchor"] = frame_id + "-" + element["anchor"]
+                element["locator"] = f"@frame:{frame_id} >> " + element["locator"]
+            value["elements"].extend(child["elements"][:max(0, 400-len(value["elements"]))])
+            value["text"] += child["text"]
         challenge = await page.evaluate("""() => {
           const widget = document.querySelector('.g-recaptcha[data-sitekey],.cf-turnstile[data-sitekey]');
           if (widget && widget.getBoundingClientRect().height > 0) return {kind: widget.classList.contains('g-recaptcha') ? 'recaptcha_v2' : 'turnstile', websiteUrl: location.href, siteKey: widget.getAttribute('data-sitekey')};

@@ -93,6 +93,7 @@ it("close flushes what the buffer still held", async () => {
   // The document request's `network` row (S3b) joins the two already here — its response
   // settles, and is written, before `goto`'s own action entry is (the entry is written after
   // `goto` resolves, by which point the response that let it resolve already landed).
-  expect(rows.map((r) => r.kind)).toEqual(["navigation", "network", "action"]);
-  expect(rows.map((r) => r.seq)).toEqual([0, 1, 2]);
+  expect(payloadOf(rows[0]!)).toMatchObject({ runtimeVersion: "tabductor-static-v1", browserVersion: rig.chrome.version });
+  expect(rows.map((r) => r.kind)).toEqual(["runtime", "navigation", "network", "action"]);
+  expect(rows.map((r) => r.seq)).toEqual([0, 1, 2, 3]);
 });
