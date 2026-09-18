@@ -1,4 +1,5 @@
 export { createEngine, type Engine, type EngineDeps } from "./engine.js";
+export { ASYNC_EVENT_EXECUTION_CONTRACT } from "./async-execution-contract.js";
 export {
   claimBrowserAllocation,
   createBrowserProfile,

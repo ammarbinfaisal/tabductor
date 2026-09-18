@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { ASYNC_EVENT_EXECUTION_CONTRACT } from "@tabductor/engine";
 import { z } from "zod";
 import { runAgentLoop, type RunAgentLoopOptions } from "./loop.js";
 import type { LlmRequest } from "./llm.js";
@@ -27,16 +28,16 @@ describe("runAgentLoop system contract", () => {
         parameters: z.object({}),
         execute: async () => ({ ok: true as const, value: null }),
       }],
-      task: { prompt: "Store one incoming tweet." },
+      task: { prompt: "Store one incoming record." },
       trigger: null,
       emits: [],
       trace,
     });
 
     expect(result.outcome).toBe("done");
-    expect(request?.system).toContain("independently scheduled event-driven run");
-    expect(request?.system).toContain("does not call or wait for consumers");
-    expect(request?.system).toContain("Emit each complete independent record immediately");
-    expect(request?.system).toContain("Never poll for downstream completion");
+    expect(request?.system).toContain(ASYNC_EVENT_EXECUTION_CONTRACT);
+    expect(request?.system).toContain("returns without waiting for any consumer");
+    expect(request?.system).toContain("emit each complete item immediately");
+    expect(request?.system).toContain("A consumes list is not a join");
   });
 });

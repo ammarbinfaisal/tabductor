@@ -201,7 +201,8 @@ export function emitTool(emit: EmitFn): AgentTool {
   return defineTool({
     name: "emit",
     description:
-      "Publish an event of a type this task declares emitting. `packet` is validated against " +
+      "Durably hand off one event packet to asynchronous consumers; this returns after acceptance, " +
+      "never after downstream completion. The type must be one this task declares emitting. `packet` is validated against " +
       "that event's schema before publishing — an invalid packet comes back as a tool error to " +
       "correct and retry. `dedupeKey`, when given, makes a repeated emit under the same key a " +
       "no-op (emitIfNew semantics) — use it for anything that must not double-fire across retries.",

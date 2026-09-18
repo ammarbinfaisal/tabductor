@@ -1,27 +1,28 @@
 import { describe, expect, it } from "vitest";
+import { ASYNC_EVENT_EXECUTION_CONTRACT } from "./async-execution-contract.js";
 import { GRAPH_AUTHORING_SYSTEM_PROMPT } from "./graph-authoring-prompts.js";
 import { assemblePromptBrief, PROMPT_SYSTEM_PROMPT, type PromptCompileInput } from "./prompt-compiler.js";
 
 const decisionInput: PromptCompileInput = {
-  workflow: { name: "Tweets to Notion" },
-  task: { name: "Store tweet", kind: "decision", prompt: "Upsert the tweet.", schedule: null },
+  workflow: { name: "Stream records to a destination" },
+  task: { name: "Store record", kind: "decision", prompt: "Upsert the record.", schedule: null },
   consumes: [{
-    type: "tweet.discovered",
-    description: "One complete tweet.",
+    type: "record.discovered",
+    description: "One complete source record.",
     schema: { type: "object" },
-    emitters: ["Read timeline"],
+    emitters: ["Read source"],
   }],
   emits: [],
-  neighbours: [{ name: "Read timeline", kind: "browser", prompt: "Read N tweets." }],
-  store: [{ name: "tweets", columns: ["tweet_id", "text"], primaryKey: ["tweet_id"] }],
+  neighbours: [{ name: "Read source", kind: "browser", prompt: "Read N records." }],
+  store: [{ name: "records", columns: ["source_id", "body"], primaryKey: ["source_id"] }],
 };
 
 describe("asynchronous graph prompt contract", () => {
   it("is present in deterministic briefs even when no prompt model is configured", () => {
     const brief = assemblePromptBrief(decisionInput);
-    expect(brief).toContain("independently and asynchronously");
-    expect(brief).toContain("never wait for, poll, or coordinate downstream completion");
-    expect(brief).toContain("stable record ids and idempotent store upserts");
+    expect(brief).toContain(ASYNC_EVENT_EXECUTION_CONTRACT);
+    expect(brief).toContain("Emitting a packet records an asynchronous handoff");
+    expect(brief).toContain("Every consumer processes its triggering item independently");
   });
 
   it("requires prompt compilation to preserve streaming handoff", () => {
@@ -30,9 +31,10 @@ describe("asynchronous graph prompt contract", () => {
     expect(PROMPT_SYSTEM_PROMPT).toContain("Do not wait for a whole scan before emitting");
   });
 
-  it("authors X-to-Notion work as separate asynchronously communicating browser nodes", () => {
-    expect(GRAPH_AUTHORING_SYSTEM_PROMPT).toContain("reading N X timeline tweets");
-    expect(GRAPH_AUTHORING_SYSTEM_PROMPT).toContain("separate event-triggered browser consumer");
-    expect(GRAPH_AUTHORING_SYSTEM_PROMPT).toContain("never delay Notion writes until all N tweets");
+  it("authors any source-to-sink flow as generic asynchronously communicating stages", () => {
+    expect(GRAPH_AUTHORING_SYSTEM_PROMPT).toContain(ASYNC_EVENT_EXECUTION_CONTRACT);
+    expect(GRAPH_AUTHORING_SYSTEM_PROMPT).toContain("different sites or external systems");
+    expect(GRAPH_AUTHORING_SYSTEM_PROMPT).toContain("each sink handles one event");
+    expect(GRAPH_AUTHORING_SYSTEM_PROMPT).not.toContain("Notion");
   });
 });

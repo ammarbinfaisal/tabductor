@@ -107,19 +107,19 @@ it("fans one event out to three tasks; a failing sibling does not disturb the ot
   expect(failures[0]!.packet).toMatchObject({ runId: boom!.id, error: "stub asked to fail" });
 });
 
-it("streams emitted records to downstream runs while the producer is still working", async () => {
+it("streams any emitted work items to downstream runs while the producer is still working", async () => {
   let releaseProducer!: () => void;
   const downstreamStarted = new Promise<void>((resolve) => { releaseProducer = resolve; });
   let sourceFinished = false;
   const executor: TaskExecutor = {
     async execute(handle) {
-      if (handle.task.name === "Timeline") {
-        await handle.emit("tweet.discovered", { tweetId: "1" }, { dedupeKey: "1" });
+      if (handle.task.name === "ItemSource") {
+        await handle.emit("item.discovered", { sourceId: "1" }, { dedupeKey: "1" });
         await Promise.race([
           downstreamStarted,
           new Promise<never>((_, reject) => setTimeout(() => reject(new Error("downstream did not overlap producer")), 5_000)),
         ]);
-        await handle.emit("tweet.discovered", { tweetId: "2" }, { dedupeKey: "2" });
+        await handle.emit("item.discovered", { sourceId: "2" }, { dedupeKey: "2" });
         sourceFinished = true;
         return { ok: true };
       }
@@ -130,16 +130,16 @@ it("streams emitted records to downstream runs while the producer is still worki
   };
   rig = await startRig({ executors: { [executorKey("browser", "stub")]: executor } });
   const wf = await seedWorkflow(rig.handle.db, {
-    tasks: { Start: {}, Timeline: { emits: ["tweet.discovered"] }, NotionWriter: {} },
+    tasks: { Start: {}, ItemSource: { emits: ["item.discovered"] }, ItemSink: {} },
     edges: [
-      ["Start", "scan.requested", "Timeline"],
-      ["Timeline", "tweet.discovered", "NotionWriter"],
+      ["Start", "scan.requested", "ItemSource"],
+      ["ItemSource", "item.discovered", "ItemSink"],
     ],
     events: {
-      "tweet.discovered": { schema: {
+      "item.discovered": { schema: {
         type: "object",
-        properties: { tweetId: { type: "string" } },
-        required: ["tweetId"],
+        properties: { sourceId: { type: "string" } },
+        required: ["sourceId"],
         additionalProperties: false,
       } },
     },
@@ -149,7 +149,7 @@ it("streams emitted records to downstream runs while the producer is still worki
   await waitForQuiet(rig);
 
   expect(sourceFinished).toBe(true);
-  expect(await runsForTask(rig, wf.taskIds.NotionWriter!)).toHaveLength(2);
+  expect(await runsForTask(rig, wf.taskIds.ItemSink!)).toHaveLength(2);
 });
 
 it("pins every descendant of an execution to the version that accepted its trigger", async () => {

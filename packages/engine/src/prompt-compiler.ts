@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { canonicalJson } from "@tabductor/core";
 import type { NodeKind } from "./graph.js";
 import type { ChatTransport, ChatTurn } from "./schema-generator-llm.js";
+import { ASYNC_EVENT_EXECUTION_CONTRACT } from "./async-execution-contract.js";
 
 /**
  * The publish-time **prompt compiler** — the second half of what a publish compiles, beside
@@ -90,7 +91,7 @@ export const TOOL_SURFACE: Record<NodeKind, ReadonlyArray<{ name: string; hint: 
     { name: "page.extract", hint: "extract fields from one item anchor (default: whole page); each field reads its first Playwright selector match or null. For repeated items, extract each anchor separately and emit each validated record immediately. Correct invalid field selectors and retry, omitting only optional fields" },
     { name: "network.list", hint: "list the XHR/fetch responses observed so far" },
     { name: "network.read", hint: "read one observed response body" },
-    { name: "emit", hint: "publish one event packet, validated against its schema" },
+    { name: "emit", hint: "durably hand off one event packet for asynchronous consumers, validated against its schema" },
     { name: "done", hint: "finish the run successfully" },
     { name: "fail", hint: "finish the run as failed, with a reason" },
   ],
@@ -98,7 +99,7 @@ export const TOOL_SURFACE: Record<NodeKind, ReadonlyArray<{ name: string; hint: 
     { name: "store.query", hint: "one SELECT against the workflow store, read-only" },
     { name: "store.insert", hint: "stage a row insert, committed with the next emit" },
     { name: "store.upsert", hint: "stage a row upsert, committed with the next emit" },
-    { name: "emit", hint: "publish one event packet, validated against its schema" },
+    { name: "emit", hint: "durably hand off one event packet for asynchronous consumers, validated against its schema" },
     { name: "done", hint: "finish the run successfully" },
     { name: "fail", hint: "finish the run as failed, with a reason" },
   ],
@@ -110,11 +111,6 @@ const KIND_ROLE: Record<NodeKind, string> = {
   decision:
     "You perform semantic work: inspect the trigger, query or update the workflow store, and decide what to emit. You have no browser.",
 };
-
-const ASYNC_EXECUTION_CONTRACT =
-  "Runs communicate only through durable events. Every emitted packet schedules each matching consumer independently and asynchronously. " +
-  "Emit a complete per-record packet as soon as that record is ready and continue this node's own work; never wait for, poll, or coordinate downstream completion. " +
-  "Do not assume event ordering, shared memory, or a shared browser tab between runs. Use stable record ids and idempotent store upserts or destination operations.";
 
 /**
  * JSON with object keys sorted at every depth. Schemas come back from `jsonb` with Postgres's
@@ -156,7 +152,7 @@ export function assemblePromptBrief(input: PromptCompileInput): string {
     [
       `# Node "${task.name}" (kind: ${task.kind}) in workflow "${input.workflow.name}"`,
       KIND_ROLE[task.kind],
-      ASYNC_EXECUTION_CONTRACT,
+      ASYNC_EVENT_EXECUTION_CONTRACT,
       task.schedule
         ? `This node also runs on a schedule (cron "${task.schedule.cron}", ${task.schedule.tz}); a scheduled run arrives with no trigger packet.`
         : "",
