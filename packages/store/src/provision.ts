@@ -1,4 +1,6 @@
 import type { Pool, PoolClient } from "pg";
+import type { Db } from "@tabductor/db";
+import { sql } from "drizzle-orm";
 import { wfIdsOf } from "./ids.js";
 
 /**
@@ -52,6 +54,9 @@ export async function provision(pool: Pool, workflowId: string): Promise<WfConne
   await withClient(pool, async (client) => {
     await client.query("BEGIN");
     try {
+      // Catalog existence checks alone race: CREATE ROLE/SCHEMA can lose a unique insert
+      // after both publishers observed absence. Serialize provisioning for this workflow.
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`store-provision:${workflowId}`]);
       // `CREATE ROLE` has no `IF NOT EXISTS`; the DO block is the standard idiom.
       await client.query(`
         DO $$ BEGIN
@@ -190,4 +195,18 @@ export async function applyMigration(pool: Pool, workflowId: string, sql: string
       throw err;
     }
   });
+}
+
+/** Generated migration SQL, its metadata, and graph publication share the caller's
+ * transaction. Never pass unvalidated authored DDL to this function. */
+export async function applyMigrationInTransaction(trx: Db, workflowId: string, migrationSql: string): Promise<number> {
+  const ids = wfIdsOf(workflowId);
+  await trx.execute(sql`SET LOCAL search_path = ${sql.identifier(ids.schema)}, pg_catalog`);
+  if (migrationSql.trim()) await trx.execute(sql.raw(migrationSql));
+  const result = await trx.execute<{ schema_version: number }>(sql`
+    UPDATE ${sql.identifier(ids.schema)}._meta SET schema_version = schema_version + 1
+    WHERE id = true RETURNING schema_version
+  `);
+  await trx.execute(sql`SET LOCAL search_path TO DEFAULT`);
+  return result.rows[0]!.schema_version;
 }

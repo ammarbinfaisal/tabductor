@@ -40,21 +40,23 @@ export async function createWorkflowExecution(
   db: Db,
   input: { workflowId: string; workflowVersionId?: string },
 ): Promise<string> {
-  const [workflow] = await db.select().from(workflows).where(eq(workflows.id, input.workflowId));
-  if (!workflow) throw new Error(`no workflow "${input.workflowId}"`);
-  const versionId = input.workflowVersionId ?? await latestVersionId(db, workflow);
-  if (!versionId) throw new Error(`workflow "${input.workflowId}" has no published version`);
-  const [version] = await db.select({ id: workflowVersions.id }).from(workflowVersions)
-    .where(and(eq(workflowVersions.id, versionId), eq(workflowVersions.workflowId, workflow.id)));
-  if (!version) throw new AppError("execution_version_mismatch", "execution version must belong to its workflow");
-  const executionId = newId("exec");
-  await db.insert(workflowExecutions).values({
-    id: executionId,
-    workflowId: workflow.id,
-    workflowVersionId: versionId,
-    maxHops: workflow.maxHops,
+  return db.transaction(async (db) => {
+    const [workflow] = await db.select().from(workflows).where(eq(workflows.id, input.workflowId)).for("update");
+    if (!workflow) throw new Error(`no workflow "${input.workflowId}"`);
+    const versionId = input.workflowVersionId ?? await latestVersionId(db, workflow);
+    if (!versionId) throw new Error(`workflow "${input.workflowId}" has no published version`);
+    const [version] = await db.select({ id: workflowVersions.id }).from(workflowVersions)
+      .where(and(eq(workflowVersions.id, versionId), eq(workflowVersions.workflowId, workflow.id)));
+    if (!version) throw new AppError("execution_version_mismatch", "execution version must belong to its workflow");
+    const executionId = newId("exec");
+    await db.insert(workflowExecutions).values({
+      id: executionId,
+      workflowId: workflow.id,
+      workflowVersionId: versionId,
+      maxHops: workflow.maxHops,
+    });
+    return executionId;
   });
-  return executionId;
 }
 
 /**
@@ -154,146 +156,146 @@ export async function triggerTask(
       }),
     );
     return { event, dispatched: await dispatchToTask(db, target.task.id, event) };
-    });
+  });
+}
+
+/**
+ * Which graph does this event belong to, and which version routes it?
+ *
+ * An event's `source_task_id` points at the task row that emitted it — which belongs to
+ * the version that was current *then*. Tasks are per-version rows, so the latest version
+ * holds a different row for the same node; `tasks.name` is the identity that survives the
+ * edit, and is what we re-resolve against.
+ */
+async function resolveSource(
+  db: Db,
+  event: EventRow,
+): Promise<{ workflow: WorkflowRow; versionId: string; taskId: string } | undefined> {
+  if (!event.sourceTaskId) return undefined;
+  const resolved = await resolveTask(db, event.sourceTaskId, event.executionId);
+  return resolved && { workflow: resolved.workflow, versionId: resolved.versionId, taskId: resolved.task.id };
+}
+
+/**
+ * A task id from *some* version → the row for the same node in the latest version, with
+ * the workflow it belongs to. `undefined` when the node was deleted in a newer version.
+ */
+async function resolveTask(
+  db: Db,
+  taskId: string,
+  executionId?: string | null,
+): Promise<{ workflow: WorkflowRow; versionId: string; task: TaskRow } | undefined> {
+  const [origin] = await db
+    .select({ task: tasks, workflow: workflows })
+    .from(tasks)
+    .innerJoin(workflowVersions, eq(workflowVersions.id, tasks.workflowVersionId))
+    .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId))
+    .where(eq(tasks.id, taskId));
+  if (!origin) return undefined;
+
+  let versionId: string;
+  if (executionId) {
+    const [execution] = await db.select().from(workflowExecutions).where(eq(workflowExecutions.id, executionId));
+    if (!execution || execution.workflowId !== origin.workflow.id || execution.status !== "running") return undefined;
+    versionId = execution.workflowVersionId;
+  } else {
+    versionId = await latestVersionId(db, origin.workflow);
   }
 
-  /**
-   * Which graph does this event belong to, and which version routes it?
-   *
-   * An event's `source_task_id` points at the task row that emitted it — which belongs to
-   * the version that was current *then*. Tasks are per-version rows, so the latest version
-   * holds a different row for the same node; `tasks.name` is the identity that survives the
-   * edit, and is what we re-resolve against.
-   */
-  async function resolveSource(
-    db: Db,
-    event: EventRow,
-  ): Promise<{ workflow: WorkflowRow; versionId: string; taskId: string } | undefined> {
-    if (!event.sourceTaskId) return undefined;
-    const resolved = await resolveTask(db, event.sourceTaskId, event.executionId);
-    return resolved && { workflow: resolved.workflow, versionId: resolved.versionId, taskId: resolved.task.id };
+  // Same version: the row we have is already the routing row.
+  if (versionId === origin.task.workflowVersionId) {
+    return { workflow: origin.workflow, versionId, task: origin.task };
   }
 
-  /**
-   * A task id from *some* version → the row for the same node in the latest version, with
-   * the workflow it belongs to. `undefined` when the node was deleted in a newer version.
-   */
-  async function resolveTask(
-    db: Db,
-    taskId: string,
-    executionId?: string | null,
-  ): Promise<{ workflow: WorkflowRow; versionId: string; task: TaskRow } | undefined> {
-    const [origin] = await db
-      .select({ task: tasks, workflow: workflows })
-      .from(tasks)
-      .innerJoin(workflowVersions, eq(workflowVersions.id, tasks.workflowVersionId))
-      .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId))
-      .where(eq(tasks.id, taskId));
-    if (!origin) return undefined;
+  const [current] = await db
+    .select()
+    .from(tasks)
+    .where(and(eq(tasks.workflowVersionId, versionId), eq(tasks.name, origin.task.name)));
 
-    let versionId: string;
-    if (executionId) {
-      const [execution] = await db.select().from(workflowExecutions).where(eq(workflowExecutions.id, executionId));
-      if (!execution || execution.workflowId !== origin.workflow.id || execution.status !== "running") return undefined;
-      versionId = execution.workflowVersionId;
-    } else {
-      versionId = await latestVersionId(db, origin.workflow);
-    }
+  // The node was deleted in the newer version: its events no longer route anywhere.
+  if (!current) return undefined;
+  return { workflow: origin.workflow, versionId, task: current };
+}
 
-    // Same version: the row we have is already the routing row.
-    if (versionId === origin.task.workflowVersionId) {
-      return { workflow: origin.workflow, versionId, task: origin.task };
-    }
+/**
+ * `workflows.current_version_id` when the graph editor has set it, newest row otherwise —
+ * so a version published without touching the pointer still routes.
+ */
+async function latestVersionId(db: Db, workflow: WorkflowRow): Promise<string> {
+  if (workflow.currentVersionId) return workflow.currentVersionId;
+  const [newest] = await db
+    .select({ id: workflowVersions.id })
+    .from(workflowVersions)
+    .where(eq(workflowVersions.workflowId, workflow.id))
+    .orderBy(desc(workflowVersions.createdAt), desc(workflowVersions.id))
+    .limit(1);
+  return newest?.id ?? "";
+}
 
-    const [current] = await db
-      .select()
-      .from(tasks)
-      .where(and(eq(tasks.workflowVersionId, versionId), eq(tasks.name, origin.task.name)));
+/**
+ * Creates one `queued` run, guarded by the two things that must happen *before* any work:
+ * the loop budget (§5) and the `(task, event)` dedupe claim (§6).
+ *
+ * The claim and the run insert share one transaction, and that is load-bearing. Dedupe is
+ * what makes at-least-once delivery safe, so a claim that commits without its run would
+ * turn every redelivery into a `duplicate` and lose the trigger for good. Together they are
+ * atomic: either the event is claimed *and* has its run, or neither, and it is redelivered.
+ *
+ * The budget check stays outside — it only reads, and it comes first so an over-budget
+ * event never burns its claim.
+ */
+async function createRun(
+  db: Db,
+  args: {
+    task: TaskRow;
+    event: EventRow;
+    workflow: WorkflowRow;
+    versionId: string;
+    metrics?: Metrics;
+  },
+): Promise<Dispatched | undefined> {
+  const { task, event, workflow, versionId } = args;
 
-    // The node was deleted in the newer version: its events no longer route anywhere.
-    if (!current) return undefined;
-    return { workflow: origin.workflow, versionId, task: current };
-  }
-
-  /**
-   * `workflows.current_version_id` when the graph editor has set it, newest row otherwise —
-   * so a version published without touching the pointer still routes.
-   */
-  async function latestVersionId(db: Db, workflow: WorkflowRow): Promise<string> {
-    if (workflow.currentVersionId) return workflow.currentVersionId;
-    const [newest] = await db
-      .select({ id: workflowVersions.id })
-      .from(workflowVersions)
-      .where(eq(workflowVersions.workflowId, workflow.id))
-      .orderBy(desc(workflowVersions.createdAt), desc(workflowVersions.id))
-      .limit(1);
-    return newest?.id ?? "";
-  }
-
-  /**
-   * Creates one `queued` run, guarded by the two things that must happen *before* any work:
-   * the loop budget (§5) and the `(task, event)` dedupe claim (§6).
-   *
-   * The claim and the run insert share one transaction, and that is load-bearing. Dedupe is
-   * what makes at-least-once delivery safe, so a claim that commits without its run would
-   * turn every redelivery into a `duplicate` and lose the trigger for good. Together they are
-   * atomic: either the event is claimed *and* has its run, or neither, and it is redelivered.
-   *
-   * The budget check stays outside — it only reads, and it comes first so an over-budget
-   * event never burns its claim.
-   */
-  async function createRun(
-    db: Db,
-    args: {
-      task: TaskRow;
-      event: EventRow;
-      workflow: WorkflowRow;
-      versionId: string;
-      metrics?: Metrics;
-    },
-  ): Promise<Dispatched | undefined> {
-    const { task, event, workflow, versionId } = args;
-
-    // The run this event triggers becomes hop N+1, so the budget is spent when the trigger's
-    // own chain already fills it.
-    const [execution] = event.executionId
-      ? await db.select().from(workflowExecutions).where(eq(workflowExecutions.id, event.executionId))
-      : [];
-    const maxHops = execution?.maxHops ?? workflow.maxHops;
-    const depth = await chainDepth(db, event.eventId, maxHops + 1);
-    if (depth > maxHops) {
-      if (event.type === LOOP_BUDGET_EXCEEDED) return undefined;
-      await db.transaction(async (trx) => {
-        if ((await claim(trx, task.id, event.eventId)) === "duplicate") return;
-        await publish(trx, {
-          type: LOOP_BUDGET_EXCEEDED,
-          sourceTaskId: task.id,
-          causationId: event.eventId,
-          executionId: event.executionId,
-          packet: { taskId: task.id, workflowId: workflow.id, maxHops, depth },
-        });
-      });
-      return undefined;
-    }
-
-    const runId = newId("run");
-    const created = await db.transaction(async (trx) => {
-      if ((await claim(trx, task.id, event.eventId)) === "duplicate") {
-        // Not an error: at-least-once delivery meeting the claim that makes it safe. Counted
-        // because a *rising* rate means the dispatcher is redelivering, and that is a symptom.
-        args.metrics?.eventsDedupeDropped.add();
-        return false;
-      }
-      await trx.insert(runs).values({
-        id: runId,
+  // The run this event triggers becomes hop N+1, so the budget is spent when the trigger's
+  // own chain already fills it.
+  const [execution] = event.executionId
+    ? await db.select().from(workflowExecutions).where(eq(workflowExecutions.id, event.executionId))
+    : [];
+  const maxHops = execution?.maxHops ?? workflow.maxHops;
+  const depth = await chainDepth(db, event.eventId, maxHops + 1);
+  if (depth > maxHops) {
+    if (event.type === LOOP_BUDGET_EXCEEDED) return undefined;
+    await db.transaction(async (trx) => {
+      if ((await claim(trx, task.id, event.eventId)) === "duplicate") return;
+      await publish(trx, {
+        type: LOOP_BUDGET_EXCEEDED,
+        sourceTaskId: task.id,
+        causationId: event.eventId,
         executionId: event.executionId,
-        taskId: task.id,
-        workflowVersionId: versionId,
-        triggerEventId: event.eventId,
-        status: "queued",
-        modeUsed: task.mode,
+        packet: { taskId: task.id, workflowId: workflow.id, maxHops, depth },
       });
-      return true;
+    });
+    return undefined;
+  }
+
+  const runId = newId("run");
+  const created = await db.transaction(async (trx) => {
+    if ((await claim(trx, task.id, event.eventId)) === "duplicate") {
+      // Not an error: at-least-once delivery meeting the claim that makes it safe. Counted
+      // because a *rising* rate means the dispatcher is redelivering, and that is a symptom.
+      args.metrics?.eventsDedupeDropped.add();
+      return false;
+    }
+    await trx.insert(runs).values({
+      id: runId,
+      executionId: event.executionId,
+      taskId: task.id,
+      workflowVersionId: versionId,
+      triggerEventId: event.eventId,
+      status: "queued",
+      modeUsed: task.mode,
+    });
+    return true;
   });
 
   return created

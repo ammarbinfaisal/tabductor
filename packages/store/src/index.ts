@@ -17,6 +17,7 @@ export {
   deprovision,
   validateDdlApplies,
   applyMigration,
+  applyMigrationInTransaction,
   currentSchemaVersion,
   type WfConnectionInfo,
 } from "./provision.js";

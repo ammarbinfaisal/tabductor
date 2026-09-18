@@ -705,21 +705,10 @@ export async function publishVersion(
   let storeTables: PromptStoreTable[] = [];
   let storeSchemaId: string | null = null;
   if (deps.pool) {
-    if (input.authoring?.store) {
-      const stored = await publishStoreSchema(db, deps.pool, {
-        workflowId: workflow.id,
-        description: input.authoring.store.description,
-        ddl: input.authoring.store.ddl,
-        tablesSpec: input.authoring.store.tablesSpec,
-        confirmDestructive: input.authoring.store.confirmDestructive,
-        forceDestructive: input.authoring.store.forceDestructive,
-      });
-      storeSchemaId = stored.schemaId;
-    }
     await provision(deps.pool, workflow.id);
     const latest = await latestStoreSchema(db, workflow.id);
     storeSchemaId ??= latest?.id ?? null;
-    const spec = tablesSpecOf(latest);
+    const spec = input.authoring?.store?.tablesSpec ?? tablesSpecOf(latest);
     storeTables = Object.entries(spec)
       .map(([name, table]) => ({ name, columns: columnsOf(asRecord(table.schema)), primaryKey: table.primaryKey }))
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -744,8 +733,19 @@ export async function publishVersion(
 
   return db.transaction(async (trx) => {
     const [latest] = await trx.select({ currentVersionId: workflows.currentVersionId }).from(workflows).where(eq(workflows.id, workflow.id)).for("update");
-    if (input.expectedVersionId !== undefined && latest?.currentVersionId !== input.expectedVersionId) {
+    if (latest?.currentVersionId !== (input.expectedVersionId === undefined ? workflow.currentVersionId : input.expectedVersionId)) {
       throw invalid("The workflow was published elsewhere. Reload it before publishing this draft.", {});
+    }
+    if (input.authoring?.store && deps.pool) {
+      const stored = await publishStoreSchema(trx, deps.pool, {
+        workflowId: workflow.id,
+        description: input.authoring.store.description,
+        ddl: input.authoring.store.ddl,
+        tablesSpec: input.authoring.store.tablesSpec,
+        confirmDestructive: input.authoring.store.confirmDestructive,
+        forceDestructive: input.authoring.store.forceDestructive,
+      });
+      storeSchemaId = stored.schemaId;
     }
     const versionId = newId("wfv");
     await trx.insert(workflowVersions).values({

@@ -1,9 +1,9 @@
 import type { Pool } from "pg";
 import { AppError, newId } from "@tabductor/core";
 import { and, desc, eq, inArray } from "drizzle-orm";
-import { runs, storeSchemas, tasks, workflowVersions, workflows, type Db, type StoreMigrationClass } from "@tabductor/db";
+import { runs, storeSchemas, tasks, workflowExecutions, workflowVersions, workflows, type Db, type StoreMigrationClass } from "@tabductor/db";
 import {
-  applyMigration,
+  applyMigrationInTransaction,
   checkDdlShape,
   classifyMigration,
   provision,
@@ -93,55 +93,69 @@ export async function publishStoreSchema(
     });
   }
 
-  const previous = await previousStoreSchema(db, input.workflowId);
-  const diff = classifyMigration(previous?.tables ?? new Map(), shape.tables);
+  await provision(pool, input.workflowId);
+  return db.transaction(async (db) => {
+    // Trigger admission takes this same lock before creating an execution. No new
+    // execution can slip between the drain check and incompatible DDL publication.
+    await db.select({ id: workflows.id }).from(workflows).where(eq(workflows.id, input.workflowId)).for("update");
+    const previous = await previousStoreSchema(db, input.workflowId);
+    const diff = classifyMigration(previous?.tables ?? new Map(), shape.tables);
 
-  if (diff.class === "destructive" && !input.confirmDestructive) {
-    throw new AppError(STORE_MIGRATION_DESTRUCTIVE, "this migration drops or narrows data; resend with confirmDestructive to apply", {
-      details: { changes: diff.changes },
-    });
-  }
-  if (diff.class === "destructive" && !input.forceDestructive) {
-    const active = await db
-      .select({ id: runs.id })
-      .from(runs)
-      .innerJoin(tasks, eq(tasks.id, runs.taskId))
-      .innerJoin(workflowVersions, eq(workflowVersions.id, tasks.workflowVersionId))
-      .where(and(
-        eq(workflowVersions.workflowId, input.workflowId),
-        inArray(runs.status, ["queued", "running", "awaiting_approval"]),
-      ));
-    if (active.length > 0) {
-      throw new AppError(STORE_MIGRATION_BUSY, "destructive migration is waiting for active runs to drain", {
-        details: { activeRuns: active.map((run) => run.id), changes: diff.changes },
+    if (diff.class === "destructive" && !input.confirmDestructive) {
+      throw new AppError(STORE_MIGRATION_DESTRUCTIVE, "this migration drops or narrows data; resend with confirmDestructive to apply", {
+        details: { changes: diff.changes },
       });
     }
-  }
-
-  await provision(pool, input.workflowId);
-
-  if (diff.class === "none") {
-    // Republishing an unchanged schema is free (the schema-compiler precedent, EC1/§4.2):
-    // no DDL to apply, and no new `store_schemas` row either — `(workflow_id, version)` is
-    // unique, and there is genuinely no new *version* to record when nothing changed. The
-    // existing latest row already is this schema's record.
-    if (!previous) {
-      throw new AppError(STORE_SCHEMA_INVALID, "an empty store schema has no version to pin");
+    if (diff.class === "destructive") {
+      const activeExecutions = await db.select({ id: workflowExecutions.id }).from(workflowExecutions).where(and(
+        eq(workflowExecutions.workflowId, input.workflowId), eq(workflowExecutions.status, "running"),
+      ));
+      if (activeExecutions.length) {
+        throw new AppError(STORE_MIGRATION_BUSY, "destructive migration is waiting for active executions to drain", {
+          details: { activeExecutions: activeExecutions.map((execution) => execution.id), changes: diff.changes },
+        });
+      }
     }
-    return { schemaId: previous.id, version: previous.version, migrationClass: "none", changes: ["no change"] };
-  }
+    if (diff.class === "destructive" && !input.forceDestructive) {
+      const active = await db
+        .select({ id: runs.id })
+        .from(runs)
+        .innerJoin(tasks, eq(tasks.id, runs.taskId))
+        .innerJoin(workflowVersions, eq(workflowVersions.id, tasks.workflowVersionId))
+        .where(and(
+          eq(workflowVersions.workflowId, input.workflowId),
+          inArray(runs.status, ["queued", "running", "awaiting_approval"]),
+        ));
+      if (active.length > 0) {
+        throw new AppError(STORE_MIGRATION_BUSY, "destructive migration is waiting for active runs to drain", {
+          details: { activeRuns: active.map((run) => run.id), changes: diff.changes },
+        });
+      }
+    }
 
-  const appliedVersion = await applyMigration(pool, input.workflowId, diff.sql);
-  const [stored] = await db.insert(storeSchemas).values({
-    id: newId("storesch"),
-    workflowId: input.workflowId,
-    version: appliedVersion,
-    descriptionText: input.description ?? "",
-    ddl: input.ddl,
-    tablesSpecJson: input.tablesSpec,
-    migrationSql: diff.sql,
-    migrationClass: diff.class,
-  }).returning({ id: storeSchemas.id });
+    if (diff.class === "none") {
+      // Republishing an unchanged schema is free (the schema-compiler precedent, EC1/§4.2):
+      // no DDL to apply, and no new `store_schemas` row either — `(workflow_id, version)` is
+      // unique, and there is genuinely no new *version* to record when nothing changed. The
+      // existing latest row already is this schema's record.
+      if (!previous) {
+        throw new AppError(STORE_SCHEMA_INVALID, "an empty store schema has no version to pin");
+      }
+      return { schemaId: previous.id, version: previous.version, migrationClass: "none", changes: ["no change"] };
+    }
 
-  return { schemaId: stored!.id, version: appliedVersion, migrationClass: diff.class, changes: diff.changes };
+    const appliedVersion = await applyMigrationInTransaction(db, input.workflowId, diff.sql);
+    const [stored] = await db.insert(storeSchemas).values({
+      id: newId("storesch"),
+      workflowId: input.workflowId,
+      version: appliedVersion,
+      descriptionText: input.description ?? "",
+      ddl: input.ddl,
+      tablesSpecJson: input.tablesSpec,
+      migrationSql: diff.sql,
+      migrationClass: diff.class,
+    }).returning({ id: storeSchemas.id });
+
+    return { schemaId: stored!.id, version: appliedVersion, migrationClass: diff.class, changes: diff.changes };
+  });
 }

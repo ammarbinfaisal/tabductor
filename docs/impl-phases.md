@@ -77,6 +77,10 @@ transaction. Durable completion waits for descendant attempts and outbox deliver
 marks abandoned real-browser attempts `browser_outcome_uncertain` without automatically
 replaying them. Delivery dead letters retain execution identity, and loop-budget notices
 cannot recursively generate more notices.
+Graph publication now checks its captured base version even when callers omit an explicit
+base. Store DDL, schema metadata, and the published graph commit together; competing
+publishers cannot apply the losing schema. Incompatible migrations wait for live executions,
+including gaps between runs while outbox delivery is pending, and serialize with new triggers.
 These checks are part of H2; the full acceptance gate below remains required.
 
 - Add execution identity to triggers, events, task attempts, and system events. Atomically
