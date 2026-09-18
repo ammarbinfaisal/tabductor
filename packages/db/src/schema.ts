@@ -281,6 +281,8 @@ export const workflowExecutions = pgTable(
       .references(() => workflowVersions.id, { onDelete: "restrict" }),
     status: text("status").$type<ExecutionStatus>().notNull().default("running"),
     maxHops: integer("max_hops").notNull(),
+    maxRuns: integer("max_runs").notNull().default(1000),
+    admittedRuns: integer("admitted_runs").notNull().default(0),
     endedAt: ts("ended_at"),
     createdAt: createdAt(),
   },
@@ -288,6 +290,7 @@ export const workflowExecutions = pgTable(
     index("workflow_executions_workflow_created_idx").on(t.workflowId, t.createdAt),
     index("workflow_executions_status_idx").on(t.status),
     check("workflow_executions_status_check", sql`${t.status} in ('running','succeeded','failed','cancelled')`),
+    check("workflow_executions_budget_check", sql`${t.maxRuns} > 0 and ${t.admittedRuns} >= 0`),
   ],
 );
 

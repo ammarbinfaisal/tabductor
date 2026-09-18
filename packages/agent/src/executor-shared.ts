@@ -75,6 +75,7 @@ export function makeEmitFn(opts: {
    * Absent for a browser run — a browser task has no store tools to have staged anything.
    */
   drainPendingWrites?: () => Array<(trx: Db) => Promise<void>>;
+  restorePendingWrites?: (writes: Array<(trx: Db) => Promise<void>>) => void;
   /** Wraps the drained writes into one `RunHandle.emit` `withTx` hook — the writer-role
    * switch belongs to `packages/store` (`flushStagedWrites`), not this file, which only
    * knows *that* something is pending, never how to execute it under the right role. */
@@ -83,13 +84,15 @@ export function makeEmitFn(opts: {
   const { handleEmit, trace } = opts;
 
   const publish = async (type: string, packet: unknown, dedupeKey: string | undefined): Promise<EmitOutcome> => {
+    const pending = opts.drainPendingWrites?.() ?? [];
+    let committed = false;
     try {
-      const pending = opts.drainPendingWrites?.() ?? [];
       const withTx = pending.length > 0 && opts.wrapPendingWrites ? opts.wrapPendingWrites(pending) : undefined;
       const event = await handleEmit(type, packet, {
         ...(withTx ? { withTx } : {}),
         ...(dedupeKey ? { dedupeKey } : {}),
       });
+      committed = true;
       if (!event) {
         await trace.record("action", { action: "emit", type, dedupeKey: dedupeKey ?? null, ok: true, deduped: true });
         return { outcome: "deduped" };
@@ -97,6 +100,7 @@ export function makeEmitFn(opts: {
       await trace.record("action", { action: "emit", type, dedupeKey: dedupeKey ?? null, ok: true, eventId: event.eventId });
       return { outcome: "published", eventId: event.eventId };
     } catch (err) {
+      if (!committed) opts.restorePendingWrites?.(pending);
       const error = err instanceof Error ? err.message : String(err);
       await trace.record("action", { action: "emit", type, dedupeKey: dedupeKey ?? null, ok: false, error });
       return { outcome: "rejected", error };

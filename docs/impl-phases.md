@@ -81,6 +81,9 @@ Graph publication now checks its captured base version even when callers omit an
 base. Store DDL, schema metadata, and the published graph commit together; competing
 publishers cannot apply the losing schema. Incompatible migrations wait for live executions,
 including gaps between runs while outbox delivery is pending, and serialize with new triggers.
+Executions admit at most 1,000 attempts by default (including retries), with atomic counters
+that bound concurrent fan-out separately from hop depth. Migration 0033 backfills existing
+attempt counts. Rejected emits retain staged store writes for a corrected retry.
 These checks are part of H2; the full acceptance gate below remains required.
 
 - Add execution identity to triggers, events, task attempts, and system events. Atomically

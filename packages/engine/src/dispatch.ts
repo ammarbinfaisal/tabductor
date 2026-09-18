@@ -14,6 +14,7 @@ import {
 } from "@tabductor/db";
 import type { Metrics } from "@tabductor/telemetry";
 import { and, desc, eq } from "drizzle-orm";
+import { admitExecutionRun, RUN_BUDGET_EXCEEDED } from "./execution-budget.js";
 
 export const LOOP_BUDGET_EXCEEDED = "system.loop_budget_exceeded";
 
@@ -38,8 +39,11 @@ export type Dispatched = {
 
 export async function createWorkflowExecution(
   db: Db,
-  input: { workflowId: string; workflowVersionId?: string },
+  input: { workflowId: string; workflowVersionId?: string; maxRuns?: number },
 ): Promise<string> {
+  if (input.maxRuns !== undefined && (!Number.isSafeInteger(input.maxRuns) || input.maxRuns < 1 || input.maxRuns > 1000)) {
+    throw new AppError("execution_budget_invalid", "maxRuns must be an integer between 1 and 1000");
+  }
   return db.transaction(async (db) => {
     const [workflow] = await db.select().from(workflows).where(eq(workflows.id, input.workflowId)).for("update");
     if (!workflow) throw new Error(`no workflow "${input.workflowId}"`);
@@ -54,6 +58,7 @@ export async function createWorkflowExecution(
       workflowId: workflow.id,
       workflowVersionId: versionId,
       maxHops: workflow.maxHops,
+      maxRuns: input.maxRuns ?? 1000,
     });
     return executionId;
   });
@@ -138,11 +143,7 @@ export async function triggerTask(
 ): Promise<{ event: EventRow; dispatched: Dispatched | undefined }> {
   return db.transaction(async (db) => {
     const target = await resolveTask(db, input.taskId, input.executionId);
-    if (!target) return { event: await db.transaction((trx) => publish(trx, {
-      type: input.type ?? MANUAL_TRIGGER,
-      sourceTaskId: input.taskId,
-      packet: input.packet ?? {},
-    })), dispatched: undefined };
+    if (!target) throw new AppError("task_not_triggerable", "task or active execution does not exist in this workflow");
     const executionId = input.executionId ?? await createWorkflowExecution(db, {
       workflowId: target.workflow.id,
       workflowVersionId: target.versionId,
@@ -264,7 +265,7 @@ async function createRun(
   const maxHops = execution?.maxHops ?? workflow.maxHops;
   const depth = await chainDepth(db, event.eventId, maxHops + 1);
   if (depth > maxHops) {
-    if (event.type === LOOP_BUDGET_EXCEEDED) return undefined;
+    if ([LOOP_BUDGET_EXCEEDED, RUN_BUDGET_EXCEEDED].includes(event.type)) return undefined;
     await db.transaction(async (trx) => {
       if ((await claim(trx, task.id, event.eventId)) === "duplicate") return;
       await publish(trx, {
@@ -286,6 +287,10 @@ async function createRun(
       args.metrics?.eventsDedupeDropped.add();
       return false;
     }
+    if (!await admitExecutionRun(trx, {
+      executionId: event.executionId, taskId: task.id, causationId: event.eventId,
+      notice: ![LOOP_BUDGET_EXCEEDED, RUN_BUDGET_EXCEEDED].includes(event.type),
+    })) return false;
     await trx.insert(runs).values({
       id: runId,
       executionId: event.executionId,

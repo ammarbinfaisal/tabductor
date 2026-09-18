@@ -89,6 +89,7 @@ export function createDecisionExecutor(deps: DecisionExecutorDeps): TaskExecutor
           handleEmit: handle.emit,
           trace,
           drainPendingWrites: () => stager.drain(),
+          restorePendingWrites: (writes) => stager.restore(writes),
           wrapPendingWrites: (writes) => flushStagedWrites(workflowId, writes),
         });
         const taskCtx = { taskId: handle.task.id, runId: handle.run.id };

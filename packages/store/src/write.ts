@@ -56,10 +56,11 @@ export async function checkStoreWriteGrant(
  */
 export type PendingWrite = (trx: Db) => Promise<void>;
 
-export function createWriteStager(): { stage: (w: PendingWrite) => void; drain: () => PendingWrite[]; pending: () => number } {
+export function createWriteStager(): { stage: (w: PendingWrite) => void; drain: () => PendingWrite[]; restore: (writes: PendingWrite[]) => void; pending: () => number } {
   let queue: PendingWrite[] = [];
   return {
     stage: (w) => queue.push(w),
+    restore: (writes) => { queue = [...writes, ...queue]; },
     drain: () => {
       const drained = queue;
       queue = [];

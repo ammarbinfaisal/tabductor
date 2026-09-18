@@ -3,6 +3,7 @@ import { newId } from "@tabductor/core";
 import { runs, taskState, workflowExecutions, type Db, type RunRow, type TaskRow } from "@tabductor/db";
 import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
+import { admitExecutionRun } from "./execution-budget.js";
 
 /**
  * Per-task retry policy (§15). A retry is a *new run row* at attempt n+1 carrying the same
@@ -97,6 +98,10 @@ export async function scheduleRetry(
       return undefined;
     }
 
+    if (!await admitExecutionRun(db, {
+      executionId: run.executionId, taskId: run.taskId,
+      causationId: run.triggerEventId, sourceRunId: run.id,
+    })) return undefined;
     const runId = newId("run");
     await db.insert(runs).values({
       id: runId,

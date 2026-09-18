@@ -87,6 +87,16 @@ it("rejects a version belonging to another workflow", async () => {
     .rejects.toThrow("execution version must belong to its workflow");
 });
 
+it("never falls back to legacy routing for a foreign or terminal execution", async () => {
+  const first = await seedWorkflow(handle.db, { tasks: { Root: {} } });
+  const second = await seedWorkflow(handle.db, { tasks: { Root: {} } });
+  const executionId = await createWorkflowExecution(handle.db, { workflowId: first.workflowId });
+  await expect(triggerTask(handle.db, { taskId: second.taskIds.Root!, executionId })).rejects.toMatchObject({ code: "task_not_triggerable" });
+  await handle.db.update(workflowExecutions).set({ status: "succeeded" }).where(eq(workflowExecutions.id, executionId));
+  await expect(triggerTask(handle.db, { taskId: first.taskIds.Root!, executionId })).rejects.toMatchObject({ code: "task_not_triggerable" });
+  expect(await handle.db.select().from(events)).toHaveLength(0);
+});
+
 it("does not automatically repeat a browser run abandoned during an uncertain action", async () => {
   const wf = await seedWorkflow(handle.db, { tasks: { Root: { retry: { max: 3 } } } });
   const { dispatched } = await triggerTask(handle.db, { taskId: wf.taskIds.Root! });

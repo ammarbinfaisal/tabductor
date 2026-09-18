@@ -25,7 +25,7 @@ export async function settleWorkflowExecutions(db: Db): Promise<string[]> {
       ) or exists (
         select 1 from events e left join outbox o on o.event_id = e.event_id
         where e.execution_id = x.id
-          and (o.status = 'dead_letter' or e.type = 'system.loop_budget_exceeded')
+          and (o.status = 'dead_letter' or e.type in ('system.loop_budget_exceeded', 'system.run_budget_exceeded'))
       ) then 'failed'
       else 'succeeded'
     end
