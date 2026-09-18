@@ -10,11 +10,25 @@ export {
   type ClaimedBrowserAllocation,
 } from "./browser-fleet.js";
 export {
+  acknowledgeBrowserPause,
+  appendBrowserRecordingSegment,
+  appendBrowserSessionActivity,
+  expireBrowserTakeovers,
+  finishBrowserRecording,
+  getBrowserSessionPlayback,
+  listBrowserSessionActivity,
+  requestBrowserTakeover,
+  resumeBrowserAutomation,
+  stopBrowserSession,
+  type BrowserSessionControlState,
+} from "./browser-session-control.js";
+export {
   accountOwnsWorkflow,
   accountOwnsTask,
   accountOwnsRun,
   accountOwnsEvent,
   accountOwnsShare,
+  accountOwnsBrowserSession,
   createAccountMcpToken,
   resolveAccountIdentity,
   resolveAccountMcpToken,

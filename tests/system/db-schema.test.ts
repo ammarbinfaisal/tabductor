@@ -12,6 +12,8 @@ const EXPECTED_TABLES = [
   "browser_allocation_requests",
   "browser_profile_leases",
   "browser_profiles",
+  "browser_recording_segments",
+  "browser_session_activity",
   "browser_sessions",
   "browser_workers",
   "cdp_endpoints",

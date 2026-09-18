@@ -8,6 +8,7 @@ import {
   accountOwnsRun,
   accountOwnsEvent,
   accountOwnsShare,
+  accountOwnsBrowserSession,
   publicEventTypes,
   refCodec,
   type PromptCompiler,
@@ -88,6 +89,8 @@ export const requireEventOwner = (ctx: Context, id: string) =>
   requireOwned(ctx, "event", id, (accountId) => accountOwnsEvent(ctx.db, accountId, id));
 export const requireShareOwner = (ctx: Context, id: string) =>
   requireOwned(ctx, "share", id, (accountId) => accountOwnsShare(ctx.db, accountId, id));
+export const requireBrowserSessionOwner = (ctx: Context, id: string) =>
+  requireOwned(ctx, "browser session", id, (accountId) => accountOwnsBrowserSession(ctx.db, accountId, id));
 
 const t = initTRPC.context<Context>().create({
   transformer: superjson,

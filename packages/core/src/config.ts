@@ -13,6 +13,11 @@ const optionalSetting = z.preprocess(
   z.string().min(1).optional(),
 );
 
+const optionalUrl = z.preprocess(
+  (v) => (v === "" ? undefined : v),
+  z.string().url().optional(),
+);
+
 const envSchema = z.object({
   TABDUCTOR_DEPLOYMENT_MODE: z.enum(["local", "hosted"]).default("local"),
   TABDUCTOR_FIXTURE_MODE: z.enum(["0", "1"]).default("0").transform((value) => value === "1"),
@@ -47,6 +52,19 @@ const envSchema = z.object({
   ANTHROPIC_API_KEY: optionalSetting,
   OPENAI_API_KEY: optionalSetting,
   SCHEMA_MODEL: optionalSetting,
+  // Provider credentials are deliberately named after the providers' own terminology.
+  // Paddle's API key remains server-only; the client token is the only Paddle credential
+  // that may cross into browser code. Solver keys never leave control-plane processes.
+  PADDLE_API_KEY: optionalSetting,
+  PADDLE_CLIENT_TOKEN: optionalSetting,
+  PADDLE_WEBHOOK_SECRET: optionalSetting,
+  PADDLE_ENVIRONMENT: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.enum(["sandbox", "live"]).optional(),
+  ),
+  PADDLE_CHECKOUT_URL: optionalUrl,
+  CAPSOLVER_API_KEY: optionalSetting,
+  TWO_CAPTCHA_API_KEY: optionalSetting,
   // S5c: the secrets broker's KEK-wrapping key store (`fileKeyWrapper`, dev/test — a KMS
   // implementation is a later swap behind the same `KeyWrapper` interface, per S5b's own
   // doc). A clean checkout needs no environment (impl-phases §0's own rule for every other
@@ -55,6 +73,25 @@ const envSchema = z.object({
 }).superRefine((config, ctx) => {
   if (config.TABDUCTOR_DEPLOYMENT_MODE === "hosted" && config.TABDUCTOR_FIXTURE_MODE) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["TABDUCTOR_FIXTURE_MODE"], message: "fixture mode is forbidden in hosted deployments" });
+  }
+  const inferredPaddle = config.PADDLE_API_KEY?.startsWith("pdl_sdbx_")
+    ? "sandbox"
+    : config.PADDLE_API_KEY?.startsWith("pdl_live_")
+      ? "live"
+      : undefined;
+  const paddleEnvironment = config.PADDLE_ENVIRONMENT ?? inferredPaddle;
+  if (config.PADDLE_API_KEY && !paddleEnvironment) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["PADDLE_ENVIRONMENT"],
+      message: "is required for a legacy or unrecognized Paddle API key",
+    });
+  }
+  if (paddleEnvironment === "sandbox" && config.PADDLE_CLIENT_TOKEN && !config.PADDLE_CLIENT_TOKEN.startsWith("test_")) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["PADDLE_CLIENT_TOKEN"], message: "must be a sandbox test_ token" });
+  }
+  if (paddleEnvironment === "live" && config.PADDLE_CLIENT_TOKEN && !config.PADDLE_CLIENT_TOKEN.startsWith("live_")) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["PADDLE_CLIENT_TOKEN"], message: "must be a live_ token" });
   }
 });
 

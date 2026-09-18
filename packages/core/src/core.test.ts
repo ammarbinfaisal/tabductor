@@ -49,8 +49,32 @@ describe("loadConfig", () => {
   // omitting the variable. Empty has to read as absent, or declaring the setting in compose and
   // leaving it unset would throw config_invalid and take the web app down on boot.
   it("reads an empty optional setting as absent rather than invalid", () => {
-    const cfg = loadConfig({ ANTHROPIC_API_KEY: "" });
+    const cfg = loadConfig({ ANTHROPIC_API_KEY: "", CAPSOLVER_API_KEY: "", PADDLE_API_KEY: "" });
     expect(cfg.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(cfg.CAPSOLVER_API_KEY).toBeUndefined();
+    expect(cfg.PADDLE_API_KEY).toBeUndefined();
+  });
+
+  it("loads provider credentials without exposing or rewriting them", () => {
+    const cfg = loadConfig({
+      PADDLE_API_KEY: "pdl_sdbx_apikey_example",
+      PADDLE_CLIENT_TOKEN: "test_client-token",
+      CAPSOLVER_API_KEY: "capsolver-secret",
+      TWO_CAPTCHA_API_KEY: "two-captcha-secret",
+    });
+    expect(cfg).toMatchObject({
+      PADDLE_API_KEY: "pdl_sdbx_apikey_example",
+      PADDLE_CLIENT_TOKEN: "test_client-token",
+      CAPSOLVER_API_KEY: "capsolver-secret",
+      TWO_CAPTCHA_API_KEY: "two-captcha-secret",
+    });
+  });
+
+  it("rejects mixed Paddle sandbox and live credentials", () => {
+    expect(() => loadConfig({
+      PADDLE_API_KEY: "pdl_live_apikey_example",
+      PADDLE_CLIENT_TOKEN: "test_wrong-workspace",
+    })).toThrow(AppError);
   });
 });
 

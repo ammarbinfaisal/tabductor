@@ -9,11 +9,13 @@ import { storeRouter } from "./routers/store.js";
 import { taskRouter } from "./routers/task.js";
 import { workflowRouter } from "./routers/workflow.js";
 import { accountRouter } from "./routers/account.js";
+import { browserSessionRouter } from "./routers/browser-session.js";
 import { createCallerFactory, createContext, router, type Context } from "./trpc.js";
 import { accountIdForWebRequest } from "./auth-context.js";
 
 export const appRouter = router({
   account: accountRouter,
+  browserSession: browserSessionRouter,
   workflow: workflowRouter,
   task: taskRouter,
   run: runRouter,

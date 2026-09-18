@@ -60,6 +60,7 @@ export {
   BROWSER_WORKER_STATUSES,
   BROWSER_RECORDING_STATUSES,
   BROWSER_RECORDING_SEGMENT_STATUSES,
+  BROWSER_INPUT_OWNERS,
   EXECUTION_STATUSES,
 } from "./schema.js";
 export type {
@@ -110,6 +111,7 @@ export type {
   BrowserWorkerStatus,
   BrowserRecordingStatus,
   BrowserRecordingSegmentStatus,
+  BrowserInputOwner,
   SecretTier,
   SecretRow,
   NewSecret,

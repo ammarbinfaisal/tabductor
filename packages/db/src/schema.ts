@@ -795,6 +795,8 @@ export const BROWSER_RECORDING_STATUSES = ["unavailable", "recording", "partial"
 export type BrowserRecordingStatus = (typeof BROWSER_RECORDING_STATUSES)[number];
 export const BROWSER_RECORDING_SEGMENT_STATUSES = ["ready", "gap", "private"] as const;
 export type BrowserRecordingSegmentStatus = (typeof BROWSER_RECORDING_SEGMENT_STATUSES)[number];
+export const BROWSER_INPUT_OWNERS = ["ai", "human", "paused"] as const;
+export type BrowserInputOwner = (typeof BROWSER_INPUT_OWNERS)[number];
 
 export const browserProfiles = pgTable(
   "browser_profiles",
@@ -826,7 +828,7 @@ export const browserSessions = pgTable(
     generation: integer("generation").notNull().default(1),
     workerId: text("worker_id"),
     podName: text("pod_name"),
-    inputOwner: text("input_owner").notNull().default("ai"),
+    inputOwner: text("input_owner").$type<BrowserInputOwner>().notNull().default("ai"),
     inputOwnerGeneration: integer("input_owner_generation").notNull().default(1),
     pauseRequestedAt: ts("pause_requested_at"),
     pauseAcknowledgedAt: ts("pause_acknowledged_at"),

@@ -4,6 +4,7 @@ import {
   accountIdentities,
   accountMcpTokens,
   accounts,
+  browserSessions,
   events,
   runs,
   tasks,
@@ -102,5 +103,11 @@ export async function accountOwnsShare(db: Db, accountId: string, shareId: strin
   const [row] = await db.select({ id: workflowShares.id }).from(workflowShares)
     .innerJoin(workflows, eq(workflows.id, workflowShares.workflowId))
     .where(and(eq(workflowShares.id, shareId), eq(workflows.accountId, accountId)));
+  return Boolean(row);
+}
+
+export async function accountOwnsBrowserSession(db: Db, accountId: string, sessionId: string): Promise<boolean> {
+  const [row] = await db.select({ id: browserSessions.id }).from(browserSessions)
+    .where(and(eq(browserSessions.id, sessionId), eq(browserSessions.accountId, accountId)));
   return Boolean(row);
 }
