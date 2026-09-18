@@ -1,9 +1,7 @@
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { appRouter } from "../../../../server/router.js";
-import { db, pool } from "../../../../server/db.js";
 import { metricsNow } from "../../../../server/metrics.js";
-import { graphCompiler, promptCompiler, schemaGenerator } from "../../../../server/schema-generator.js";
-import type { Context } from "../../../../server/trpc.js";
+import { createContext, type Context } from "../../../../server/trpc.js";
 import { accountIdForWebRequest } from "../../../../server/auth-context.js";
 
 /** The one HTTP surface: no REST duplication, no versioning (S2c). */
@@ -19,14 +17,8 @@ const handler = (req: Request): Promise<Response> =>
      */
     createContext: async (): Promise<Context> => {
       const metrics = metricsNow();
-      const databasePool = pool();
       return {
-        db: db(),
-        accountId: await accountIdForWebRequest(),
-        pool: databasePool,
-        schemaGenerator: schemaGenerator(),
-        promptCompiler: promptCompiler(),
-        graphCompiler: graphCompiler(databasePool),
+        ...createContext(await accountIdForWebRequest()),
         clientKey: clientKeyOf(req),
         ...(metrics ? { metrics } : {}),
       };

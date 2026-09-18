@@ -19,8 +19,10 @@ export async function POST(request: Request): Promise<Response> {
   } catch {
     return Response.json({ error: "The message could not be read. Please try again." }, { status: 400 });
   }
-  const ctx = { ...createContext(), accountId: await accountIdForWebRequest() };
-  const model = workflowChatModel();
+  let ctx = createContext(await accountIdForWebRequest());
+  const services = ctx.modelsForWorkflow?.(input.workflowId);
+  if (services) ctx = { ...ctx, ...services };
+  const model = services?.workflowChatModel ?? workflowChatModel();
   if (!model || !ctx.graphCompiler) return Response.json({ error: "The workflow assistant is not configured on this server." }, { status: 503 });
   const caller = createCaller(ctx);
   const current = await caller.workflow.get({ id: input.workflowId });

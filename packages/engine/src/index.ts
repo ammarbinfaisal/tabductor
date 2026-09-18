@@ -260,3 +260,5 @@ export {
 } from "./graph-authoring.js";
 
 export * from "./workflow-chat.js";
+export { createModelResolver, saveModelCredential, setModelSelection, modelSelectionSchema, modelScopeForTask, parseModelRates, modelCreditUnits, settleModelOperation,
+  type ModelResolver, type ModelRate, type ModelUsage, type ModelScope, type ModelPurpose, type ModelCallConfig } from "./model-funding.js";

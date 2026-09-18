@@ -91,6 +91,7 @@ export const workflowRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       await requireWorkflowOwner(ctx, input.workflowId);
+      if (ctx.modelsForWorkflow) ctx = { ...ctx, ...ctx.modelsForWorkflow(input.workflowId) };
       return triggerWorkflow(ctx, input);
     }),
 
@@ -110,6 +111,7 @@ export const workflowRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       await requireWorkflowOwner(ctx, input.workflowId);
+      if (ctx.modelsForWorkflow) ctx = { ...ctx, ...ctx.modelsForWorkflow(input.workflowId) };
       return setWorkflowSchedule(ctx, input);
     }),
 
@@ -123,6 +125,7 @@ export const workflowRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       await requireWorkflowOwner(ctx, input.workflowId);
+      if (ctx.modelsForWorkflow) ctx = { ...ctx, ...ctx.modelsForWorkflow(input.workflowId) };
       if (!ctx.graphCompiler) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
@@ -195,6 +198,7 @@ export const workflowRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       await requireWorkflowOwner(ctx, input.workflowId);
+      if (ctx.modelsForWorkflow) ctx = { ...ctx, ...ctx.modelsForWorkflow(input.workflowId) };
       let checked = input;
       if (input.authoring) {
         const gated = await gateGraphDraft(
@@ -244,6 +248,7 @@ export const workflowRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       await requireWorkflowOwner(ctx, input.workflowId);
+      if (ctx.modelsForWorkflow) ctx = { ...ctx, ...ctx.modelsForWorkflow(input.workflowId) };
       if (!ctx.pool) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "no pool configured for this context" });
       return publishStoreSchema(ctx.db, ctx.pool, input);
     }),

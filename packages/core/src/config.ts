@@ -52,6 +52,7 @@ const envSchema = z.object({
   ANTHROPIC_API_KEY: optionalSetting,
   OPENAI_API_KEY: optionalSetting,
   SCHEMA_MODEL: optionalSetting,
+  MODEL_RATES_JSON: optionalSetting,
   // Provider credentials are deliberately named after the providers' own terminology.
   // Paddle's API key remains server-only; the client token is the only Paddle credential
   // that may cross into browser code. Solver keys never leave control-plane processes.

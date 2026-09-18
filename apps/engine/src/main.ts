@@ -5,6 +5,7 @@ import {
   createCompileWorker,
   createDecisionExecutor,
   createLlm,
+  fundedLlm,
   providerFromEnv,
   type CompileWorker,
 } from "@tabductor/agent";
@@ -14,6 +15,9 @@ import { loadConfig } from "@tabductor/core";
 import { createDb, type Db } from "@tabductor/db";
 import {
   createEngine,
+  createModelResolver,
+  modelScopeForTask,
+  parseModelRates,
   executorKey,
   pickWorkflowEndpoint,
   parsePaddleCreditPacks,
@@ -84,6 +88,11 @@ const liveProvider = providerFromEnv({ ANTHROPIC_API_KEY: config.ANTHROPIC_API_K
  * own poll, timeout and retry budget. It needs the model, so it exists exactly when a provider
  * key does — with none configured, jobs simply queue up and wait for an engine that has one.
  */
+const modelResolver = createModelResolver({ db: handle.db, wrapper: fileKeyWrapper(config.SECRETS_KEK_FILE_PATH),
+  rates: parseModelRates(config.MODEL_RATES_JSON),
+  platformKeys: { ...(config.OPENAI_API_KEY ? { openai: config.OPENAI_API_KEY } : {}), ...(config.ANTHROPIC_API_KEY ? { anthropic: config.ANTHROPIC_API_KEY } : {}) },
+});
+const funded = config.TABDUCTOR_DEPLOYMENT_MODE === "hosted";
 const compileLoop = createCompileLoop({
   db: handle.db,
   publish: async (input) => {
@@ -94,17 +103,17 @@ const compileLoop = createCompileLoop({
 });
 
 function compileWorkerEntry(db: Db): CompileWorker | undefined {
-  if (!liveProvider) {
+  if (!liveProvider && !funded) {
     log.info("no ANTHROPIC_API_KEY/OPENAI_API_KEY configured — compiles will queue but not run", {});
     return undefined;
   }
   const live = liveProvider;
   return createCompileWorker({
     db,
-    compileLlmFor: () =>
+    compileLlmFor: ({ task, job }) => funded ? fundedLlm(modelResolver, () => modelScopeForTask(db, task.id, "trace_compilation", job.runId)) :
       createLlm("live", {
-        provider: live.provider,
-        apiKey: live.apiKey,
+        provider: live!.provider,
+        apiKey: live!.apiKey,
         metrics: telemetry.metrics,
         costLabels: { kind: "browser", mode: "compile" },
       }),
@@ -131,7 +140,7 @@ const compileWorker = compileWorkerEntry(handle.db);
  */
 function agentExecutorEntry(db: Db): ReturnType<typeof createAgentExecutor> | undefined {
   const live = providerFromEnv({ ANTHROPIC_API_KEY: config.ANTHROPIC_API_KEY, OPENAI_API_KEY: config.OPENAI_API_KEY });
-  if (!live) {
+  if (!live && !funded) {
     log.info("no ANTHROPIC_API_KEY/OPENAI_API_KEY configured — (browser, ai) has no executor", {});
     return undefined;
   }
@@ -153,10 +162,10 @@ function agentExecutorEntry(db: Db): ReturnType<typeof createAgentExecutor> | un
     onOutcome: async (input) => void (await compileLoop.afterAiRun(input)),
     // One live provider serves every task — `task` is here for the test rig's benefit, not
     // this composition root's; see `AgentExecutorDeps.llmFor`.
-    llmFor: ({ trace }) =>
+    llmFor: ({ trace, task, runId }) => funded ? fundedLlm(modelResolver, () => modelScopeForTask(db, task.id, "runtime", runId), trace) :
       createLlm("live", {
-        provider: live.provider,
-        apiKey: live.apiKey,
+        provider: live!.provider,
+        apiKey: live!.apiKey,
         trace,
         metrics: telemetry.metrics,
         costLabels: { kind: "browser", mode: "ai" },
@@ -182,7 +191,7 @@ const secretsBroker = createSecretsBroker({
 // -----------------------------------------------------------------------------------------
 function decisionExecutorEntry(db: Db, pool: Pool): ReturnType<typeof createDecisionExecutor> | undefined {
   const live = providerFromEnv({ ANTHROPIC_API_KEY: config.ANTHROPIC_API_KEY, OPENAI_API_KEY: config.OPENAI_API_KEY });
-  if (!live) {
+  if (!live && !funded) {
     log.info("no ANTHROPIC_API_KEY/OPENAI_API_KEY configured — (decision, ai) has no executor", {});
     return undefined;
   }
@@ -192,10 +201,10 @@ function decisionExecutorEntry(db: Db, pool: Pool): ReturnType<typeof createDeci
     blobs,
     gate,
     metrics: telemetry.metrics,
-    llmFor: ({ trace }) =>
+    llmFor: ({ trace, task, runId }) => funded ? fundedLlm(modelResolver, () => modelScopeForTask(db, task.id, "runtime", runId), trace) :
       createLlm("live", {
-        provider: live.provider,
-        apiKey: live.apiKey,
+        provider: live!.provider,
+        apiKey: live!.apiKey,
         trace,
         metrics: telemetry.metrics,
         costLabels: { kind: "decision", mode: "ai" },
@@ -211,7 +220,7 @@ function decisionExecutorEntry(db: Db, pool: Pool): ReturnType<typeof createDeci
  */
 function compiledExecutorEntry(db: Db): TaskExecutor | undefined {
   const live = providerFromEnv({ ANTHROPIC_API_KEY: config.ANTHROPIC_API_KEY, OPENAI_API_KEY: config.OPENAI_API_KEY });
-  if (!live) {
+  if (!live && !funded) {
     log.info("no ANTHROPIC_API_KEY/OPENAI_API_KEY configured — (browser, compiled) has no executor", {});
     return undefined;
   }
@@ -224,10 +233,10 @@ function compiledExecutorEntry(db: Db): TaskExecutor | undefined {
     endpointFor: endpointFor(db),
     metrics: telemetry.metrics,
     onOutcome: (input) => compileLoop.afterCompiledRun(input),
-    llmFor: ({ trace }) =>
+    llmFor: ({ trace, task, runId }) => funded ? fundedLlm(modelResolver, () => modelScopeForTask(db, task.id, "recovery", runId), trace) :
       createLlm("live", {
-        provider: live.provider,
-        apiKey: live.apiKey,
+        provider: live!.provider,
+        apiKey: live!.apiKey,
         trace,
         metrics: telemetry.metrics,
         // The deopt path is the only thing here that ever calls a model, so cost recorded

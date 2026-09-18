@@ -498,6 +498,9 @@ importers:
       '@tabductor/db':
         specifier: workspace:*
         version: link:../db
+      '@tabductor/secrets':
+        specifier: workspace:*
+        version: link:../secrets
       '@tabductor/store':
         specifier: workspace:*
         version: link:../store

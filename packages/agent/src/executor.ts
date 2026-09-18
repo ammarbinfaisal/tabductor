@@ -59,7 +59,7 @@ export type AgentExecutorDeps = {
    * `task` rides along so a test rig can pick a fixture per task; production wiring ignores it
    * (one live provider serves every task).
    */
-  llmFor: (opts: { trace: TraceRecorder; task: TaskRow }) => Llm;
+  llmFor: (opts: { trace: TraceRecorder; task: TaskRow; runId: string }) => Llm;
   metrics?: Metrics;
   storageFlagsOf?: (task: TaskRow) => StorageFlags;
   /**
@@ -141,7 +141,7 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
 
         const [emits, trigger] = await Promise.all([handle.declaredEmits(), triggerInfoOf(db, handle)]);
         const emit = makeEmitFn({ db, taskId: handle.task.id, handleEmit: handle.emit, trace });
-        const llm = llmFor({ trace, task: handle.task });
+        const llm = llmFor({ trace, task: handle.task, runId: handle.run.id });
         const tools = buildToolRegistry({
           session,
           emit,

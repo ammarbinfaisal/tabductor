@@ -45,7 +45,7 @@ export function createCaller(ctx: Context = createContext()) {
 }
 
 export async function createServerCaller() {
-  return callerFactory({ ...createContext(), accountId: await accountIdForWebRequest() });
+  return callerFactory(createContext(await accountIdForWebRequest()));
 }
 
 export type { Context };

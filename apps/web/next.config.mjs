@@ -17,6 +17,7 @@ const config = {
   // modules by require path — both need to be the real module, not a bundled copy.
   serverExternalPackages: [
     "pg",
+    "sodium-native",
     "pino",
     "pino-pretty",
     "@opentelemetry/sdk-node",

@@ -35,7 +35,7 @@ export type LlmToolCall = { id: string; name: string; args: Record<string, unkno
 export type LlmResponse = {
   text?: string;
   toolCalls: LlmToolCall[];
-  usage: { in: number; out: number };
+  usage: { in: number; out: number; cachedInput?: number; reasoning?: number };
 };
 
 export type Llm = { complete(req: LlmRequest): Promise<LlmResponse> };

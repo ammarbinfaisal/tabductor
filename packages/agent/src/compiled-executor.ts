@@ -60,7 +60,7 @@ export type CompiledExecutorDeps = {
   endpointFor: (handle: RunHandle) => Promise<string>;
   /** Only ever built when a deopt actually happens — a clean compiled run never calls this,
    * which is what makes "zero LLM calls" true of the wiring and not just of the transcript. */
-  llmFor: (opts: { trace: TraceRecorder; task: TaskRow }) => Llm;
+  llmFor: (opts: { trace: TraceRecorder; task: TaskRow; runId: string }) => Llm;
   metrics?: Metrics;
   storageFlagsOf?: (task: TaskRow) => StorageFlags;
   /**
@@ -215,7 +215,7 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
 
         const [emits, trigger] = await Promise.all([handle.declaredEmits(), triggerInfoOf(db, handle)]);
         const loop = await runAgentLoop({
-          llm: llmFor({ trace, task: handle.task }),
+          llm: llmFor({ trace, task: handle.task, runId: handle.run.id }),
           tools: buildToolRegistry({ session, emit }),
           task: { prompt: handoffPrompt(handle.task, result.prompt, result.evidence) },
           trigger,

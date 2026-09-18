@@ -16,3 +16,4 @@ export {
   type SecretsBrokerRunDeps,
 } from "./broker.js";
 export { createSecret, grantSecret, type CreateSecretInput } from "./store.js";
+export { encryptEnvelope, withEnvelope, type EncryptedEnvelope } from "./envelope.js";

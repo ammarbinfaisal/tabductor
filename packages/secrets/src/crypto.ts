@@ -1,3 +1,4 @@
+/// <reference path="./sodium-native.d.ts" />
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import sodium from "sodium-native";

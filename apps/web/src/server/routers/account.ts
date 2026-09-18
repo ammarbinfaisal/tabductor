@@ -1,6 +1,8 @@
-import { accountMcpTokens } from "@tabductor/db";
+import { fileKeyWrapper } from "@tabductor/secrets";
+import { modelCredentials, modelSelections, modelOperations, creditReservations, paymentPurchases, accountMcpTokens } from "@tabductor/db";
 import { AppError, loadConfig } from "@tabductor/core";
 import {
+  saveModelCredential, setModelSelection, modelSelectionSchema, parseModelRates,
   createAccountMcpToken,
   createPaddleCreditPurchase,
   createPaddleTransactionClient,
@@ -15,6 +17,37 @@ import { procedure, router } from "../trpc.js";
 const accountIdOf = (accountId: string | undefined) => accountId ?? LOCAL_ACCOUNT;
 
 export const accountRouter = router({
+  modelSettings: procedure.query(async ({ ctx }) => {
+    const accountId = accountIdOf(ctx.accountId);
+    const [credentials, selections] = await Promise.all([
+      ctx.db.select({ id: modelCredentials.id, provider: modelCredentials.provider, label: modelCredentials.label, createdAt: modelCredentials.createdAt })
+        .from(modelCredentials).where(and(eq(modelCredentials.accountId, accountId), isNull(modelCredentials.revokedAt))),
+      ctx.db.select().from(modelSelections).where(eq(modelSelections.accountId, accountId)),
+    ]);
+    return { credentials, selections, platformModels: parseModelRates(loadConfig().MODEL_RATES_JSON) };
+  }),
+  saveModelCredential: procedure.input(z.object({ provider: z.enum(["openai", "anthropic"]), label: z.string().trim().min(1).max(120), apiKey: z.string().min(1).max(4096) }).strict())
+    .mutation(({ ctx, input }) => saveModelCredential(ctx.db, fileKeyWrapper(loadConfig().SECRETS_KEK_FILE_PATH), { ...input, accountId: accountIdOf(ctx.accountId) })),
+  setModel: procedure.input(modelSelectionSchema).mutation(({ ctx, input }) => setModelSelection(ctx.db, accountIdOf(ctx.accountId), input)),
+  revokeModelCredential: procedure.input(z.object({ id: z.string().min(1) })).mutation(async ({ ctx, input }) => {
+    const rows = await ctx.db.update(modelCredentials).set({ revokedAt: sql`now()` }).where(and(eq(modelCredentials.id, input.id), eq(modelCredentials.accountId, accountIdOf(ctx.accountId)), isNull(modelCredentials.revokedAt))).returning({ id: modelCredentials.id });
+    return { revoked: rows.length > 0 };
+  }),
+  billing: procedure.query(async ({ ctx }) => {
+    const accountId = accountIdOf(ctx.accountId);
+    const config = loadConfig();
+    const [balance, purchases, usage, models] = await Promise.all([
+      getCreditBalance(ctx.db, accountId),
+      ctx.db.select({ id: paymentPurchases.id, creditUnits: paymentPurchases.creditUnits, refundedUnits: paymentPurchases.refundedUnits, status: paymentPurchases.status, createdAt: paymentPurchases.createdAt })
+        .from(paymentPurchases).where(eq(paymentPurchases.accountId, accountId)).orderBy(desc(paymentPurchases.createdAt)).limit(50),
+      ctx.db.select({ category: creditReservations.category, units: sql<number>`coalesce(sum(${creditReservations.settledUnits}), 0)::double precision` })
+        .from(creditReservations).where(and(eq(creditReservations.accountId, accountId), eq(creditReservations.status, "settled"))).groupBy(creditReservations.category),
+      ctx.db.select({ id: modelOperations.id, model: modelOperations.model, funding: modelOperations.funding, purpose: modelOperations.purpose, status: modelOperations.status,
+        inputTokens: modelOperations.inputTokens, outputTokens: modelOperations.outputTokens, chargedUnits: modelOperations.chargedUnits, createdAt: modelOperations.createdAt })
+        .from(modelOperations).where(eq(modelOperations.accountId, accountId)).orderBy(desc(modelOperations.createdAt)).limit(50),
+    ]);
+    return { balance, purchases, usage, models, packs: config.PADDLE_API_KEY && config.PADDLE_CREDIT_PACKS_JSON ? [...parsePaddleCreditPacks(config.PADDLE_CREDIT_PACKS_JSON).values()] : [] };
+  }),
   creditBalance: procedure.query(({ ctx }) => getCreditBalance(ctx.db, accountIdOf(ctx.accountId))),
 
   createCreditPurchase: procedure.input(z.object({

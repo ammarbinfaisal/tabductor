@@ -58,3 +58,4 @@ export {
   createDecisionExecutor,
   type DecisionExecutorDeps,
 } from "./decision-executor.js";
+export { fundedLlm } from "./funded-llm.js";

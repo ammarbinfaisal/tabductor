@@ -1,5 +1,8 @@
 export * as schema from "./schema.js";
 export {
+  modelCredentials,
+  modelSelections,
+  modelOperations,
   accounts,
   accountIdentities,
   accountMcpTokens,

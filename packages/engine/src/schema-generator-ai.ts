@@ -109,3 +109,34 @@ export function aiWorkflowChatModel(opts: AiSchemaGeneratorOptions): import("./w
     },
   };
 }
+
+/** All hosted authoring phases share the same account/workflow funding resolver. */
+export function fundedAuthoringModels(resolver: import("./model-funding.js").ModelResolver,
+  scope: Omit<import("./model-funding.js").ModelScope, "purpose">, pool?: import("pg").Pool) {
+  const usageOf = (usage: import("ai").LanguageModelUsage) => ({ input: usage.inputTokens ?? NaN,
+    output: usage.outputTokens ?? NaN, cachedInput: usage.inputTokenDetails.cacheReadTokens ?? 0,
+    reasoning: usage.outputTokenDetails.reasoningTokens ?? 0 });
+  const transport = (purpose: import("./model-funding.js").ModelPurpose, system: string): ChatTransport => ({
+    complete: (turns) => resolver.execute({ ...scope, purpose }, { inputTokenBound: Buffer.byteLength(JSON.stringify({ system, turns })) + 4096 }, async (config) => {
+      const result = await generateText({ model: languageModel(config), system, messages: turns,
+        maxOutputTokens: config.maxOutputTokens, maxRetries: 0 });
+      const value: Awaited<ReturnType<ChatTransport["complete"]>> = result.finishReason === "content-filter" ? { refused: true } : { text: result.text };
+      return { value, usage: usageOf(result.usage) };
+    }),
+  });
+  const workflowChatModel: import("./workflow-chat.js").WorkflowChatModel = { complete: (input) => {
+    const tools: ToolSet = Object.fromEntries(input.tools.map((entry) => [entry.name, tool({ description: entry.description, inputSchema: entry.parameters })]));
+    return resolver.execute({ ...scope, purpose: "authoring" }, { inputTokenBound: Buffer.byteLength(JSON.stringify({ system: input.system, messages: input.messages, tools: input.tools })) + 4096 }, async (config) => {
+      const result = streamText({ model: languageModel(config), system: input.system, messages: input.messages, tools,
+        maxOutputTokens: config.maxOutputTokens, maxRetries: 0, ...(input.signal ? { abortSignal: input.signal } : {}) });
+      for await (const part of result.fullStream) {
+        if (part.type === "text-delta") input.onText(part.text);
+        if (part.type === "error") throw part.error;
+      }
+      return { value: { text: await result.text, toolCalls: (await result.toolCalls).map((call) => ({ id: call.toolCallId, name: call.toolName, args: call.input })) }, usage: usageOf(await result.usage) };
+    });
+  } };
+  return { schemaGenerator: llmSchemaGenerator(transport("schema", SCHEMA_SYSTEM_PROMPT)),
+    promptCompiler: llmPromptCompiler(transport("prompt", PROMPT_SYSTEM_PROMPT)),
+    graphCompiler: llmGraphCompiler(transport("graph", "You design checked workflow graphs."), { ...(pool ? { pool } : {}) }), workflowChatModel };
+}

@@ -22,10 +22,11 @@ import superjson from "superjson";
 import { z } from "zod";
 import { db, pool } from "./db.js";
 import { createRateLimiter } from "./rate-limit.js";
-import { graphCompiler, promptCompiler, schemaGenerator } from "./schema-generator.js";
+import { accountModelServices, graphCompiler, promptCompiler, schemaGenerator } from "./schema-generator.js";
 import { LOCAL_ACCOUNT } from "./auth-context.js";
 
 export type Context = {
+  modelsForWorkflow?: (workflowId: string) => ReturnType<typeof accountModelServices>;
   db: Db;
   accountId?: string;
   /** S5g: `workflow.publishStoreSchema`'s migrator/fence connection — see `db.ts`'s `pool()`.
@@ -48,15 +49,16 @@ export type Context = {
   metrics?: Metrics;
 };
 
-export function createContext(): Context {
+export function createContext(accountId = LOCAL_ACCOUNT): Context {
   const databasePool = pool();
   return {
     db: db(),
-    accountId: LOCAL_ACCOUNT,
+    accountId,
     pool: databasePool,
     schemaGenerator: schemaGenerator(),
     promptCompiler: promptCompiler(),
     graphCompiler: graphCompiler(databasePool),
+    ...(process.env.TABDUCTOR_DEPLOYMENT_MODE === "hosted" ? { ...accountModelServices(accountId), modelsForWorkflow: (id: string) => accountModelServices(accountId, id) } : {}),
   };
 }
 

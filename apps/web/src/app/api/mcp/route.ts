@@ -10,8 +10,7 @@ async function handle(request: Request): Promise<Response> {
     enableJsonResponse: true,
   });
   const server = createWorkflowMcpServer(createWorkflowControl({
-    ...createContext(),
-    accountId: await accountIdForMcpRequest(request),
+    ...createContext(await accountIdForMcpRequest(request)),
   }));
   await server.connect(transport);
   return transport.handleRequest(request);

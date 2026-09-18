@@ -35,6 +35,7 @@ export type LiveLlmOptions = {
   provider: LlmProvider;
   apiKey: string;
   model?: string | undefined;
+  maxOutputTokens?: number;
 };
 
 const toolCallArgsSchema = z.record(z.string(), z.unknown());
@@ -74,6 +75,8 @@ export function liveLlm(opts: LiveLlmOptions): Llm {
     async complete(req: LlmRequest): Promise<LlmResponse> {
       const result = await generateText({
         model,
+        maxRetries: 0,
+        ...(opts.maxOutputTokens ? { maxOutputTokens: opts.maxOutputTokens } : {}),
         system: req.system,
         messages: req.messages.map((m) => ({ role: m.role, content: m.content })),
         tools: toAiTools(req.tools),
@@ -97,7 +100,8 @@ export function liveLlm(opts: LiveLlmOptions): Llm {
         // normalize that to `undefined` so a caller can `if (res.text)` without a special case.
         text: result.text || undefined,
         toolCalls,
-        usage: { in: result.usage.inputTokens ?? 0, out: result.usage.outputTokens ?? 0 },
+        usage: { in: result.usage.inputTokens ?? NaN, out: result.usage.outputTokens ?? NaN,
+          cachedInput: result.usage.inputTokenDetails.cacheReadTokens ?? 0, reasoning: result.usage.outputTokenDetails.reasoningTokens ?? 0 },
       };
     },
   };

@@ -40,7 +40,7 @@ export type DecisionExecutorDeps = {
   pool: Pool;
   gate: PolicyGate;
   blobs: BlobStore;
-  llmFor: (opts: { trace: TraceRecorder; task: TaskRow }) => Llm;
+  llmFor: (opts: { trace: TraceRecorder; task: TaskRow; runId: string }) => Llm;
   metrics?: Metrics;
   storageFlagsOf?: (task: TaskRow) => StorageFlags;
 };
@@ -107,7 +107,7 @@ export function createDecisionExecutor(deps: DecisionExecutorDeps): TaskExecutor
             policy: { gate, taskCtx },
           },
         });
-        const llm = llmFor({ trace, task: handle.task });
+        const llm = llmFor({ trace, task: handle.task, runId: handle.run.id });
 
         const result = await runAgentLoop({
           llm,

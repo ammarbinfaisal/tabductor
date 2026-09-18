@@ -1188,3 +1188,8 @@ main:has(.workflow-workspace) { max-width: 1680px; }
 @media (prefers-reduced-motion: reduce) { .chat-tool[data-status="running"] > span:first-child { animation: none; } }
 .chat-welcome h3 { font-family: var(--font-display); text-transform: none; letter-spacing: normal; font-weight: 500; }
 @media (min-width: 1001px) { .workflow-chat { height: calc(100dvh - 265px); } }
+
+.settings-section form { max-width: 44rem; margin-block: var(--space-5, 24px); }
+.settings-section label { display: grid; gap: 8px; margin-block: 12px; }
+.settings-section input, .settings-section select { width: 100%; min-height: 44px; }
+.table-scroll { overflow-x: auto; }

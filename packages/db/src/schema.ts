@@ -1313,3 +1313,49 @@ export type SecretAccessLogRow = typeof secretAccessLog.$inferSelect;
 export type StoreSchemaRow = typeof storeSchemas.$inferSelect;
 export type NewStoreSchema = typeof storeSchemas.$inferInsert;
 export type StoreWriteGrantRow = typeof storeWriteGrants.$inferSelect;
+
+export const modelCredentials = pgTable("model_credentials", {
+  id: text("id").primaryKey(),
+  accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }),
+  provider: text("provider").$type<"openai" | "anthropic">().notNull(),
+  label: text("label").notNull(),
+  envelope: jsonb("envelope").$type<{ ciphertext: string; nonce: string; wrapped: string; kekRef: string }>().notNull(),
+  revokedAt: ts("revoked_at"),
+  createdAt: createdAt(),
+}, (t) => [index("model_credentials_account_idx").on(t.accountId)]);
+
+/** scope is 'account' or a workflow id. Credentials are never part of a graph artifact. */
+export const modelSelections = pgTable("model_selections", {
+  accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }),
+  scope: text("scope").notNull(),
+  funding: text("funding").$type<"byo" | "platform">().notNull(),
+  provider: text("provider").$type<"openai" | "anthropic">().notNull(),
+  model: text("model").notNull(),
+  credentialId: text("credential_id").references(() => modelCredentials.id, { onDelete: "restrict" }),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.accountId, t.scope] }),
+  check("model_selections_funding_check", sql`(${t.funding} = 'byo' and ${t.credentialId} is not null) or (${t.funding} = 'platform' and ${t.credentialId} is null)`)]);
+
+/** Each outbound model call is admitted durably before contacting the provider. */
+export const modelOperations = pgTable("model_operations", {
+  id: text("id").primaryKey(),
+  accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "restrict" }),
+  workflowId: text("workflow_id").references(() => workflows.id, { onDelete: "restrict" }),
+  runId: text("run_id").references(() => runs.id, { onDelete: "restrict" }),
+  purpose: text("purpose").notNull(),
+  funding: text("funding").$type<"byo" | "platform">().notNull(),
+  provider: text("provider").notNull(),
+  model: text("model").notNull(),
+  rateVersion: text("rate_version"),
+  rateJson: jsonb("rate_json").$type<{ input: number; cachedInput: number; output: number }>(),
+  reservationId: text("reservation_id").references(() => creditReservations.id, { onDelete: "restrict" }),
+  status: text("status").$type<"pending" | "succeeded" | "uncertain">().notNull().default("pending"),
+  inputTokens: integer("input_tokens"),
+  cachedInputTokens: integer("cached_input_tokens"),
+  outputTokens: integer("output_tokens"),
+  reasoningTokens: integer("reasoning_tokens"),
+  chargedUnits: bigint("charged_units", { mode: "number" }),
+  createdAt: createdAt(),
+  completedAt: ts("completed_at"),
+}, (t) => [index("model_operations_account_created_idx").on(t.accountId, t.createdAt),
+  check("model_operations_status_check", sql`${t.status} in ('pending','succeeded','uncertain')`)]);
