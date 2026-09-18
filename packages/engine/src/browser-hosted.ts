@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import { AppError, newId } from "@tabductor/core";
 import type { EndpointPool } from "@tabductor/browser";
 import { createCamoufoxWorkerDriver } from "@tabductor/browser/worker-driver";
-import { browserSessions, browserCommands, workflowBrowserProfiles, workflows, runs, workflowVersions, tasks, browserBilling, type Db } from "@tabductor/db";
+import { browserSessionActivity, browserSessions, browserCommands, workflowBrowserProfiles, workflows, runs, workflowVersions, tasks, browserBilling, type Db } from "@tabductor/db";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { createBrowserProfile, requestBrowserSession, type BrowserAdmission } from "./browser-fleet.js";
 import { stopBrowserSession } from "./browser-session-control.js";
@@ -73,20 +73,25 @@ export function createHostedBrowserPool(deps: { db: Db; tokenKey: string; worker
           if (!session || ["ended", "failed", "stopping"].includes(session.status)) throw new AppError("browser_allocation_failed", "browser allocation ended");
           if (session.status === "ready" && session.podName) {
             const url = await deps.workerUrl(session.podName);
+            let inputGeneration = session.inputOwnerGeneration;
             const driver = createCamoufoxWorkerDriver({ token: browserWorkerToken(deps.tokenKey, session.podName), sessionId, generation: session.generation,
               fetch: async (target, init) => {
                 const command = JSON.parse(String(init?.body)) as Record<string, unknown>;
                 const commandId = newId("command");
                 await deps.db.insert(browserCommands).values({ id: commandId, sessionId, runId, runGeneration: row.run.leaseGeneration,
-                  generation: session.generation, inputGeneration: session.inputOwnerGeneration, method: String(command.method) });
+                  generation: session.generation, inputGeneration, method: String(command.method) });
                 let dispatched = false;
                 try {
                   const response = await deps.db.transaction(async (trx) => {
                     await assertRunLease(trx, runId, row.run.leaseGeneration);
                     const [owner] = await trx.select().from(browserSessions).where(and(eq(browserSessions.id, sessionId),
                       eq(browserSessions.generation, session.generation), inArray(browserSessions.status, ["ready", "running"]))).for("update");
-                    if (!owner || owner.inputOwner !== "ai" || owner.inputOwnerGeneration !== session.inputOwnerGeneration) {
-                      throw new AppError("browser_input_revoked", "browser input changed; automation must resume with fresh perception");
+                    if (!owner || owner.inputOwner !== "ai") {
+                      throw new AppError("browser_input_revoked", "browser input is paused for a human; wait for resume and perceive again");
+                    }
+                    if (owner.inputOwnerGeneration !== inputGeneration) {
+                      if (command.method !== "page.perceive") throw new AppError("browser_fresh_perception_required", "browser input changed; perceive the page before taking another action");
+                      inputGeneration = owner.inputOwnerGeneration;
                     }
                     dispatched = true;
                     const result = await request(target, { ...init, signal: AbortSignal.timeout(60_000), body: JSON.stringify({ ...command, command_id: commandId, input_generation: owner.inputOwnerGeneration }) });
@@ -95,6 +100,9 @@ export function createHostedBrowserPool(deps: { db: Db; tokenKey: string; worker
                     return new Response(bytes, { status: result.status, headers: result.headers });
                   });
                   await deps.db.update(browserCommands).set({ status: response.ok ? "succeeded" : "uncertain", completedAt: sql`now()` }).where(eq(browserCommands.id, commandId));
+                  await deps.db.insert(browserSessionActivity).values({ sessionId, kind: String(command.method),
+                    offsetMs: Math.max(0, Date.now() - (session.readyAt ?? session.createdAt).getTime()),
+                    private: command.method === "page.insert_text", payloadJson: { commandId, outcome: response.ok ? "succeeded" : "uncertain" } });
                   return response;
                 } catch (error) {
                   await deps.db.update(browserCommands).set({ status: dispatched ? "uncertain" : "rejected", completedAt: sql`now()` }).where(eq(browserCommands.id, commandId));

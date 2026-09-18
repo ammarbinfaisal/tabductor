@@ -1,11 +1,11 @@
 import { CoreV1Api, KubeConfig, type V1Pod } from "@kubernetes/client-node";
 import { loadConfig, newId } from "@tabductor/core";
-import { createDb, browserAllocationRequests, browserBilling, browserProfiles, browserProfileLeases, browserSessions, browserWorkers } from "@tabductor/db";
+import { createDb, browserRecordingSegments, browserAllocationRequests, browserBilling, browserProfiles, browserProfileLeases, browserSessions, browserWorkers } from "@tabductor/db";
 import { createMinioBlobStore } from "@tabductor/browser";
 import { encryptEnvelope, fileKeyWrapper, withEnvelope, type EncryptedEnvelope } from "@tabductor/secrets";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { claimBrowserAllocation, failBrowserAllocation, fulfillBrowserAllocation, endBrowserSession, browserWorkerToken,
-  browserCreditAdmission, settleBrowserUsage, acknowledgeBrowserPause, expireBrowserTakeovers, stopBrowserSession } from "@tabductor/engine";
+  browserCreditAdmission, settleBrowserUsage, acknowledgeBrowserPause, expireBrowserTakeovers, stopBrowserSession, appendBrowserRecordingSegment, expireBrowserRecordings } from "@tabductor/engine";
 
 const config = loadConfig();
 const namespace = process.env.BROWSER_NAMESPACE ?? "tabductor-staging";
@@ -48,6 +48,23 @@ async function rpc(podName: string, url: string, path: string, method: string, b
   return await response.json() as Record<string, unknown>;
 }
 
+async function syncRecording(sessionId: string, generation: number, podName: string, url: string) {
+  const [last] = await handle.db.select({ sequence: browserRecordingSegments.sequence }).from(browserRecordingSegments)
+    .where(eq(browserRecordingSegments.sessionId, sessionId)).orderBy(desc(browserRecordingSegments.sequence)).limit(1);
+  const result = await rpc(podName, url, `/v1/sessions/${sessionId}/recording?after=${last?.sequence ?? -1}`, "GET");
+  const segments = result.segments as Array<{ sequence: number; start_ms: number; end_ms: number; status: "ready" | "private"; bytes?: string }>;
+  for (const segment of segments) {
+    let objectRef: string | undefined;
+    if (segment.status === "ready" && segment.bytes) {
+      const encrypted = await encryptEnvelope(wrapper, Buffer.from(segment.bytes, "base64"));
+      objectRef = await blobs.put(Buffer.from(JSON.stringify(encrypted)), { mime: "application/json" });
+    }
+    await appendBrowserRecordingSegment(handle.db, { sessionId, generation, sequence: segment.sequence,
+      startMs: segment.start_ms, endMs: Math.max(segment.start_ms + 1, segment.end_ms), status: segment.status, ...(objectRef ? { objectRef } : {}) });
+  }
+  return result.finished === true && segments.length < 8;
+}
+
 async function reconcile(): Promise<void> {
   // A connection-scoped leader lock survives individual bookkeeping transactions. Never overlap controllers.
   const leader = await handle.pool.connect();
@@ -56,6 +73,7 @@ async function reconcile(): Promise<void> {
     if (!lock.rows[0]?.locked) return;
     try {
       await expireBrowserTakeovers(handle.db);
+      await expireBrowserRecordings(handle.db, blobs);
       const podList = await core.listNamespacedPod({ namespace, labelSelector: "app.kubernetes.io/name=tabductor-browser" });
       const pods = new Map(podList.items.map((pod) => [pod.metadata!.name!, pod]));
       const workers = await handle.db.select().from(browserWorkers).where(inArray(browserWorkers.status, ["warm", "allocated", "draining"]));
@@ -112,6 +130,7 @@ async function reconcile(): Promise<void> {
           if (allocation) await fulfillBrowserAllocation(handle.db, { requestId: allocation.id, accountId: session.accountId, sessionId: session.id, profileId: session.profileId, generation: session.generation, workerId: worker.id, podName: worker.podName });
         } else if (session.status === "stopping") {
           const result = await rpc(worker.podName, url, `/v1/sessions/${session.id}?generation=${session.generation}`, "DELETE");
+          if (!await syncRecording(session.id, session.generation, worker.podName, url)) continue;
           if (typeof result.snapshot !== "string") throw new Error("worker did not return a clean profile snapshot");
           const envelope = await encryptEnvelope(wrapper, Buffer.from(result.snapshot, "base64"));
           const ref = await blobs.put(Buffer.from(JSON.stringify(envelope)), { mime: "application/json" });
@@ -123,6 +142,7 @@ async function reconcile(): Promise<void> {
           });
           await settleBrowserUsage(handle.db, session.id);
         } else {
+          await syncRecording(session.id, session.generation, worker.podName, url);
           const owner = session.inputOwner === "paused" && session.pauseRequestedAt && !session.pauseAcknowledgedAt ? "human" : session.inputOwner;
           await rpc(worker.podName, url, `/v1/sessions/${session.id}/control`, "POST", { generation: session.generation, input_generation: session.inputOwnerGeneration, owner });
           if (owner === "human" && session.inputOwner === "paused") await acknowledgeBrowserPause(handle.db, { sessionId: session.id, generation: session.generation, inputOwnerGeneration: session.inputOwnerGeneration });

@@ -1,0 +1,44 @@
+import { afterAll, beforeAll, expect, it } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { browserSessions } from "@tabductor/db";
+import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
+import { fileKeyWrapper, encryptEnvelope } from "@tabductor/secrets";
+import { appendBrowserRecordingSegment, claimBrowserAllocation, createBrowserProfile, expireBrowserRecordings, fulfillBrowserAllocation,
+  mintBrowserViewToken, readBrowserMedia, requestBrowserSession, resolveAccountIdentity, verifyBrowserViewToken } from "@tabductor/engine";
+import { eq, sql } from "drizzle-orm";
+let db: MigratedTestDb, dir: string;
+beforeAll(async () => { db = await createMigratedTestDb(); dir = await mkdtemp(join(tmpdir(), "media-")); });
+afterAll(async () => { await db?.close(); if (dir) await rm(dir, { recursive: true }); });
+it("rejects tampered and expired viewer tokens", () => {
+  const key = "fixture".repeat(6);
+  const claims = { accountId: "a", sessionId: "s", generation: 1, inputGeneration: 2, access: "control" as const, expiresAt: Date.now() + 10_000 };
+  const token = mintBrowserViewToken(key, claims);
+  expect(verifyBrowserViewToken(key, token)).toEqual(claims);
+  expect(() => verifyBrowserViewToken(key, token, claims.expiresAt)).toThrow("invalid or expired");
+  expect(() => verifyBrowserViewToken(key, token + "x")).toThrow("invalid or expired");
+  expect(() => verifyBrowserViewToken("different".repeat(5), token)).toThrow("invalid or expired");
+});
+it("serves encrypted media only to its account and deletes it after seven days", async () => {
+  const accountId = await resolveAccountIdentity(db.db, { provider: "fixture", subject: "media-owner" });
+  const profileId = await createBrowserProfile(db.db, { accountId, name: "Media" });
+  const sessionId = await requestBrowserSession(db.db, { accountId, profileId });
+  const allocation = await claimBrowserAllocation(db.db);
+  await fulfillBrowserAllocation(db.db, { ...allocation!, workerId: "media-worker", podName: "media-pod" });
+  const wrapper = fileKeyWrapper(join(dir, "kek.json"));
+  const encrypted = Buffer.from(JSON.stringify(await encryptEnvelope(wrapper, Buffer.from("fixture video"))));
+  const objects = new Map([["ref", encrypted]]);
+  const blobs = { put: async () => "ref", get: async (ref: string) => objects.get(ref)!, remove: async (ref: string) => { objects.delete(ref); } };
+  await appendBrowserRecordingSegment(db.db, { sessionId, generation: 1, sequence: 0, startMs: 0, endMs: 2000, status: "ready", objectRef: "ref" });
+  await appendBrowserRecordingSegment(db.db, { sessionId, generation: 1, sequence: 1, startMs: 2000, endMs: 4000, status: "private" });
+  expect((await readBrowserMedia(db.db, blobs, wrapper, { accountId, sessionId, sequence: 0 })).bytes.toString()).toBe("fixture video");
+  const playlist = (await readBrowserMedia(db.db, blobs, wrapper, { accountId, sessionId })).bytes.toString();
+  expect(playlist).toContain("0.ts"); expect(playlist).not.toContain("1.ts");
+  await expect(readBrowserMedia(db.db, blobs, wrapper, { accountId: "acct_local", sessionId, sequence: 0 })).rejects.toMatchObject({ code: "browser_media_not_found" });
+  await expect(readBrowserMedia(db.db, blobs, wrapper, { accountId, sessionId, sequence: 1 })).rejects.toMatchObject({ code: "browser_media_not_found" });
+  await db.db.update(browserSessions).set({ createdAt: sql`now() - interval '8 days'` }).where(eq(browserSessions.id, sessionId));
+  expect(await expireBrowserRecordings(db.db, blobs)).toBe(1);
+  expect(objects.size).toBe(0);
+  await expect(readBrowserMedia(db.db, blobs, wrapper, { accountId, sessionId })).rejects.toThrow("unavailable");
+});

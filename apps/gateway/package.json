@@ -1,0 +1,5 @@
+{
+  "name": "@tabductor/gateway", "version": "0.0.0", "private": true, "type": "module",
+  "dependencies": { "@tabductor/core": "workspace:*", "@tabductor/db": "workspace:*", "@tabductor/engine": "workspace:*", "drizzle-orm": "^0.44.0", "ws": "^8.18.0" },
+  "devDependencies": { "@types/ws": "^8.18.0", "@types/node": "^24.0.0" }
+}

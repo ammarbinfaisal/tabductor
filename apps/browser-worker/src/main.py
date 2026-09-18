@@ -16,7 +16,8 @@ from typing import Any
 from urllib.parse import urlparse
 
 from camoufox.async_api import AsyncCamoufox
-from fastapi import FastAPI, Header, HTTPException
+from .recording import Recorder
+from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 RPC_VERSION = "1"
@@ -74,6 +75,23 @@ session: Session | None = None
 command_lock = asyncio.Lock()
 used = False
 clean_snapshot: str | None = None
+recorder: Recorder | None = None
+control_vnc: Any = None
+recording_session_id: str | None = None
+human_view_active = False
+
+
+async def stop_control_vnc():
+    global control_vnc
+    if control_vnc is not None and control_vnc.returncode is None:
+        control_vnc.terminate()
+        await control_vnc.wait()
+    control_vnc = None
+
+
+async def start_control_vnc():
+    global control_vnc
+    control_vnc = await asyncio.create_subprocess_exec("x11vnc", "-display", os.environ.get("DISPLAY", ":99"), "-localhost", "-rfbport", "5901", "-forever", "-shared", "-nopw", "-quiet", stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
 app = FastAPI(title="Tabductor Camoufox worker", version=RPC_VERSION)
 
 
@@ -132,7 +150,7 @@ async def start_session(
     authorization: str | None = Header(default=None),
     x_tabductor_rpc_version: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    global session, used
+    global session, used, recorder, recording_session_id
     authorize(authorization, x_tabductor_rpc_version)
     if not ID.fullmatch(request.session_id):
         raise HTTPException(400, "invalid session id")
@@ -173,6 +191,9 @@ async def start_session(
     manager = AsyncCamoufox(**options)
     context = await manager.__aenter__()
     session = Session(request.session_id, request.generation, manager, context, profile=profile)
+    recorder = Recorder(PROFILE_ROOT / "recordings")
+    recording_session_id = session.session_id
+    await recorder.start()
     for page in context.pages:
         session.add_page(page)
     return {"session_id": request.session_id, "generation": request.generation, "idempotent": False}
@@ -195,6 +216,9 @@ async def stop_session(session_id: str, generation: int, authorization: str | No
         if current.session_id != session_id:
             raise HTTPException(404, "session not found")
         current.input_owner = "paused"
+        await stop_control_vnc()
+        if recorder:
+            await recorder.finish()
         await current.context.close()
         await current.manager.__aexit__(None, None, None)
         output = io.BytesIO()
@@ -220,6 +244,12 @@ async def control(session_id: str, request: ControlRequest, authorization: str |
             raise HTTPException(409, "stale input owner")
         if request.input_generation == current.input_generation and request.owner != current.input_owner:
             raise HTTPException(409, "input generation already assigned")
+        if request.input_generation != current.input_generation or request.owner != current.input_owner:
+            await stop_control_vnc()
+            if request.owner == "human":
+                if recorder:
+                    await recorder.private()
+                await start_control_vnc()
         current.input_generation = request.input_generation
         current.input_owner = request.owner
         return {"acknowledged": True, "input_generation": current.input_generation}
@@ -239,6 +269,8 @@ async def command_locked(session_id: str, request: CommandRequest, authorization
         if len(current.commands) >= 10000:
             raise HTTPException(429, "session command budget exhausted")
         current.commands.add(request.command_id)
+        if request.method == "page.insert_text" and recorder:
+            await recorder.private()
         return await command(session_id, request, authorization, x_tabductor_rpc_version)
 
 
@@ -334,3 +366,72 @@ async def command(
         """, int(params.get("max_chars", 8000)))
         return {"value": value}
     raise HTTPException(400, f"unsupported method {request.method}")
+
+
+@app.websocket("/v1/sessions/{session_id}/view")
+async def view(websocket: WebSocket, session_id: str, generation: int, input_generation: int, access: str):
+    global human_view_active
+    authorize(websocket.headers.get("authorization"), websocket.headers.get("x-tabductor-rpc-version"))
+    current = require_session(generation)
+    if current.session_id != session_id or access not in {"view", "control"}:
+        await websocket.close(code=1008)
+        return
+    def allowed():
+        return session is current and (access == "view" or (current.input_owner == "human" and current.input_generation == input_generation))
+    if not allowed():
+        await websocket.close(code=1008)
+        return
+    async with command_lock:
+        if access == "control":
+            if human_view_active or not allowed():
+                await websocket.close(code=1008)
+                return
+            human_view_active = True
+    # Two VNC servers: the viewer port is enforced read-only by x11vnc, independently of the client.
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", 5901 if access == "control" else 5900)
+    except Exception:
+        if access == "control":
+            human_view_active = False
+        raise
+    await websocket.accept()
+    async def downstream():
+        while allowed():
+            data = await reader.read(65536)
+            if not data:
+                break
+            await websocket.send_bytes(data)
+    async def upstream():
+        while allowed():
+            data = await websocket.receive_bytes()
+            async with command_lock:
+                if not allowed():
+                    break
+                writer.write(data)
+                await writer.drain()
+    async def watch():
+        while allowed():
+            await asyncio.sleep(0.1)
+    tasks = [asyncio.create_task(downstream()), asyncio.create_task(upstream()), asyncio.create_task(watch())]
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        writer.close()
+        await writer.wait_closed()
+        if access == "control":
+            human_view_active = False
+        try:
+            await websocket.close()
+        except (RuntimeError, WebSocketDisconnect):
+            pass
+
+
+@app.get("/v1/sessions/{session_id}/recording")
+async def recording(session_id: str, after: int = -1, authorization: str | None = Header(default=None), x_tabductor_rpc_version: str | None = Header(default=None)):
+    authorize(authorization, x_tabductor_rpc_version)
+    if session_id != recording_session_id or recorder is None:
+        raise HTTPException(404, "recording not found")
+    return recorder.read(after)

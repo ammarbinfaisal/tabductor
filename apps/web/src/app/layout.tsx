@@ -27,6 +27,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <Link href="/status">status</Link>
           <Link href="/settings/models">models</Link>
           <Link href="/billing">billing</Link>
+          <Link href="/sessions">sessions</Link>
         </nav>
       </header>
       <main>{children}</main>

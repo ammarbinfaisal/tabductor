@@ -15,7 +15,8 @@ import {
   type Llm as CompilerLlm,
 } from "@tabductor/compiler";
 import { createLogger, type Logger } from "@tabductor/core";
-import type { CompileJobRow, Db, RunRow, TaskRow } from "@tabductor/db";
+import { browserSessions, browserSessionActivity, type CompileJobRow, type Db, type RunRow, type TaskRow } from "@tabductor/db";
+import { and, eq } from "drizzle-orm";
 import type { Metrics } from "@tabductor/telemetry";
 
 /**
@@ -74,6 +75,12 @@ export function createCompileLoop(deps: CompileHooksDeps): CompileLoop {
   const afterAiRun: CompileLoop["afterAiRun"] = async ({ task, run, ok }) => {
     if (task.kind !== "browser" || task.mode !== "ai") return { enqueued: false, reason: "not a browser ai task" };
     try {
+      if (run.executionId) {
+        const [assisted] = await db.select({ id: browserSessions.id }).from(browserSessions)
+          .innerJoin(browserSessionActivity, eq(browserSessionActivity.sessionId, browserSessions.id))
+          .where(and(eq(browserSessions.executionId, run.executionId), eq(browserSessionActivity.kind, "takeover_started"))).limit(1);
+        if (assisted) return { enqueued: false, reason: "human-assisted execution cannot be promoted" };
+      }
       const eligibility = await noteAiRun({ db }, task, { ok });
       if (!eligibility.eligible) return { enqueued: false, reason: eligibility.reason };
 

@@ -8,7 +8,7 @@ nodes:
   - role: control-plane
     extraPortMappings:
       - containerPort: 30080
-        hostPort: 3000
+        hostPort: 3100
         listenAddress: 127.0.0.1
         protocol: TCP
     extraMounts:

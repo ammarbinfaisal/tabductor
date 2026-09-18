@@ -13,6 +13,7 @@ export type BlobRef = string;
 export type BlobStore = {
   put: (bytes: Buffer, meta: { mime: string }) => Promise<BlobRef>;
   get: (ref: BlobRef) => Promise<Buffer>;
+  remove?: (ref: BlobRef) => Promise<void>;
 };
 
 const REF_PATTERN = /^sha256:([0-9a-f]{64})$/;
@@ -73,6 +74,12 @@ export function createMinioBlobStore(opts: MinioBlobStoreOptions): BlobStore {
         "Content-Type": meta.mime,
       });
       return `sha256:${hex}`;
+    },
+
+    async remove(ref) {
+      const match = REF_PATTERN.exec(ref);
+      if (!match) throw new AppError("blob_ref_invalid", "invalid blob reference");
+      await client.removeObject(opts.bucket, match[1]!);
     },
 
     async get(ref) {

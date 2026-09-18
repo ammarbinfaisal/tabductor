@@ -58,7 +58,8 @@ export function createContext(accountId = LOCAL_ACCOUNT): Context {
     schemaGenerator: schemaGenerator(),
     promptCompiler: promptCompiler(),
     graphCompiler: graphCompiler(databasePool),
-    ...(process.env.TABDUCTOR_DEPLOYMENT_MODE === "hosted" ? { ...accountModelServices(accountId), modelsForWorkflow: (id: string) => accountModelServices(accountId, id) } : {}),
+    ...accountModelServices(accountId),
+    modelsForWorkflow: (id: string) => accountModelServices(accountId, id),
   };
 }
 

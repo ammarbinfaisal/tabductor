@@ -13,6 +13,8 @@ stringData:
   BLOB_BUCKET: {{ .Values.minio.bucket | default .Values.blobBucket | quote }}
   TABDUCTOR_FIXTURE_MODE: {{ ternary "1" "0" .Values.fixtureMode.enabled | quote }}
   TABDUCTOR_DEPLOYMENT_MODE: {{ ternary "local" "hosted" .Values.fixtureMode.enabled | quote }}
+  BROWSER_WEB_URL: {{ printf "http://%s-web:3000" (include "tabductor.fullname" .) | quote }}
+  BROWSER_GATEWAY_URL: {{ printf "http://%s-gateway:8081" (include "tabductor.fullname" .) | quote }}
   BROWSER_MODE: {{ ternary "fleet" "cdp" .Values.fleet.enabled | quote }}
   BROWSER_WORKER_TOKEN_KEY: {{ .Values.fleet.workerTokenKey | quote }}
   BROWSER_RATE_VERSION: {{ .Values.fleet.rateVersion | quote }}

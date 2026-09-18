@@ -47,7 +47,7 @@ metadata:
   labels:
     {{- include "tabductor.labels" . | nindent 4 }}
 spec:
-  type: {{ ternary "NodePort" "ClusterIP" (ne .Values.service.nodePort nil) }}
+  type: {{ ternary "NodePort" "ClusterIP" (and (not .Values.fleet.enabled) (ne .Values.service.nodePort nil)) }}
   selector:
     app.kubernetes.io/instance: {{ .Release.Name }}
     app.kubernetes.io/component: web
@@ -55,7 +55,7 @@ spec:
     - name: http
       port: 3000
       targetPort: http
-      {{- if .Values.service.nodePort }}
+      {{- if and (not .Values.fleet.enabled) .Values.service.nodePort }}
       nodePort: {{ .Values.service.nodePort }}
       {{- end }}
 ---
@@ -95,4 +95,47 @@ spec:
           hostPath:
             path: {{ .Values.secrets.storagePath | quote }}
             type: DirectoryOrCreate
+{{- end }}
+{{- if and .Values.controlPlane.enabled .Values.fleet.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tabductor.fullname" . }}-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: gateway }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: gateway }
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: gateway
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["node", "--import", "tsx", "apps/gateway/src/main.ts"]
+          envFrom:
+            - secretRef: { name: {{ include "tabductor.fullname" . }}-config }
+          ports: [{ name: http, containerPort: 8081 }]
+          readinessProbe: { httpGet: { path: /healthz, port: http } }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tabductor.fullname" . }}-gateway
+spec:
+  type: {{ ternary "NodePort" "ClusterIP" (ne .Values.service.nodePort nil) }}
+  selector: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: gateway }
+  ports:
+    - name: http
+      port: 8081
+      targetPort: http
+      {{- if .Values.service.nodePort }}
+      nodePort: {{ .Values.service.nodePort }}
+      {{- end }}
 {{- end }}

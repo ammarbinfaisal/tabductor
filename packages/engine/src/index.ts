@@ -263,3 +263,5 @@ export * from "./workflow-chat.js";
 export { createModelResolver, saveModelCredential, setModelSelection, modelSelectionSchema, modelScopeForTask, parseModelRates, modelCreditUnits, settleModelOperation,
   type ModelResolver, type ModelRate, type ModelUsage, type ModelScope, type ModelPurpose, type ModelCallConfig } from "./model-funding.js";
 export { createHostedBrowserPool, ensureWorkflowBrowserProfile, browserWorkerToken, browserCreditAdmission, settleBrowserUsage } from "./browser-hosted.js";
+export { mintBrowserViewToken, verifyBrowserViewToken, type BrowserViewClaims } from "./browser-view-token.js";
+export { readBrowserMedia, expireBrowserRecordings } from "./browser-media.js";

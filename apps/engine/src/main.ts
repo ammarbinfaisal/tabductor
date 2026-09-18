@@ -100,7 +100,7 @@ const modelResolver = createModelResolver({ db: handle.db, wrapper: fileKeyWrapp
   rates: parseModelRates(config.MODEL_RATES_JSON),
   platformKeys: { ...(config.OPENAI_API_KEY ? { openai: config.OPENAI_API_KEY } : {}), ...(config.ANTHROPIC_API_KEY ? { anthropic: config.ANTHROPIC_API_KEY } : {}) },
 });
-const funded = config.TABDUCTOR_DEPLOYMENT_MODE === "hosted";
+const funded = true;
 const compileLoop = createCompileLoop({
   db: handle.db,
   publish: async (input) => {

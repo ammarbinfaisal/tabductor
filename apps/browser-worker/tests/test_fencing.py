@@ -11,7 +11,9 @@ fake = types.ModuleType("camoufox.async_api")
 fake.AsyncCamoufox = None
 sys.modules.setdefault("camoufox", types.ModuleType("camoufox"))
 sys.modules["camoufox.async_api"] = fake
-spec = importlib.util.spec_from_file_location("worker_protocol", Path(__file__).parents[1] / "src/main.py")
+sys.path.insert(0, str(Path(__file__).parents[1]))
+import src.recording
+spec = importlib.util.spec_from_file_location("src.worker_protocol", Path(__file__).parents[1] / "src/main.py")
 worker = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = worker
 spec.loader.exec_module(worker)
@@ -19,6 +21,8 @@ spec.loader.exec_module(worker)
 class Fencing(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         worker.TOKEN = "fixture-token"
+        worker.stop_control_vnc = AsyncMock()
+        worker.start_control_vnc = AsyncMock()
         worker.command_lock = asyncio.Lock()
         worker.session = worker.Session("session-a", 2, None, None)
         worker.session.pages["p1"] = types.SimpleNamespace(title=AsyncMock(return_value="Fixture"))

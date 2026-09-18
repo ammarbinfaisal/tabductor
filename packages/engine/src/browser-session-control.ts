@@ -64,6 +64,7 @@ async function appendControlActivity(
   await db.insert(browserSessionActivity).values({
     sessionId: input.sessionId,
     kind: input.kind,
+    offsetMs: sql`greatest(0, extract(epoch from (now() - (select coalesce(ready_at, created_at) from browser_sessions where id = ${input.sessionId}))) * 1000)::int`,
     payloadJson: input.payload ?? {},
     private: input.private ?? false,
   });

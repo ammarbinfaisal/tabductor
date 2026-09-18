@@ -59,4 +59,4 @@ helm upgrade "${TABDUCTOR_RELEASE}" "${chart}" \
   --set migration.enabled=false \
   --wait --timeout 5m
 
-printf 'Tabductor staging is ready at http://127.0.0.1:3000\n'
+printf 'Tabductor staging is ready at http://127.0.0.1:3100\n'

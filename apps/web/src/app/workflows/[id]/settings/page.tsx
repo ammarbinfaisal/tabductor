@@ -1,3 +1,4 @@
+import { ProfileSetup } from "../../../../components/profile-setup.js";
 import { ModelSettings } from "../../../../components/model-settings.js";
 import { createServerCaller } from "../../../../server/router.js";
 import { EndpointSettings } from "../../../../components/endpoint-settings.js";
@@ -14,7 +15,7 @@ export default async function SettingsPage({ params }: { params: Promise<{ id: s
     <>
       <h1>Settings</h1>
       <ModelSettings settings={models} workflowId={id} />
-      <EndpointSettings workflowId={id} />
+      {process.env.TABDUCTOR_DEPLOYMENT_MODE === "hosted" || process.env.BROWSER_MODE === "fleet" ? <ProfileSetup workflowId={id} /> : <EndpointSettings workflowId={id} />}
     </>
   );
 }

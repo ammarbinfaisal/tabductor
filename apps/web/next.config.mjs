@@ -38,6 +38,10 @@ const config = {
    * `instrumentation.ts` for the edge too — where the OTel SDK cannot resolve `net`. Static
    * config gets the same headers with no second runtime to keep the SDK out of.
    */
+  async rewrites() {
+    return [{ source: "/browser-gateway/:path*", destination: `${process.env.BROWSER_GATEWAY_URL ?? "http://127.0.0.1:8081"}/:path*` }];
+  },
+
   async headers() {
     return [
       {
