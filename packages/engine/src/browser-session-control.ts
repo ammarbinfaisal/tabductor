@@ -93,7 +93,7 @@ export async function requestBrowserTakeover(
     }).where(and(
       eq(browserSessions.id, input.sessionId),
       eq(browserSessions.accountId, input.accountId),
-      eq(browserSessions.inputOwner, "ai"),
+      inArray(browserSessions.inputOwner, ["ai", "paused"]),
       inArray(browserSessions.status, ACTIVE_SESSION_STATUSES),
     )).returning();
     if (!updated) {

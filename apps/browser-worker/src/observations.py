@@ -61,14 +61,31 @@ class Observations:
             page = None
             if request.is_navigation_request():
                 for _ in range(50):
+                    try:
+                        page = request.frame.page
+                    except Exception:
+                        pass
+                    if page:
+                        break
                     candidates = [p for p in self.current.context.pages if p.url == request.url]
                     if len(candidates) == 1:
                         page = candidates[0]
                         break
                     await asyncio.sleep(0.02)
-        while page and page not in self.roots:
-            page = await page.opener()
-        page_id = self.roots.get(page)
+        # Firefox can expose the popup Page before its opener relationship or the
+        # popup event is visible. Wait for attribution rather than dropping that request.
+        page_id = None
+        for _ in range(50):
+            ancestor = page
+            try:
+                while ancestor and ancestor not in self.roots:
+                    ancestor = await ancestor.opener()
+            except Exception:
+                ancestor = None
+            page_id = self.roots.get(ancestor)
+            if page_id or not page:
+                break
+            await asyncio.sleep(0.02)
         if not page_id:
             return
         if self.current.input_owner != "ai" or len(self.requests) >= MAX_REQUESTS:

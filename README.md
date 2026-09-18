@@ -19,9 +19,31 @@ Copy `.env.example` to `.env` if it does not exist, then set `CLERK_SECRET_KEY` 
 `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` from the same Clerk development instance.
 
 ```sh
-docker compose up -d --build
+pnpm local:up
 open http://localhost:3000
 ```
+
+This starts the web app, engine, live-browser gateway, and a local fleet with up to three
+active Camoufox browsers and one clean spare. The local fleet uses the Docker socket to
+create disposable browser containers; it is unavailable in hosted mode. Local browser time
+does not consume Tabductor credits. Model calls still use your selected provider and funding.
+The command generates a local worker signing key in `.env` and selects the active Docker
+context's socket, including rootless Docker. For the control plane without managed browsers,
+use `docker compose up -d --build`.
+
+Open **Profiles** to create a browser profile. Choose **Open browser & sign in**, wait for
+the session to become ready, then **Take control**. Use the address bar to navigate and log
+in. **Stop session** saves the browser state. In an automation, follow **Set up browser
+profiles and sign in** to select the profile for future sessions.
+
+Alternatively, [load the Chrome extension](apps/profile-extension/README.md) and import a
+selected site's cookies and full local storage with the single-use code from Profiles.
+Stop an active session before importing. Some authentication remains bound to the original
+device and needs a fresh login. The extension is supplied locally, not through the Web Store.
+
+The **Automation** tab accepts a finished prompt or helps write one through chat. Build the
+draft, review its behavior, publish, and run it. **Graph** is a separate local-only tab;
+hosted deployments show Automation and Activity.
 
 Compose starts Postgres, MinIO, one-shot migrations, the engine, and the Next.js control plane.
 After signing in, open **Models**, save your provider key, and select a model under
@@ -31,9 +53,11 @@ they do not automatically select a model for a signed-in account. Platform model
 require configured rates and account credits.
 MinIO stores browser trace blobs.
 
-After changing Clerk keys in `.env`, run `docker compose up -d --no-deps web` to
-recreate the web container with the new values. A container restart alone does not reload
-Compose environment variables.
+After changing keys in `.env`, run `pnpm local:up` to recreate the managed local stack
+with the new values. For the control-plane-only setup, use `docker compose up -d --no-deps web engine`.
+A container restart alone does not reload Compose environment variables. Web, engine, and
+fleet use the same absolute encryption-key path on the persistent `kek` volume so credentials
+and imported profile state survive container recreation.
 
 Browser navigation defaults to `POLICY_NAVIGATION_MODE=permissive`: pages, redirects,
 popups, and embedded frames can load without per-host task grants, including identity

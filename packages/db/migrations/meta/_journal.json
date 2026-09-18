@@ -281,6 +281,13 @@
       "when": 1789728966354,
       "tag": "0039_cold_wong",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1789746915863,
+      "tag": "0040_lyrical_black_knight",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Tabductor Profile Sync",
+  "version": "0.1.0",
+  "description": "Copy a selected website's cookies and local storage into your Tabductor browser profile.",
+  "permissions": [
+    "activeTab",
+    "cookies",
+    "scripting"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Sync to Tabductor profile"
+  },
+  "minimum_chrome_version": "132"
+}

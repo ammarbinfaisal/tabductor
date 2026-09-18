@@ -266,3 +266,5 @@ export { createHostedBrowserPool, ensureWorkflowBrowserProfile, browserWorkerTok
 export { mintBrowserViewToken, verifyBrowserViewToken, type BrowserViewClaims } from "./browser-view-token.js";
 export { readBrowserMedia, expireBrowserRecordings } from "./browser-media.js";
 export { createSolverProvider, parseSolverRates, requestChallengeRecovery, advanceChallengeRecovery, type SolverProvider, type Challenge, type ChallengeKind } from "./challenge-recovery.js";
+
+export * from "./profile-auth.js";

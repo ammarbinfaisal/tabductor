@@ -161,6 +161,22 @@ profile directory or recycle a used customer browser into the warm pool.
 Persist locale, timezone, fingerprint, and proxy preferences together. Keep a sticky proxy
 assignment during a session; an expiring provider assignment does not imply a permanent IP.
 Interactive profile setup uses the same session, takeover, and metering paths as workflows.
+
+The frontend exposes profile creation, workflow binding, and an interactive session with an
+address bar. Users take control to navigate and sign in, then stop to save the encrypted profile.
+An explicit Chrome extension import can transfer a selected origin's cookies and complete
+localStorage into an idle profile. A short-lived, single-use capability binds each transfer
+to an account, profile and origin. Imports never read profile secrets back to the extension.
+The worker applies imports before recording, preserves session cookies across clean browser
+replacement, and clears pending imports only after publishing a clean encrypted snapshot.
+Other origins require separate transfers; IndexedDB, passkeys, device-bound credentials and
+partitioned-cookie authentication are outside this portable import format.
+
+Authoring starts with a user-facing automation prompt, written directly or prepared by chat.
+The checked draft stores that prompt with its version; internal task instructions remain
+separate. Building does not publish or run. The main views are Automation and Activity; Graph
+is available only as a separate local inspection tab. Missing runtime sign-in is handled by
+profile setup, not by asking the author to host a runner or supply website API credentials.
 A persistent profile stores browser state, not a checkpoint of arbitrary running JavaScript.
 
 ## 6. Live viewing, playback, and human takeover

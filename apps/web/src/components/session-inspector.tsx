@@ -69,12 +69,17 @@ export function SessionInspector({ sessionId }: { sessionId: string }) {
   return <>
     <p>Status: <strong>{session?.status ?? "Loading…"}</strong> · input: {session?.inputOwner ?? "—"}</p>
     {view.error ? <p role="alert">{view.error}</p> : null}
-    <div className="row">
+    <div className="row session-controls">
       <button disabled={!active} onClick={() => void connect(sessionId, "view").catch(report)}>Watch live</button>
-      <button disabled={!active || session.inputOwner !== "ai"} onClick={() => void action(sessionId, "takeover")}>Take control</button>
+      <button disabled={!active || session.inputOwner === "human"} onClick={() => void action(sessionId, "takeover")}>Take control</button>
       <button disabled={!active || session.inputOwner === "ai"} onClick={() => void action(sessionId, "resume")}>Resume automation</button>
-      <button disabled={!active} onClick={() => void action(sessionId, "stop")}>Stop session</button>
+      <button disabled={!session || ["ended", "failed", "stopping"].includes(session.status)} onClick={() => void action(sessionId, "stop")}>Stop session & save profile</button>
     </div>
+    <form className="browser-address" onSubmit={event => { event.preventDefault(); const data = new FormData(event.currentTarget); void api.browserSession.navigate.mutate({ sessionId, url: String(data.get("url")) }).catch(report); }}>
+      <label>Website address<input name="url" type="url" required placeholder="https://x.com" disabled={!active || session.inputOwner !== "human"} /></label>
+      <button disabled={!active || session.inputOwner !== "human"}>Go</button>
+    </form>
+    <p>Choose Take control to navigate and sign in. When finished, stop the session to save this profile.</p>
     <p className="muted">Taking control makes the rest of this session private in recordings. Disconnecting control pauses input; resume explicitly when you are finished.</p>
     <div id="session-viewer" className="session-viewer" aria-label="Live browser" />
     <h2>Playback</h2>

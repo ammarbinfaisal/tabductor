@@ -13,6 +13,7 @@ const EXPECTED_TABLES = [
   "browser_billing",
   "browser_challenges",
   "browser_commands",
+  "browser_profile_imports",
   "browser_profile_leases",
   "browser_profiles",
   "browser_recording_segments",

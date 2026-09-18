@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { clerkConfigured, clerkPublishableKey } from "./server/clerk-config.js";
 
 const configured = clerkConfigured();
-const isPublicRoute = createRouteMatcher(["/s/(.*)", "/status", "/api/mcp", "/sign-in(.*)", "/sign-up(.*)", "/api/paddle/webhook"]);
+const isPublicRoute = createRouteMatcher(["/s/(.*)", "/status", "/api/mcp", "/api/profile-import", "/sign-in(.*)", "/sign-up(.*)", "/api/paddle/webhook"]);
 
 const authenticated = clerkMiddleware(async (auth, request) => {
   if (!isPublicRoute(request)) await auth.protect();

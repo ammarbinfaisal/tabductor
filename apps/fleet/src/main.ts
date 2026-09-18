@@ -1,4 +1,5 @@
 import { AppsV1Api, CoreV1Api, KubeConfig, type V1Pod, type V1OwnerReference } from "@kubernetes/client-node";
+import { dockerFleet } from "./docker-fleet.js";
 import { loadConfig, newId } from "@tabductor/core";
 import { createDb, browserRecordingSegments, browserAllocationRequests, browserBilling, browserProfiles, browserProfileLeases, browserSessions, browserWorkers } from "@tabductor/db";
 import { configuredBlobStore } from "@tabductor/browser";
@@ -14,16 +15,18 @@ const warmSlots = Number(process.env.BROWSER_WARM_SLOTS ?? 1);
 if (!Number.isSafeInteger(maxAllocated) || maxAllocated < 1 || !Number.isSafeInteger(warmSlots) || warmSlots < 0) throw new Error("invalid fleet capacity");
 const tokenKey = process.env.BROWSER_WORKER_TOKEN_KEY;
 if (!tokenKey || tokenKey.length < 32) throw new Error("BROWSER_WORKER_TOKEN_KEY must contain at least 32 characters");
-const admission = config.TABDUCTOR_FIXTURE_MODE ? undefined : browserCreditAdmission({
+const localDocker = process.env.BROWSER_FLEET_DRIVER === "docker";
+if (localDocker && config.TABDUCTOR_DEPLOYMENT_MODE !== "local") throw new Error("Docker fleet is local-only");
+const admission = config.TABDUCTOR_FIXTURE_MODE || localDocker ? undefined : browserCreditAdmission({
   version: process.env.BROWSER_RATE_VERSION ?? "", unitsPerMinute: Number(process.env.BROWSER_UNITS_PER_MINUTE), maxSeconds: Number(process.env.BROWSER_MAX_SECONDS ?? 1800),
 });
 const handle = createDb(config.DATABASE_URL, { max: 8 });
 const blobs = configuredBlobStore(config);
 const wrapper = configuredKeyWrapper(config);
 const kubeconfig = new KubeConfig();
-kubeconfig.loadFromDefault();
-const core = kubeconfig.makeApiClient(CoreV1Api);
-const apps = kubeconfig.makeApiClient(AppsV1Api);
+if (!localDocker) kubeconfig.loadFromDefault();
+const core = localDocker ? dockerFleet(tokenKey) : kubeconfig.makeApiClient(CoreV1Api);
+const apps = localDocker ? null : kubeconfig.makeApiClient(AppsV1Api);
 let controllerOwner: V1OwnerReference;
 let stopping = false;
 let inFlight: Promise<void> | undefined;
@@ -78,10 +81,13 @@ async function reconcile(): Promise<void> {
     if (!lock.rows[0]?.locked) return;
     try {
       if (!controllerOwner) {
+        if (localDocker) controllerOwner = { apiVersion: "v1", kind: "LocalFleet", name: "compose", uid: "compose" };
+        else {
         const name = process.env.BROWSER_CONTROLLER_DEPLOYMENT;
         if (!name) throw new Error("BROWSER_CONTROLLER_DEPLOYMENT is required to own browser pods");
-        const deployment = await apps.readNamespacedDeployment({ namespace, name });
+        const deployment = await apps!.readNamespacedDeployment({ namespace, name });
         controllerOwner = { apiVersion: "apps/v1", kind: "Deployment", name, uid: deployment.metadata!.uid!, controller: false };
+        }
       }
       await expireBrowserTakeovers(handle.db);
       await expireBrowserRecordings(handle.db, blobs);
@@ -135,9 +141,10 @@ async function reconcile(): Promise<void> {
         }
         if (session.status === "allocating") {
           const [profile] = await handle.db.select().from(browserProfiles).where(eq(browserProfiles.id, session.profileId));
+          const importedStates = profile!.pendingAuthEnvelope ? await withEnvelope(wrapper, profile!.pendingAuthEnvelope, async bytes => JSON.parse(bytes.toString())) : [];
           const start = async (snapshot?: string) => rpc(worker.podName, url, "/v1/sessions", "POST", {
             session_id: session.id, generation: session.generation, profile_dir: session.profileId,
-            fingerprint: profile!.fingerprintJson, ...(snapshot ? { snapshot } : {}),
+            fingerprint: profile!.fingerprintJson, imported_states: importedStates, ...(snapshot ? { snapshot } : {}),
           });
           if (profile!.snapshotBlobRef) {
             const envelope = JSON.parse((await blobs.get(profile!.snapshotBlobRef)).toString()) as EncryptedEnvelope;
@@ -154,7 +161,7 @@ async function reconcile(): Promise<void> {
           await handle.db.transaction(async (trx) => {
             const [lease] = await trx.select().from(browserProfileLeases).where(and(eq(browserProfileLeases.sessionId, session.id), eq(browserProfileLeases.generation, session.generation))).for("update");
             if (!lease) throw new Error("profile ownership ended before snapshot publication");
-            await trx.update(browserProfiles).set({ snapshotBlobRef: ref, snapshotGeneration: sql`${browserProfiles.snapshotGeneration} + 1`, updatedAt: sql`now()` }).where(eq(browserProfiles.id, session.profileId));
+            await trx.update(browserProfiles).set({ snapshotBlobRef: ref, pendingAuthEnvelope: null, snapshotGeneration: sql`${browserProfiles.snapshotGeneration} + 1`, updatedAt: sql`now()` }).where(eq(browserProfiles.id, session.profileId));
             await endBrowserSession(trx, session.id);
           });
           await settleBrowserUsage(handle.db, session.id);

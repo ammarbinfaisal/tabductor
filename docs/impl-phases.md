@@ -337,12 +337,29 @@ Camoufox Docker acceptance, and five Python protocol/privacy tests pass. The ful
 regression suite passed 496 tests, with one live-model smoke test skipped. Both Helm
 configurations and Terraform configurations validate; the deployed edge has no drift.
 
-The roadmap is not complete. Remaining gates include the full seeded kind journey and
-fixed-worker Compose mode; live Clerk/Paddle journeys; interval browser reservations,
+Local authoring/profile checkpoint (2026-09-18): the Automation tab accepts a complete prompt
+or conversational refinement and builds a checked draft. Graph inspection is a separate tab
+in local deployments and absent in hosted deployments. A live OpenAI check built the requested
+personalized-feed-to-database automation without publication or external browser actions.
+`pnpm local:up` supplies a bounded Docker fleet and viewer gateway; real allocation and encrypted
+profile snapshot saving pass. Profile creation, workflow binding, live navigation/sign-in, and
+an unpacked Chrome extension for explicit per-origin cookies/full-localStorage import are
+implemented. Import grants are single-use, expire in five minutes, and reject active profiles.
+Real Camoufox checks cover import, session-cookie persistence, profile replacement, manual
+navigation, and private recording. Desktop/mobile authoring UI checks pass. The extension is
+not published to the Chrome Web Store; device-bound credentials and IndexedDB are not imported.
+The full regression suite passes 509 tests with one live-model smoke skipped. Live local
+acceptance covers extension HTTP import, signed viewer control through the gateway, address-bar
+navigation, and encrypted profile saving. All control-plane processes use the same absolute
+path for the persisted encryption key, including Next.js when launched from its package directory.
+
+The roadmap is not complete. Remaining gates include the full seeded kind journey;
+live Clerk/Paddle journeys; interval browser reservations,
 account/execution spending ceilings and unknown-usage reconciliation; managed proxy
 assignment/metering; bounded live model/solver tests; drain-aware upgrades, operational
-dashboards/alerts, and the AWS load/failure/isolation acceptance suite. The account plan,
-regional quota, and host inotify changes are external blockers, not passing test results.
+dashboards/alerts, and the AWS load/failure/isolation acceptance suite. The account plan
+and regional quota remain external blockers, not passing test results. The host inotify limits
+have now been raised; this alone does not establish that the kind acceptance journey passes.
 
 - Run TypeScript build, web build, lint, relevant Python worker checks, unit/system tests,
   and real Camoufox staging tests. Validate Helm rendering and Kubernetes readiness.

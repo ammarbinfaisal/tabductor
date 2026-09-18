@@ -14,7 +14,7 @@ import urllib.error
 import urllib.request
 import uuid
 
-HTML = b'''<!doctype html><title>Browser fixture</title><input id="password" type="password"><button id="login" onclick="document.cookie='fixture=logged-in; max-age=3600; path=/';localStorage.setItem('login','yes');location.href='/account'">Log in</button><iframe src="/frame"></iframe><button id="popup" onclick="window.open('/popup')">Popup</button><button id="dialog" onclick="alert('fixture dialog')">Dialog</button><div id="state"></div><script>fetch('/api/fixture');document.querySelector('#state').textContent=document.cookie.includes('fixture=logged-in')&&localStorage.getItem('login')==='yes'?'authenticated':'anonymous'</script>'''
+HTML = b'''<!doctype html><title>Browser fixture</title><input id="password" type="password"><button id="login" onclick="document.cookie='fixture=logged-in; max-age=3600; path=/';localStorage.setItem('login','yes');location.href='/account'">Log in</button><iframe src="/frame"></iframe><button id="popup" onclick="document.querySelector('#popup-result').textContent=window.open('/popup')?'opened':'blocked'">Popup</button><span id="popup-result"></span><button id="dialog" onclick="alert('fixture dialog')">Dialog</button><div id="state"></div><div id="imported"></div><script>document.querySelector("#imported").textContent=localStorage.getItem("imported-auth")+":"+document.cookie.includes("imported=yes");fetch('/api/fixture');document.querySelector('#state').textContent=document.cookie.includes('fixture=logged-in')&&localStorage.getItem('login')==='yes'?'authenticated':'anonymous'</script>'''
 names = []
 network = 'tabductor-smoke-'+uuid.uuid4().hex[:10]
 fixture_name = network+'-fixture'
@@ -66,17 +66,19 @@ http.server.ThreadingHTTPServer(('0.0.0.0',8085),Handler).serve_forever()
     names.append(fixture_name)
     docker('run','-d','--name',fixture_name,'--network',network,'--entrypoint','python','tabductor-browser-worker:local','-c',fixture_code)
     url=worker()
-    rpc(url,'/v1/sessions',dict(session_id='smoke-a',generation=1,profile_dir='profile'))
+    rpc(url,'/v1/sessions',dict(session_id='smoke-a',generation=1,profile_dir='profile', imported_states=[{'origin':fixture_url.removesuffix('/login'),'localStorage':[{'name':'imported-auth','value':'full-storage-value'}],'cookies':[{'name':'imported','value':'yes','domain':fixture_name,'path':'/','expires':-1,'httpOnly':False,'secure':False,'sameSite':'Lax'}]}]))
     page=command(url,'smoke-a','page.create')['page_id']
-    command(url,'smoke-a','page.goto',page,{'url':fixture_url})
+    command(url,'smoke-a','page.goto',page,{'url':fixture_url,'wait_until':'domcontentloaded'})
     evidence=command(url,'smoke-a','page.perceive',page)
     assert evidence['title']=='Browser fixture'
+    assert command(url,'smoke-a','page.query_all',page,{'selector':'#imported','fields':{'value':{}}})==[{'value':'full-storage-value:true'}]
     frame_element=next(el for el in evidence['elements'] if el['name']=='Frame secret')
     probe=command(url,'smoke-a','page.probe',page,{'selector':frame_element['locator']})
     assert probe['tag']=='input' and probe['frameOrigin']==fixture_url.removesuffix('/login'),probe
     time.sleep(4.5)
     command(url,'smoke-a','page.insert_text',page,{'selector':frame_element['locator'],'text':'private-frame-fixture'})
     command(url,'smoke-a','page.click',page,{'selector':'#popup'})
+    print('Popup click result:', command(url,'smoke-a','page.query_all',page,{'selector':'#popup-result','fields':{'value':{}}}),flush=True)
     command(url,'smoke-a','page.click',page,{'selector':'#dialog'})
     for _ in range(50):
         observed=rpc(url,'/v1/sessions/smoke-a/commands',dict(generation=1,input_generation=1,command_id=str(uuid.uuid4()),method='browser.events',params={}))['events']
@@ -95,6 +97,8 @@ http.server.ThreadingHTTPServer(('0.0.0.0',8085),Handler).serve_forever()
     assert state==[{'state':'authenticated'}],state
     rpc(url,'/v1/sessions/smoke-a/control',dict(generation=1,input_generation=2,owner='human'))
     denied(lambda:command(url,'smoke-a','page.title',page))
+    denied(lambda:rpc(url,'/v1/sessions/smoke-a/navigate',dict(generation=1,input_generation=1,url=fixture_url)))
+    rpc(url,'/v1/sessions/smoke-a/navigate',dict(generation=1,input_generation=2,url=fixture_url))
     rpc(url,'/v1/sessions/smoke-a/control',dict(generation=1,input_generation=3,owner='ai'))
     assert command(url,'smoke-a','page.title',page,input_generation=3)=='Browser fixture'
     stopped=rpc(url,'/v1/sessions/smoke-a?generation=1',method='DELETE')
@@ -106,12 +110,13 @@ http.server.ThreadingHTTPServer(('0.0.0.0',8085),Handler).serve_forever()
     replacement=worker()
     rpc(replacement,'/v1/sessions',dict(session_id='smoke-b',generation=1,profile_dir='profile',snapshot=stopped['snapshot']))
     page=command(replacement,'smoke-b','page.create')['page_id']
-    command(replacement,'smoke-b','page.goto',page,{'url':fixture_url})
+    command(replacement,'smoke-b','page.goto',page,{'url':fixture_url,'wait_until':'domcontentloaded'})
     state=command(replacement,'smoke-b','page.query_all',page,{'selector':'#state','fields':{'state':{}}})
     assert state==[{'state':'authenticated'}],state
+    assert command(replacement,'smoke-b','page.query_all',page,{'selector':'#imported','fields':{'value':{}}})==[{'value':'full-storage-value:true'}]
     after=rpc(replacement,'/v1/sessions/smoke-b?generation=1',method='DELETE')
     assert fingerprint(after['snapshot'])==before,'fingerprint changed after replacement'
-    print('PASS: real Camoufox login/profile replacement, stable fingerprint, frame secret targeting, popup/dialog/network observations, duplicate/stale command fencing, takeover/resume, playable/private recording')
+    print('PASS: imported cookies/full localStorage, human navigation, real Camoufox login/profile replacement, stable fingerprint, frame secret targeting, popup/dialog/network observations, duplicate/stale command fencing, takeover/resume, playable/private recording')
 finally:
     import sys
     for name in names:

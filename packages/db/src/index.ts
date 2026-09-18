@@ -41,6 +41,7 @@ export {
   cdpEndpoints,
   endpointLeases,
   browserProfiles,
+  browserProfileImports,
   browserSessions,
   browserProfileLeases,
   browserAllocationRequests,

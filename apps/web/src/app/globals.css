@@ -1198,3 +1198,30 @@ main:has(.workflow-workspace) { max-width: 1680px; }
 .session-timeline { max-height: 24rem; overflow: auto; }
 
 .auth-panel { display: flex; justify-content: center; padding: clamp(24px, 6vw, 72px) 16px; }
+
+/* The automation brief is the product surface; the graph is local inspection. */
+main:has(.automation-workspace) { max-width: 1440px; }
+.automation-tabs { display: flex; gap: 8px; border-bottom: var(--rule); margin-bottom: 24px; }
+.automation-tabs button { min-height: 44px; border: 0; border-radius: 0; background: transparent; padding: 12px 20px; }
+.automation-tabs button[aria-current] { border-bottom: 2px solid var(--accent-text); color: var(--accent-text); }
+.automation-workspace { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 32px; }
+.automation-brief { min-width: 0; padding: 24px 0; }
+.automation-brief h2 { font-size: var(--text-2xl); margin: 12px 0; }
+.automation-brief > p { color: var(--text-secondary); line-height: 1.6; }
+.automation-brief textarea { min-height: 220px; width: 100%; font-size: 16px; line-height: 1.6; resize: vertical; }
+.automation-outline { border-top: var(--rule); margin-top: 24px; padding-top: 20px; }
+.automation-outline li { margin-bottom: 16px; }
+.automation-outline p { margin: 4px 0; color: var(--text-secondary); }
+.automation-workspace .workflow-chat { border: var(--rule); min-width: 0; }
+.workflow-workspace--inspection { display: block; }
+.automation-workspace .graph-chat-message p, .automation-workspace .graph-chat-form textarea { font-size: 16px; }
+@media (max-width: 800px) {
+  .automation-workspace { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+  .automation-tabs button { padding: 12px 16px; }
+  .automation-workspace .workflow-chat { min-height: 480px; height: 70dvh; }
+}
+.browser-address { display: flex; gap: 12px; align-items: flex-end; margin-block: 20px; }
+.browser-address label { display: grid; gap: 8px; flex: 1; min-width: 0; }
+.browser-address input { width: 100%; min-height: 44px; }
+.session-controls { flex-wrap: wrap; }
+.session-controls button { min-height: 44px; }

@@ -1,0 +1,6 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Tabductor Profile Sync</title><link rel="stylesheet" href="popup.css"></head><body>
+<h1>Sync this website</h1><p>Copy cookies (including HttpOnly cookies) and all local storage from the active website into your chosen Tabductor profile.</p>
+<label for="code">Import code from Tabductor Profiles</label><textarea id="code" rows="5" spellcheck="false" autocomplete="off"></textarea>
+<p id="target"></p><button id="review">Review transfer</button><button id="sync" hidden>Allow and sync website</button><p id="status" role="status"></p>
+<p class="note">Only this website is copied. Other origins, IndexedDB, session storage, passkeys and device-bound credentials are not transferred. Some sites may ask you to sign in again.</p>
+<script type="module" src="popup.js"></script></body></html>

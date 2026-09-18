@@ -969,6 +969,7 @@ export const browserProfiles = pgTable(
     accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     snapshotBlobRef: text("snapshot_blob_ref"),
+    pendingAuthEnvelope: jsonb("pending_auth_envelope").$type<{ ciphertext: string; nonce: string; wrapped: string; kekRef: string }>(),
     snapshotGeneration: integer("snapshot_generation").notNull().default(0),
     fingerprintJson: jsonb("fingerprint_json").notNull().default({}),
     proxyRef: text("proxy_ref"),
@@ -1063,6 +1064,16 @@ export const browserProfileLeases = pgTable("browser_profile_leases", {
   sessionId: text("session_id").notNull().references(() => browserSessions.id, { onDelete: "cascade" }),
   generation: integer("generation").notNull(),
   heartbeatAt: ts("heartbeat_at").notNull().defaultNow(),
+});
+
+/** Single-use, origin-scoped capabilities; plaintext tokens are never stored. */
+export const browserProfileImports = pgTable("browser_profile_imports", {
+  tokenHash: text("token_hash").primaryKey(),
+  accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }),
+  profileId: text("profile_id").notNull().references(() => browserProfiles.id, { onDelete: "cascade" }),
+  origin: text("origin").notNull(),
+  expiresAt: ts("expires_at").notNull(),
+  usedAt: ts("used_at"),
 });
 
 export const browserAllocationRequests = pgTable(

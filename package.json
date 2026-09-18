@@ -16,7 +16,8 @@
     "staging:down": "bash scripts/staging/down.sh",
     "staging:reset": "bash scripts/staging/reset.sh",
     "staging:test": "bash scripts/staging/test.sh",
-    "staging:test:live": "TABDUCTOR_STAGING_LIVE=1 bash scripts/staging/test.sh"
+    "staging:test:live": "TABDUCTOR_STAGING_LIVE=1 bash scripts/staging/test.sh",
+    "local:up": "node scripts/local/up.mjs"
   },
   "devDependencies": {
     "@opentelemetry/api": "^1.9.0",

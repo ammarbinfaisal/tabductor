@@ -29,6 +29,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <Link href="/settings/models">models</Link>
           <Link href="/billing">billing</Link>
           <Link href="/sessions">sessions</Link>
+          <Link href="/profiles">profiles</Link>
           {clerkConfigured() && <UserButton />}
         </nav>
       </header>

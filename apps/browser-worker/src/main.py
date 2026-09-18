@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 from camoufox.async_api import AsyncCamoufox
 from .recording import Recorder
 from .observations import Observations
+from .auth_state import import_auth_state
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
@@ -35,6 +36,7 @@ class StartRequest(BaseModel):
     locale: str | None = None
     proxy: dict[str, str] | None = None
     snapshot: str | None = None
+    imported_states: list[dict[str, Any]] = Field(default_factory=list)
     fingerprint: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -42,6 +44,12 @@ class ControlRequest(BaseModel):
     generation: int = Field(ge=1)
     input_generation: int = Field(ge=1)
     owner: str
+
+
+class NavigateRequest(BaseModel):
+    generation: int = Field(ge=1)
+    input_generation: int = Field(ge=1)
+    url: str = Field(min_length=1, max_length=4096)
 
 
 class CommandRequest(BaseModel):
@@ -245,6 +253,14 @@ async def start_session(
         fingerprint_path.write_text("".join(value for _, value in sorted(fragments)))
     manager = AsyncCamoufox(from_options=prepared, persistent_context=True)
     context = await manager.__aenter__()
+    try:
+        cookies_path = profile / ".tabductor-session-cookies.json"
+        if cookies_path.exists():
+            await context.add_cookies(json.loads(cookies_path.read_text()))
+        await import_auth_state(context, request.imported_states)
+    except Exception:
+        await manager.__aexit__(None, None, None)
+        raise HTTPException(400, "could not restore imported authentication")
     session = Session(request.session_id, request.generation, manager, context, profile=profile)
     session.observations = Observations(session)
     recorder = Recorder(PROFILE_ROOT / "recordings")
@@ -275,6 +291,11 @@ async def stop_session(session_id: str, generation: int, authorization: str | No
         await stop_control_vnc()
         if recorder:
             await recorder.finish()
+        # Persistent Firefox profiles discard session cookies on a clean close.
+        # Keep them inside the encrypted profile archive for the next allocation.
+        cookies_path = current.profile / ".tabductor-session-cookies.json"
+        cookies_path.write_text(json.dumps(await current.context.cookies()))
+        cookies_path.chmod(0o600)
         await current.context.close()
         await current.manager.__aexit__(None, None, None)
         output = io.BytesIO()
@@ -309,6 +330,26 @@ async def control(session_id: str, request: ControlRequest, authorization: str |
         current.input_generation = request.input_generation
         current.input_owner = request.owner
         return {"acknowledged": True, "input_generation": current.input_generation}
+
+
+@app.post("/v1/sessions/{session_id}/navigate")
+async def navigate(session_id: str, request: NavigateRequest, authorization: str | None = Header(default=None), x_tabductor_rpc_version: str | None = Header(default=None)):
+    authorize(authorization, x_tabductor_rpc_version)
+    async with command_lock:
+        current = require_session(request.generation)
+        if current.session_id != session_id:
+            raise HTTPException(404, "session not found")
+        if current.input_owner != "human" or current.input_generation != request.input_generation:
+            raise HTTPException(409, "human input ownership required")
+        parsed = urlparse(request.url)
+        if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+            raise HTTPException(400, "invalid website address")
+        target = public_url(request.url)
+        pages = [page for page in current.context.pages if not page.is_closed()]
+        page = pages[-1] if pages else await current.context.new_page()
+        await page.goto(target, wait_until="domcontentloaded", timeout=30000)
+        await page.bring_to_front()
+        return {"navigated": True}
 
 
 @app.post("/v1/sessions/{session_id}/commands")

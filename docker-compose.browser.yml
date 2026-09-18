@@ -1,0 +1,57 @@
+# Local managed browsers. Start with `pnpm local:up` to prepare the signing key and socket path.
+services:
+  web:
+    ports: !reset []
+    environment:
+      BROWSER_WORKER_TOKEN_KEY: ${BROWSER_WORKER_TOKEN_KEY:?Run pnpm local:up}
+  engine:
+    environment:
+      BROWSER_MODE: fleet
+      BROWSER_WORKER_TOKEN_KEY: ${BROWSER_WORKER_TOKEN_KEY:?Run pnpm local:up}
+  gateway:
+    image: tabductor-app:local
+    command: ["node", "--import", "tsx", "apps/gateway/src/main.ts"]
+    environment:
+      DATABASE_URL: postgres://tabductor:tabductor@postgres:5432/tabductor
+      BROWSER_WORKER_TOKEN_KEY: ${BROWSER_WORKER_TOKEN_KEY:?Run pnpm local:up}
+      BROWSER_WEB_URL: http://web:3000
+      PORT: "8081"
+    ports: ["${BIND_ADDR:-127.0.0.1}:3000:8081"]
+    depends_on:
+      web:
+        condition: service_healthy
+    restart: unless-stopped
+  fleet:
+    image: tabductor-app:local
+    # The Docker daemon remaps container UIDs on some Linux hosts. This operator
+    # process needs the host socket; browser workers retain their normal sandbox.
+    userns_mode: host
+    user: "0:0"
+    command: ["node", "--import", "tsx", "apps/fleet/src/main.ts"]
+    environment:
+      DATABASE_URL: postgres://tabductor:tabductor@postgres:5432/tabductor
+      BLOB_ENDPOINT: http://minio:9000
+      BLOB_ACCESS_KEY: tabductor
+      BLOB_SECRET_KEY: tabductor
+      BLOB_BUCKET: tabductor-blobs
+      TABDUCTOR_DEPLOYMENT_MODE: local
+      SECRETS_KEK_FILE_PATH: /app/data/secrets-kek.json
+      BROWSER_FLEET_DRIVER: docker
+      BROWSER_DOCKER_NETWORK: tabductor_default
+      BROWSER_WORKER_IMAGE: tabductor-browser-worker:local
+      BROWSER_WORKER_TOKEN_KEY: ${BROWSER_WORKER_TOKEN_KEY:?Run pnpm local:up}
+      BROWSER_MAX_ALLOCATED: "3"
+      BROWSER_WARM_SLOTS: "1"
+    volumes: ["kek:/app/data", "${DOCKER_SOCKET_PATH:?Run pnpm local:up}:/var/run/docker.sock"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+  browser-image:
+    profiles: ["build-only"]
+    image: tabductor-browser-worker:local
+    build:
+      context: .
+      dockerfile: apps/browser-worker/Dockerfile
