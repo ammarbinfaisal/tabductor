@@ -1,6 +1,8 @@
 export * as schema from "./schema.js";
 export {
   workflowBrowserProfiles,
+  browserChallenges,
+  challengeAttempts,
   browserCommands,
   browserBilling,
   modelCredentials,

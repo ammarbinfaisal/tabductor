@@ -9,12 +9,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends xvfb x11vnc x11
 COPY apps/browser-worker/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt \
   && playwright install-deps firefox \
+  && camoufox sync \
+  && camoufox fetch "${CAMOUFOX_BROWSER}" \
   && camoufox set "${CAMOUFOX_BROWSER}" \
-  && camoufox fetch
+  && camoufox active | grep -F "${CAMOUFOX_BROWSER}"
 COPY apps/browser-worker/src ./src
 COPY apps/browser-worker/entrypoint.sh ./entrypoint.sh
 
-RUN useradd --create-home --uid 10001 worker && mkdir -p /profiles && chown -R worker:worker /worker /profiles /opt/browser-cache /opt/browser-data
+RUN useradd --create-home --uid 10001 worker && mkdir -p /profiles /opt/browser-data && chown -R worker:worker /worker /profiles /opt/browser-cache /opt/browser-data
 USER worker
 EXPOSE 8080
 CMD ["sh", "entrypoint.sh"]

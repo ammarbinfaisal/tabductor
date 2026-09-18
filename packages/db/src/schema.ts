@@ -1389,3 +1389,30 @@ export const browserBilling = pgTable("browser_billing", {
   startedAt: ts("started_at").notNull().defaultNow(),
   endedAt: ts("ended_at"),
 });
+
+export const browserChallenges = pgTable("browser_challenges", {
+  id: text("id").primaryKey(),
+  sessionId: text("session_id").notNull().references(() => browserSessions.id, { onDelete: "restrict" }),
+  accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "restrict" }),
+  identity: text("identity").notNull(),
+  kind: text("kind").notNull(),
+  websiteUrl: text("website_url").notNull(),
+  siteKey: text("site_key").notNull(),
+  status: text("status").$type<"pending" | "solved" | "human_required">().notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  deadline: ts("deadline").notNull(),
+  nextPollAt: ts("next_poll_at").notNull().defaultNow(),
+  createdAt: createdAt(),
+}, (t) => [uniqueIndex("browser_challenges_identity_key").on(t.sessionId, t.identity)]);
+
+export const challengeAttempts = pgTable("challenge_attempts", {
+  id: text("id").primaryKey(),
+  challengeId: text("challenge_id").notNull().references(() => browserChallenges.id, { onDelete: "restrict" }),
+  provider: text("provider").notNull(),
+  providerTaskId: text("provider_task_id"),
+  rateVersion: text("rate_version").notNull(),
+  creditUnits: integer("credit_units").notNull(),
+  reservationId: text("reservation_id").notNull().references(() => creditReservations.id, { onDelete: "restrict" }),
+  status: text("status").$type<"submitting" | "submitted" | "rejected" | "applying" | "solved" | "invalid" | "uncertain">().notNull(),
+  createdAt: createdAt(),
+}, (t) => [index("challenge_attempts_challenge_idx").on(t.challengeId)]);

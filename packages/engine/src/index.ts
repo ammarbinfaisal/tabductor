@@ -265,3 +265,4 @@ export { createModelResolver, saveModelCredential, setModelSelection, modelSelec
 export { createHostedBrowserPool, ensureWorkflowBrowserProfile, browserWorkerToken, browserCreditAdmission, settleBrowserUsage } from "./browser-hosted.js";
 export { mintBrowserViewToken, verifyBrowserViewToken, type BrowserViewClaims } from "./browser-view-token.js";
 export { readBrowserMedia, expireBrowserRecordings } from "./browser-media.js";
+export { createSolverProvider, parseSolverRates, requestChallengeRecovery, advanceChallengeRecovery, type SolverProvider, type Challenge, type ChallengeKind } from "./challenge-recovery.js";

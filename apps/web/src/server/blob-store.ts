@@ -1,5 +1,5 @@
 import { loadConfig } from "@tabductor/core";
-import { createMinioBlobStore, type BlobStore } from "@tabductor/browser/blob-store";
+import { configuredBlobStore, type BlobStore } from "@tabductor/browser/blob-store";
 
 /**
  * The screenshot route's blob client (U1.5), memoized on `globalThis` for the same reason
@@ -13,12 +13,7 @@ const store = globalThis as { __tabductorBlobs?: BlobStore };
 export function blobStore(): BlobStore {
   if (!store.__tabductorBlobs) {
     const cfg = loadConfig();
-    store.__tabductorBlobs = createMinioBlobStore({
-      endpoint: cfg.BLOB_ENDPOINT,
-      accessKey: cfg.BLOB_ACCESS_KEY,
-      secretKey: cfg.BLOB_SECRET_KEY,
-      bucket: cfg.BLOB_BUCKET,
-    });
+    store.__tabductorBlobs = configuredBlobStore(cfg);
   }
   return store.__tabductorBlobs;
 }

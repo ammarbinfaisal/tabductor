@@ -5,21 +5,21 @@ import {
   createCompileLoop,
   createCompileWorker,
   createDecisionExecutor,
-  createLlm,
   fundedLlm,
-  providerFromEnv,
   type CompileWorker,
 } from "@tabductor/agent";
-import { createEndpointPool, createMinioBlobStore, playwrightDriver } from "@tabductor/browser";
+import { createEndpointPool, configuredBlobStore, playwrightDriver } from "@tabductor/browser";
 import { createDispatcher, publish } from "@tabductor/bus";
 import { loadConfig } from "@tabductor/core";
 import { browserWorkers, createDb, type Db } from "@tabductor/db";
 import {
   createEngine,
   createHostedBrowserPool,
+  createSolverProvider,
   createModelResolver,
   modelScopeForTask,
   parseModelRates,
+  parseSolverRates,
   executorKey,
   pickWorkflowEndpoint,
   parsePaddleCreditPacks,
@@ -33,7 +33,7 @@ import {
   type TaskExecutor,
 } from "@tabductor/engine";
 import { RuntimeSafetyGate } from "@tabductor/core";
-import { createSecretsBroker, fileKeyWrapper, type SecretsBrokerRunDeps } from "@tabductor/secrets";
+import { createSecretsBroker, configuredKeyWrapper, type SecretsBrokerRunDeps } from "@tabductor/secrets";
 import { initTelemetry } from "@tabductor/telemetry/init";
 import type { Pool } from "pg";
 
@@ -67,22 +67,19 @@ const endpointFor = (db: Db) => async (handle: RunHandle) =>
 /** One pool, one blob store, one gate for every browser-facing piece below — the compile
  * loop's dry run borrows an endpoint through the same pool the runs do, so the two never
  * hold one endpoint twice. */
+const solverRates = parseSolverRates(config.SOLVER_RATES_JSON);
+const solverKeys = { capsolver: config.CAPSOLVER_API_KEY, "2captcha": config.TWO_CAPTCHA_API_KEY, "anti-captcha": config.ANTI_CAPTCHA_API_KEY };
+const solvers = solverRates.map((rate) => createSolverProvider({ ...rate, apiKey: solverKeys[rate.name] ?? "" }));
 const browserPool = config.TABDUCTOR_DEPLOYMENT_MODE === "hosted" || process.env.BROWSER_MODE === "fleet"
-  ? createHostedBrowserPool({ db: handle.db, tokenKey: process.env.BROWSER_WORKER_TOKEN_KEY ?? "", workerUrl: async (podName) => {
+  ? createHostedBrowserPool({ db: handle.db, solvers, tokenKey: process.env.BROWSER_WORKER_TOKEN_KEY ?? "", workerUrl: async (podName) => {
       const [worker] = await handle.db.select().from(browserWorkers).where(eq(browserWorkers.podName, podName));
       if (!worker?.endpointUrl) throw new Error("worker endpoint is unavailable");
       return worker.endpointUrl;
     } })
   : createEndpointPool({ db: handle.db, driver: playwrightDriver, metrics: telemetry.metrics, logger: log });
-const blobs = createMinioBlobStore({
-  endpoint: config.BLOB_ENDPOINT,
-  accessKey: config.BLOB_ACCESS_KEY,
-  secretKey: config.BLOB_SECRET_KEY,
-  bucket: config.BLOB_BUCKET,
-});
+const blobs = configuredBlobStore(config);
 // S7: one persisted evaluator shared by browser, decision-store, and secret paths.
 const gate = new RuntimeSafetyGate({ navAllowlist: config.HARNESS_NAV_ALLOWLIST });
-const liveProvider = providerFromEnv({ ANTHROPIC_API_KEY: config.ANTHROPIC_API_KEY, OPENAI_API_KEY: config.OPENAI_API_KEY });
 
 /**
  * The compile loop's two halves (`compile-loop.ts`).
@@ -96,11 +93,10 @@ const liveProvider = providerFromEnv({ ANTHROPIC_API_KEY: config.ANTHROPIC_API_K
  * own poll, timeout and retry budget. It needs the model, so it exists exactly when a provider
  * key does — with none configured, jobs simply queue up and wait for an engine that has one.
  */
-const modelResolver = createModelResolver({ db: handle.db, wrapper: fileKeyWrapper(config.SECRETS_KEK_FILE_PATH),
+const modelResolver = createModelResolver({ db: handle.db, wrapper: configuredKeyWrapper(config),
   rates: parseModelRates(config.MODEL_RATES_JSON),
   platformKeys: { ...(config.OPENAI_API_KEY ? { openai: config.OPENAI_API_KEY } : {}), ...(config.ANTHROPIC_API_KEY ? { anthropic: config.ANTHROPIC_API_KEY } : {}) },
 });
-const funded = true;
 const compileLoop = createCompileLoop({
   db: handle.db,
   publish: async (input) => {
@@ -111,20 +107,9 @@ const compileLoop = createCompileLoop({
 });
 
 function compileWorkerEntry(db: Db): CompileWorker | undefined {
-  if (!liveProvider && !funded) {
-    log.info("no ANTHROPIC_API_KEY/OPENAI_API_KEY configured — compiles will queue but not run", {});
-    return undefined;
-  }
-  const live = liveProvider;
   return createCompileWorker({
     db,
-    compileLlmFor: ({ task, job }) => funded ? fundedLlm(modelResolver, () => modelScopeForTask(db, task.id, "trace_compilation", job.runId)) :
-      createLlm("live", {
-        provider: live!.provider,
-        apiKey: live!.apiKey,
-        metrics: telemetry.metrics,
-        costLabels: { kind: "browser", mode: "compile" },
-      }),
+    compileLlmFor: ({ task, job }) => fundedLlm(modelResolver, () => modelScopeForTask(db, task.id, "trace_compilation", job.runId)),
     publish: async (input) => {
       await publish(db, input);
     },
@@ -135,23 +120,8 @@ function compileWorkerEntry(db: Db): CompileWorker | undefined {
 const compileWorker = compileWorkerEntry(handle.db);
 
 
-/**
- * The first browser node executor this process can run (S4b): `AgentExecutor` under mode
- * `ai`. Gated on a live LLM key, checked once at boot rather than per run: `providerFromEnv`
- * is the same selection rule the schema compiler uses (`schema-generator-ai.ts`) — Anthropic
- * wins if both are set. With neither set, registering the executor anyway would hand the
- * engine a mode it can dispatch runs to but can never actually call a model for; every one
- * of those runs would fail deep inside the loop's first `llm.complete`, indistinguishably
- * from a real outage. A run failing `no_executor` up front is the honest failure — it says
- * "not configured," not "broke." The CDP endpoint is *not* a boot gate any more (U3a): it
- * is a per-workflow setting, resolved by `endpointFor` per run.
- */
+/** Browser tasks resolve the account model at call time. */
 function agentExecutorEntry(db: Db): ReturnType<typeof createAgentExecutor> | undefined {
-  const live = providerFromEnv({ ANTHROPIC_API_KEY: config.ANTHROPIC_API_KEY, OPENAI_API_KEY: config.OPENAI_API_KEY });
-  if (!live && !funded) {
-    log.info("no ANTHROPIC_API_KEY/OPENAI_API_KEY configured — (browser, ai) has no executor", {});
-    return undefined;
-  }
 
   const executor = createAgentExecutor({
     pool: browserPool,
@@ -168,16 +138,7 @@ function agentExecutorEntry(db: Db): ReturnType<typeof createAgentExecutor> | un
     // The first clean run makes the task eligible (K=1); the hook only queues the compile,
     // so the run settles without waiting for a model.
     onOutcome: async (input) => void (await compileLoop.afterAiRun(input)),
-    // One live provider serves every task — `task` is here for the test rig's benefit, not
-    // this composition root's; see `AgentExecutorDeps.llmFor`.
-    llmFor: ({ trace, task, runId }) => funded ? fundedLlm(modelResolver, () => modelScopeForTask(db, task.id, "runtime", runId), trace) :
-      createLlm("live", {
-        provider: live!.provider,
-        apiKey: live!.apiKey,
-        trace,
-        metrics: telemetry.metrics,
-        costLabels: { kind: "browser", mode: "ai" },
-      }),
+    llmFor: ({ trace, task, runId }) => fundedLlm(modelResolver, () => modelScopeForTask(db, task.id, "runtime", runId), trace),
   });
   return executor;
 }
@@ -187,7 +148,7 @@ const liveSecretRuns = new Map<string, SecretsBrokerRunDeps>();
 const secretsBroker = createSecretsBroker({
   db: handle.db,
   gate,
-  keyWrapper: fileKeyWrapper(config.SECRETS_KEK_FILE_PATH),
+  keyWrapper: configuredKeyWrapper(config),
   resolveRun: (runId) => liveSecretRuns.get(runId),
   metrics: telemetry.metrics,
 });
@@ -198,40 +159,19 @@ const secretsBroker = createSecretsBroker({
 // endpoint check, because a decision run acquires no browser session.
 // -----------------------------------------------------------------------------------------
 function decisionExecutorEntry(db: Db, pool: Pool): ReturnType<typeof createDecisionExecutor> | undefined {
-  const live = providerFromEnv({ ANTHROPIC_API_KEY: config.ANTHROPIC_API_KEY, OPENAI_API_KEY: config.OPENAI_API_KEY });
-  if (!live && !funded) {
-    log.info("no ANTHROPIC_API_KEY/OPENAI_API_KEY configured — (decision, ai) has no executor", {});
-    return undefined;
-  }
   return createDecisionExecutor({
     db,
     pool,
     blobs,
     gate,
     metrics: telemetry.metrics,
-    llmFor: ({ trace, task, runId }) => funded ? fundedLlm(modelResolver, () => modelScopeForTask(db, task.id, "runtime", runId), trace) :
-      createLlm("live", {
-        provider: live!.provider,
-        apiKey: live!.apiKey,
-        trace,
-        metrics: telemetry.metrics,
-        costLabels: { kind: "decision", mode: "ai" },
-      }),
+    llmFor: ({ trace, task, runId }) => fundedLlm(modelResolver, () => modelScopeForTask(db, task.id, "runtime", runId), trace),
   });
 }
 // -----------------------------------------------------------------------------------------
 
-/**
- * S6c: `(browser, compiled)`. Gated on the model key like `(browser, ai)` — a compiled run
- * needs a model the moment its guards fail, and a compiled task whose deopt had nowhere to
- * go would fail runs that the agent could have finished. The endpoint is per run (U3a).
- */
+/** Compiled recovery uses the same account model source. */
 function compiledExecutorEntry(db: Db): TaskExecutor | undefined {
-  const live = providerFromEnv({ ANTHROPIC_API_KEY: config.ANTHROPIC_API_KEY, OPENAI_API_KEY: config.OPENAI_API_KEY });
-  if (!live && !funded) {
-    log.info("no ANTHROPIC_API_KEY/OPENAI_API_KEY configured — (browser, compiled) has no executor", {});
-    return undefined;
-  }
 
   return createCompiledExecutor({
     pool: browserPool,
@@ -241,16 +181,7 @@ function compiledExecutorEntry(db: Db): TaskExecutor | undefined {
     endpointFor: endpointFor(db),
     metrics: telemetry.metrics,
     onOutcome: (input) => compileLoop.afterCompiledRun(input),
-    llmFor: ({ trace, task, runId }) => funded ? fundedLlm(modelResolver, () => modelScopeForTask(db, task.id, "recovery", runId), trace) :
-      createLlm("live", {
-        provider: live!.provider,
-        apiKey: live!.apiKey,
-        trace,
-        metrics: telemetry.metrics,
-        // The deopt path is the only thing here that ever calls a model, so cost recorded
-        // under mode `compiled` is exactly the cost of guards that stopped holding.
-        costLabels: { kind: "browser", mode: "compiled" },
-      }),
+    llmFor: ({ trace, task, runId }) => fundedLlm(modelResolver, () => modelScopeForTask(db, task.id, "recovery", runId), trace),
   });
 }
 

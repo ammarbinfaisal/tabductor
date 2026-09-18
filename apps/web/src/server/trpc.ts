@@ -22,7 +22,7 @@ import superjson from "superjson";
 import { z } from "zod";
 import { db, pool } from "./db.js";
 import { createRateLimiter } from "./rate-limit.js";
-import { accountModelServices, graphCompiler, promptCompiler, schemaGenerator } from "./schema-generator.js";
+import { accountModelServices } from "./schema-generator.js";
 import { LOCAL_ACCOUNT } from "./auth-context.js";
 
 export type Context = {
@@ -55,9 +55,6 @@ export function createContext(accountId = LOCAL_ACCOUNT): Context {
     db: db(),
     accountId,
     pool: databasePool,
-    schemaGenerator: schemaGenerator(),
-    promptCompiler: promptCompiler(),
-    graphCompiler: graphCompiler(databasePool),
     ...accountModelServices(accountId),
     modelsForWorkflow: (id: string) => accountModelServices(accountId, id),
   };

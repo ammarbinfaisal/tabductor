@@ -30,6 +30,8 @@ export {
 } from "./camoufox-worker-driver.js";
 export {
   createMinioBlobStore,
+  configuredBlobStore,
+  createS3BlobStore,
   type BlobRef,
   type BlobStore,
   type MinioBlobStoreOptions,

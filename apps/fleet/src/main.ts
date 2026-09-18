@@ -1,8 +1,8 @@
 import { CoreV1Api, KubeConfig, type V1Pod } from "@kubernetes/client-node";
 import { loadConfig, newId } from "@tabductor/core";
 import { createDb, browserRecordingSegments, browserAllocationRequests, browserBilling, browserProfiles, browserProfileLeases, browserSessions, browserWorkers } from "@tabductor/db";
-import { createMinioBlobStore } from "@tabductor/browser";
-import { encryptEnvelope, fileKeyWrapper, withEnvelope, type EncryptedEnvelope } from "@tabductor/secrets";
+import { configuredBlobStore } from "@tabductor/browser";
+import { encryptEnvelope, configuredKeyWrapper, withEnvelope, type EncryptedEnvelope } from "@tabductor/secrets";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { claimBrowserAllocation, failBrowserAllocation, fulfillBrowserAllocation, endBrowserSession, browserWorkerToken,
   browserCreditAdmission, settleBrowserUsage, acknowledgeBrowserPause, expireBrowserTakeovers, stopBrowserSession, appendBrowserRecordingSegment, expireBrowserRecordings } from "@tabductor/engine";
@@ -18,8 +18,8 @@ const admission = config.TABDUCTOR_FIXTURE_MODE ? undefined : browserCreditAdmis
   version: process.env.BROWSER_RATE_VERSION ?? "", unitsPerMinute: Number(process.env.BROWSER_UNITS_PER_MINUTE), maxSeconds: Number(process.env.BROWSER_MAX_SECONDS ?? 1800),
 });
 const handle = createDb(config.DATABASE_URL, { max: 8 });
-const blobs = createMinioBlobStore({ endpoint: config.BLOB_ENDPOINT, accessKey: config.BLOB_ACCESS_KEY, secretKey: config.BLOB_SECRET_KEY, bucket: config.BLOB_BUCKET });
-const wrapper = fileKeyWrapper(config.SECRETS_KEK_FILE_PATH);
+const blobs = configuredBlobStore(config);
+const wrapper = configuredKeyWrapper(config);
 const kubeconfig = new KubeConfig();
 kubeconfig.loadFromDefault();
 const core = kubeconfig.makeApiClient(CoreV1Api);

@@ -348,6 +348,25 @@ async def command(
             contentEditable: nodes[0].isContentEditable, frameOrigin: location.origin
           } : null
         """)}
+    if request.method == "challenge.apply":
+        if recorder:
+            await recorder.private()
+        applied = await page.evaluate("""(args) => {
+          const selector = args.kind === 'recaptcha_v2' ? '.g-recaptcha' : '.cf-turnstile';
+          const widget = document.querySelector(selector);
+          if (!widget || widget.getAttribute('data-sitekey') !== args.site_key) return false;
+          const callback = widget.getAttribute('data-callback');
+          if (!callback || !/^[A-Za-z_$][A-Za-z0-9_$.]*$/.test(callback)) return false;
+          const fn = callback.split('.').reduce((value, key) => value?.[key], window);
+          if (typeof fn !== 'function') return false;
+          fn(args.token);
+          return true;
+        }""", params)
+        if not applied:
+            return {"value": False}
+        await page.wait_for_timeout(500)
+        recovered = await page.locator('.g-recaptcha:visible,.cf-turnstile:visible').count() == 0
+        return {"value": recovered}
     if request.method == "page.perceive":
         value = await page.evaluate("""
           (maxChars) => {
@@ -364,6 +383,14 @@ async def command(
             return {url:location.href, title:document.title, elements, text:(document.body?.innerText || '').slice(0, maxChars)};
           }
         """, int(params.get("max_chars", 8000)))
+        challenge = await page.evaluate("""() => {
+          const widget = document.querySelector('.g-recaptcha[data-sitekey],.cf-turnstile[data-sitekey]');
+          if (widget && widget.getBoundingClientRect().height > 0) return {kind: widget.classList.contains('g-recaptcha') ? 'recaptcha_v2' : 'turnstile', websiteUrl: location.href, siteKey: widget.getAttribute('data-sitekey')};
+          if (document.querySelector('input[autocomplete="one-time-code"]')) return {kind:'mfa', websiteUrl:location.href, siteKey:''};
+          return null;
+        }""")
+        if challenge:
+            value["challenge"] = challenge
         return {"value": value}
     raise HTTPException(400, f"unsupported method {request.method}")
 

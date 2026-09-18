@@ -29,6 +29,9 @@ const envSchema = z.object({
   BLOB_ACCESS_KEY: z.string().min(1).default("tabductor"),
   BLOB_SECRET_KEY: z.string().min(1).default("tabductor"),
   BLOB_BUCKET: z.string().min(1).default("tabductor-blobs"),
+  BLOB_DRIVER: z.enum(["minio", "s3"]).default("minio"),
+  AWS_REGION: z.string().min(1).default("ap-southeast-2"),
+  SECRETS_KMS_KEY_ARN: optionalSetting,
   /** Includes identity redirects and frames; account deny/approval rules still apply. */
   POLICY_NAVIGATION_MODE: z.enum(["permissive", "grant_required"]).default("permissive"),
   /**
@@ -67,6 +70,8 @@ const envSchema = z.object({
   PADDLE_CREDIT_PACKS_JSON: optionalSetting,
   CAPSOLVER_API_KEY: optionalSetting,
   TWO_CAPTCHA_API_KEY: optionalSetting,
+  ANTI_CAPTCHA_API_KEY: optionalSetting,
+  SOLVER_RATES_JSON: optionalSetting,
   // S5c: the secrets broker's KEK-wrapping key store (`fileKeyWrapper`, dev/test — a KMS
   // implementation is a later swap behind the same `KeyWrapper` interface, per S5b's own
   // doc). A clean checkout needs no environment (impl-phases §0's own rule for every other

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { Client } from "minio";
-import { AppError } from "@tabductor/core";
+import { AppError, type Config } from "@tabductor/core";
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 
 /**
  * Where anything too big for a JSON column goes: screenshots now, response bodies and
@@ -17,6 +18,36 @@ export type BlobStore = {
 };
 
 const REF_PATTERN = /^sha256:([0-9a-f]{64})$/;
+
+/** S3 buckets are provisioned by IaC. The app uses EKS workload identity, never bucket creation privileges. */
+export function createS3BlobStore(opts: { bucket: string; region: string; client?: S3Client }): BlobStore {
+  const client = opts.client ?? new S3Client({ region: opts.region });
+  function key(ref: string) {
+    const match = REF_PATTERN.exec(ref);
+    if (!match) throw new AppError("blob_ref_invalid", "invalid blob reference");
+    return match[1]!;
+  }
+  return {
+    async put(bytes, meta) {
+      const hash = createHash("sha256").update(bytes).digest("hex");
+      await client.send(new PutObjectCommand({ Bucket: opts.bucket, Key: hash, Body: bytes, ContentType: meta.mime }));
+      return `sha256:${hash}`;
+    },
+    async get(ref) {
+      const result = await client.send(new GetObjectCommand({ Bucket: opts.bucket, Key: key(ref) }));
+      if (!result.Body) throw new AppError("blob_missing", "object has no body");
+      const bytes = Buffer.from(await result.Body.transformToByteArray());
+      if (createHash("sha256").update(bytes).digest("hex") !== key(ref)) throw new AppError("blob_integrity_failed", "object digest does not match its reference");
+      return bytes;
+    },
+    async remove(ref) { await client.send(new DeleteObjectCommand({ Bucket: opts.bucket, Key: key(ref) })); },
+  };
+}
+
+export function configuredBlobStore(config: Pick<Config, "BLOB_DRIVER" | "BLOB_BUCKET" | "AWS_REGION" | "BLOB_ENDPOINT" | "BLOB_ACCESS_KEY" | "BLOB_SECRET_KEY">): BlobStore {
+  return config.BLOB_DRIVER === "s3" ? createS3BlobStore({ bucket: config.BLOB_BUCKET, region: config.AWS_REGION })
+    : createMinioBlobStore({ endpoint: config.BLOB_ENDPOINT, bucket: config.BLOB_BUCKET, accessKey: config.BLOB_ACCESS_KEY, secretKey: config.BLOB_SECRET_KEY });
+}
 
 export type MinioBlobStoreOptions = {
   endpoint: string;

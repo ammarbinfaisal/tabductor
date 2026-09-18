@@ -1,5 +1,5 @@
 import { createModelResolver, parseModelRates } from "@tabductor/engine";
-import { fileKeyWrapper } from "@tabductor/secrets";
+import { configuredKeyWrapper } from "@tabductor/secrets";
 import { db, pool as databasePool } from "./db.js";
 import { loadConfig } from "@tabductor/core";
 import {
@@ -70,7 +70,7 @@ export function workflowChatModel(): import("@tabductor/engine").WorkflowChatMod
 /** Request-scoped factories prevent account identity leaking through a process-global model. */
 export function accountModelServices(accountId: string, workflowId?: string) {
   const config = loadConfig();
-  const resolver = createModelResolver({ db: db(), wrapper: fileKeyWrapper(config.SECRETS_KEK_FILE_PATH), rates: parseModelRates(config.MODEL_RATES_JSON),
+  const resolver = createModelResolver({ db: db(), wrapper: configuredKeyWrapper(config), rates: parseModelRates(config.MODEL_RATES_JSON),
     platformKeys: { ...(config.OPENAI_API_KEY ? { openai: config.OPENAI_API_KEY } : {}), ...(config.ANTHROPIC_API_KEY ? { anthropic: config.ANTHROPIC_API_KEY } : {}) } });
   return fundedAuthoringModels(resolver, { accountId, ...(workflowId ? { workflowId } : {}) }, databasePool());
 }

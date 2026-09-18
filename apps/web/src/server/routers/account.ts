@@ -1,4 +1,4 @@
-import { fileKeyWrapper } from "@tabductor/secrets";
+import { configuredKeyWrapper } from "@tabductor/secrets";
 import { modelCredentials, modelSelections, modelOperations, creditReservations, paymentPurchases, accountMcpTokens } from "@tabductor/db";
 import { AppError, loadConfig } from "@tabductor/core";
 import {
@@ -27,7 +27,7 @@ export const accountRouter = router({
     return { credentials, selections, platformModels: parseModelRates(loadConfig().MODEL_RATES_JSON) };
   }),
   saveModelCredential: procedure.input(z.object({ provider: z.enum(["openai", "anthropic"]), label: z.string().trim().min(1).max(120), apiKey: z.string().min(1).max(4096) }).strict())
-    .mutation(({ ctx, input }) => saveModelCredential(ctx.db, fileKeyWrapper(loadConfig().SECRETS_KEK_FILE_PATH), { ...input, accountId: accountIdOf(ctx.accountId) })),
+    .mutation(({ ctx, input }) => saveModelCredential(ctx.db, configuredKeyWrapper(loadConfig()), { ...input, accountId: accountIdOf(ctx.accountId) })),
   setModel: procedure.input(modelSelectionSchema).mutation(({ ctx, input }) => setModelSelection(ctx.db, accountIdOf(ctx.accountId), input)),
   revokeModelCredential: procedure.input(z.object({ id: z.string().min(1) })).mutation(async ({ ctx, input }) => {
     const rows = await ctx.db.update(modelCredentials).set({ revokedAt: sql`now()` }).where(and(eq(modelCredentials.id, input.id), eq(modelCredentials.accountId, accountIdOf(ctx.accountId)), isNull(modelCredentials.revokedAt))).returning({ id: modelCredentials.id });

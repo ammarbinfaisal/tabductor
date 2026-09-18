@@ -1,5 +1,6 @@
 /// <reference path="./sodium-native.d.ts" />
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import sodium from "sodium-native";
 import { AppError } from "@tabductor/core";
@@ -111,13 +112,18 @@ function readOrInitKekFile(path: string): KekFileShape {
     const initial: KekFileShape = { current: ref, keys: { [ref]: key.toString("base64") } };
     zero(key);
     mkdirSync(dirname(path), { recursive: true });
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    writeFileSync(temporary, JSON.stringify(initial, null, 2), { mode: 0o600, flag: "wx" });
     try {
-      writeFileSync(path, JSON.stringify(initial, null, 2), { mode: 0o600, flag: "wx" });
+      // Publish a complete file atomically without overwriting a concurrent initializer.
+      linkSync(temporary, path);
       return initial;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       // Another control-plane process won initialization; never overwrite its wrapping key.
       return JSON.parse(readFileSync(path, "utf8")) as KekFileShape;
+    } finally {
+      unlinkSync(temporary);
     }
   }
   return JSON.parse(readFileSync(path, "utf8")) as KekFileShape;
