@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { loadConfig } from "@tabductor/core";
 import { TRPCError } from "@trpc/server";
 import { GraphEditor } from "../../../components/graph-editor.js";
 import { createServerCaller } from "../../../server/router.js";
@@ -25,6 +26,7 @@ export default async function WorkflowPage({ params, searchParams }: { params: P
       eventSchemas={got.eventSchemas}
       authoring={got.authoring}
       maxHops={got.workflow.maxHops}
+      showGraph={loadConfig().TABDUCTOR_DEPLOYMENT_MODE === "local"}
       {...(event ? { initialEventId: event } : {})}
     />
   );

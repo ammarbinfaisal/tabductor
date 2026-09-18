@@ -34,6 +34,7 @@ export function GraphEditor(props: {
     proposedGrants: Array<ProposedGrant & { id: string }>;
   } | null;
   maxHops: number;
+  showGraph?: boolean;
   initialEventId?: string;
 }) {
   // Rebuilt when the page is showing a different workflow than the one the store holds —
@@ -43,15 +44,16 @@ export function GraphEditor(props: {
   const state = useStoreBridge(s);
   useMountHook(() => s.restoreConversation());
   const empty = state.graph.tasks.length === 0;
+  const promptChanged = state.automationPrompt.trim() !== (state.graph.automationPrompt ?? "");
 
-  const publishReason = empty
+  const publishReason = promptChanged ? "Build the edited prompt before publishing." : empty
     ? "Describe the workflow in chat before publishing."
     : !state.dirty && state.versionId
       ? "All changes published."
       : null;
   const operationReason = !state.versionId
     ? "Publish the workflow first."
-    : state.dirty
+    : state.dirty || promptChanged
       ? "Publish the current edits first."
       : null;
 
@@ -107,13 +109,32 @@ export function GraphEditor(props: {
       ) : null}
       {state.notice ? <div className="banner">{state.notice}</div> : null}
 
-      <WorkflowWorkspace
+      <nav className="automation-tabs" aria-label="Workflow views">
+        {(["automation", "activity", ...(props.showGraph ? ["graph" as const] : [])] as const).map((tab) => <button key={tab}
+          aria-current={state.workspaceTab === tab ? "page" : undefined}
+          onClick={() => s.setWorkspaceTab(tab)}>{tab === "automation" ? "Automation" : tab === "activity" ? "Activity" : "Graph"}</button>)}
+      </nav>
+      {state.workspaceTab === "automation" || (state.workspaceTab === "graph" && !props.showGraph) ? <div className="automation-workspace">
+        <section className="automation-brief" aria-label="Automation prompt">
+          <SectionLabel>What should the browser do?</SectionLabel>
+          <h2>One prompt. A repeatable routine.</h2>
+          <p>Write the instructions yourself or describe the outcome in chat. Review the automation, publish it, then run it once or add a schedule.</p>
+          <label className="field"><span>Automation prompt</span><textarea value={state.automationPrompt} disabled={state.busy} maxLength={20000}
+            placeholder="Open X, collect 100 unique tweets from my For You timeline, and add them to my Notion database at… Skip tweets already saved and verify each new entry."
+            onChange={(event) => s.setAutomationPrompt(event.target.value)} /></label>
+          <button className="btn--primary" disabled={state.busy || !state.automationPrompt.trim()} onClick={() => void s.buildAutomation()}>{state.busy && !state.chatPending ? "Building…" : "Build automation"}</button>
+          <p className="muted">No schedule specified? It runs on demand.</p>
+          {state.graph.tasks.length ? <div className="automation-outline"><h3>What it will do</h3><ol>{state.graph.tasks.map((task) => <li key={task.name}><strong>{task.label ?? task.name}</strong>{task.summary ? <p>{task.summary}</p> : null}</li>)}</ol></div> : null}
+          <Link href={`/profiles?workflow=${encodeURIComponent(state.workflowId)}`}>Set up browser profiles and sign in ↗</Link>
+        </section>
+        <WorkflowChat store={s} state={state} />
+      </div> : <WorkflowWorkspace
         key={`${state.workflowId}:${state.versionId ?? "draft"}`}
         editor={s}
         state={state}
-        chat={<WorkflowChat store={s} state={state} />}
+        showGraph={props.showGraph === true && state.workspaceTab === "graph"}
         {...(props.initialEventId ? { initialEventId: props.initialEventId } : {})}
-      />
+      />}
       <details className="workflow-schedule-details">
         <summary>Schedule & automatic runs</summary>
         <WorkflowSchedule store={s} state={state} operationReason={operationReason} />

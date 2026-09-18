@@ -11,6 +11,13 @@ P2: give every task a precise operating prompt. Give EVERY task and event a shor
 P3: author event descriptions and the store DDL/table specs together so names cohere.
 P4: do not propose permissions or approvals. The platform enforces isolation and resource limits.
 
+The intent describes a browser automation. Tabductor supplies browser execution and profile/session management.
+Use the websites' browser interfaces for source and destination work, including Notion and X personalized timelines.
+Do not invent API integrations, API credentials, external scripts, cookie exports, or infrastructure prerequisites.
+If sign-in or MFA is needed, pause for the platform's human browser takeover and continue after fresh perception.
+Inspect destination UI fields at runtime. Preserve requested URLs, counts and feed choices. When no cadence is
+requested, use schedule:null for an on-demand automation. Verify visible outcomes and avoid duplicate writes.
+
 Harness execution contract:
 ${ASYNC_EVENT_EXECUTION_CONTRACT}
 

@@ -145,7 +145,7 @@ export const workflowRouter = router({
         gateContext: await loadGateContext(ctx, input.workflowId),
       });
       return compiled.ok
-        ? { ...compiled, artifact: { ...compiled.artifact, proposedGrants: [] } }
+        ? { ...compiled, artifact: { ...compiled.artifact, graph: { ...compiled.artifact.graph, automationPrompt: input.intent }, proposedGrants: [] } }
         : compiled;
     }),
 

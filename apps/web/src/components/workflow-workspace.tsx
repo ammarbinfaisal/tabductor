@@ -1,7 +1,6 @@
 "use client";
 
 import type { Graph } from "@tabductor/engine";
-import type { ReactNode } from "react";
 import Link from "next/link";
 import { usePolling, useStoreBridge } from "../lib/store.js";
 import { useMountHook } from "../lib/use-mount-hook.js";
@@ -18,8 +17,8 @@ function flowFor(graph: Graph): FlowLayout {
   return layout;
 }
 
-export function WorkflowWorkspace({ editor, state, chat, initialEventId }: {
-  editor: EditorStore; state: EditorState; chat: ReactNode; initialEventId?: string;
+export function WorkflowWorkspace({ editor, state, showGraph = false, initialEventId }: {
+  editor: EditorStore; state: EditorState; showGraph?: boolean; initialEventId?: string;
 }) {
   const activity = activityFor(state.workflowId, state.versionId);
   const live = useStoreBridge(activity);
@@ -69,9 +68,9 @@ export function WorkflowWorkspace({ editor, state, chat, initialEventId }: {
   };
 
   return (
-    <div className="workflow-workspace">
+    <div className="workflow-workspace workflow-workspace--inspection">
       <div className="workflow-workspace__main">
-        <section className="flow-panel" aria-label="Workflow graph">
+        {showGraph ? <section className="flow-panel" aria-label="Workflow graph">
           <div className="flow-toolbar">
             <div><strong>Workflow graph</strong><span className="muted">{state.graph.tasks.length} steps · {state.graph.events.length} event types</span></div>
             <div className="row">
@@ -125,7 +124,7 @@ export function WorkflowWorkspace({ editor, state, chat, initialEventId }: {
             </div>
           )}
           <div className="flow-legend"><span>▣ Step</span><span>◇ Event packet route</span><span>→ Direction of flow</span><span>┄ Feedback loop</span></div>
-        </section>
+        </section> : null}
 
         {live.packetLoading || live.packet || task || eventType ? <section className="flow-selection" aria-label="Selected workflow item">
           {live.packetLoading ? <p role="status">Loading packet and its path…</p> : live.packet ? <PacketInspector activity={activity} state={state} onOpen={openPacket} /> : <>
@@ -178,7 +177,6 @@ export function WorkflowWorkspace({ editor, state, chat, initialEventId }: {
         </section>
       </div>
 
-      <aside className="flow-sidebar" aria-label="Chat">{chat}</aside>
     </div>
   );
 }

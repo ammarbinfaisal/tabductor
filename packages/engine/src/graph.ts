@@ -149,6 +149,8 @@ export const graphTaskSchema = z.object({
 });
 
 export const graphSchema = z.object({
+  /** User-facing automation brief; internal task prompts remain separate. */
+  automationPrompt: z.string().max(20000).optional(),
   contractVersion: z.literal(2).optional(),
   externalInputs: z.array(z.string().min(1).max(200)).max(500).optional(),
   systemInputs: z.array(z.enum(["run.completed", "run.failed", "run.timed_out", "system.loop_budget_exceeded", "system.run_budget_exceeded", "system.schedule_skipped"])).optional(),
@@ -1032,6 +1034,7 @@ export async function readGraph(db: Db, versionId: string): Promise<Graph> {
   const scheduleOf = new Map(scheduleRows.map((s) => [s.taskId, s]));
 
   return {
+    ...(stored.success && stored.data.automationPrompt !== undefined ? { automationPrompt: stored.data.automationPrompt } : {}),
     ...(stored.success && stored.data.contractVersion ? { contractVersion: stored.data.contractVersion, externalInputs: stored.data.externalInputs,
       systemInputs: stored.data.systemInputs, maxRuns: stored.data.maxRuns } : {}),
     tasks: taskRows.map((row): GraphTask => {

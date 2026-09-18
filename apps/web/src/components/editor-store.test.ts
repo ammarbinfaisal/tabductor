@@ -22,6 +22,20 @@ vi.mock("../lib/workflow-chat-client.js", () => ({ sendWorkflowMessage: vi.fn() 
 
 beforeEach(() => vi.clearAllMocks());
 
+it("builds a pasted prompt once and prevents running or publishing unbuilt prompt edits", async () => {
+  const graph: Graph = { tasks: [], events: [] };
+  const store = createEditorStore({ workflowId: "wf", versionId: "v1", graph, tasks: [], eventSchemas: {} });
+  store.setAutomationPrompt("Check the dashboard daily");
+  await store.save();
+  await store.triggerWorkflow();
+  expect(api.workflow.publishVersion.mutate).not.toHaveBeenCalled();
+  expect(api.workflow.trigger.mutate).not.toHaveBeenCalled();
+  vi.mocked(api.workflow.compileIntent.mutate).mockResolvedValue({ ok: true, artifact: { graph: { ...graph, automationPrompt: "Check the dashboard daily" }, store: null, proposedGrants: [] }, report: { checks: [], attempts: 1 } });
+  await store.buildAutomation();
+  expect(api.workflow.compileIntent.mutate).toHaveBeenCalledExactlyOnceWith({ workflowId: "wf", intent: "Check the dashboard daily", current: { graph, store: null, proposedGrants: [] } });
+  expect(store.getState()).toMatchObject({ graph: { ...graph, automationPrompt: "Check the dashboard daily" }, dirty: true, busy: false, workspaceTab: "automation" });
+});
+
 it("streams conversational edits without coupling the request to the selected node", async () => {
   const graph: Graph = { tasks: [{ name: "Read", kind: "browser", mode: "ai", prompt: "Read page", emits: [], consumes: [], limits: {}, schedule: null, position: null }], events: [] };
   const store = createEditorStore({ workflowId: "wf", versionId: "v1", graph, tasks: [], eventSchemas: {} });

@@ -10,6 +10,20 @@ const editCall = { id: "edit", name: "mutate_graph", args: { operation: "add_eve
 const publishCall = { id: "publish", name: "publish_draft", args: {} };
 const success: GraphCompileResult = { ok: true, artifact: edited, report: { checks: [], attempts: 1 } };
 
+it("turns a complete request into a reusable prompt and a checked draft without publishing", async () => {
+  const prompt = "Collect 100 unique tweets from my X For You timeline into my Notion database. Verify writes and skip duplicates. Run on demand.";
+  const events: WorkflowChatEvent[] = [];
+  const compiler = { compile: vi.fn().mockResolvedValue(success) };
+  const publish = vi.fn();
+  const complete = vi.fn<WorkflowChatModel["complete"]>()
+    .mockResolvedValueOnce({ text: "", toolCalls: [{ id: "build", name: "build_automation", args: { prompt } }] })
+    .mockResolvedValueOnce({ text: "Ready to publish.", toolCalls: [] });
+  await runWorkflowChat(request, { model: { complete }, compiler, publish, gateContext: {}, onEvent: event => events.push(event) });
+  expect(compiler.compile).toHaveBeenCalledWith({ current: original, gateContext: {}, intent: prompt });
+  expect(events).toContainEqual({ type: "draft", artifact: { ...edited, graph: { ...edited.graph, automationPrompt: prompt } } });
+  expect(publish).not.toHaveBeenCalled();
+});
+
 it.each([
   ["model_selection_missing", "/settings/models"],
   ["model_credential_missing", "unavailable or revoked"],

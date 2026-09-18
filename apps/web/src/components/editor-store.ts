@@ -55,6 +55,8 @@ export type WorkflowScheduleDraft = {
 };
 
 export type EditorState = {
+  workspaceTab: "automation" | "activity" | "graph";
+  automationPrompt: string;
   sidebar: "inspect" | "chat";
   chatMessages: Array<{ role: "user" | "assistant"; text: string; changes?: string[]; tools?: ChatToolActivity[] }>;
   chatPending: boolean;
@@ -139,6 +141,8 @@ export function createEditorStore(init: {
   try { triggerRequestId = sessionStorage.getItem(triggerStorageKey) ?? undefined; } catch { /* Server render or storage disabled. */ }
   const draft = executionDraft(init.graph);
   const store = createStore<EditorState>(() => ({
+    workspaceTab: "automation",
+    automationPrompt: init.graph.automationPrompt ?? "",
     sidebar: "chat",
     chatMessages: [],
     chatPending: false,
@@ -195,6 +199,25 @@ export function createEditorStore(init: {
     ...store,
 
     select: (selected: Selection) => store.setState({ selected }),
+    setWorkspaceTab: (workspaceTab: EditorState["workspaceTab"]) => store.setState({ workspaceTab, selected: null }),
+    setAutomationPrompt: (automationPrompt: string) => store.setState({ automationPrompt }),
+
+    async buildAutomation() {
+      const state = store.getState();
+      const intent = state.automationPrompt.trim();
+      if (!intent || state.busy) return;
+      store.setState({ busy: true, error: null, notice: "Building your automation…" });
+      try {
+        const result = await api.workflow.compileIntent.mutate({ workflowId: state.workflowId, intent,
+          current: { graph: state.graph, store: state.authoringStore, proposedGrants: [] } });
+        if (!result.ok) throw new Error(result.error);
+        const graph = { ...result.artifact.graph, automationPrompt: intent };
+        store.setState({ graph, automationPrompt: intent, authoringStore: result.artifact.store,
+          authoringReport: result.report, proposedGrants: [], dirty: true, selected: null,
+          scheduleDraft: workflowScheduleOf(graph).draft, notice: "Automation ready to review. Publish it, then run it when you’re ready." });
+      } catch (error) { store.setState({ error: asApiError(error), notice: null }); }
+      finally { store.setState({ busy: false }); }
+    },
     showSidebar: (sidebar: EditorState["sidebar"]) => store.setState({ sidebar }),
 
     setUi: (patch: Partial<EditorUi>) =>
@@ -214,6 +237,7 @@ export function createEditorStore(init: {
         if (saved && Array.isArray(saved.chatMessages)) {
           const compatible = saved.versionId === store.getState().versionId;
           store.setState({ chatMessages: saved.chatMessages.slice(-80).map((message) => ({ ...message, tools: message.tools?.map((tool) => tool.status === "running" ? { ...tool, status: "error" as const } : tool) })),
+            ...(compatible && typeof saved.automationPrompt === "string" ? { automationPrompt: saved.automationPrompt } : {}),
             ...(compatible && saved.dirty && saved.graph && Array.isArray(saved.graph.tasks) && Array.isArray(saved.graph.events)
               ? { graph: saved.graph, dirty: true, authoringReport: { checks: [], attempts: 1 }, authoringStore: saved.authoringStore ?? null, proposedGrants: [], scheduleDraft: workflowScheduleOf(saved.graph).draft, notice: "Your unpublished draft has been restored." }
               : {}),
@@ -222,8 +246,8 @@ export function createEditorStore(init: {
       } catch { /* Storage may be unavailable or contain an older format. */ }
       let timer: ReturnType<typeof setTimeout> | undefined;
       const persist = (): void => {
-        const { versionId, graph, dirty, authoringStore, proposedGrants, chatMessages } = store.getState();
-        try { localStorage.setItem(key, JSON.stringify({ versionId, graph, dirty, authoringStore, proposedGrants, chatMessages: chatMessages.slice(-80) })); } catch { /* A full/private browser does not block editing. */ }
+        const { versionId, graph, dirty, authoringStore, proposedGrants, chatMessages, automationPrompt } = store.getState();
+        try { localStorage.setItem(key, JSON.stringify({ versionId, graph, dirty, authoringStore, proposedGrants, chatMessages: chatMessages.slice(-80), automationPrompt })); } catch { /* A full/private browser does not block editing. */ }
       };
       const unsubscribe = store.subscribe(() => { clearTimeout(timer); timer = setTimeout(persist, 250); });
       return () => { clearTimeout(timer); persist(); unsubscribe(); };
@@ -247,7 +271,7 @@ export function createEditorStore(init: {
         }, (event) => {
           if (event.type === "text") updateAssistant((message) => ({ ...message, text: message.text + event.text }));
           if (event.type === "tool") updateAssistant((message) => ({ ...message, tools: [...(message.tools ?? []).filter((tool) => tool.id !== event.activity.id), event.activity] }));
-          if (event.type === "draft") store.setState({ graph: event.artifact.graph, authoringStore: event.artifact.store, proposedGrants: [], authoringReport: { checks: [], attempts: 1 }, dirty: true, selected: null, scheduleDraft: workflowScheduleOf(event.artifact.graph).draft });
+          if (event.type === "draft") store.setState({ graph: event.artifact.graph, automationPrompt: event.artifact.graph.automationPrompt ?? store.getState().automationPrompt, authoringStore: event.artifact.store, proposedGrants: [], authoringReport: { checks: [], attempts: 1 }, dirty: true, selected: null, scheduleDraft: workflowScheduleOf(event.artifact.graph).draft });
           if (event.type === "published") {
             wasPublished = true;
             store.setState({ versionId: event.versionId, dirty: false, publishedPublic: publicTypesOf(store.getState().graph), notice: "Workflow published. Future runs will use these changes." });
@@ -380,7 +404,7 @@ export function createEditorStore(init: {
      * the per-event report so every failed event card can say why.
      */
     async save(confirmed = false) {
-      if (store.getState().busy) return;
+      if (store.getState().busy || store.getState().automationPrompt.trim() !== (store.getState().graph.automationPrompt ?? "")) return;
       const { workflowId, versionId: baseVersionId, graph, publishedPublic, authoringReport, authoringStore } = store.getState();
 
       const next = publicTypesOf(graph);
@@ -434,7 +458,7 @@ export function createEditorStore(init: {
     /** Start every externally triggerable entry behavior without exposing internal nodes. */
     async triggerWorkflow() {
       const state = store.getState();
-      if (!state.versionId || state.dirty || state.busy) return;
+      if (!state.versionId || state.dirty || state.busy || state.automationPrompt.trim() !== (state.graph.automationPrompt ?? "")) return;
       store.setState({ busy: true, error: null, notice: null });
       try {
         triggerRequestId ??= crypto.randomUUID();
@@ -454,7 +478,7 @@ export function createEditorStore(init: {
     /** A schedule edit is a publication: the resulting version becomes current atomically. */
     async publishSchedule(remove = false) {
       const state = store.getState();
-      if (!state.versionId || state.dirty || state.busy) return;
+      if (!state.versionId || state.dirty || state.busy || state.automationPrompt.trim() !== (state.graph.automationPrompt ?? "")) return;
       const cron = state.scheduleDraft.cron.trim();
       const timezone = state.scheduleDraft.timezone.trim();
       if (!remove && (!cron || !timezone)) return;
@@ -498,6 +522,7 @@ export function createEditorStore(init: {
       store.setState({
         versionId: got.versionId,
         graph: draft.graph,
+        automationPrompt: draft.graph.automationPrompt ?? "",
         taskIds: Object.fromEntries(got.tasks.map((t) => [t.name, t.id])),
         publishedTasks: Object.fromEntries(got.tasks.map((t) => [t.name, t])),
         eventSchemas: got.eventSchemas,

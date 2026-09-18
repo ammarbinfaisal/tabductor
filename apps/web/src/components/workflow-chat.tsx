@@ -5,11 +5,11 @@ import type { EditorState, EditorStore } from "./editor-store.js";
 
 export function WorkflowChat({ store, state }: { store: EditorStore; state: EditorState }) {
   const publishing = state.chatMessages.at(-1)?.tools?.some((tool) => tool.label === "Publishing draft" && tool.status === "running");
-  const examples = ["Explain how this workflow works", "Add a step to handle failures", "Publish this draft"];
+  const examples = state.graph.tasks.length ? ["Explain what this automation does", "Update the automation prompt", "Publish this draft"] : ["Collect 100 tweets from my For You timeline into Notion", "Check a product’s availability every morning", "Help me write an automation prompt"];
   return <section className="workflow-chat" aria-label="Workflow assistant">
-    <header className="workflow-chat__header"><span className="chat-avatar" aria-hidden>✦</span><div><h2>Workflow assistant</h2><p>Plan, build, and publish together.</p></div></header>
+    <header className="workflow-chat__header"><span className="chat-avatar" aria-hidden>✦</span><div><h2>Build with chat</h2><p>Describe the outcome. I’ll prepare the automation.</p></div></header>
     <div className="graph-chat-log" role="log" aria-label="Workflow conversation" aria-live="polite" aria-relevant="additions" onScroll={(event) => { const log = event.currentTarget; log.dataset.follow = String(log.scrollHeight - log.scrollTop - log.clientHeight < 120); }}>
-      {state.chatMessages.length === 0 ? <div className="chat-welcome"><h3>What would you like to do?</h3><p>Ask about this workflow, describe a change, or tell me to publish your draft. I can work across the whole graph.</p><div className="chat-suggestions">{examples.map((text) => <button key={text} className="btn--quiet" onClick={() => store.setAuthoringIntent(text)}>{text} <span aria-hidden>↗</span></button>)}</div></div> : null}
+      {state.chatMessages.length === 0 ? <div className="chat-welcome"><h3>What should your browser do?</h3><p>Tell me which sites to use, the result you want, and when it should happen. I’ll turn that into a prompt and a working draft. Sign in to sites through your browser profile.</p><div className="chat-suggestions">{examples.map((text) => <button key={text} className="btn--quiet" onClick={() => store.setAuthoringIntent(text)}>{text} <span aria-hidden>↗</span></button>)}</div></div> : null}
       {state.chatMessages.map((message, index) => <article key={index} className={`graph-chat-message graph-chat-message--${message.role}`} aria-label={message.role === "user" ? "You" : "Assistant"}>
         <span className="chat-message-author">{message.role === "user" ? "You" : "✦ Assistant"}</span>
         {message.tools?.length ? <div className="chat-tool-list">{message.tools.map((tool) => <div key={tool.id} className="chat-tool" data-status={tool.status}><span aria-hidden>{tool.status === "running" ? "◌" : tool.status === "complete" ? "✓" : "!"}</span> {tool.label}<span className="muted">{tool.status === "running" ? "Working…" : tool.status === "complete" ? "Done" : "Couldn’t finish"}</span></div>)}</div> : null}
@@ -19,7 +19,7 @@ export function WorkflowChat({ store, state }: { store: EditorStore; state: Edit
       <div className="chat-scroll-anchor" ref={(element) => { if (element) { const log = element.parentElement; if (log && log.dataset.follow !== "false") log.scrollTop = log.scrollHeight; } }} />
     </div>
     <form className="graph-chat-form" onSubmit={(event) => { event.preventDefault(); void store.sendMessage(); }}>
-      <textarea id="graph-chat-message" aria-label="Message to workflow assistant" placeholder="Ask or make a change…" value={state.authoringIntent} maxLength={12000}
+      <textarea id="graph-chat-message" aria-label="Message to workflow assistant" placeholder="Describe an automation or refine the prompt…" value={state.authoringIntent} maxLength={12000}
         onChange={(event) => store.setAuthoringIntent(event.target.value)}
         onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void store.sendMessage(); } }} />
       <div className="chat-composer-footer"><span>{state.dirty ? "Unpublished draft" : state.versionId ? "All changes published" : "Start with an idea"}</span>
