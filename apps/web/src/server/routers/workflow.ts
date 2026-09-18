@@ -187,7 +187,7 @@ export const workflowRouter = router({
         authoring: z
           .object({
             report: graphCompileReportSchema,
-            proposedGrants: z.array(proposedGrantSchema),
+            proposedGrants: z.array(proposedGrantSchema).max(0, "Action grant proposals have been retired").default([]),
             store: graphStoreArtifactSchema.optional(),
           })
           .optional(),

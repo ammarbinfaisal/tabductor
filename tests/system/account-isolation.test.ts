@@ -8,7 +8,7 @@ import {
   staticSchemaGenerator,
 } from "@tabductor/engine";
 import { eq, sql } from "drizzle-orm";
-import { createCaller } from "../../apps/web/src/server/router.js";
+import { appRouter, createCaller } from "../../apps/web/src/server/router.js";
 
 let handle: MigratedTestDb;
 
@@ -20,6 +20,22 @@ const callerFor = (accountId: string) => createCaller({
   pool: handle.pool,
   accountId,
   schemaGenerator: staticSchemaGenerator({}),
+});
+
+it("exposes no legacy action-grant or approval procedures", () => {
+  expect(Object.keys(appRouter._def.procedures).some((name) => name.startsWith("policy."))).toBe(false);
+});
+
+it("rejects attempts to publish action grant proposals", async () => {
+  const accountId = await resolveAccountIdentity(handle.db, { provider: "fixture", subject: "retired_grants" });
+  const api = callerFor(accountId);
+  const workflowId = await api.workflow.create({ name: "No action approvals" });
+  await expect(api.workflow.publishVersion({
+    workflowId, graph: { tasks: [], events: [] },
+    authoring: { report: { checks: [], attempts: 1 }, proposedGrants: [{
+      taskRef: "task", grantKey: "action", grantValue: "click", requiresApproval: true, status: "approved",
+    }] },
+  })).rejects.toMatchObject({ code: "BAD_REQUEST" });
 });
 
 it("isolates workflow reads and lists between resolved Clerk accounts", async () => {

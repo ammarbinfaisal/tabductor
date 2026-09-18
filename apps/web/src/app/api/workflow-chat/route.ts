@@ -42,7 +42,7 @@ export async function POST(request: Request): Promise<Response> {
         model, compiler, gateContext, signal,
         publish: (artifact, expectedVersionId) => caller.workflow.publishVersion({
           workflowId, expectedVersionId, graph: artifact.graph,
-          authoring: { report: { checks: [], attempts: 1 }, proposedGrants: artifact.proposedGrants, ...(artifact.store ? { store: artifact.store } : {}) },
+          authoring: { report: { checks: [], attempts: 1 }, proposedGrants: [], ...(artifact.store ? { store: artifact.store } : {}) },
         }),
         onEvent: (event) => {
           if (!open) return;

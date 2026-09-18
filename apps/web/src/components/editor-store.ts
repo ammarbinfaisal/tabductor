@@ -81,8 +81,6 @@ export type EditorState = {
   authoringStore: GraphDraftArtifact["store"];
   proposedGrants: ProposedGrant[];
   publishedProposals: Array<ProposedGrant & { id: string }>;
-  /** Proposal identity → checked in the pre-publish review list. Safe default is false. */
-  proposalApprovals: Record<string, boolean>;
   /**
    * `executorKey` strings the engine registered at boot (U3a), or `null` while unknown.
    * Used to explain when real execution is unavailable; `null` means unknown.
@@ -154,9 +152,8 @@ export function createEditorStore(init: {
     authoringIntent: "",
     authoringReport: init.authoring?.report?.authoring ?? null,
     authoringStore: null,
-    proposedGrants: init.authoring?.proposedGrants ?? [],
-    publishedProposals: init.authoring?.proposedGrants ?? [],
-    proposalApprovals: {},
+    proposedGrants: [],
+    publishedProposals: [],
     engineExecutors: null,
     publishedPublic: publicTypesOf(init.graph),
     confirmVisibility: null,
@@ -181,7 +178,6 @@ export function createEditorStore(init: {
       authoringReport: null,
       authoringStore: null,
       proposedGrants: [],
-      proposalApprovals: {},
     });
 
   const mapTask = (name: string, fn: (task: GraphTask) => GraphTask): void =>
@@ -204,12 +200,6 @@ export function createEditorStore(init: {
     setScheduleDraft: (patch: Partial<WorkflowScheduleDraft>) =>
       store.setState({ scheduleDraft: { ...store.getState().scheduleDraft, ...patch } }),
 
-    toggleProposalApproval(grant: ProposedGrant) {
-      const key = proposalKey(grant);
-      const approvals = store.getState().proposalApprovals;
-      store.setState({ proposalApprovals: { ...approvals, [key]: !approvals[key] } });
-    },
-
     /** Restore only after mount so server markup and hydration use the same graph. */
     restoreConversation() {
       if (typeof localStorage === "undefined") return;
@@ -220,7 +210,7 @@ export function createEditorStore(init: {
           const compatible = saved.versionId === store.getState().versionId;
           store.setState({ chatMessages: saved.chatMessages.slice(-80).map((message) => ({ ...message, tools: message.tools?.map((tool) => tool.status === "running" ? { ...tool, status: "error" as const } : tool) })),
             ...(compatible && saved.dirty && saved.graph && Array.isArray(saved.graph.tasks) && Array.isArray(saved.graph.events)
-              ? { graph: saved.graph, dirty: true, authoringReport: { checks: [], attempts: 1 }, authoringStore: saved.authoringStore ?? null, proposedGrants: saved.proposedGrants ?? [], scheduleDraft: workflowScheduleOf(saved.graph).draft, notice: "Your unpublished draft has been restored." }
+              ? { graph: saved.graph, dirty: true, authoringReport: { checks: [], attempts: 1 }, authoringStore: saved.authoringStore ?? null, proposedGrants: [], scheduleDraft: workflowScheduleOf(saved.graph).draft, notice: "Your unpublished draft has been restored." }
               : {}),
           });
         }
@@ -247,12 +237,12 @@ export function createEditorStore(init: {
         store.setState((current) => ({ chatMessages: current.chatMessages.map((message, index) => index === assistantIndex ? fn(message) : message) }));
       try {
         await sendWorkflowMessage({ workflowId: state.workflowId, versionId: state.versionId,
-          current: { graph: state.graph, store: state.authoringStore, proposedGrants: state.proposedGrants },
+          current: { graph: state.graph, store: state.authoringStore, proposedGrants: [] },
           messages: messages.slice(-80).map(({ role, text }) => ({ role, text })),
         }, (event) => {
           if (event.type === "text") updateAssistant((message) => ({ ...message, text: message.text + event.text }));
           if (event.type === "tool") updateAssistant((message) => ({ ...message, tools: [...(message.tools ?? []).filter((tool) => tool.id !== event.activity.id), event.activity] }));
-          if (event.type === "draft") store.setState({ graph: event.artifact.graph, authoringStore: event.artifact.store, proposedGrants: event.artifact.proposedGrants, authoringReport: { checks: [], attempts: 1 }, dirty: true, selected: null, scheduleDraft: workflowScheduleOf(event.artifact.graph).draft });
+          if (event.type === "draft") store.setState({ graph: event.artifact.graph, authoringStore: event.artifact.store, proposedGrants: [], authoringReport: { checks: [], attempts: 1 }, dirty: true, selected: null, scheduleDraft: workflowScheduleOf(event.artifact.graph).draft });
           if (event.type === "published") {
             wasPublished = true;
             store.setState({ versionId: event.versionId, dirty: false, publishedPublic: publicTypesOf(store.getState().graph), notice: "Workflow published. Future runs will use these changes." });
@@ -267,7 +257,7 @@ export function createEditorStore(init: {
         if (wasPublished) {
           try {
             const got = await api.workflow.get.query({ id: state.workflowId });
-            store.setState({ versionId: got.versionId, graph: got.graph, taskIds: Object.fromEntries(got.tasks.map((task) => [task.name, task.id])), publishedTasks: Object.fromEntries(got.tasks.map((task) => [task.name, task])), eventSchemas: got.eventSchemas, publishedProposals: got.authoring?.proposedGrants ?? [], proposedGrants: got.authoring?.proposedGrants ?? [] });
+            store.setState({ versionId: got.versionId, graph: got.graph, taskIds: Object.fromEntries(got.tasks.map((task) => [task.name, task.id])), publishedTasks: Object.fromEntries(got.tasks.map((task) => [task.name, task])), eventSchemas: got.eventSchemas, publishedProposals: [], proposedGrants: [] });
           } catch { store.setState({ notice: "Published successfully. Reload to refresh run details." }); }
         }
         store.setState({ busy: false, chatPending: false });
@@ -275,39 +265,6 @@ export function createEditorStore(init: {
     },
 
     stopMessage() { chatAbort?.abort(); },
-
-    async decideProposal(proposalId: string, decision: "approved" | "rejected") {
-      if (store.getState().busy) return;
-      store.setState({ busy: true, error: null, notice: null });
-      try {
-        const result = await api.policy.decideProposedGrant.mutate({ proposalId, decision });
-        if (!("proposal" in result)) {
-          throw new Error(`Proposal could not be updated: ${result.outcome}`);
-        }
-        const proposal: ProposedGrant & { id: string } = {
-          taskRef: result.proposal.taskRef,
-          grantKey: result.proposal.grantKey as ProposedGrant["grantKey"],
-          grantValue: result.proposal.grantValue,
-          requiresApproval: result.proposal.requiresApproval,
-          status: result.proposal.status as ProposedGrant["status"],
-          id: result.proposal.id,
-        };
-        store.setState({
-          busy: false,
-          publishedProposals: store.getState().publishedProposals.map((item) =>
-            item.id === proposal.id ? proposal : item,
-          ),
-          proposedGrants: store.getState().proposedGrants.map((item) =>
-            proposalKey(item) === proposalKey(proposal) ? proposal : item,
-          ),
-          notice: result.outcome === "stripped_by_baseline"
-            ? "The account baseline stripped that proposal."
-            : `Proposal ${result.outcome}.`,
-        });
-      } catch (err) {
-        store.setState({ busy: false, error: asApiError(err) });
-      }
-    },
 
     /** Banner deep link: select the event and arm the one-shot scroll-flash. */
     goToEvent(type: string) {
@@ -419,7 +376,7 @@ export function createEditorStore(init: {
      */
     async save(confirmed = false) {
       if (store.getState().busy) return;
-      const { workflowId, graph, publishedPublic, authoringReport, authoringStore, proposedGrants } = store.getState();
+      const { workflowId, graph, publishedPublic, authoringReport, authoringStore } = store.getState();
 
       const next = publicTypesOf(graph);
       const adding = next.filter((t) => !publishedPublic.includes(t));
@@ -438,25 +395,13 @@ export function createEditorStore(init: {
             ? {
                 authoring: {
                   report: authoringReport,
-                  proposedGrants,
+                  proposedGrants: [],
                   ...(authoringStore ? { store: authoringStore } : {}),
                 },
               }
             : {}),
         });
-        let got = await api.workflow.get.query({ id: workflowId });
-        const approvals = store.getState().proposalApprovals;
-        const toApprove = (got.authoring?.proposedGrants ?? []).filter(
-          (proposal) => proposal.status === "pending" && approvals[proposalKey(proposal)],
-        );
-        if (toApprove.length > 0) {
-          await Promise.all(
-            toApprove.map((proposal) =>
-              api.policy.decideProposedGrant.mutate({ proposalId: proposal.id, decision: "approved" }),
-            ),
-          );
-          got = await api.workflow.get.query({ id: workflowId });
-        }
+        const got = await api.workflow.get.query({ id: workflowId });
         store.setState({
           versionId,
           taskIds,
@@ -468,9 +413,8 @@ export function createEditorStore(init: {
           scheduleDraft: workflowScheduleOf(got.graph).draft,
           compileReport: report.events,
           authoringReport: got.authoring?.report?.authoring ?? authoringReport,
-          proposedGrants: got.authoring?.proposedGrants ?? proposedGrants,
-          publishedProposals: got.authoring?.proposedGrants ?? [],
-          proposalApprovals: {},
+          proposedGrants: [],
+          publishedProposals: [],
           notice: "Workflow published. Future runs will use these changes.",
         });
       } catch (err) {
@@ -524,9 +468,8 @@ export function createEditorStore(init: {
           compileReport: null,
           authoringReport: got.authoring?.report?.authoring ?? null,
           authoringStore: null,
-          proposedGrants: got.authoring?.proposedGrants ?? [],
-          publishedProposals: got.authoring?.proposedGrants ?? [],
-          proposalApprovals: {},
+          proposedGrants: [],
+          publishedProposals: [],
           publishedPublic: publicTypesOf(got.graph),
           confirmVisibility: null,
           scheduleDraft: workflowScheduleOf(got.graph).draft,
@@ -554,9 +497,8 @@ export function createEditorStore(init: {
         compileReport: null,
         authoringReport: got.authoring?.report?.authoring ?? null,
         authoringStore: null,
-        proposedGrants: got.authoring?.proposedGrants ?? [],
-        publishedProposals: got.authoring?.proposedGrants ?? [],
-        proposalApprovals: {},
+        proposedGrants: [],
+        publishedProposals: [],
         publishedPublic: publicTypesOf(got.graph),
         confirmVisibility: null,
         scheduleDraft: workflowScheduleOf(got.graph).draft,
@@ -591,10 +533,6 @@ export function workflowScheduleOf(graph: Graph): WorkflowScheduleView {
     scheduledEntries: schedules.length,
     distinctSchedules,
   };
-}
-
-export function proposalKey(grant: Pick<ProposedGrant, "taskRef" | "grantKey" | "grantValue">): string {
-  return `${grant.taskRef}\u0000${grant.grantKey}\u0000${grant.grantValue}`;
 }
 
 const EXECUTION_NOTICE = "Publish to replace legacy test behavior with real execution.";

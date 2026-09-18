@@ -51,6 +51,11 @@ live payment, or real solver request is needed for the deterministic suite.
 
 ### H1 — Clerk accounts and removal of action approvals
 
+Implementation notes (2026-09-18): the legacy approval/baseline pages and policy tRPC router
+have been removed. Editor publication no longer approves grants, restored drafts discard
+old proposals, and public publication rejects non-empty grant proposals. Historical policy
+records remain intact. Extracting safety services from the legacy policy package remains open.
+
 - Integrate Clerk and account resolution across server rendering, tRPC, workflow chat, MCP,
   and background work. Add revocable account MCP tokens and an account ownership query layer.
 - Backfill existing data to an explicit owner and enforce ownership on workflows, stores,

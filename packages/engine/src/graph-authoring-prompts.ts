@@ -4,7 +4,7 @@ import { ASYNC_EVENT_EXECUTION_CONTRACT } from "./async-execution-contract.js";
 export const GRAPH_AUTHORING_SYSTEM_PROMPT = `You compile one workflow intent into one coherent JSON draft.
 
 Return JSON only with this shape:
-{"graph":{"tasks":[{"name":"...","kind":"browser|decision","mode":"ai","prompt":"...","limits":{},"emits":[],"consumes":[],"schedule":null,"position":null}],"events":[{"type":"...","description":"...","public":false}]},"store":null or {"description":"...","ddl":"CREATE TABLE ...","tablesSpec":{"table":{"primaryKey":["id"],"schema":{"type":"object","properties":{},"required":[]}}},"confirmDestructive":false,"forceDestructive":false},"proposedGrants":[]}.
+{"graph":{"tasks":[{"name":"...","kind":"browser|decision","mode":"ai","prompt":"...","limits":{},"emits":[],"consumes":[],"schedule":null,"position":null}],"events":[{"type":"...","description":"...","public":false}]},"store":null or {"description":"...","ddl":"CREATE TABLE ...","tablesSpec":{"table":{"primaryKey":["id"],"schema":{"type":"object","properties":{},"required":[]}}},"confirmDestructive":false,"forceDestructive":false}}.
 
 P1: choose topology, kinds, event declarations, emits/consumes and schedules. There are no edges.
 P2: give every task a precise operating prompt. Give EVERY task and event a short human-readable label and a summary of its purpose and outcome (one or two sentences, maximum 600 characters). These are user-facing descriptions: never put instructions, prompts, schema rules, tool names, or database IDs in a label or summary. Preserve existing labels and summaries unless their meaning changes.

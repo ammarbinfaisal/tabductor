@@ -128,7 +128,7 @@ export async function setWorkflowSchedule(ctx: Context, input: WorkflowScheduleI
   const priorAuthoring = authoring.report
     ? {
         report: authoring.report.authoring,
-        proposedGrants: authoring.proposedGrants.map(({ id: _id, ...proposal }) => proposal),
+        proposedGrants: [],
       }
     : undefined;
   const published = await publishVersion(ctx.db, {
