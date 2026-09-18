@@ -1390,6 +1390,14 @@ export const browserBilling = pgTable("browser_billing", {
   endedAt: ts("ended_at"),
 });
 
+export const workflowTriggerRequests = pgTable("workflow_trigger_requests", {
+  workflowId: text("workflow_id").notNull().references(() => workflows.id, { onDelete: "restrict" }),
+  requestId: text("request_id").notNull(),
+  resultJson: jsonb("result_json").$type<{ workflowId: string; executionId: string; accepted: number;
+    runs: Array<{ eventId: string; type: string; runId: string | null }> }>().notNull(),
+  createdAt: createdAt(),
+}, (t) => [primaryKey({ columns: [t.workflowId, t.requestId] })]);
+
 export const browserChallenges = pgTable("browser_challenges", {
   id: text("id").primaryKey(),
   sessionId: text("session_id").notNull().references(() => browserSessions.id, { onDelete: "restrict" }),

@@ -11,7 +11,7 @@ import {
 } from "@tabductor/store";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
-import { graphSchema, unauthorableModeReason, type Graph } from "./graph.js";
+import { checkGraph, graphSchema, unauthorableModeReason, type Graph } from "./graph.js";
 import { GRAPH_AUTHORING_SYSTEM_PROMPT } from "./graph-authoring-prompts.js";
 import type { ChatTransport } from "./schema-generator-llm.js";
 
@@ -216,6 +216,10 @@ export async function gateGraphDraft(
 ): Promise<{ artifact: GraphDraftArtifact; checks: GraphGateEntry[] }> {
   const artifact = graphDraftArtifactSchema.parse(input);
   const checks: GraphGateEntry[] = [];
+  if (artifact.graph.contractVersion === 2) {
+    try { checkGraph(artifact.graph); }
+    catch (error) { checks.push(entry("P1", "graph_shape", "fail", error instanceof Error ? error.message : "invalid graph contract")); }
+  }
   const taskNames = artifact.graph.tasks.map((task) => task.name);
   const eventTypes = artifact.graph.events.map((event) => event.type);
   const duplicateTask = taskNames.find((name, index) => taskNames.indexOf(name) !== index);

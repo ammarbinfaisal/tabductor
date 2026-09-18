@@ -3,7 +3,7 @@ import { z } from "zod";
 
 export type WorkflowPublishInput = { name: string; intent: string; maxHops?: number };
 export type WorkflowUpdateInput = { workflowId: string; intent: string };
-export type WorkflowTriggerInput = { workflowId: string };
+export type WorkflowTriggerInput = { workflowId: string; requestId?: string };
 export type WorkflowScheduleInput = {
   workflowId: string;
   cron: string;
@@ -59,10 +59,12 @@ export function createWorkflowMcpServer(control: WorkflowControl): McpServer {
     description: "Start the full published workflow from all entry tasks. Individual events cannot be manually triggered.",
     inputSchema: {
       workflow_id: z.string().min(1),
+      request_id: z.string().min(1).max(200).optional().describe("Reuse this request ID when retrying an uncertain response; a new ID starts new work."),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
-  }, async ({ workflow_id }) => result(await control.trigger({
+  }, async ({ workflow_id, request_id }) => result(await control.trigger({
     workflowId: workflow_id,
+    ...(request_id ? { requestId: request_id } : {}),
   })));
 
   server.registerTool("workflow_schedule", {

@@ -26,11 +26,12 @@ The external automation API remains MCP at `/api/mcp`, with four workflow-level 
 
 - `workflow_publish(name, intent, max_hops?)`
 - `workflow_update(workflow_id, intent)`
-- `workflow_trigger(workflow_id, event_type?, packet?)`
+- `workflow_trigger(workflow_id, request_id?)`
 - `workflow_schedule(workflow_id, cron, timezone?, enabled?)`
 
 UI/tRPC and MCP call the same authenticated workflow services. Trigger responses include an
-execution ID. Session inspection and control use dedicated authenticated APIs; callers do
+execution ID. Reuse `request_id` after an uncertain response to recover the same execution,
+even if the workflow has since been republished. Session inspection and control use dedicated authenticated APIs; callers do
 not need internal task IDs or browser connection URLs.
 
 ## 2. Accounts and ownership

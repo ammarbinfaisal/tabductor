@@ -127,6 +127,9 @@ export const graphScheduleSchema = z.object({
 });
 
 export const graphTaskSchema = z.object({
+  logicalId: z.string().min(1).max(160).optional(),
+  /** Whether a workflow-level manual/scheduled start should create this task's root. */
+  entry: z.boolean().optional(),
   /** Identity across versions (`tasks.name`), so an edited graph still routes old events. */
   name: z.string().min(1).max(120),
   label: z.string().min(1).max(160).optional(),
@@ -146,6 +149,10 @@ export const graphTaskSchema = z.object({
 });
 
 export const graphSchema = z.object({
+  contractVersion: z.literal(2).optional(),
+  externalInputs: z.array(z.string().min(1).max(200)).max(500).optional(),
+  systemInputs: z.array(z.enum(["run.completed", "run.failed", "run.timed_out", "system.loop_budget_exceeded", "system.run_budget_exceeded", "system.schedule_skipped"])).optional(),
+  maxRuns: z.number().int().positive().max(1000).optional(),
   tasks: z.array(graphTaskSchema).max(200),
   events: z.array(graphEventSchema).max(500).default([]),
 });
@@ -192,6 +199,12 @@ const invalid = (message: string, details: Record<string, unknown>): AppError =>
 export function checkGraph(graph: Graph): void {
   const seen = new Set<string>();
   const declared = new Set(graph.events.map((e) => e.type));
+  const identities = new Set<string>();
+  if (graph.contractVersion === 2) {
+    if (!graph.externalInputs || !graph.systemInputs || !graph.maxRuns) throw invalid("version 2 graphs require explicit input declarations and a run budget", {});
+    if (new Set(graph.externalInputs).size !== graph.externalInputs.length || new Set(graph.systemInputs).size !== graph.systemInputs.length) throw invalid("duplicate input declaration", {});
+    for (const type of graph.externalInputs) if (!declared.has(type)) throw invalid(`external input "${type}" requires an event schema declaration`, { eventType: type });
+  }
 
   const types = new Set<string>();
   for (const event of graph.events) {
@@ -202,6 +215,19 @@ export function checkGraph(graph: Graph): void {
   }
 
   for (const task of graph.tasks) {
+    const logicalId = task.logicalId ?? task.name;
+    if (identities.has(logicalId)) throw invalid(`duplicate logical task identity "${logicalId}"`, { task: task.name });
+    identities.add(logicalId);
+    if (graph.contractVersion === 2) {
+      if (!task.logicalId || task.entry === undefined) throw invalid(`task "${task.name}" requires a logicalId and explicit entry behavior`, { task: task.name });
+      if (task.schedule && !task.entry) throw invalid(`scheduled task "${task.name}" must be an entry`, { task: task.name });
+      const emitted = new Set(graph.tasks.flatMap((t) => t.emits));
+      for (const type of task.consumes) {
+        if (!emitted.has(type) && !graph.externalInputs!.includes(type) && !graph.systemInputs!.some((name) => name === type)) {
+          throw invalid(`input "${type}" is neither emitted nor declared external/system input`, { task: task.name, eventType: type });
+        }
+      }
+    }
     if (seen.has(task.name)) throw invalid(`duplicate task name "${task.name}"`, { task: task.name });
     seen.add(task.name);
 
@@ -633,7 +659,14 @@ export async function publishVersion(
       })
       .from(tasks)
       .where(eq(tasks.workflowVersionId, workflow.currentVersionId));
-    for (const row of taskRows) previousTasks.set(row.name, row);
+    const [priorVersion] = await db.select({ graph: workflowVersions.graphJson }).from(workflowVersions).where(eq(workflowVersions.id, workflow.currentVersionId));
+    const priorGraph = graphSchema.safeParse(priorVersion?.graph);
+    const previousByIdentity = new Map((priorGraph.success ? priorGraph.data.tasks : []).map((task) => [task.logicalId ?? task.name, task.name]));
+    for (const task of graph.tasks) {
+      const previousName = previousByIdentity.get(task.logicalId ?? task.name);
+      const row = taskRows.find((row) => row.name === previousName);
+      if (row) previousTasks.set(task.name, row);
+    }
 
     const [grantRows, proposalRows] = await Promise.all([
       db
@@ -982,7 +1015,7 @@ export async function readGraph(db: Db, versionId: string): Promise<Graph> {
   const taskRows = await db.select().from(tasks).where(eq(tasks.workflowVersionId, versionId));
   const stored = graphSchema.safeParse(version.graphJson);
   const decoration = new Map(
-    (stored.success ? stored.data.tasks : []).map((t) => [t.name, { position: t.position, label: t.label, summary: t.summary }]),
+    (stored.success ? stored.data.tasks : []).map((t) => [t.name, { position: t.position, label: t.label, summary: t.summary, logicalId: t.logicalId, entry: t.entry }]),
   );
 
   const emitRows = await db.select().from(taskEmits).where(eq(taskEmits.workflowVersionId, versionId));
@@ -999,10 +1032,14 @@ export async function readGraph(db: Db, versionId: string): Promise<Graph> {
   const scheduleOf = new Map(scheduleRows.map((s) => [s.taskId, s]));
 
   return {
+    ...(stored.success && stored.data.contractVersion ? { contractVersion: stored.data.contractVersion, externalInputs: stored.data.externalInputs,
+      systemInputs: stored.data.systemInputs, maxRuns: stored.data.maxRuns } : {}),
     tasks: taskRows.map((row): GraphTask => {
       const schedule = scheduleOf.get(row.id);
       return {
         name: row.name,
+        ...(decoration.get(row.name)?.logicalId ? { logicalId: decoration.get(row.name)!.logicalId } : {}),
+        ...(decoration.get(row.name)?.entry !== undefined ? { entry: decoration.get(row.name)!.entry } : {}),
         ...(decoration.get(row.name)?.label ? { label: decoration.get(row.name)!.label } : {}),
         ...(decoration.get(row.name)?.summary ? { summary: decoration.get(row.name)!.summary } : {}),
         kind: row.kind,

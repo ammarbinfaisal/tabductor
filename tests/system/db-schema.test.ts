@@ -55,6 +55,7 @@ const EXPECTED_TABLES = [
   "workflow_browser_profiles",
   "workflow_executions",
   "workflow_shares",
+  "workflow_trigger_requests",
   "workflow_versions",
   "workflows",
 ];

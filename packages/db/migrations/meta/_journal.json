@@ -267,6 +267,13 @@
       "when": 1789725551993,
       "tag": "0037_deep_monster_badoon",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1789727907779,
+      "tag": "0038_optimal_chat",
+      "breakpoints": true
     }
   ]
 }

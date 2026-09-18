@@ -87,6 +87,7 @@ export const workflowRouter = router({
     .input(
       z.object({
         workflowId: z.string().min(1),
+        requestId: z.string().min(1).max(200).optional(),
       }).strict(),
     )
     .mutation(async ({ ctx, input }) => {

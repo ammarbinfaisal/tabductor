@@ -77,6 +77,7 @@ export function createWorkflowControl(ctx: Context): WorkflowControl {
     async trigger(input: WorkflowTriggerInput) {
       return triggerWorkflow(ctx, {
         workflowId: input.workflowId,
+        ...(input.requestId ? { requestId: input.requestId } : {}),
       });
     },
 

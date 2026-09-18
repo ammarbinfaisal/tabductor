@@ -49,16 +49,18 @@ export async function createWorkflowExecution(
     if (!workflow) throw new Error(`no workflow "${input.workflowId}"`);
     const versionId = input.workflowVersionId ?? await latestVersionId(db, workflow);
     if (!versionId) throw new Error(`workflow "${input.workflowId}" has no published version`);
-    const [version] = await db.select({ id: workflowVersions.id }).from(workflowVersions)
+    const [version] = await db.select({ id: workflowVersions.id, graph: workflowVersions.graphJson }).from(workflowVersions)
       .where(and(eq(workflowVersions.id, versionId), eq(workflowVersions.workflowId, workflow.id)));
     if (!version) throw new AppError("execution_version_mismatch", "execution version must belong to its workflow");
+    const declaredBudget = (version.graph as { maxRuns?: unknown } | null)?.maxRuns;
+    const versionBudget = typeof declaredBudget === "number" && Number.isSafeInteger(declaredBudget) && declaredBudget > 0 && declaredBudget <= 1000 ? declaredBudget : 1000;
     const executionId = newId("exec");
     await db.insert(workflowExecutions).values({
       id: executionId,
       workflowId: workflow.id,
       workflowVersionId: versionId,
       maxHops: workflow.maxHops,
-      maxRuns: input.maxRuns ?? 1000,
+      maxRuns: Math.min(input.maxRuns ?? 1000, versionBudget),
     });
     return executionId;
   });

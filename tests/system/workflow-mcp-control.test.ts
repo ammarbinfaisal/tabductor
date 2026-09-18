@@ -98,3 +98,22 @@ it("rejects an MCP update compiled from a version that changed during authoring"
   await expect(update).rejects.toThrow("published elsewhere");
   expect((await api.workflow.get({ id: workflowId })).versionId).toBe(winner.versionId);
 });
+
+it("retries a trigger request across concurrent calls and later publication without starting new work", async () => {
+  const context = { db: handle.db, schemaGenerator: staticSchemaGenerator() };
+  const api = createCaller(context);
+  const workflowId = await api.workflow.create({ name: "Idempotent roots" });
+  const graph = { contractVersion: 2 as const, externalInputs: [], systemInputs: [], maxRuns: 4,
+    tasks: [{ logicalId: "stable-a", name: "Entry", entry: true, mode: "stub", consumes: [], emits: [] },
+      { logicalId: "stable-b", name: "Not an entry", entry: false, mode: "stub", consumes: [], emits: [] }], events: [] };
+  await api.workflow.publishVersion({ workflowId, graph });
+  const requests = await Promise.all(Array.from({ length: 6 }, () => api.workflow.trigger({ workflowId, requestId: "same-request" })));
+  expect(new Set(requests.map((r) => r.executionId)).size).toBe(1);
+  expect(requests[0]!.accepted).toBe(1);
+  await api.workflow.publishVersion({ workflowId, graph: { ...graph, tasks: [{ ...graph.tasks[0]!, name: "Renamed entry" }] } });
+  expect(await api.workflow.trigger({ workflowId, requestId: "same-request" })).toEqual(requests[0]);
+  expect((await api.workflow.trigger({ workflowId, requestId: "new-request" })).executionId).not.toBe(requests[0]!.executionId);
+  const current = await api.workflow.get({ id: workflowId });
+  expect(current.graph.tasks[0]).toMatchObject({ logicalId: "stable-a", name: "Renamed entry", entry: true });
+  expect(current.graph).toMatchObject({ contractVersion: 2 });
+});

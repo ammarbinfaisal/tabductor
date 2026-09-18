@@ -155,7 +155,7 @@ it("runs and schedules the published workflow through workflow-level controls", 
     runs: [{ eventId: "evt", type: "manual.trigger", runId: "run_1" }],
   });
   await store.triggerWorkflow();
-  expect(api.workflow.trigger.mutate).toHaveBeenCalledWith({ workflowId: "wf" });
+  expect(api.workflow.trigger.mutate).toHaveBeenCalledWith({ workflowId: "wf", requestId: expect.any(String) });
   expect(store.getState().notice).toContain("Queued 1 run");
 
   const scheduledGraph: Graph = {

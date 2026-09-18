@@ -1,4 +1,6 @@
 import { AppError } from "@tabductor/core";
+import { workflows, workflowTriggerRequests } from "@tabductor/db";
+import { and, eq } from "drizzle-orm";
 import {
   getWorkflow,
   createWorkflowExecution,
@@ -15,6 +17,7 @@ import { requireWorkflowOwner } from "./trpc.js";
 
 export type WorkflowTriggerInput = {
   workflowId: string;
+  requestId?: string;
 };
 
 export type WorkflowScheduleInput = {
@@ -27,6 +30,7 @@ export type WorkflowScheduleInput = {
  * nothing produced inside this graph; callers never need to learn its task id or name.
  */
 export function workflowEntryNames(graph: Graph): string[] {
+  if (graph.contractVersion === 2) return graph.tasks.filter((task) => task.entry).map((task) => task.name);
   const internallyEmitted = new Set(graph.tasks.flatMap((task) => task.emits));
   return graph.tasks
     .filter((task) => task.consumes.length === 0 || task.consumes.every((type) => !internallyEmitted.has(type)))
@@ -50,44 +54,53 @@ async function currentWorkflow(ctx: Context, workflowId: string) {
 
 /** Workflow-level manual start shared by tRPC and MCP. */
 export async function triggerWorkflow(ctx: Context, input: WorkflowTriggerInput) {
-  const { workflow, versionId } = await currentWorkflow(ctx, input.workflowId);
-  const [graph, tasks] = await Promise.all([
-    readGraph(ctx.db, versionId),
-    listVersionTasks(ctx.db, versionId),
-  ]);
-  const entries = new Set(workflowEntryNames(graph));
-  const taskIds = tasks.filter((task) => entries.has(task.name)).map((task) => task.id);
-  if (taskIds.length === 0) {
-    throw new AppError("workflow_not_triggerable", "This workflow has no externally triggerable behavior.", {
-      details: { workflowId: input.workflowId },
-    });
-  }
+  await requireWorkflowOwner(ctx, input.workflowId);
+  if (input.requestId !== undefined && (!input.requestId || input.requestId.length > 200)) throw new AppError("trigger_request_invalid", "requestId must contain 1–200 characters");
+  return ctx.db.transaction(async (trx) => {
+    const [workflow] = await trx.select().from(workflows).where(eq(workflows.id, input.workflowId)).for("update");
+    if (!workflow?.currentVersionId) throw new AppError("workflow_not_published", "Publish this workflow before running it.");
+    if (input.requestId) {
+      const [prior] = await trx.select().from(workflowTriggerRequests).where(and(eq(workflowTriggerRequests.workflowId, input.workflowId), eq(workflowTriggerRequests.requestId, input.requestId)));
+      if (prior) return prior.resultJson;
+    }
+    const versionId = workflow.currentVersionId;
+    const [graph, tasks] = await Promise.all([
+      readGraph(trx, versionId),
+      listVersionTasks(trx, versionId),
+    ]);
+    const entries = new Set(workflowEntryNames(graph));
+    const taskIds = tasks.filter((task) => entries.has(task.name)).map((task) => task.id);
+    if (taskIds.length === 0) {
+      throw new AppError("workflow_not_triggerable", "This workflow has no externally triggerable behavior.", {
+        details: { workflowId: input.workflowId },
+      });
+    }
 
-  const { executionId, runs } = await ctx.db.transaction(async (trx) => {
     const executionId = await createWorkflowExecution(trx, {
       workflowId: workflow.id,
       workflowVersionId: versionId,
+      ...(graph.maxRuns ? { maxRuns: graph.maxRuns } : {}),
     });
     const runs: Awaited<ReturnType<typeof triggerTask>>[] = [];
     for (const taskId of taskIds) runs.push(await triggerTask(trx, { taskId, executionId }));
-    return { executionId, runs };
+    const result = {
+      workflowId: input.workflowId,
+      executionId,
+      accepted: runs.length,
+      runs: runs.map(({ event, dispatched }) => ({
+        eventId: event.eventId,
+        type: event.type,
+        runId: dispatched?.runId ?? null,
+      })),
+    };
+    if (input.requestId) await trx.insert(workflowTriggerRequests).values({ workflowId: input.workflowId, requestId: input.requestId, resultJson: result });
+    return result;
   });
-  return {
-    workflowId: input.workflowId,
-    executionId,
-    accepted: runs.length,
-    runs: runs.map(({ event, dispatched }) => ({
-      eventId: event.eventId,
-      type: event.type,
-      runId: dispatched?.runId ?? null,
-    })),
-  };
 }
 
 /**
  * Replace the workflow-level schedule by publishing a new version. Existing authoring
- * evidence and capability proposals travel with that version; changing when work starts
- * must not erase why or with which grants the graph was published.
+ * evidence travels with that version; changing when work starts preserves its compile report.
  */
 export async function setWorkflowSchedule(ctx: Context, input: WorkflowScheduleInput) {
   const { versionId } = await currentWorkflow(ctx, input.workflowId);

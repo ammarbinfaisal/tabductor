@@ -1,5 +1,6 @@
 export * as schema from "./schema.js";
 export {
+  workflowTriggerRequests,
   workflowBrowserProfiles,
   browserChallenges,
   challengeAttempts,

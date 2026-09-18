@@ -111,6 +111,8 @@ export type EditorStore = ReturnType<typeof createEditorStore>;
 
 const emptyTask = (name: string, kind: NodeKind): GraphTask => ({
   name,
+  logicalId: name,
+  entry: false,
   kind,
   mode: "ai",
   prompt: null,
@@ -132,6 +134,9 @@ export function createEditorStore(init: {
     proposedGrants: Array<ProposedGrant & { id: string }>;
   } | null;
 }) {
+  let triggerRequestId: string | undefined;
+  const triggerStorageKey = `tabductor.trigger.${init.workflowId}`;
+  try { triggerRequestId = sessionStorage.getItem(triggerStorageKey) ?? undefined; } catch { /* Server render or storage disabled. */ }
   const draft = executionDraft(init.graph);
   const store = createStore<EditorState>(() => ({
     sidebar: "chat",
@@ -284,7 +289,7 @@ export function createEditorStore(init: {
       const { graph } = store.getState();
       let name: string = kind;
       for (let n = 2; graph.tasks.some((t) => t.name === name); n += 1) name = `${kind}-${n}`;
-      edit((g) => ({ ...g, tasks: [...g.tasks, emptyTask(name, kind)] }));
+      edit((g) => ({ ...g, tasks: [...g.tasks, { ...emptyTask(name, kind), entry: g.tasks.length === 0 }] }));
       store.setState({ selected: { kind: "node", id: name } });
     },
 
@@ -432,7 +437,11 @@ export function createEditorStore(init: {
       if (!state.versionId || state.dirty || state.busy) return;
       store.setState({ busy: true, error: null, notice: null });
       try {
-        const result = await api.workflow.trigger.mutate({ workflowId: state.workflowId });
+        triggerRequestId ??= crypto.randomUUID();
+        try { sessionStorage.setItem(triggerStorageKey, triggerRequestId); } catch { /* Keep the in-memory key. */ }
+        const result = await api.workflow.trigger.mutate({ workflowId: state.workflowId, requestId: triggerRequestId });
+        triggerRequestId = undefined;
+        try { sessionStorage.removeItem(triggerStorageKey); } catch { /* Storage is optional. */ }
         store.setState({
           busy: false,
           notice: `Queued ${result.accepted} run${result.accepted === 1 ? "" : "s"} from the published workflow.`,
@@ -518,7 +527,7 @@ export type WorkflowScheduleView = {
 export function workflowScheduleOf(graph: Graph): WorkflowScheduleView {
   const internallyEmitted = new Set(graph.tasks.flatMap((task) => task.emits));
   const entries = graph.tasks.filter(
-    (task) => task.consumes.length === 0 || task.consumes.every((type) => !internallyEmitted.has(type)),
+    (task) => graph.contractVersion === 2 ? task.entry : task.consumes.length === 0 || task.consumes.every((type) => !internallyEmitted.has(type)),
   );
   const schedules = entries.flatMap((task) => task.schedule ? [task.schedule] : []);
   const first = schedules[0];

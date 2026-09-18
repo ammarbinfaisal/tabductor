@@ -90,6 +90,12 @@ including gaps between runs while outbox delivery is pending, and serialize with
 Executions admit at most 1,000 attempts by default (including retries), with atomic counters
 that bound concurrent fan-out separately from hop depth. Migration 0033 backfills existing
 attempt counts. Rejected emits retain staged store writes for a corrected retry.
+Version 2 graph artifacts now require stable logical task IDs, explicit entry flags,
+external/system input declarations, and a finite run budget. Legacy publications remain
+readable. Manual triggers accept a workflow-scoped request ID; concurrent requests and
+retries after republishing return the original execution and root IDs. The editor retains
+that ID until it receives a successful response. Fifteen targeted contract, trigger,
+schema, and editor tests pass, together with TypeScript checks.
 These checks are part of H2; the full acceptance gate below remains required.
 
 - Add execution identity to triggers, events, task attempts, and system events. Atomically
