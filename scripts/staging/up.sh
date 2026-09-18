@@ -3,6 +3,7 @@ set -Eeuo pipefail
 source "$(dirname "$0")/common.sh"
 
 check_prerequisites
+check_cluster_capacity
 assert_safe_staging_root
 mkdir -p "${TABDUCTOR_STATE_DIR}/postgres" "${TABDUCTOR_STATE_DIR}/minio" "${TABDUCTOR_STATE_DIR}/secrets"
 chmod 0777 "${TABDUCTOR_STATE_DIR}/postgres" "${TABDUCTOR_STATE_DIR}/minio" "${TABDUCTOR_STATE_DIR}/secrets"
@@ -12,8 +13,9 @@ if ! cluster_exists; then
   sed "s|__TABDUCTOR_STATE_DIR__|${TABDUCTOR_STATE_DIR}|g" \
     "${TABDUCTOR_REPO_ROOT}/infra/kind/tabductor.yaml" > "${rendered_kind}"
   kind create cluster --name "${TABDUCTOR_CLUSTER_NAME}" --config "${rendered_kind}" --kubeconfig "${TABDUCTOR_KUBECONFIG}"
-  kubectl apply -f "https://raw.githubusercontent.com/projectcalico/calico/${TABDUCTOR_CALICO_VERSION}/manifests/calico.yaml"
 fi
+# Reconcile the CNI on every up, including recovery from an interrupted first install.
+kubectl apply -f "https://raw.githubusercontent.com/projectcalico/calico/${TABDUCTOR_CALICO_VERSION}/manifests/calico.yaml"
 
 kubectl wait --for=condition=Ready nodes --all --timeout=180s
 docker build -t "${TABDUCTOR_IMAGE}" "${TABDUCTOR_REPO_ROOT}"

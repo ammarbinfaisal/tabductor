@@ -16,7 +16,9 @@ pnpm exec vitest run --maxWorkers=4
 The dedicated Kubernetes environment uses the shared Helm chart, Calico and a three-node
 kind cluster. Install Docker, kind, kubectl and Helm. Allow at least 4 CPUs, 12 GiB of RAM
 and 30 GiB of free disk for the configured three-browser capacity and application builds.
-Its kubeconfig, PostgreSQL, MinIO and development wrapping key live under
+On Linux, three nodes also require `fs.inotify.max_user_instances >= 512` and
+`fs.inotify.max_user_watches >= 524288`. The preflight reports the `sudo sysctl` command if
+those host limits are too low. Its kubeconfig, PostgreSQL, MinIO and development wrapping key live under
 `.tabductor-staging/`; it does not use the Compose database.
 
 ```sh
@@ -29,7 +31,8 @@ pnpm staging:reset      # removes only dedicated staging data
 The loopback gateway is `http://127.0.0.1:3100`. A repeated up rebuilds images and reconciles
 the chart; it stops the application while migrating, so drain sessions first. The current
 Helm smoke check establishes readiness; the complete fixture journey in
-`docs/impl-phases.md` remains a separate acceptance gate.
+`docs/impl-phases.md` remains a separate acceptance gate. `staging:test:live` exits with an
+explicit incomplete-journey error instead of treating credential presence as a pass.
 
 A real browser smoke uses disposable containers and a fixture website. It verifies login
 persistence after replacement, fingerprint stability, perception, command fencing,

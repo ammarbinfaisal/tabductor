@@ -12,7 +12,7 @@ helm test "${TABDUCTOR_RELEASE}" --namespace "${TABDUCTOR_NAMESPACE}" --logs --t
 if [[ "${TABDUCTOR_STAGING_LIVE:-0}" == "1" ]]; then
   [[ -n "${CLERK_SECRET_KEY:-}" ]] || die "CLERK_SECRET_KEY is required for staging:test:live"
   [[ -n "${PADDLE_API_KEY:-}" ]] || die "PADDLE_API_KEY is required for staging:test:live"
-  printf 'Live credentials are present. Provider-specific smoke journeys are enabled as their phases land.\n'
+  die "The complete hosted live journey is not yet automated. Credential presence is not an acceptance pass; finish the Clerk, Paddle sandbox, model, proxy, and solver gates in docs/impl-phases.md."
 fi
 
 printf 'Tabductor staging smoke checks passed.\n'

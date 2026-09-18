@@ -32,6 +32,23 @@ check_prerequisites() {
   docker info >/dev/null 2>&1 || die "the container runtime is not available"
 }
 
+check_cluster_capacity() {
+  local staging_cpus staging_memory staging_available_kib
+  read -r staging_cpus staging_memory < <(docker info --format '{{.NCPU}} {{.MemTotal}}')
+  (( staging_cpus >= 4 && staging_memory >= 12884901888 )) || die "three-browser staging requires at least 4 Docker CPUs and 12 GiB RAM"
+  staging_available_kib="$(df -Pk "${TABDUCTOR_REPO_ROOT}" | awk 'NR == 2 {print $4}')"
+  (( staging_available_kib >= 31457280 )) || die "staging builds require at least 30 GiB free disk space"
+  # These are shared host limits: report the required change instead of silently changing
+  # settings used by unrelated applications. Low values can break node join or kube-proxy.
+  if [[ -r /proc/sys/fs/inotify/max_user_instances ]]; then
+    local instances watches
+    read -r instances < /proc/sys/fs/inotify/max_user_instances
+    read -r watches < /proc/sys/fs/inotify/max_user_watches
+    (( instances >= 512 && watches >= 524288 )) || die \
+      "inotify limits are too low for three nodes; run sudo sysctl -w fs.inotify.max_user_instances=512 fs.inotify.max_user_watches=524288"
+  fi
+}
+
 cluster_exists() {
   kind get clusters 2>/dev/null | grep -Fxq "${TABDUCTOR_CLUSTER_NAME}"
 }

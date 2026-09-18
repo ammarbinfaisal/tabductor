@@ -10,15 +10,22 @@ provider "aws" {
   allowed_account_ids = ["523227112806"]
   default_tags { tags = { Project = "tabductor", Environment = "staging", ManagedBy = "terraform" } }
 }
-data "terraform_remote_state" "foundation" {
-  backend = "s3"
-  config = {
-    bucket = "tabductor-staging-523227112806-ap-southeast-2-terraform"
-    key    = "foundation/terraform.tfstate"
-    region = "ap-southeast-2"
-  }
+# The edge needs only the existing VPC and node security group. It can be provisioned
+# before database creation or node readiness, without reading application state/secrets.
+data "aws_vpc" "foundation" {
+  tags = { Name = "tabductor-staging", Project = "tabductor", Environment = "staging" }
 }
-locals { foundation = data.terraform_remote_state.foundation.outputs.deployment }
+data "aws_security_group" "nodes" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.foundation.id]
+  }
+  tags = { "karpenter.sh/discovery" = "tabductor-staging", Project = "tabductor" }
+}
+locals { foundation = {
+  vpc_id                 = data.aws_vpc.foundation.id
+  node_security_group_id = data.aws_security_group.nodes.id
+} }
 data "aws_subnets" "private" {
   filter {
     name   = "vpc-id"

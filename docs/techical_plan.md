@@ -2,11 +2,12 @@
 
 Version 1.0 target — hosted browser workflows with Camoufox, observable sessions, and usage billing.
 
-This document describes the target architecture. The implementation includes hosted account,
-execution, Camoufox RPC, fleet, session-control, and prepaid-ledger foundations. The default
-engine still uses user-supplied Chromium CDP endpoints and deployment-wide model keys;
-end-to-end hosted browser allocation, viewing, metering, and deployment remain incomplete.
-[Implementation phases](impl-phases.md) define the delivery order, including local staging.
+This document describes the target architecture. The hosted path now includes Clerk account
+resolution, versioned executions, automatic Camoufox allocation, encrypted profiles/media,
+viewing/takeover, account-selected models, prepaid accounting, and bounded challenge recovery.
+CDP remains the development path. The shared chart and AWS infrastructure are partially
+provisioned; the complete acceptance journey and launch gates remain open.
+[Implementation phases](impl-phases.md) records current evidence and outstanding work.
 
 ## 1. Product boundary
 
@@ -91,8 +92,8 @@ packets, account/workflow/execution identity, and causation.
 
 Resolve the current workflow version once when accepting a manual trigger, external event,
 or schedule occurrence. All downstream events, retries, and system events stay on that
-execution's version. Publishing a new version affects subsequent executions. This replaces
-the current behavior in which downstream events route through the latest graph.
+execution's version. Publishing a new version affects subsequent executions. The implemented
+execution-scoped router preserves that version across downstream delivery and retries.
 
 The typed publication artifact contains:
 
@@ -109,9 +110,9 @@ the published version untouched. Publication uses a base-version check so concur
 updates cannot silently overwrite each other.
 
 Keep the Postgres outbox and durable queue. Atomically accept triggers, create execution
-roots, deduplicate deliveries, and commit emitted events with staged store writes. Fix the
-current separate emit-dedupe claim and publish transactions so a crash cannot consume a key
-without publishing its event. Distinguish execution-scoped delivery dedupe from intentional
+roots, deduplicate deliveries, and commit emitted events with staged store writes. The implemented
+transactional emit path prevents a crash from consuming a dedupe key without publishing
+its event. Distinguish execution-scoped delivery dedupe from intentional
 cross-execution record dedupe.
 
 Execution completion requires all descendant runs and pending event deliveries to settle;
@@ -318,7 +319,8 @@ usage, credit reservations, stream lag, recording gaps, and solver outcomes.
 Keep Docker Compose as the fast developer environment for Postgres, MinIO, engine, web,
 and a fixed Camoufox worker once implemented. Production-like acceptance runs in a dedicated
 kind cluster using the same Helm chart, images, RPC interfaces, and fleet controller as EKS.
-The staging tools and commands below are planned deliverables, not existing commands.
+The lifecycle commands exist; their complete deterministic and live acceptance journeys
+remain incomplete. `staging:test:live` fails explicitly until the full journey is available.
 
 | Concern | Local staging | AWS deployment |
 | --- | --- | --- |

@@ -1,8 +1,9 @@
 # Implementation phases
 
 Version 1.0 delivery roadmap for hosted browser workflows. The target architecture is defined
-in [the technical plan](techical_plan.md). New hosted phases below are planned; this roadmap
-does not claim that accounts, payments, Camoufox, or Kubernetes deployment already exist.
+in [the technical plan](techical_plan.md). Hosted phases below mix implemented components and outstanding acceptance gates.
+Implementation notes and the release checkpoint distinguish them; no phase is complete
+solely because its code or infrastructure exists.
 
 ## 1. Existing foundation
 
@@ -33,6 +34,13 @@ must satisfy its acceptance gate before its dependent phase is considered comple
 
 ### H0 — Local staging foundation
 
+Implementation notes (2026-09-18): shared Helm/kind scripts, persisted staging volumes,
+migration jobs, and application/worker images exist. The three-node cluster was created,
+but this host's inotify limits prevent kube-proxy from starting. The preflight now checks
+CPU, RAM, disk, and inotify capacity and reports required host changes. The complete seeded
+multi-account journey is outstanding. `staging:test:live` deliberately fails until the full
+live journey is automated; checking credentials alone cannot pass that gate.
+
 - Add a shared Helm chart and local/AWS values, plus kind configuration under `infra/`.
   Local kind has one control-plane node, two worker nodes, and a NetworkPolicy-capable CNI.
 - Implement `pnpm staging:up`, `staging:down`, `staging:reset`, `staging:test`, and
@@ -54,7 +62,9 @@ live payment, or real solver request is needed for the deterministic suite.
 Implementation notes (2026-09-18): the legacy approval/baseline pages and policy tRPC router
 have been removed. Editor publication no longer approves grants, restored drafts discard
 old proposals, and public publication rejects non-empty grant proposals. Historical policy
-records remain intact. Extracting safety services from the legacy policy package remains open.
+records remain intact. Runtime safety/redaction services live in `@tabductor/core`; hosted
+execution no longer imports the legacy policy package. Clerk development keys passed backend
+API authentication; actual hosted signup/sign-in remains an acceptance gate.
 
 - Integrate Clerk and account resolution across server rendering, tRPC, workflow chat, MCP,
   and background work. Add revocable account MCP tokens and an account ownership query layer.
@@ -126,7 +136,9 @@ queued requests reserve no credits. Failure callbacks fence the allocation gener
 Worker reconciliation, warm slots, encrypted snapshots, and automatic engine allocation are
 implemented. The disposable Docker acceptance (`python3 scripts/browser/smoke.py`) passes
 real fixture login across browser replacement, identical persisted fingerprint configuration,
-perception, duplicate/stale command rejection, takeover/resume, and playable/private recording.
+perception, frame-aware secret targeting, popup-attributed network observations, lazy bounded
+response bodies, dialog handling, duplicate/stale command rejection, takeover/resume, and
+playable/private recording. Network observations are fenced across human-input generations.
 The worker pins Camoufox `official/stable/152.0.4-beta.30`, Python package 0.5.6, and Playwright
 1.55.0. Standard pointer input avoids a reproducible Xvfb stall in animated cursor movement.
 The Kubernetes concurrency, isolation, and redeployment acceptance gate remains open.
@@ -156,8 +168,11 @@ are absent from the hosted driver.
 
 Implementation notes (2026-09-18): trace buffers flush every second as well as at the size
 threshold. Failed persistence retains the batch for idempotent retry; timestamps reflect
-record time, and close waits for in-flight blob uploads. The live gateway, recording worker,
-playback UI, media expiry, and worker-enforced takeover remain open.
+record time, and close waits for in-flight blob uploads. The authenticated gateway, embedded
+viewer, encrypted recording/playback, expiry, and worker-enforced input generations are
+implemented. Real browser tests verify pause/resume fencing and playable/private segments.
+Capture remains disabled for the rest of a session after secret injection or human takeover.
+Full viewer reconnect, MFA, seeking, and crash-recovery journeys remain open.
 
 - Add an authenticated VNC/WebSocket gateway and embedded noVNC viewer. Enforce read-only
   viewers and exclusive human input at the server, with short-lived session-scoped access.
@@ -207,6 +222,13 @@ rate. Deterministic fixtures verify usage attribution; bounded live tests verify
 
 ### H6 — Paddle prepaid credits and spending enforcement
 
+Implementation notes (2026-09-18): checkout, signed webhook inbox, integer ledger,
+refund/adjustment reconciliation, reservations, and billing UI exist. Model and solver calls
+reserve before submission; browser charges start at readiness and settle once after stop.
+Browser admission currently reserves its entire bounded lifetime. Interval renewal, explicit
+account/execution spending ceilings, proxy metering, and operator reconciliation of unknown
+provider outcomes remain open, as does the real Paddle sandbox round trip.
+
 - Add configured credit packs, server-created Paddle transactions, checkout, verified
   webhooks, and a customer billing screen. Use Paddle sandbox in local staging.
 - Implement the append-only credit ledger, payment-event inbox, purchase reconciliation,
@@ -226,6 +248,11 @@ remain reconcilable. Checkout redirects alone never credit an account.
 
 ### H7 — Managed proxies and challenge recovery
 
+Implementation notes (2026-09-18): the three solver adapters, versioned rates, durable
+submission/poll state, bounded fallback, page verification, and human-assistance path exist.
+Fixtures cover paid-attempt fencing, ambiguity, fallback, and insufficient credits. Managed
+proxy assignment/byte metering and bounded live provider demo challenges remain open.
+
 - Integrate platform-owned proxy configuration with stable per-session assignment, profile
   locale/fingerprint settings, byte metering, and encrypted provider credentials.
 - Implement CapSolver, 2Captcha, and Anti-Captcha adapters with a capability map and configured
@@ -242,6 +269,14 @@ Run bounded provider demo/test challenges in explicit live mode. Verify page rec
 charge attribution separately; do not claim universal anti-bot coverage.
 
 ### H8 — AWS staging, autoscaling, and launch
+
+Implementation notes (2026-09-18): staging targets account `523227112806` in `ap-southeast-2`.
+VPC, EKS control plane, KMS, S3, ECR, workload identities, private ALB, and CloudFront exist.
+`https://d3077ldddh98qr.cloudfront.net` has valid HTTPS but returns 503 without application
+targets. Terraform's edge plan reports no drift. RDS and baseline node launches were rejected
+by AWS Free plan restrictions; the node group is `CREATE_FAILED`. The regional On-Demand
+quota is 5 vCPUs; an increase to 80 is `CASE_OPENED`. No AWS application or 25-browser
+acceptance is claimed. Images now require matching Git revision labels before publication.
 
 - Provision one-region EKS, a baseline managed node group, a bounded Karpenter browser
   NodePool, RDS, S3, ECR, workload identities, encryption, and HTTPS ingress through IaC.
@@ -297,18 +332,17 @@ configured limit; a lower test limit cannot be reported as passing the full capa
 
 ## 4. Release and migration gates
 
-Validation checkpoint (2026-09-18): the deterministic suite passed 468 tests, with one live
-model smoke test skipped. Additional editor/MCP/schedule checks passed after threading base
-versions through every publication entry point. TypeScript build, production web build,
-repository lint, and Python worker syntax checks passed. This workspace had no kind, kubectl,
-or Helm, so no Kubernetes, real Camoufox staging, Clerk development, Paddle sandbox, or AWS
-acceptance result is claimed.
+Validation checkpoint (2026-09-18): TypeScript build, production web build, lint, real
+Camoufox Docker acceptance, and five Python protocol/privacy tests pass. The full deterministic
+regression suite passed 496 tests, with one live-model smoke test skipped. Both Helm
+configurations and Terraform configurations validate; the deployed edge has no drift.
 
-Remaining H2 work includes explicit graph entry/external-input contracts, trigger request
-idempotency, durable browser command intent/outcome records, and remote command fencing.
-The H1/H3/H4 implementation notes above identify additional open integration work; H5–H8
-are not complete. In particular, the ledger and Paddle reconciliation foundations do not
-yet provide end-to-end model/browser/proxy/solver metering or a customer billing journey.
+The roadmap is not complete. Remaining gates include the full seeded kind journey and
+fixed-worker Compose mode; live Clerk/Paddle journeys; interval browser reservations,
+account/execution spending ceilings and unknown-usage reconciliation; managed proxy
+assignment/metering; bounded live model/solver tests; drain-aware upgrades, operational
+dashboards/alerts, and the AWS load/failure/isolation acceptance suite. The account plan,
+regional quota, and host inotify changes are external blockers, not passing test results.
 
 - Run TypeScript build, web build, lint, relevant Python worker checks, unit/system tests,
   and real Camoufox staging tests. Validate Helm rendering and Kubernetes readiness.
