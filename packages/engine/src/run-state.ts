@@ -1,6 +1,7 @@
 import { publish } from "@tabductor/bus";
-import { approvals, runs, schedules, RUN_STATUSES, type Db, type RunRow, type RunStatus } from "@tabductor/db";
+import { approvals, runs, schedules, tasks, RUN_STATUSES, type Db, type RunRow, type RunStatus } from "@tabductor/db";
 import { and, asc, eq, inArray, isNotNull, lte, sql } from "drizzle-orm";
+import { scheduleRetry } from "./retry.js";
 
 /**
  * Run status machine (§4). Status is `text`, not a pg enum, so `awaiting_approval`
@@ -95,6 +96,9 @@ export type FinishInput = {
   causationId?: string | null;
   taskId: string;
   leaseGeneration: number;
+  /** Queue the retry in the same transaction as failure and its system event. */
+  retry?: boolean;
+  staleHeartbeatMs?: number;
 };
 
 const EVENT_FOR: Record<FinishInput["status"], string | null> = {
@@ -118,6 +122,8 @@ export async function finishRun(db: Db, input: FinishInput): Promise<RunRow | un
         eq(runs.id, input.runId),
         eq(runs.status, "running"),
         eq(runs.leaseGeneration, input.leaseGeneration),
+        input.staleHeartbeatMs === undefined ? undefined :
+          lte(sql`coalesce(${runs.heartbeatAt}, ${runs.startedAt})`, sql`now() - ${`${input.staleHeartbeatMs} milliseconds`}::interval`),
       ))
       .returning();
     if (!row) return undefined;
@@ -133,6 +139,10 @@ export async function finishRun(db: Db, input: FinishInput): Promise<RunRow | un
         packet: { runId: input.runId, taskId: input.taskId, ...(input.error ? { error: input.error } : {}) },
       });
     }
+    if (input.status === "failed" && input.retry) {
+      const [task] = await trx.select().from(tasks).where(eq(tasks.id, row.taskId));
+      if (task) await scheduleRetry(trx, { run: row, task, error: row.error });
+    }
     return row;
   });
 }
@@ -145,9 +155,8 @@ export async function finishRun(db: Db, input: FinishInput): Promise<RunRow | un
  * reject exactly that. A run already terminal returns `undefined`, which the API reports as
  * a conflict rather than pretending it cancelled something.
  *
- * A `running` run is not interrupted mid-executor: the status flips, the executor finishes
- * whatever it is inside, and its own terminal write then loses the CAS. Real interruption
- * needs a per-executor abort path and arrives with the browser runtime (Phase 3).
+ * The status change immediately fences database effects. The next heartbeat aborts the
+ * executor signal, stopping subsequent AI tools and compiled host calls.
  */
 export async function cancelRun(db: Db, runId: string): Promise<RunRow | undefined> {
   return db.transaction(async (trx) => {
@@ -227,6 +236,7 @@ export async function heartbeat(db: Db, runId: string, leaseGeneration: number):
  * fallback, and a run with neither is too young to judge.
  */
 export const ENGINE_RESTART = "engine_restart";
+export const BROWSER_OUTCOME_UNCERTAIN = "browser_outcome_uncertain";
 
 export async function recoverStaleRuns(db: Db, staleMs: number): Promise<RunRow[]> {
   const stale = await db
@@ -241,11 +251,15 @@ export async function recoverStaleRuns(db: Db, staleMs: number): Promise<RunRow[
 
   const recovered: RunRow[] = [];
   for (const run of stale) {
+    const [task] = await db.select().from(tasks).where(eq(tasks.id, run.taskId));
+    const uncertain = task?.kind === "browser" && run.modeUsed !== "stub";
     const row = await finishRun(db, {
       runId: run.id,
       taskId: run.taskId,
       status: "failed",
-      error: ENGINE_RESTART,
+      error: uncertain ? BROWSER_OUTCOME_UNCERTAIN : ENGINE_RESTART,
+      retry: !uncertain,
+      staleHeartbeatMs: staleMs,
       causationId: run.triggerEventId,
       leaseGeneration: run.leaseGeneration,
     });

@@ -72,6 +72,11 @@ Implementation notes (2026-09-18): event/store commits and compiled task-state w
 lock and validate the active run generation in their committing transaction. Decision AI
 observes cancellation; compiled scripts fence every host call after cancellation. Regression
 coverage includes cancelled/replaced owners and rollback of emit dedupe claims with writes.
+Trigger roots and schedule claims commit atomically; failure and retry creation share one
+transaction. Durable completion waits for descendant attempts and outbox delivery. Recovery
+marks abandoned real-browser attempts `browser_outcome_uncertain` without automatically
+replaying them. Delivery dead letters retain execution identity, and loop-budget notices
+cannot recursively generate more notices.
 These checks are part of H2; the full acceptance gate below remains required.
 
 - Add execution identity to triggers, events, task attempts, and system events. Atomically

@@ -149,7 +149,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     return inSpan(span, ctx, () => fireInSpan(row, at, due));
   };
 
-  const fireInSpan = async (row: ScheduleRow, at: number, due: Date | null): Promise<boolean> => {
+  const fireInSpan = async (row: ScheduleRow, at: number, due: Date | null): Promise<boolean> => db.transaction(async (db) => {
     if (due) metrics?.schedulerFireLag.record(Math.max(0, at - due.getTime()) / 1000);
 
     const claimed = await db
@@ -198,7 +198,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     // it starts alone. The distinction is the whole point of the `queue` policy.
     metrics?.schedulerFires.add(live.length > 0 ? "queued" : "fired");
     return true;
-  };
+  });
 
   return {
     async start() {

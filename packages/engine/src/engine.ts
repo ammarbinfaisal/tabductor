@@ -17,7 +17,6 @@ import { and, asc, eq } from "drizzle-orm";
 import { dispatchEvent } from "./dispatch.js";
 import { executorKey, type ExecutorRegistry, type RunHandle, type RunResult } from "./executor.js";
 import { validatePacket } from "./packet-schema.js";
-import { scheduleRetry } from "./retry.js";
 import {
   dueQueuedRuns,
   finishRun,
@@ -29,6 +28,7 @@ import {
 import { createScheduler, type Scheduler } from "./scheduler.js";
 import { StubExecutor } from "./stub-executor.js";
 import { assertRunLease } from "./run-lease.js";
+import { settleWorkflowExecutions } from "./execution-state.js";
 
 export type EngineDeps = {
   db: Db;
@@ -214,12 +214,12 @@ export function createEngine(deps: EngineDeps): Engine {
       error: result.ok ? undefined : result.error,
       causationId,
       leaseGeneration: run.leaseGeneration,
+      retry: !result.ok && !result.permanent,
     });
     // Only the writer that actually moved the run counts it — the watchdog may have reaped
     // this run first, in which case it is `timed_out` and belongs to whoever reaped it.
     if (finished) recordOutcome(finished, task, status);
-    if (!finished || result.ok || result.permanent) return;
-    await scheduleRetry(db, { run: finished, task, error: result.error });
+
   };
 
   const runExecutor = async (
@@ -257,6 +257,7 @@ export function createEngine(deps: EngineDeps): Engine {
         const [task] = await db.select().from(tasks).where(eq(tasks.id, run.taskId));
         if (task) recordOutcome(run, task, "timed_out");
       }
+      await settleWorkflowExecutions(db);
       return reaped;
     } catch (err) {
       log.error("watchdog sweep failed", { error: String(err) });
@@ -276,10 +277,6 @@ export function createEngine(deps: EngineDeps): Engine {
       const recovered = await recoverStaleRuns(db, staleHeartbeatMs);
       if (recovered.length) {
         metrics?.crashRecoveredRuns.add(recovered.length);
-      }
-      for (const run of recovered) {
-        const [task] = await db.select().from(tasks).where(eq(tasks.id, run.taskId));
-        if (task) await scheduleRetry(db, { run, task, error: run.error });
       }
 
       unsubscribe = dispatcher.subscribe(onEvent);

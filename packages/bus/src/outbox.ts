@@ -178,6 +178,8 @@ export function createDispatcher(handle: { db: Db; pool: pg.Pool }, opts: Dispat
           if (row.event.type !== DEAD_LETTER_TYPE) {
             await publish(trx, {
               type: DEAD_LETTER_TYPE,
+              executionId: row.event.executionId,
+              sourceTaskId: row.event.sourceTaskId,
               causationId: row.event.eventId,
               packet: { eventId: row.event.eventId, type: row.event.type, attempts, error: message },
             });

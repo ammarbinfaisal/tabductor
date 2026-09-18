@@ -1,5 +1,6 @@
 export { createEngine, type Engine, type EngineDeps } from "./engine.js";
 export { assertRunLease } from "./run-lease.js";
+export { settleWorkflowExecutions } from "./execution-state.js";
 export { ASYNC_EVENT_EXECUTION_CONTRACT } from "./async-execution-contract.js";
 export {
   claimBrowserAllocation,
@@ -89,6 +90,7 @@ export {
   recoverStaleRuns,
   startRun,
   ENGINE_RESTART,
+  BROWSER_OUTCOME_UNCERTAIN,
   RUN_COMPLETED,
   RUN_FAILED,
   RUN_TIMED_OUT,

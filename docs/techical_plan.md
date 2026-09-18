@@ -2,9 +2,10 @@
 
 Version 1.0 target — hosted browser workflows with Camoufox, observable sessions, and usage billing.
 
-This document describes the target architecture. The current implementation has a local,
-single-user control plane, user-supplied Chromium CDP endpoints, and deployment-wide model
-keys. Hosted tenancy, Camoufox, playback, billing, and fleet orchestration are planned work.
+This document describes the target architecture. The implementation includes hosted account,
+execution, Camoufox RPC, fleet, session-control, and prepaid-ledger foundations. The default
+engine still uses user-supplied Chromium CDP endpoints and deployment-wide model keys;
+end-to-end hosted browser allocation, viewing, metering, and deployment remain incomplete.
 [Implementation phases](impl-phases.md) define the delivery order, including local staging.
 
 ## 1. Product boundary

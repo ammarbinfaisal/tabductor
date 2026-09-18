@@ -1,7 +1,7 @@
 import { publish } from "@tabductor/bus";
 import { newId } from "@tabductor/core";
-import { runs, type Db, type RunRow, type TaskRow } from "@tabductor/db";
-import { sql } from "drizzle-orm";
+import { runs, taskState, workflowExecutions, type Db, type RunRow, type TaskRow } from "@tabductor/db";
+import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 
 /**
@@ -50,43 +50,66 @@ export async function scheduleRetry(
   db: Db,
   args: { run: RunRow; task: TaskRow; error?: string | null },
 ): Promise<string | undefined> {
-  const { run, task } = args;
-  const policy = parseRetry(task.limitsJson);
-  const attempt = run.attempt + 1;
-
-  if (!policy || attempt > policy.max) {
-    if (policy) {
-      await db.transaction((trx) =>
-        publish(trx, {
-          type: RETRIES_EXHAUSTED,
-          executionId: run.executionId,
-          sourceTaskId: run.taskId,
-          sourceRunId: run.id,
-          causationId: run.triggerEventId,
-          packet: {
-            runId: run.id,
-            taskId: run.taskId,
-            attempts: run.attempt + 1,
-            max: policy.max,
-            ...(args.error ? { error: args.error } : {}),
-          },
-        }),
-      );
+  return db.transaction(async (db) => {
+    const { run, task } = args;
+    const [failed] = await db.select().from(runs).where(and(
+      eq(runs.id, run.id), eq(runs.status, "failed"), eq(runs.leaseGeneration, run.leaseGeneration),
+    )).for("update");
+    if (!failed) return undefined;
+    if (run.executionId) {
+      const [execution] = await db.select().from(workflowExecutions).where(and(
+        eq(workflowExecutions.id, run.executionId), eq(workflowExecutions.status, "running"),
+      ));
+      if (!execution) return undefined;
     }
-    return undefined;
-  }
+    // One durable decision per failed attempt, including an exhausted policy. This also
+    // makes replay after a process restart safe when the caller lost the commit response.
+    const key = `retry:${run.id}`;
+    const claimed = await db.insert(taskState).values({ taskId: run.taskId, key, value: {} })
+      .onConflictDoNothing().returning();
+    if (!claimed.length) {
+      const [prior] = await db.select().from(taskState).where(and(eq(taskState.taskId, run.taskId), eq(taskState.key, key)));
+      const value = prior?.value as { runId?: string } | undefined;
+      return value?.runId;
+    }
+    const policy = parseRetry(task.limitsJson);
+    const attempt = run.attempt + 1;
 
-  const runId = newId("run");
-  await db.insert(runs).values({
-    id: runId,
-    executionId: run.executionId,
-    taskId: run.taskId,
-    workflowVersionId: run.workflowVersionId,
-    triggerEventId: run.triggerEventId,
-    status: "queued",
-    modeUsed: task.mode,
-    attempt,
-    notBefore: sql`now() + ${`${policy.backoffMs * 2 ** (attempt - 1)} milliseconds`}::interval`,
+    if (!policy || attempt > policy.max) {
+      if (policy) {
+        await db.transaction((trx) =>
+          publish(trx, {
+            type: RETRIES_EXHAUSTED,
+            executionId: run.executionId,
+            sourceTaskId: run.taskId,
+            sourceRunId: run.id,
+            causationId: run.triggerEventId,
+            packet: {
+              runId: run.id,
+              taskId: run.taskId,
+              attempts: run.attempt + 1,
+              max: policy.max,
+              ...(args.error ? { error: args.error } : {}),
+            },
+          }),
+        );
+      }
+      return undefined;
+    }
+
+    const runId = newId("run");
+    await db.insert(runs).values({
+      id: runId,
+      executionId: run.executionId,
+      taskId: run.taskId,
+      workflowVersionId: run.workflowVersionId,
+      triggerEventId: run.triggerEventId,
+      status: "queued",
+      modeUsed: task.mode,
+      attempt,
+      notBefore: sql`now() + ${`${policy.backoffMs * 2 ** (attempt - 1)} milliseconds`}::interval`,
+    });
+    await db.update(taskState).set({ value: { runId } }).where(and(eq(taskState.taskId, run.taskId), eq(taskState.key, key)));
+    return runId;
   });
-  return runId;
 }
