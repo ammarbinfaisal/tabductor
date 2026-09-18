@@ -108,7 +108,7 @@ it("keeps legacy sample nodes as unpublished edits until real execution is publi
     tasks: [{ ...init.tasks[0]!, id: "t2", mode: "ai" }],
   });
   await store.save();
-  expect(api.workflow.publishVersion.mutate).toHaveBeenCalledWith({ workflowId: "wf", graph: { ...graph, tasks: [{ ...graph.tasks[0], mode: "ai" }] } });
+  expect(api.workflow.publishVersion.mutate).toHaveBeenCalledWith({ workflowId: "wf", expectedVersionId: "v1", graph: { ...graph, tasks: [{ ...graph.tasks[0], mode: "ai" }] } });
   expect(store.getState().dirty).toBe(false);
   expect(store.getState().versionId).toBe("v2");
   expect(store.getState().publishedTasks.Browser?.mode).toBe("ai");

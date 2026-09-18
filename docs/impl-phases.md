@@ -83,7 +83,8 @@ marks abandoned real-browser attempts `browser_outcome_uncertain` without automa
 replaying them. Delivery dead letters retain execution identity, and loop-budget notices
 cannot recursively generate more notices.
 Graph publication now checks its captured base version even when callers omit an explicit
-base. Store DDL, schema metadata, and the published graph commit together; competing
+base. Editor saves, MCP compilation, chat, and schedule updates carry the version they read.
+Store DDL, schema metadata, and the published graph commit together; competing
 publishers cannot apply the losing schema. Incompatible migrations wait for live executions,
 including gaps between runs while outbox delivery is pending, and serialize with new triggers.
 Executions admit at most 1,000 attempts by default (including retries), with atomic counters

@@ -74,3 +74,27 @@ it("publishes, updates, triggers, and schedules without exposing task ids", asyn
   expect(current.authoring?.report?.authoring.attempts).toBe(1);
   expect(current.authoring?.report?.authoring.checks.length).toBeGreaterThan(0);
 });
+
+it("rejects an MCP update compiled from a version that changed during authoring", async () => {
+  let entered!: () => void;
+  let resume!: () => void;
+  const compiling = new Promise<void>((resolve) => { entered = resolve; });
+  const release = new Promise<void>((resolve) => { resume = resolve; });
+  const graph = { tasks: [], events: [] };
+  const context = { db: handle.db, schemaGenerator: staticSchemaGenerator(), graphCompiler: {
+    compile: async () => {
+      entered();
+      await release;
+      return { ok: true as const, artifact: { graph, store: null, proposedGrants: [] }, report: { checks: [], attempts: 1 } };
+    },
+  } };
+  const api = createCaller(context);
+  const workflowId = await api.workflow.create({ name: "Concurrent update" });
+  const initial = await api.workflow.publishVersion({ workflowId, graph });
+  const update = createWorkflowControl(context).update({ workflowId, intent: "Change the workflow" });
+  await compiling;
+  const winner = await api.workflow.publishVersion({ workflowId, expectedVersionId: initial.versionId, graph });
+  resume();
+  await expect(update).rejects.toThrow("published elsewhere");
+  expect((await api.workflow.get({ id: workflowId })).versionId).toBe(winner.versionId);
+});

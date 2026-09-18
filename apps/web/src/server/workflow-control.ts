@@ -133,6 +133,7 @@ export async function setWorkflowSchedule(ctx: Context, input: WorkflowScheduleI
     : undefined;
   const published = await publishVersion(ctx.db, {
     workflowId: input.workflowId,
+    expectedVersionId: versionId,
     graph,
     ...(priorAuthoring ? { authoring: priorAuthoring } : {}),
   }, {

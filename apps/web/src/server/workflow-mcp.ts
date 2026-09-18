@@ -15,12 +15,13 @@ function publicResult(workflowId: string, versionId: string, extra: Record<strin
   return { workflowId, versionId, ...extra };
 }
 
-async function compileAndPublish(ctx: Context, workflowId: string, intent: string, current?: GraphDraftArtifact) {
+async function compileAndPublish(ctx: Context, workflowId: string, intent: string, current?: GraphDraftArtifact, expectedVersionId: string | null = null) {
   const caller = createCaller(ctx);
   const compiled = await caller.workflow.compileIntent({ workflowId, intent, ...(current ? { current } : {}) });
   if (!compiled.ok) throw new Error(`workflow compilation failed: ${compiled.error}`);
   const published = await caller.workflow.publishVersion({
     workflowId,
+    expectedVersionId,
     graph: compiled.artifact.graph,
     authoring: {
       report: compiled.report,
@@ -34,7 +35,7 @@ async function compileAndPublish(ctx: Context, workflowId: string, intent: strin
   });
 }
 
-async function currentArtifact(ctx: Context, workflowId: string): Promise<GraphDraftArtifact> {
+async function currentArtifact(ctx: Context, workflowId: string): Promise<{ artifact: GraphDraftArtifact; versionId: string | null }> {
   const caller = createCaller(ctx);
   const current = await caller.workflow.get({ id: workflowId });
   const [store] = await ctx.db
@@ -43,7 +44,7 @@ async function currentArtifact(ctx: Context, workflowId: string): Promise<GraphD
     .where(eq(storeSchemas.workflowId, workflowId))
     .orderBy(desc(storeSchemas.version))
     .limit(1);
-  return {
+  return { versionId: current.versionId, artifact: {
     graph: current.graph,
     store: store
       ? graphStoreArtifactSchema.parse({
@@ -53,7 +54,7 @@ async function currentArtifact(ctx: Context, workflowId: string): Promise<GraphD
         })
       : null,
     proposedGrants: [],
-  };
+  } };
 }
 
 /** Adapts the existing compiler/publication APIs to workflow-level MCP operations. */
@@ -69,7 +70,8 @@ export function createWorkflowControl(ctx: Context): WorkflowControl {
     },
 
     async update(input: WorkflowUpdateInput) {
-      return compileAndPublish(ctx, input.workflowId, input.intent, await currentArtifact(ctx, input.workflowId));
+      const current = await currentArtifact(ctx, input.workflowId);
+      return compileAndPublish(ctx, input.workflowId, input.intent, current.artifact, current.versionId);
     },
 
     async trigger(input: WorkflowTriggerInput) {

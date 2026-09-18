@@ -376,7 +376,7 @@ export function createEditorStore(init: {
      */
     async save(confirmed = false) {
       if (store.getState().busy) return;
-      const { workflowId, graph, publishedPublic, authoringReport, authoringStore } = store.getState();
+      const { workflowId, versionId: baseVersionId, graph, publishedPublic, authoringReport, authoringStore } = store.getState();
 
       const next = publicTypesOf(graph);
       const adding = next.filter((t) => !publishedPublic.includes(t));
@@ -390,6 +390,7 @@ export function createEditorStore(init: {
       try {
         const { versionId, taskIds, report } = await api.workflow.publishVersion.mutate({
           workflowId,
+          expectedVersionId: baseVersionId,
           graph,
           ...(authoringReport
             ? {
