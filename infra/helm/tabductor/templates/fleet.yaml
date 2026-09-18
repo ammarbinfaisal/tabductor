@@ -15,7 +15,11 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "watch", "create", "delete"]
+    verbs: ["get", "list", "watch", "create", "delete", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: [{{ include "tabductor.fullname" . }}-fleet]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -51,26 +55,34 @@ spec:
         app.kubernetes.io/component: fleet
     spec:
       serviceAccountName: {{ include "tabductor.fullname" . }}-fleet
+      {{- with .Values.controlPlane.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: fleet
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "tabductor.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["node", "--import", "tsx", "apps/fleet/src/main.ts"]
           envFrom:
-            - secretRef: { name: {{ include "tabductor.fullname" . }}-config }
+            - secretRef: { name: {{ include "tabductor.configSecret" . }} }
           env:
+            - { name: BROWSER_CONTROLLER_DEPLOYMENT, value: {{ printf "%s-fleet" (include "tabductor.fullname" .) | quote }} }
+            - { name: BROWSER_NODE_ROLE, value: {{ .Values.fleet.nodeRole | default "" | quote }} }
             - { name: BROWSER_NAMESPACE, value: {{ .Release.Namespace | quote }} }
             - { name: BROWSER_MAX_ALLOCATED, value: {{ .Values.fleet.maxAllocated | quote }} }
             - { name: BROWSER_WARM_SLOTS, value: {{ .Values.fleet.warmSlots | quote }} }
             - { name: BROWSER_WORKER_IMAGE, value: {{ .Values.fleet.workerImage | quote }} }
             - { name: BROWSER_WORKER_PULL_POLICY, value: {{ .Values.fleet.workerPullPolicy | quote }} }
-            - { name: BROWSER_WORKER_TOKEN_KEY, value: {{ required "fleet.workerTokenKey is required" .Values.fleet.workerTokenKey | quote }} }
           resources: {{- toYaml .Values.resources.fleet | nindent 12 }}
           volumeMounts:
             - { name: kek, mountPath: /app/data }
       volumes:
         - name: kek
+          {{- if .Values.secrets.kms }}
+          emptyDir: {}
+          {{- else }}
           hostPath:
             path: {{ .Values.secrets.storagePath | quote }}
             type: DirectoryOrCreate
+          {{- end }}
 {{- end }}

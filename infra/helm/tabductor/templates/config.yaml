@@ -1,3 +1,4 @@
+{{- if not .Values.existingConfigSecret }}
 apiVersion: v1
 kind: Secret
 metadata:
@@ -23,4 +24,6 @@ stringData:
   SECRETS_KEK_FILE_PATH: /app/data/secrets-kek.json
 {{- range $key, $value := .Values.environment }}
   {{ $key }}: {{ $value | quote }}
+{{- end }}
+
 {{- end }}

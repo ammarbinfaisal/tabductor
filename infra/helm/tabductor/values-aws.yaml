@@ -17,3 +17,13 @@ fleet:
   maxAllocated: 25
   warmSlots: 2
   workerTokenKey: ""
+  nodeRole: browser
+
+controlPlane:
+  nodeSelector:
+    tabductor.io/node-role: control
+
+secrets:
+  kms: true
+
+existingConfigSecret: tabductor-application

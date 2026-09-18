@@ -9,3 +9,13 @@ coverage
 blob-store
 *.tsbuildinfo
 docs
+.env
+.env.*
+!.env.example
+.tabductor-staging
+.tabductor-aws
+**/.terraform
+**/*.tfstate*
+**/*.tfplan
+**/*.auto.tfvars.json
+data

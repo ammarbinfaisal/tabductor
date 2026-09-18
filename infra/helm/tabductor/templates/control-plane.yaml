@@ -18,13 +18,17 @@ spec:
         app.kubernetes.io/instance: {{ .Release.Name }}
         app.kubernetes.io/component: web
     spec:
+      serviceAccountName: {{ include "tabductor.fullname" . }}-app
+      {{- with .Values.controlPlane.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: web
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "tabductor.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["pnpm", "-F", "web", "start"]
           envFrom:
-            - secretRef: { name: {{ include "tabductor.fullname" . }}-config }
+            - secretRef: { name: {{ include "tabductor.configSecret" . }} }
           ports:
             - { name: http, containerPort: 3000 }
           readinessProbe:
@@ -36,9 +40,13 @@ spec:
             - { name: kek, mountPath: /app/data }
       volumes:
         - name: kek
+          {{- if .Values.secrets.kms }}
+          emptyDir: {}
+          {{- else }}
           hostPath:
             path: {{ .Values.secrets.storagePath | quote }}
             type: DirectoryOrCreate
+          {{- end }}
 ---
 apiVersion: v1
 kind: Service
@@ -78,13 +86,17 @@ spec:
         app.kubernetes.io/instance: {{ .Release.Name }}
         app.kubernetes.io/component: engine
     spec:
+      serviceAccountName: {{ include "tabductor.fullname" . }}-app
+      {{- with .Values.controlPlane.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: engine
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "tabductor.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["node", "--import", "tsx", "apps/engine/src/main.ts"]
           envFrom:
-            - secretRef: { name: {{ include "tabductor.fullname" . }}-config }
+            - secretRef: { name: {{ include "tabductor.configSecret" . }} }
           env:
             - { name: SECRETS_KEK_FILE_PATH, value: /app/data/secrets-kek.json }
           resources: {{- toYaml .Values.resources.engine | nindent 12 }}
@@ -92,9 +104,13 @@ spec:
             - { name: kek, mountPath: /app/data }
       volumes:
         - name: kek
+          {{- if .Values.secrets.kms }}
+          emptyDir: {}
+          {{- else }}
           hostPath:
             path: {{ .Values.secrets.storagePath | quote }}
             type: DirectoryOrCreate
+          {{- end }}
 {{- end }}
 {{- if and .Values.controlPlane.enabled .Values.fleet.enabled }}
 ---
@@ -111,13 +127,17 @@ spec:
       labels: { app.kubernetes.io/instance: {{ .Release.Name }}, app.kubernetes.io/component: gateway }
     spec:
       automountServiceAccountToken: false
+      serviceAccountName: {{ include "tabductor.fullname" . }}-app
+      {{- with .Values.controlPlane.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: gateway
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "tabductor.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["node", "--import", "tsx", "apps/gateway/src/main.ts"]
           envFrom:
-            - secretRef: { name: {{ include "tabductor.fullname" . }}-config }
+            - secretRef: { name: {{ include "tabductor.configSecret" . }} }
           ports: [{ name: http, containerPort: 8081 }]
           readinessProbe: { httpGet: { path: /healthz, port: http } }
           resources:

@@ -43,7 +43,7 @@ export async function settleBrowserUsage(db: Db, sessionId: string): Promise<voi
     const [session] = await trx.select().from(browserSessions).where(eq(browserSessions.id, sessionId));
     const [billing] = await trx.select().from(browserBilling).where(eq(browserBilling.sessionId, sessionId)).for("update");
     if (!billing || billing.endedAt || !session?.endedAt) return;
-    const seconds = Math.min(billing.maxSeconds, Math.max(0, (session.endedAt.getTime() - billing.startedAt.getTime()) / 1000));
+    const seconds = session.readyAt ? Math.min(billing.maxSeconds, Math.max(0, (session.endedAt.getTime() - session.readyAt.getTime()) / 1000)) : 0;
     await settleCreditReservation(trx, { accountId: session.accountId, reservationId: billing.reservationId,
       actualUnits: Math.ceil(seconds / 60) * billing.unitsPerMinute });
     await trx.update(browserBilling).set({ endedAt: session.endedAt }).where(eq(browserBilling.sessionId, sessionId));

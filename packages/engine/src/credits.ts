@@ -48,16 +48,12 @@ async function availableUnits(db: Db, accountId: string): Promise<number> {
 }
 
 export async function getCreditBalance(db: Db, accountId: string): Promise<CreditBalance> {
-  const [available, reserved] = await Promise.all([
-    availableUnits(db, accountId),
-    db.select({
-      units: sql<number>`coalesce(sum(${creditReservations.reservedUnits}), 0)::double precision`,
-    }).from(creditReservations).where(and(
-      eq(creditReservations.accountId, accountId),
-      eq(creditReservations.status, "active"),
-    )),
-  ]);
-  const reservedUnits = reserved[0]?.units ?? 0;
+  // Both totals must observe the same PostgreSQL statement snapshot during settlement.
+  const result = await db.execute<{ available: number; reserved: number }>(sql`select
+    (select coalesce(sum(units), 0)::double precision from ${creditLedgerEntries} where account_id = ${accountId}) as available,
+    (select coalesce(sum(reserved_units), 0)::double precision from ${creditReservations} where account_id = ${accountId} and status = 'active') as reserved`);
+  const available = result.rows[0]!.available;
+  const reservedUnits = result.rows[0]!.reserved;
   return { availableUnits: available, reservedUnits, totalUnits: available + reservedUnits };
 }
 

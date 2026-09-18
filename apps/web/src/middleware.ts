@@ -1,12 +1,13 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
+import { clerkConfigured, clerkPublishableKey } from "./server/clerk-config.js";
 
-const configured = Boolean(process.env.CLERK_SECRET_KEY && process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
-const isPublicRoute = createRouteMatcher(["/s/(.*)", "/status", "/api/mcp"]);
+const configured = clerkConfigured();
+const isPublicRoute = createRouteMatcher(["/s/(.*)", "/status", "/api/mcp", "/sign-in(.*)", "/sign-up(.*)", "/api/paddle/webhook"]);
 
 const authenticated = clerkMiddleware(async (auth, request) => {
   if (!isPublicRoute(request)) await auth.protect();
-});
+}, { publishableKey: clerkPublishableKey(), signInUrl: "/sign-in", signUpUrl: "/sign-up" });
 
 const unauthenticated = () => {
   if (process.env.NODE_ENV === "production" && process.env.TABDUCTOR_FIXTURE_MODE !== "1") {

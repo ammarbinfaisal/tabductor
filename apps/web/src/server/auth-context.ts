@@ -2,12 +2,10 @@ import { auth } from "@clerk/nextjs/server";
 import { TRPCError } from "@trpc/server";
 import { resolveAccountIdentity, resolveAccountMcpToken } from "@tabductor/engine";
 import { db } from "./db.js";
+import { clerkConfigured } from "./clerk-config.js";
+export { clerkConfigured } from "./clerk-config.js";
 
 export const LOCAL_ACCOUNT = "acct_local";
-
-export function clerkConfigured(): boolean {
-  return Boolean(process.env.CLERK_SECRET_KEY && process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
-}
 
 export async function accountIdForWebRequest(): Promise<string> {
   if (!clerkConfigured()) {

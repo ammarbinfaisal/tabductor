@@ -1,4 +1,4 @@
-import { CoreV1Api, KubeConfig, type V1Pod } from "@kubernetes/client-node";
+import { AppsV1Api, CoreV1Api, KubeConfig, type V1Pod, type V1OwnerReference } from "@kubernetes/client-node";
 import { loadConfig, newId } from "@tabductor/core";
 import { createDb, browserRecordingSegments, browserAllocationRequests, browserBilling, browserProfiles, browserProfileLeases, browserSessions, browserWorkers } from "@tabductor/db";
 import { configuredBlobStore } from "@tabductor/browser";
@@ -23,13 +23,18 @@ const wrapper = configuredKeyWrapper(config);
 const kubeconfig = new KubeConfig();
 kubeconfig.loadFromDefault();
 const core = kubeconfig.makeApiClient(CoreV1Api);
+const apps = kubeconfig.makeApiClient(AppsV1Api);
+let controllerOwner: V1OwnerReference;
 let stopping = false;
 let inFlight: Promise<void> | undefined;
 
 function podFor(podName: string): V1Pod {
   return { apiVersion: "v1", kind: "Pod", metadata: { name: podName, namespace,
-    labels: { "app.kubernetes.io/name": "tabductor-browser" }, annotations: { "karpenter.sh/do-not-disrupt": "true" } },
+    ownerReferences: [controllerOwner],
+    labels: { "app.kubernetes.io/name": "tabductor-browser" }, annotations: { "karpenter.sh/do-not-disrupt": "false" } },
     spec: { restartPolicy: "Never", terminationGracePeriodSeconds: 30, automountServiceAccountToken: false,
+      ...(process.env.BROWSER_NODE_ROLE ? { nodeSelector: { "tabductor.io/node-role": process.env.BROWSER_NODE_ROLE },
+        tolerations: [{ key: "tabductor.io/browser", operator: "Equal", value: "true", effect: "NoSchedule" }] } : {}),
       containers: [{ name: "worker", image: process.env.BROWSER_WORKER_IMAGE ?? "tabductor-browser-worker:local", imagePullPolicy: process.env.BROWSER_WORKER_PULL_POLICY ?? "IfNotPresent",
         env: [{ name: "TABDUCTOR_WORKER_TOKEN", value: browserWorkerToken(tokenKey!, podName) }, { name: "TABDUCTOR_PROFILE_ROOT", value: "/profiles" },
           ...(config.TABDUCTOR_FIXTURE_MODE ? [{ name: "TABDUCTOR_ALLOW_PRIVATE_EGRESS", value: "1" }] : [])],
@@ -72,6 +77,12 @@ async function reconcile(): Promise<void> {
     const lock = await leader.query<{ locked: boolean }>("select pg_try_advisory_lock(7023165) as locked");
     if (!lock.rows[0]?.locked) return;
     try {
+      if (!controllerOwner) {
+        const name = process.env.BROWSER_CONTROLLER_DEPLOYMENT;
+        if (!name) throw new Error("BROWSER_CONTROLLER_DEPLOYMENT is required to own browser pods");
+        const deployment = await apps.readNamespacedDeployment({ namespace, name });
+        controllerOwner = { apiVersion: "apps/v1", kind: "Deployment", name, uid: deployment.metadata!.uid!, controller: false };
+      }
       await expireBrowserTakeovers(handle.db);
       await expireBrowserRecordings(handle.db, blobs);
       const podList = await core.listNamespacedPod({ namespace, labelSelector: "app.kubernetes.io/name=tabductor-browser" });
@@ -104,15 +115,21 @@ async function reconcile(): Promise<void> {
           await handle.db.update(browserWorkers).set({ status: "dead" }).where(eq(browserWorkers.id, worker.id));
           continue;
         }
-        if (!pod?.status?.podIP || !pod.status.conditions?.some((c) => c.type === "Ready" && c.status === "True")) continue;
+        if (!pod?.status?.podIP || !pod.status.conditions?.some((c) => c.type === "Ready" && c.status === "True")) {
+          if (Date.now() - worker.heartbeatAt.getTime() > 300_000) await core.deleteNamespacedPod({ namespace, name: worker.podName });
+          continue;
+        }
         const url = `http://${pod.status.podIP}:8080`;
         await handle.db.update(browserWorkers).set({ endpointUrl: url }).where(eq(browserWorkers.id, worker.id));
         if (!session) {
           await handle.db.update(browserWorkers).set({ heartbeatAt: sql`now()` }).where(eq(browserWorkers.id, worker.id));
           continue;
         }
+        if (pod.metadata?.annotations?.["karpenter.sh/do-not-disrupt"] !== "true") {
+          await core.patchNamespacedPod({ namespace, name: worker.podName, body: { metadata: { annotations: { "karpenter.sh/do-not-disrupt": "true" } } } });
+        }
         const [billing] = await handle.db.select().from(browserBilling).where(eq(browserBilling.sessionId, session.id));
-        if (billing && Date.now() - billing.startedAt.getTime() >= billing.maxSeconds * 1000 && session.status !== "stopping") {
+        if (billing && session.readyAt && Date.now() - session.readyAt.getTime() >= billing.maxSeconds * 1000 && session.status !== "stopping") {
           await stopBrowserSession(handle.db, { accountId: session.accountId, sessionId: session.id });
           continue;
         }
@@ -181,6 +198,12 @@ async function reconcile(): Promise<void> {
       const warm = await handle.db.select({ count: sql<number>`count(*)::int` }).from(browserWorkers).where(eq(browserWorkers.status, "warm"));
       const queued = await handle.db.select({ count: sql<number>`count(*)::int` }).from(browserAllocationRequests).where(eq(browserAllocationRequests.status, "queued"));
       const desiredWarm = Math.max(warmSlots, queued[0]!.count > 0 ? 1 : 0);
+      // Configuration changes and empty queues may retire spare pods, never allocated sessions.
+      const excess = Math.max(0, warm[0]!.count - desiredWarm);
+      for (const worker of idle.slice(0, excess)) {
+        await handle.db.update(browserWorkers).set({ status: "draining" })
+          .where(and(eq(browserWorkers.id, worker.id), eq(browserWorkers.status, "warm"), isNull(browserWorkers.sessionId)));
+      }
       const needed = Math.min(desiredWarm - warm[0]!.count, maxAllocated + warmSlots - count[0]!.count);
       for (let n = 0; n < needed; n++) {
         const id = newId("worker");

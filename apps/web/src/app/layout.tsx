@@ -1,8 +1,9 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { ClerkProvider } from "@clerk/nextjs";
+import { ClerkProvider, UserButton } from "@clerk/nextjs";
 import "./globals.css";
-import { clerkConfigured } from "../server/auth-context.js";
+import { clerkConfigured, clerkPublishableKey } from "../server/clerk-config.js";
+export const dynamic = "force-dynamic";
 
 export const metadata = { title: "tabductor", description: "Agentic browsing control plane" };
 
@@ -23,11 +24,12 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         </Link>
         <nav>
           <Link href="/workflows">workflows</Link>
-          <Link href="/endpoints">endpoints</Link>
+          {process.env.TABDUCTOR_DEPLOYMENT_MODE !== "hosted" && <Link href="/endpoints">endpoints</Link>}
           <Link href="/status">status</Link>
           <Link href="/settings/models">models</Link>
           <Link href="/billing">billing</Link>
           <Link href="/sessions">sessions</Link>
+          {clerkConfigured() && <UserButton />}
         </nav>
       </header>
       <main>{children}</main>
@@ -41,7 +43,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <link rel="stylesheet" href={FONTS} />
       </head>
       <body>
-        {clerkConfigured() ? <ClerkProvider>{body}</ClerkProvider> : body}
+        {clerkConfigured() ? <ClerkProvider publishableKey={clerkPublishableKey()} signInUrl="/sign-in" signUpUrl="/sign-up">{body}</ClerkProvider> : body}
       </body>
     </html>
   );

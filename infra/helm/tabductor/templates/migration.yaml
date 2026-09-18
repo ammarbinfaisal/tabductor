@@ -17,11 +17,12 @@ spec:
         app.kubernetes.io/component: migration
     spec:
       restartPolicy: Never
+      serviceAccountName: {{ include "tabductor.fullname" . }}-app
       containers:
         - name: migrate
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "tabductor.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["node", "--import", "tsx", "packages/db/src/migrate.ts"]
           envFrom:
-            - secretRef: { name: {{ include "tabductor.fullname" . }}-config }
+            - secretRef: { name: {{ include "tabductor.configSecret" . }} }
 {{- end }}

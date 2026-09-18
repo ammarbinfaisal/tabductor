@@ -1,0 +1,24 @@
+#!/usr/bin/env python3
+"""Publish already validated images; save immutable digests for Helm."""
+import json
+import subprocess
+from pathlib import Path
+
+def run(*args, **kwargs): return subprocess.check_output(list(args), text=True, **kwargs)
+d=json.loads(run('python3','scripts/aws/terraform.py','-chdir=infra/aws/foundation','output','-json','deployment'))
+tag=run('git','rev-parse','--short=12','HEAD').strip()
+if run('git','status','--porcelain').strip(): raise SystemExit('Commit the validated deployment batch before publishing images')
+registry=f"{d['account_id']}.dkr.ecr.{d['region']}.amazonaws.com"
+password=run('aws','ecr','get-login-password','--region',d['region'])
+run('docker','login','--username','AWS','--password-stdin',registry,input=password)
+images={}
+for name,local in [('app','tabductor-app:local'),('browser-worker','tabductor-browser-worker:local')]:
+    repository=d['image_repositories'][name]
+    remote=f'{repository}:{tag}'
+    subprocess.run(['docker','tag',local,remote],check=True)
+    subprocess.run(['docker','push',remote],check=True)
+    digest=run('aws','ecr','describe-images','--repository-name',f'tabductor-staging/{name}',
+        '--image-ids',f'imageTag={tag}','--region',d['region'],'--query','imageDetails[0].imageDigest','--output','text').strip()
+    images[name]={'repository':repository,'digest':digest}
+Path('.tabductor-aws/images.json').write_text(json.dumps(images,indent=2))
+print('Published immutable image digests.')

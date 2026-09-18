@@ -16,3 +16,9 @@ __pycache__/
 .next/
 next-env.d.ts
 .tabductor-staging/
+.tabductor-aws/
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.auto.tfvars.json

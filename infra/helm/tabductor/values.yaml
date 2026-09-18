@@ -60,3 +60,6 @@ resources:
 
 # Additional server-only settings (Clerk, Paddle, model rates and provider credentials).
 environment: {}
+
+# Production configuration is injected separately from Helm release history.
+existingConfigSecret: ""
