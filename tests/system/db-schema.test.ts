@@ -20,6 +20,8 @@ const EXPECTED_TABLES = [
   "compile_jobs",
   "compile_reports",
   "compiled_scripts",
+  "credit_ledger_entries",
+  "credit_reservations",
   "endpoint_leases",
   "engine_status",
   "event_defs",

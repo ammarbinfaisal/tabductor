@@ -1,5 +1,5 @@
 import { accountMcpTokens } from "@tabductor/db";
-import { createAccountMcpToken } from "@tabductor/engine";
+import { createAccountMcpToken, getCreditBalance } from "@tabductor/engine";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { LOCAL_ACCOUNT } from "../auth-context.js";
@@ -8,6 +8,8 @@ import { procedure, router } from "../trpc.js";
 const accountIdOf = (accountId: string | undefined) => accountId ?? LOCAL_ACCOUNT;
 
 export const accountRouter = router({
+  creditBalance: procedure.query(({ ctx }) => getCreditBalance(ctx.db, accountIdOf(ctx.accountId))),
+
   mcpTokens: procedure.query(({ ctx }) => ctx.db.select({
     id: accountMcpTokens.id,
     prefix: accountMcpTokens.tokenPrefix,

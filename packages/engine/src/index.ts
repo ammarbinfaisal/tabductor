@@ -23,6 +23,17 @@ export {
   type BrowserSessionControlState,
 } from "./browser-session-control.js";
 export {
+  appendCreditAdjustment,
+  expireCreditReservations,
+  getCreditBalance,
+  releaseCreditReservation,
+  reserveCredits,
+  settleCreditReservation,
+  type CreditAdjustmentInput,
+  type CreditBalance,
+  type ReserveCreditsInput,
+} from "./credits.js";
+export {
   accountOwnsWorkflow,
   accountOwnsTask,
   accountOwnsRun,

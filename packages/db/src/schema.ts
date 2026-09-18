@@ -1,5 +1,6 @@
 import {
   type AnyPgColumn,
+  bigint,
   bigserial,
   boolean,
   check,
@@ -97,6 +98,71 @@ export const accountMcpTokens = pgTable(
     createdAt: createdAt(),
   },
   (t) => [uniqueIndex("account_mcp_tokens_hash_key").on(t.tokenSha256), index("account_mcp_tokens_account_idx").on(t.accountId)],
+);
+
+export const CREDIT_RESERVATION_STATUSES = ["active", "settled", "released", "expired"] as const;
+export type CreditReservationStatus = (typeof CREDIT_RESERVATION_STATUSES)[number];
+export const CREDIT_USAGE_CATEGORIES = ["browser", "model", "proxy", "solver", "other"] as const;
+export type CreditUsageCategory = (typeof CREDIT_USAGE_CATEGORIES)[number];
+export const CREDIT_LEDGER_KINDS = [
+  "purchase",
+  "adjustment",
+  "refund",
+  "reservation_hold",
+  "reservation_release",
+  "reservation_settlement",
+] as const;
+export type CreditLedgerKind = (typeof CREDIT_LEDGER_KINDS)[number];
+
+/** A mutable operation record; money movement itself lives only in `credit_ledger_entries`. */
+export const creditReservations = pgTable(
+  "credit_reservations",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "restrict" }),
+    operationId: text("operation_id").notNull(),
+    category: text("category").$type<CreditUsageCategory>().notNull(),
+    reservedUnits: bigint("reserved_units", { mode: "number" }).notNull(),
+    settledUnits: bigint("settled_units", { mode: "number" }),
+    status: text("status").$type<CreditReservationStatus>().notNull().default("active"),
+    expiresAt: ts("expires_at").notNull(),
+    settledAt: ts("settled_at"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("credit_reservations_account_operation_key").on(t.accountId, t.operationId),
+    index("credit_reservations_active_expiry_idx").on(t.status, t.expiresAt),
+    check("credit_reservations_status_check", sql`${t.status} in ('active','settled','released','expired')`),
+    check("credit_reservations_category_check", sql`${t.category} in ('browser','model','proxy','solver','other')`),
+    check("credit_reservations_reserved_check", sql`${t.reservedUnits} > 0`),
+    check("credit_reservations_settled_check", sql`${t.settledUnits} is null or (${t.settledUnits} >= 0 and ${t.settledUnits} <= ${t.reservedUnits})`),
+  ],
+);
+
+/**
+ * Signed, append-only available-credit movements. A reservation hold is negative; releasing
+ * unused or abandoned credit is positive. Actual usage stays on the reservation, so no
+ * mutable balance column can drift away from the audit trail.
+ */
+export const creditLedgerEntries = pgTable(
+  "credit_ledger_entries",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "restrict" }),
+    reservationId: text("reservation_id").references(() => creditReservations.id, { onDelete: "restrict" }),
+    kind: text("kind").$type<CreditLedgerKind>().notNull(),
+    units: bigint("units", { mode: "number" }).notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    metadataJson: jsonb("metadata_json").$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("credit_ledger_entries_idempotency_key").on(t.idempotencyKey),
+    index("credit_ledger_entries_account_created_idx").on(t.accountId, t.createdAt),
+    index("credit_ledger_entries_reservation_idx").on(t.reservationId),
+    check("credit_ledger_entries_kind_check", sql`${t.kind} in ('purchase','adjustment','refund','reservation_hold','reservation_release','reservation_settlement')`),
+    check("credit_ledger_entries_units_check", sql`${t.units} <> 0`),
+  ],
 );
 
 export const workflows = pgTable("workflows", {
@@ -1128,6 +1194,8 @@ export type WorkflowExecutionRow = typeof workflowExecutions.$inferSelect;
 export type AccountRow = typeof accounts.$inferSelect;
 export type AccountIdentityRow = typeof accountIdentities.$inferSelect;
 export type AccountMcpTokenRow = typeof accountMcpTokens.$inferSelect;
+export type CreditReservationRow = typeof creditReservations.$inferSelect;
+export type CreditLedgerEntryRow = typeof creditLedgerEntries.$inferSelect;
 export type WorkflowVersionRow = typeof workflowVersions.$inferSelect;
 export type ScheduleRow = typeof schedules.$inferSelect;
 export type WorkflowShareRow = typeof workflowShares.$inferSelect;
