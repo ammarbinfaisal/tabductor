@@ -142,6 +142,11 @@ are absent from the hosted driver.
 
 ### H4 — Live sessions, playback, and takeover
 
+Implementation notes (2026-09-18): trace buffers flush every second as well as at the size
+threshold. Failed persistence retains the batch for idempotent retry; timestamps reflect
+record time, and close waits for in-flight blob uploads. The live gateway, recording worker,
+playback UI, media expiry, and worker-enforced takeover remain open.
+
 - Add an authenticated VNC/WebSocket gateway and embedded noVNC viewer. Enforce read-only
   viewers and exclusive human input at the server, with short-lived session-scoped access.
 - Record Xvfb output into recoverable HLS segments in object storage. Persist manifests,

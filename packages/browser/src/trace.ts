@@ -62,6 +62,7 @@ type PendingEntry = {
   kind: TraceKind;
   payloadJson: Record<string, unknown>;
   blobRef: string | null;
+  createdAt: Date;
 };
 
 type PendingArtifact = { id: string; runId: string; kind: string; blobRef: string; meta: object };
@@ -71,13 +72,19 @@ export function createTraceRecorder(
   blobs: BlobStore,
   runId: string,
   storageFlags: StorageFlags = {},
+  options: { flushIntervalMs?: number; onFlushError?: (error: unknown) => void } = {},
 ): TraceRecorder {
+  const flushIntervalMs = options.flushIntervalMs ?? 1000;
+  if (!Number.isSafeInteger(flushIntervalMs) || flushIntervalMs < 1) throw new Error("trace flush interval must be a positive integer");
   let seq = 0;
   let entries: PendingEntry[] = [];
   let pendingArtifacts: PendingArtifact[] = [];
   // Serializes flushes: two overlapping inserts of the same buffer would duplicate rows,
   // and the (run_id, seq) primary key would turn that into a run-killing error.
   let inFlight: Promise<void> = Promise.resolve();
+  let closed = false;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const recording = new Set<Promise<void>>();
 
   const flush = async (): Promise<void> => {
     const run = inFlight.then(async () => {
@@ -86,39 +93,67 @@ export function createTraceRecorder(
       if (batch.length === 0 && batchArtifacts.length === 0) return;
       entries = [];
       pendingArtifacts = [];
-      await db.transaction(async (trx) => {
-        if (batch.length > 0) await trx.insert(traceEntries).values(batch);
-        if (batchArtifacts.length > 0) await trx.insert(artifacts).values(batchArtifacts);
-      });
+      try {
+        await db.transaction(async (trx) => {
+          // A lost commit response may retry an already-persisted batch. Both keys are
+          // stable, so retrying trace persistence cannot duplicate entries or artifacts.
+          if (batch.length > 0) await trx.insert(traceEntries).values(batch).onConflictDoNothing();
+          if (batchArtifacts.length > 0) await trx.insert(artifacts).values(batchArtifacts).onConflictDoNothing();
+        });
+      } catch (error) {
+        entries = [...batch, ...entries];
+        pendingArtifacts = [...batchArtifacts, ...pendingArtifacts];
+        throw error;
+      }
     });
     inFlight = run.catch(() => undefined);
     return run;
   };
 
   return {
-    async record(kind, payload, blob) {
-      if (!enabled(storageFlags, CATEGORY[kind])) return;
-
-      let blobRef: string | null = null;
-      if (blob && enabled(storageFlags, blob.kind)) {
-        blobRef = await blobs.put(blob.bytes, { mime: blob.mime });
-        pendingArtifacts.push({
-          id: newId("artifact"),
-          runId,
-          kind: blob.kind,
-          blobRef,
-          meta: { mime: blob.mime, bytes: blob.bytes.byteLength },
-        });
+    record(kind, payload, blob) {
+      if (closed) return Promise.reject(new Error("trace recorder is closed"));
+      if (!enabled(storageFlags, CATEGORY[kind])) return Promise.resolve();
+      const entrySeq = seq++;
+      const createdAt = new Date();
+      if (!timer) {
+        timer = setInterval(() => {
+          void flush().catch((error: unknown) => options.onFlushError?.(error));
+        }, flushIntervalMs);
+        timer.unref();
       }
 
-      entries.push({ runId, seq: seq++, kind, payloadJson: payload, blobRef });
-      if (entries.length >= BUFFER_LIMIT) await flush();
+      const pending = (async () => {
+        let blobRef: string | null = null;
+        if (blob && enabled(storageFlags, blob.kind)) {
+          blobRef = await blobs.put(blob.bytes, { mime: blob.mime });
+          pendingArtifacts.push({
+            id: newId("artifact"),
+            runId,
+            kind: blob.kind,
+            blobRef,
+            meta: { mime: blob.mime, bytes: blob.bytes.byteLength },
+          });
+        }
+
+        entries.push({ runId, seq: entrySeq, kind, payloadJson: payload, blobRef, createdAt });
+        if (entries.length >= BUFFER_LIMIT) await flush();
+      })();
+      const tracked = pending.finally(() => recording.delete(tracked));
+      recording.add(tracked);
+      return tracked;
     },
 
     flush,
 
     async close() {
+      closed = true;
+      if (timer) clearInterval(timer);
+      timer = undefined;
+      const pending = await Promise.allSettled([...recording]);
       await flush();
+      const failed = pending.find((result) => result.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
     },
   };
 }
