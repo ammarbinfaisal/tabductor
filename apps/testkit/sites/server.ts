@@ -158,10 +158,7 @@ function mutatorPage(tweets: Tweet[], layout: string): string {
   return page("Mutator", `<h1>Timeline</h1><div id="timeline">${items}</div>`);
 }
 
-// Element order here is anchor order for every `perceive()` snapshot of this page — S5b's
-// recorded transcripts (`tests/system/fixtures/transcripts/*.jsonl`) hardcode anchors like
-// `e5`/`e7` against the login/create-post forms above, so anything added to this page goes
-// *after* them (the hidden field below), never between or before.
+// Browser replay fixtures bind form controls by their observed semantic names.
 const FAKE_GRAM_PAGE = page(
   "FakeGram",
   `<h1>FakeGram</h1>

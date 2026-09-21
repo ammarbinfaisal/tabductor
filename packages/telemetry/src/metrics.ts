@@ -14,7 +14,7 @@ import type { Meter } from "@opentelemetry/api";
  */
 
 export type RunStatus = "succeeded" | "failed" | "timed_out" | "cancelled";
-export type FireResult = "fired" | "skipped_overlap" | "skipped_missed" | "queued";
+export type FireResult = "fired" | "skipped_overlap" | "skipped_missed" | "queued" | "blocked_prerequisite";
 export type ShareViewResult = "ok" | "unknown" | "revoked" | "rate_limited";
 export type PolicyCheck = "navigation" | "action" | "network_read";
 export type ResourceLimit = "max_tabs" | "max_visits" | "max_wall_ms";

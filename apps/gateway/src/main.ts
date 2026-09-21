@@ -2,8 +2,8 @@ import { createServer, request as proxyRequest } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { loadConfig } from "@tabductor/core";
 import { createDb, browserSessions, browserWorkers } from "@tabductor/db";
-import { browserWorkerToken, verifyBrowserViewToken, type BrowserViewClaims } from "@tabductor/engine";
-import { and, eq, sql } from "drizzle-orm";
+import { browserControlIsActive, browserWorkerToken, verifyBrowserViewToken, type BrowserViewClaims } from "@tabductor/engine";
+import { and, eq, isNotNull, sql } from "drizzle-orm";
 const config = loadConfig();
 const key = process.env.BROWSER_WORKER_TOKEN_KEY ?? "";
 if (key.length < 32) throw new Error("browser gateway signing key is required");
@@ -25,7 +25,7 @@ async function owned(claims: BrowserViewClaims) {
     .innerJoin(browserWorkers, eq(browserWorkers.id, browserSessions.workerId)).where(and(
       eq(browserSessions.id, claims.sessionId), eq(browserSessions.accountId, claims.accountId), eq(browserSessions.generation, claims.generation)));
   if (!row || !["ready", "running"].includes(row.session.status) || !row.worker.endpointUrl || row.worker.status !== "allocated") throw new Error("session unavailable");
-  if (claims.access === "control" && (row.session.inputOwner !== "human" || row.session.inputOwnerGeneration !== claims.inputGeneration || !row.session.takeoverExpiresAt || row.session.takeoverExpiresAt.getTime() <= Date.now())) throw new Error("input ownership revoked");
+  if (claims.access === "control" && (!browserControlIsActive(row.session) || row.session.inputOwnerGeneration !== claims.inputGeneration)) throw new Error("input ownership revoked");
   return row;
 }
 server.on("upgrade", (req, socket, head) => {
@@ -34,7 +34,10 @@ server.on("upgrade", (req, socket, head) => {
     const auth = protocols.find((protocol) => protocol.startsWith("td."));
     if (!auth) throw new Error("unauthorized");
     const claims = verifyBrowserViewToken(key, auth.slice(3));
-    const { worker } = await owned(claims);
+    const { worker, session } = await owned(claims);
+    // A short-lived token admits this connection. Profile control then lasts until revoked
+    // by session ownership, which is still checked continuously, rather than a timer.
+    const profileControl = claims.access === "control" && session.executionId === null;
     sockets.handleUpgrade(req, socket, head, (viewer) => {
       const upstreamUrl = new URL(`/v1/sessions/${encodeURIComponent(claims.sessionId)}/view`, worker.endpointUrl!);
       upstreamUrl.protocol = upstreamUrl.protocol === "https:" ? "wss:" : "ws:";
@@ -49,11 +52,11 @@ server.on("upgrade", (req, socket, head) => {
       const timer = setInterval(() => {
         if (checking) return;
         checking = true;
-        void owned(claims).then(() => { if (Date.now() >= claims.expiresAt) close(); }).catch(close).finally(() => { checking = false; });
+        void owned(claims).then(() => { if (!profileControl && Date.now() >= claims.expiresAt) close(); }).catch(close).finally(() => { checking = false; });
       }, 500);
       upstream.on("open", () => { for (const bytes of pending) upstream.send(bytes); pending.length = 0; });
       viewer.on("message", (data) => {
-        if (Date.now() >= claims.expiresAt || upstream.bufferedAmount > 1024 * 1024) { close(); return; }
+        if ((!profileControl && Date.now() >= claims.expiresAt) || upstream.bufferedAmount > 1024 * 1024) { close(); return; }
         const bytes = Buffer.from(data as Buffer);
         if (upstream.readyState === WebSocket.OPEN) upstream.send(bytes);
         else if (upstream.readyState === WebSocket.CONNECTING && (pendingBytes += bytes.length) < 64 * 1024) pending.push(bytes);
@@ -64,7 +67,7 @@ server.on("upgrade", (req, socket, head) => {
       viewer.on("close", () => {
         close();
         if (claims.access === "control") void handle.db.update(browserSessions).set({ inputOwner: "paused", inputOwnerGeneration: sql`${browserSessions.inputOwnerGeneration} + 1` })
-          .where(and(eq(browserSessions.id, claims.sessionId), eq(browserSessions.inputOwner, "human"), eq(browserSessions.inputOwnerGeneration, claims.inputGeneration)))
+          .where(and(eq(browserSessions.id, claims.sessionId), isNotNull(browserSessions.executionId), eq(browserSessions.inputOwner, "human"), eq(browserSessions.inputOwnerGeneration, claims.inputGeneration)))
           .catch(() => {});
       });
     });

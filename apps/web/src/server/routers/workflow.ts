@@ -1,5 +1,7 @@
 import {
   createWorkflow,
+  compileResultSchema,
+  withWorkflowResult,
   getWorkflow,
   graphSchema,
   graphDraftArtifactSchema,
@@ -16,13 +18,13 @@ import {
   readGraph,
   type GraphGateContext,
 } from "@tabductor/engine";
-import { accountBaselineRules, secrets, storeSchemas, workflows } from "@tabductor/db";
+import { accountBaselineRules, secrets, storeSchemas, workflows, workflowExecutions } from "@tabductor/db";
 import { TRPCError } from "@trpc/server";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { LOCAL_USER, procedure, requireWorkflowOwner, router, type Context } from "../trpc.js";
 import { LOCAL_ACCOUNT } from "../auth-context.js";
-import { setWorkflowSchedule, triggerWorkflow } from "../workflow-control.js";
+import { setWorkflowSchedule, triggerWorkflow, workflowStatus } from "../workflow-control.js";
 
 /** One `StoreTableSpec` (`@tabductor/store`), restated as zod rather than imported: the
  * package's own type is a plain TS shape (it feeds ajv, not a request boundary), and this
@@ -68,7 +70,65 @@ export async function loadGateContext(ctx: Context, workflowId: string): Promise
   };
 }
 
+const resultSchemaInput = z.union([z.record(z.unknown()), z.boolean()]).nullable().optional();
+
+async function compileWorkflowPrompt(ctx: Context, input: {
+  workflowId: string; intent: string; resultSchema?: Record<string, unknown> | boolean | null;
+  current?: z.infer<typeof graphDraftArtifactSchema>;
+}) {
+  await requireWorkflowOwner(ctx, input.workflowId);
+  if (ctx.modelsForWorkflow) ctx = { ...ctx, ...ctx.modelsForWorkflow(input.workflowId) };
+  if (!ctx.graphCompiler) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "graph compilation unavailable: configure ANTHROPIC_API_KEY or OPENAI_API_KEY",
+    });
+  }
+  let current = input.current;
+  if (current && !current.store) {
+    const [persisted] = await ctx.db.select().from(storeSchemas)
+      .where(eq(storeSchemas.workflowId, input.workflowId)).orderBy(desc(storeSchemas.version)).limit(1);
+    if (persisted) current = { ...current, store: graphStoreArtifactSchema.parse({ description: persisted.descriptionText, ddl: persisted.ddl, tablesSpec: persisted.tablesSpecJson }) };
+  }
+  if (input.resultSchema !== undefined && input.resultSchema !== null) compileResultSchema(input.resultSchema);
+  const compiled = await ctx.graphCompiler.compile({
+    intent: input.intent,
+    resultSchema: input.resultSchema ?? null,
+    ...(current ? { current } : {}),
+    gateContext: await loadGateContext(ctx, input.workflowId),
+  });
+  return compiled.ok
+    ? { ...compiled, artifact: { ...compiled.artifact, graph: withWorkflowResult(compiled.artifact.graph, input.intent, input.resultSchema), proposedGrants: [] } }
+    : compiled;
+}
+
 export const workflowRouter = router({
+  createFromPrompt: procedure.input(z.object({ prompt: z.string().trim().min(1).max(20_000), resultSchema: resultSchemaInput }).strict())
+    .mutation(async ({ ctx, input }) => {
+      if (input.resultSchema !== undefined && input.resultSchema !== null) compileResultSchema(input.resultSchema);
+      const workflowId = await createWorkflow(ctx.db, { name: input.prompt.split("\n")[0]!.slice(0, 100), userId: LOCAL_USER, accountId: ctx.accountId ?? LOCAL_ACCOUNT });
+      if (ctx.modelsForWorkflow) ctx = { ...ctx, ...ctx.modelsForWorkflow(workflowId) };
+      const compiled = await compileWorkflowPrompt(ctx, { workflowId, intent: input.prompt, resultSchema: input.resultSchema });
+      if (!compiled.ok) throw new TRPCError({ code: "BAD_REQUEST", message: compiled.error });
+      const published = await publishVersion(ctx.db, { workflowId, expectedVersionId: null, graph: compiled.artifact.graph,
+        authoring: { report: compiled.report, proposedGrants: [], ...(compiled.artifact.store ? { store: compiled.artifact.store } : {}) } },
+        { schemaGenerator: ctx.schemaGenerator, ...(ctx.promptCompiler ? { promptCompiler: ctx.promptCompiler } : {}), ...(ctx.pool ? { pool: ctx.pool } : {}) });
+      return { workflowId, versionId: published.versionId };
+    }),
+  progress: procedure.input(z.object({ workflowId: z.string().min(1), versionId: z.string().optional() }))
+    .query(async ({ ctx, input }) => {
+      await requireWorkflowOwner(ctx, input.workflowId);
+      const [workflow, executions] = await Promise.all([
+        getWorkflow(ctx.db, input.workflowId),
+        ctx.db.select({ id: workflowExecutions.id }).from(workflowExecutions)
+          .where(and(eq(workflowExecutions.workflowId, input.workflowId), input.versionId ? eq(workflowExecutions.workflowVersionId, input.versionId) : undefined))
+          .orderBy(desc(workflowExecutions.createdAt), desc(workflowExecutions.id)).limit(1),
+      ]);
+      return { blocked: workflow?.blockedReasonJson ?? null,
+        execution: executions[0] ? await workflowStatus(ctx, { workflowId: input.workflowId, executionId: executions[0].id }) : null };
+    }),
+  status: procedure.input(z.object({ workflowId: z.string().min(1), executionId: z.string().min(1) }))
+    .query(({ ctx, input }) => workflowStatus(ctx, input)),
   create: procedure
     .input(z.object({ name: z.string().min(1).max(200), maxHops: z.number().int().positive().max(1000).optional() }))
     .mutation(({ ctx, input }) =>
@@ -122,32 +182,10 @@ export const workflowRouter = router({
         workflowId: z.string().min(1),
         intent: z.string().min(1).max(20_000),
         current: graphDraftArtifactSchema.optional(),
+        resultSchema: resultSchemaInput,
       }),
     )
-    .mutation(async ({ ctx, input }) => {
-      await requireWorkflowOwner(ctx, input.workflowId);
-      if (ctx.modelsForWorkflow) ctx = { ...ctx, ...ctx.modelsForWorkflow(input.workflowId) };
-      if (!ctx.graphCompiler) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: "graph compilation unavailable: configure ANTHROPIC_API_KEY or OPENAI_API_KEY",
-        });
-      }
-      let current = input.current;
-      if (current && !current.store) {
-        const [persisted] = await ctx.db.select().from(storeSchemas)
-          .where(eq(storeSchemas.workflowId, input.workflowId)).orderBy(desc(storeSchemas.version)).limit(1);
-        if (persisted) current = { ...current, store: graphStoreArtifactSchema.parse({ description: persisted.descriptionText, ddl: persisted.ddl, tablesSpec: persisted.tablesSpecJson }) };
-      }
-      const compiled = await ctx.graphCompiler.compile({
-        intent: input.intent,
-        ...(current ? { current } : {}),
-        gateContext: await loadGateContext(ctx, input.workflowId),
-      });
-      return compiled.ok
-        ? { ...compiled, artifact: { ...compiled.artifact, graph: { ...compiled.artifact.graph, automationPrompt: input.intent }, proposedGrants: [] } }
-        : compiled;
-    }),
+    .mutation(({ ctx, input }) => compileWorkflowPrompt(ctx, input)),
 
   /** The workflow, its current graph, and the task ids that graph's nodes resolved to. */
   get: procedure.input(z.object({ id: z.string().min(1) })).query(async ({ ctx, input }) => {

@@ -1,8 +1,12 @@
+import { withAutomationControl } from "./control.js";
+import { randomBytes } from "node:crypto";
 import { AppError, SCRIPT_RUNTIME_VERSION } from "@tabductor/core";
 import type { PolicyGate, TaskCtx } from "@tabductor/core";
 import type { Metrics } from "@tabductor/telemetry";
 import type {
   Anchor,
+  AnchoredElement,
+  Perception,
   BrowserConn,
   DialogHook,
   ExtractSpec,
@@ -39,13 +43,20 @@ export type RunSession = {
   /** A second guarded+traced page on the same connection (§8 `max_tabs`). */
   openTab: () => Promise<Page>;
   /**
-   * Resolves an anchor (`e1`, `e2`, …) from the most recent `perceive()` call on any page in
+   * Resolves a snapshot-qualified anchor from the most recent `perceive()` call on any page in
    * this session back to the locator `Page` methods accept — S4b's loop calls this once per
    * tool call rather than holding a selector itself, and the resolved string is what lands in
    * the action's trace entry (S4a §8: "the trace records the resolved locator"). `undefined`
    * for an anchor that was never perceived, or one from a snapshot since superseded.
    */
   resolveAnchor: (anchor: Anchor) => string | undefined;
+  /** Semantic identity for recovery only; actions still resolve the exact observed node. */
+  describeAnchor?: (anchor: Anchor) => string | undefined;
+  anchorInfo?: (anchor: Anchor) => AnchoredElement | undefined;
+  lastPerception?: () => Perception | undefined;
+  remainingWallMs?: () => number;
+  dispatchState?: () => { sequence: number; status: "executed" | "failed" | "uncertain" };
+  snapshotId?: () => string | undefined;
   close: () => Promise<void>;
 };
 
@@ -131,7 +142,7 @@ const DEFAULT_NETWORK_LIST_LIMIT = 50;
 export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
   const { conn, gate, taskCtx, trace, metrics, limits } = deps;
   const openedAt = Date.now();
-  const browserVersion = await conn.version();
+  const browserVersion = await withAutomationControl(conn, () => conn.version());
   await trace.record("runtime", { browserVersion, runtimeVersion: SCRIPT_RUNTIME_VERSION });
 
   // ---- resource limits (§8): runtime-enforced, checked before policy. A run that has
@@ -171,6 +182,14 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
   // last thing the agent looked at", the same one-snapshot-at-a-time model the agent loop
   // itself uses (perceive, then act on what it just saw). ----
   let anchorMap = new Map<Anchor, string>();
+  let anchorDetails = new Map<Anchor, AnchoredElement>();
+  let latestPerception: Perception | undefined;
+  let dispatchSequence = 0;
+  let dispatchStatus: "executed" | "failed" | "uncertain" = "uncertain";
+  let snapshotSequence = 0;
+  let currentSnapshotId: string | undefined;
+  const snapshotNamespace = randomBytes(4).toString("hex");
+  let evidenceLocators = new Map<string, string>();
 
   // ---- network observation (§9 step 1): one shared store for every page this session opens
   // (the initial page, any `openTab()` pages, and popups either spawns), so indices stay
@@ -533,7 +552,18 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
 
   /** Wraps one raw driver page — the initial page and every `openTab()` page share this. */
   const makePage = (raw: Page): Page => {
-    const pageAct: typeof act = (action, detail, fn, onResult) => act(action, { ...detail, pageId: raw.id }, fn, onResult);
+    const pageAct: typeof act = (action, detail, fn, onResult) => act(action, { ...detail,
+      ...(typeof detail.selector === "string" ? { selector: evidenceLocators.get(detail.selector) ?? detail.selector } : {}), pageId: raw.id }, async () => {
+        const mutation = ["goto","click","type","scroll","press","select","hover","drag","upload","download","switchTab","dialog"].includes(action);
+        if (!mutation) return fn();
+        anchorMap.clear(); anchorDetails.clear(); latestPerception = undefined; currentSnapshotId = undefined;
+        dispatchSequence++; dispatchStatus = "uncertain";
+        try { const result = await fn(); dispatchStatus = "executed"; return result; }
+        catch (error) {
+          if (error instanceof AppError && error.details?.outcomeUncertain === false) dispatchStatus = "failed";
+          throw error;
+        }
+      }, onResult);
     return {
     id: raw.id,
     async goto(url, opts) {
@@ -563,7 +593,7 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
     // it decided, and `insertTextRaw`'s whole point is a call site that leaves nothing in the
     // trace for its `text` argument to leak into (`packages/secrets/src/broker.ts`).
     probeTarget: (selector) => raw.probeTarget(selector),
-    insertTextRaw: (selector, text) => raw.insertTextRaw(selector, text),
+    insertTextRaw: (selector, text) => { anchorMap.clear(); currentSnapshotId = undefined; return raw.insertTextRaw(selector, text); },
     // Traced by name/mime/size only, never the bytes — the same "count or length, not
     // content" rule `type`/`queryAll`/`perceive` already follow. The bytes' own provenance
     // and integrity belong to the caller; a second copy in
@@ -572,14 +602,14 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
       pageAct("upload", { selector, name: file.name, mime: file.mimeType, size: file.bytes.byteLength }, () =>
         raw.upload(selector, file),
       ),
-    queryAll: (selector, fields: ExtractSpec) =>
+    queryAll: (selector, fields: ExtractSpec, opts) =>
       pageAct(
         "queryAll",
-        { selector, fields: Object.keys(fields) },
-        () => raw.queryAll(selector, fields),
+        { selector, fields: Object.keys(fields), ...(opts ? { bounds: opts } : {}) },
+        () => raw.queryAll(selector, fields, opts),
         // The count, never the extracted values: a trace of what was scraped is a copy of
         // the page, and §14 makes page content an opt-in category rather than a default.
-        { detail: (records) => ({ count: records.length }) },
+        { detail: (records) => ({ count: records.length, extractionFields: fields }) },
       ),
     perceive: (opts) =>
       pageAct(
@@ -587,20 +617,44 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
         { maxChars: opts?.maxChars },
         () => raw.perceive(opts),
         {
-          // Counts only, never the elements or the text themselves — the same rule
-          // `queryAll` follows above, for the same reason (§14 opt-in page content).
-          detail: (result) => ({ url: result.url, elementCount: result.elements.length, textChars: result.text.length }),
+          // Structural evidence only; page text and form values remain opt-in content.
+          detail: (result) => ({ url: result.url, elementCount: result.elements.length, textChars: result.text.length,
+            coverage: result.coverage, elementStructure: result.elements.slice(0, 100).map(e => ({ tag: e.tag, role: e.role, locator: ["testid","css-path"].includes(e.strategy) ? e.locator : undefined,
+              strategy: e.strategy, disabled: e.disabled, inViewport: e.inViewport })) }),
         },
       ).then((result) => {
-        anchorMap = new Map(result.elements.map((e) => [e.anchor, e.locator]));
+        const snapshotId = `s${snapshotNamespace}-${++snapshotSequence}`;
+        currentSnapshotId = snapshotId;
+        const scopeEvidence = opts?.selector ? evidenceLocators.get(opts.selector) : undefined;
+        evidenceLocators = new Map(result.elements.map(e => [e.actionLocator ?? e.locator, e.locator]));
+        result = { ...result, snapshotId, pageId: raw.id, scopeAnchor: result.scopeAnchor ? `${snapshotId}:${result.scopeAnchor}` : undefined, elements: result.elements.map(e => ({ ...e,
+          anchor: `${snapshotId}:${e.anchor}`, parentAnchor: e.parentAnchor ? `${snapshotId}:${e.parentAnchor}` : null })) };
+        anchorMap = new Map(result.elements.map((e) => [e.anchor, e.actionLocator ?? e.locator]));
+        anchorDetails = new Map(result.elements.map(e => [e.anchor, e]));
+        latestPerception = result;
+        // A paged subtree may omit its root. Its fresh scope anchor must still resolve
+        // so the next page can use the same scope without an expired anchor.
+        if (result.scopeAnchor && opts?.selector) {
+          anchorMap.set(result.scopeAnchor, opts.selector);
+          if (scopeEvidence) evidenceLocators.set(opts.selector, scopeEvidence);
+        }
         return result;
       }),
 
     scroll: (direction) => pageAct("scroll", { direction }, () => raw.scroll(direction)),
-    screenshot: () =>
-      pageAct("screenshot", {}, () => raw.screenshot(), {
+    screenshot: (opts) =>
+      pageAct("screenshot", { selector: opts?.selector }, () => raw.screenshot(opts), {
         blob: (bytes) => ({ kind: "screenshots", bytes, mime: "image/png" }),
       }),
+    ...(raw.interact ? { interact: (action: import("./driver.js").PageInteraction) =>
+      pageAct(action.kind, { ...action, ...(action.kind === "dialog" ? { promptText: undefined } : {}) }, () => raw.interact!(action)) } : {}),
+    ...(raw.download ? { download: (selector: string) => pageAct("download", { selector }, () => raw.download!(selector),
+      { detail: file => ({ name: file.name, size: file.bytes.length }) }) } : {}),
+    ...(raw.tabs ? { tabs: () => pageAct("tabs", {}, () => raw.tabs!()) } : {}),
+    ...(raw.switchTab ? { switchTab: async (id: string) => {
+      const selected = await pageAct("switchTab", { targetPageId: id }, () => raw.switchTab!(id));
+      anchorMap.clear(); return makePage(selected);
+    } } : {}),
     title: () => raw.title(),
     url: () => raw.url(),
     close: () => raw.close(),
@@ -611,7 +665,7 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
   const openPages: Page[] = [];
 
   const openPage = async (): Promise<Page> => {
-    const raw = await conn.createPage({ onNavigationRequest, network: networkHooks, onDialog });
+    const raw = await withAutomationControl(conn, () => conn.createPage({ onNavigationRequest, network: networkHooks, onDialog }));
     openPages.push(raw);
     return makePage(raw);
   };
@@ -632,6 +686,12 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
     network: { list: networkList, body: networkBody, read: networkRead, waitForResponse: networkWait },
     openTab,
     resolveAnchor: (anchor) => anchorMap.get(anchor),
+    describeAnchor: (anchor) => { const locator = anchorMap.get(anchor); return locator ? evidenceLocators.get(locator) ?? locator : undefined; },
+    anchorInfo: (anchor) => anchorDetails.get(anchor),
+    lastPerception: () => latestPerception,
+    remainingWallMs: () => limits?.maxWallMs === undefined ? Infinity : Math.max(0, limits.maxWallMs - (Date.now() - openedAt)),
+    dispatchState: () => ({ sequence: dispatchSequence, status: dispatchStatus }),
+    snapshotId: () => currentSnapshotId,
     async close() {
       closed = true;
       for (const notify of networkWaiters) notify();

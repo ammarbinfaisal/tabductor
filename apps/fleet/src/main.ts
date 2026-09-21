@@ -1,12 +1,12 @@
 import { AppsV1Api, CoreV1Api, KubeConfig, type V1Pod, type V1OwnerReference } from "@kubernetes/client-node";
 import { dockerFleet } from "./docker-fleet.js";
 import { loadConfig, newId } from "@tabductor/core";
-import { createDb, browserRecordingSegments, browserAllocationRequests, browserBilling, browserProfiles, browserProfileLeases, browserSessions, browserWorkers } from "@tabductor/db";
+import { createDb, browserFleetStatus, browserRecordingSegments, browserAllocationRequests, browserBilling, browserProfiles, browserProfileLeases, browserSessions, browserWorkers } from "@tabductor/db";
 import { configuredBlobStore } from "@tabductor/browser";
 import { encryptEnvelope, configuredKeyWrapper, withEnvelope, type EncryptedEnvelope } from "@tabductor/secrets";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { claimBrowserAllocation, failBrowserAllocation, fulfillBrowserAllocation, endBrowserSession, browserWorkerToken,
-  browserCreditAdmission, settleBrowserUsage, acknowledgeBrowserPause, expireBrowserTakeovers, stopBrowserSession, appendBrowserRecordingSegment, expireBrowserRecordings } from "@tabductor/engine";
+  browserCreditAdmission, settleBrowserUsage, acknowledgeBrowserPause, acknowledgeBrowserResume, requestBrowserTakeover, expireBrowserTakeovers, stopBrowserSession, stopFinishedExecutionBrowsers, appendBrowserRecordingSegment, expireBrowserRecordings } from "@tabductor/engine";
 
 const config = loadConfig();
 const namespace = process.env.BROWSER_NAMESPACE ?? "tabductor-staging";
@@ -90,8 +90,11 @@ async function reconcile(): Promise<void> {
         }
       }
       await expireBrowserTakeovers(handle.db);
+      await stopFinishedExecutionBrowsers(handle.db);
       await expireBrowserRecordings(handle.db, blobs);
       const podList = await core.listNamespacedPod({ namespace, labelSelector: "app.kubernetes.io/name=tabductor-browser" });
+      await handle.db.insert(browserFleetStatus).values({ id: "fleet", maxAllocated })
+        .onConflictDoUpdate({ target: browserFleetStatus.id, set: { maxAllocated, heartbeatAt: sql`now()` } });
       const pods = new Map(podList.items.map((pod) => [pod.metadata!.name!, pod]));
       const workers = await handle.db.select().from(browserWorkers).where(inArray(browserWorkers.status, ["warm", "allocated", "draining"]));
       // Reconcile recorded worker intent first. Lost create responses are adopted by the same pod name.
@@ -166,9 +169,23 @@ async function reconcile(): Promise<void> {
           });
           await settleBrowserUsage(handle.db, session.id);
         } else {
+          // Profile setup always belongs to its human, including after reopening an older session.
+          if (session.executionId === null && (session.inputOwner === "ai" ||
+            session.inputOwner === "paused" && (!session.pauseRequestedAt || session.pauseAcknowledgedAt))) {
+            await requestBrowserTakeover(handle.db, { accountId: session.accountId, sessionId: session.id });
+            continue;
+          }
           await syncRecording(session.id, session.generation, worker.podName, url);
           const owner = session.inputOwner === "paused" && session.pauseRequestedAt && !session.pauseAcknowledgedAt ? "human" : session.inputOwner;
-          await rpc(worker.podName, url, `/v1/sessions/${session.id}/control`, "POST", { generation: session.generation, input_generation: session.inputOwnerGeneration, owner });
+          const control = await rpc(worker.podName, url, `/v1/sessions/${session.id}/control`, "POST", { generation: session.generation, input_generation: session.inputOwnerGeneration, owner });
+          if (control.closed === true) {
+            await stopBrowserSession(handle.db, { accountId: session.accountId, sessionId: session.id });
+            continue;
+          }
+          if (control.acknowledged !== true || control.input_generation !== session.inputOwnerGeneration) {
+            throw new Error("worker did not acknowledge the requested control generation");
+          }
+          if (owner === "ai") await acknowledgeBrowserResume(handle.db, { sessionId: session.id, generation: session.generation, inputOwnerGeneration: session.inputOwnerGeneration });
           if (owner === "human" && session.inputOwner === "paused") await acknowledgeBrowserPause(handle.db, { sessionId: session.id, generation: session.generation, inputOwnerGeneration: session.inputOwnerGeneration });
           await handle.db.update(browserSessions).set({ heartbeatAt: sql`now()` }).where(eq(browserSessions.id, session.id));
         }

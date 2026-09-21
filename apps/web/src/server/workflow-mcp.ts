@@ -9,15 +9,15 @@ import { graphStoreArtifactSchema, type GraphDraftArtifact } from "@tabductor/en
 import { storeSchemas } from "@tabductor/db";
 import { desc, eq } from "drizzle-orm";
 import { createCaller, type Context } from "./router.js";
-import { setWorkflowSchedule, triggerWorkflow } from "./workflow-control.js";
+import { setWorkflowSchedule, triggerWorkflow, workflowStatus } from "./workflow-control.js";
 
 function publicResult(workflowId: string, versionId: string, extra: Record<string, unknown> = {}) {
   return { workflowId, versionId, ...extra };
 }
 
-async function compileAndPublish(ctx: Context, workflowId: string, intent: string, current?: GraphDraftArtifact, expectedVersionId: string | null = null) {
+async function compileAndPublish(ctx: Context, workflowId: string, prompt: string, current: GraphDraftArtifact, expectedVersionId: string | null, resultSchema?: Record<string, unknown> | boolean) {
   const caller = createCaller(ctx);
-  const compiled = await caller.workflow.compileIntent({ workflowId, intent, ...(current ? { current } : {}) });
+  const compiled = await caller.workflow.compileIntent({ workflowId, intent: prompt, current, resultSchema: resultSchema ?? null });
   if (!compiled.ok) throw new Error(`workflow compilation failed: ${compiled.error}`);
   const published = await caller.workflow.publishVersion({
     workflowId,
@@ -60,18 +60,15 @@ async function currentArtifact(ctx: Context, workflowId: string): Promise<{ arti
 /** Adapts the existing compiler/publication APIs to workflow-level MCP operations. */
 export function createWorkflowControl(ctx: Context): WorkflowControl {
   return {
+    status: (input) => workflowStatus(ctx, input),
     async publish(input: WorkflowPublishInput) {
       const caller = createCaller(ctx);
-      const workflowId = await caller.workflow.create({
-        name: input.name,
-        ...(input.maxHops === undefined ? {} : { maxHops: input.maxHops }),
-      });
-      return compileAndPublish(ctx, workflowId, input.intent);
+      return caller.workflow.createFromPrompt(input);
     },
 
     async update(input: WorkflowUpdateInput) {
       const current = await currentArtifact(ctx, input.workflowId);
-      return compileAndPublish(ctx, input.workflowId, input.intent, current.artifact, current.versionId);
+      return compileAndPublish(ctx, input.workflowId, input.prompt, current.artifact, current.versionId, input.resultSchema);
     },
 
     async trigger(input: WorkflowTriggerInput) {

@@ -48,12 +48,12 @@ it("anchors the timeline's tweets by test id, in document order, with locators t
   expect(tweetArticles.length).toBeGreaterThanOrEqual(3);
 
   // Document order: anchor numbers increase monotonically for the tweet articles.
-  const anchorNumbers = tweetArticles.map((e) => Number(e.anchor.slice(1)));
+  const anchorNumbers = tweetArticles.map((e) => Number(e.anchor.split(":").at(-1)!.slice(1)));
   expect(anchorNumbers).toEqual([...anchorNumbers].sort((a, b) => a - b));
 
   // Every anchor resolves back to exactly its own recorded locator.
   for (const el of perception.elements) {
-    expect(sess.session.resolveAnchor(el.anchor)).toBe(el.locator);
+    expect(sess.session.resolveAnchor(el.anchor)).toBe(el.actionLocator ?? el.locator);
   }
 
   // The resolved locator is something `queryAll` accepts and that actually matches the
@@ -102,7 +102,7 @@ it("chooses the test-id tier for every [data-testid] element, even though the id
   expect(testIdElements.every((e) => e.strategy === "testid")).toBe(true);
 });
 
-it("assigns the same anchors to the same fixture state (deterministic, document order)", async () => {
+it("keeps node identities stable while expiring old snapshot anchors", async () => {
   sess = await openSession(rig);
   const { page } = sess.session;
 
@@ -112,12 +112,12 @@ it("assigns the same anchors to the same fixture state (deterministic, document 
   const first = await page.perceive();
   const second = await page.perceive();
 
-  expect(second.elements.map((e) => ({ anchor: e.anchor, locator: e.locator, strategy: e.strategy }))).toEqual(
-    first.elements.map((e) => ({ anchor: e.anchor, locator: e.locator, strategy: e.strategy })),
+  expect(second.elements.map((e) => ({ actionLocator: e.actionLocator, locator: e.locator, strategy: e.strategy }))).toEqual(
+    first.elements.map((e) => ({ actionLocator: e.actionLocator, locator: e.locator, strategy: e.strategy })),
   );
 });
 
-it("truncates the text budget on a long page, with a marker, and never emits raw HTML", async () => {
+it("paginates the text budget on a long page with explicit coverage", async () => {
   sess = await openSession(rig);
   const { page } = sess.session;
 
@@ -139,10 +139,10 @@ it("truncates the text budget on a long page, with a marker, and never emits raw
 
   const budgeted = await page.perceive({ maxChars: 500 });
   expect(budgeted.text.length).toBeLessThan(600); // budget + the truncation marker's own text
-  expect(budgeted.text).toContain("truncated");
+  expect(budgeted.coverage?.nextTextOffset).toBe(500);
   expect(budgeted.text).not.toContain("<");
 
   const unbudgeted = await page.perceive({ maxChars: 100_000 });
   expect(unbudgeted.text.length).toBeGreaterThan(budgeted.text.length);
-  expect(unbudgeted.text).not.toContain("truncated");
+  expect(unbudgeted.coverage?.nextTextOffset).toBeNull();
 });

@@ -120,7 +120,9 @@ export function createModelResolver(deps: { db: Db; wrapper: KeyWrapper; rates: 
       if (selection.funding === "platform" && !rate) throw new AppError("model_rate_unknown", "this platform model has no configured rate");
       const maxInput = rate?.maxInputTokens ?? 128_000;
       const maxOutputTokens = rate?.maxOutputTokens ?? 8192;
-      if (input.inputTokenBound > maxInput) throw new AppError("model_input_limit", "model input exceeds the configured limit");
+      if (input.inputTokenBound > maxInput) throw new AppError("model_input_limit",
+        `model input estimate ${input.inputTokenBound} exceeds configured limit ${maxInput}; compact history or reduce tool data`,
+        { details: { estimatedInputTokens: input.inputTokenBound, maxInputTokens: maxInput } });
       const [credential] = selection.funding === "byo" ? await deps.db.select().from(modelCredentials).where(and(
         eq(modelCredentials.id, selection.credentialId!), eq(modelCredentials.accountId, scope.accountId),
         eq(modelCredentials.provider, selection.provider), isNull(modelCredentials.revokedAt))) : [];

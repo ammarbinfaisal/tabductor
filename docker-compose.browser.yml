@@ -40,7 +40,7 @@ services:
       BROWSER_DOCKER_NETWORK: tabductor_default
       BROWSER_WORKER_IMAGE: tabductor-browser-worker:local
       BROWSER_WORKER_TOKEN_KEY: ${BROWSER_WORKER_TOKEN_KEY:?Run pnpm local:up}
-      BROWSER_MAX_ALLOCATED: "3"
+      BROWSER_MAX_ALLOCATED: "4"
       BROWSER_WARM_SLOTS: "1"
     volumes: ["kek:/app/data", "${DOCKER_SOCKET_PATH:?Run pnpm local:up}:/var/run/docker.sock"]
     depends_on:

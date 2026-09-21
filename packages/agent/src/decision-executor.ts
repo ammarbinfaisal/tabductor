@@ -16,7 +16,6 @@ import { buildDecisionToolRegistry } from "./decision-tools.js";
 import {
   flushRemainingWrites,
   makeEmitFn,
-  maxStepsOf,
   storageFlagsOf as defaultStorageFlagsOf,
   toRunResult,
   triggerInfoOf,
@@ -97,6 +96,7 @@ export function createDecisionExecutor(deps: DecisionExecutorDeps): TaskExecutor
           pool,
           workflowId,
           emit,
+          recordOutcome: handle.recordOutcome, recordCompletionError: handle.recordCompletionError,
           ...(metrics ? { metrics } : {}),
           write: {
             db,
@@ -116,7 +116,6 @@ export function createDecisionExecutor(deps: DecisionExecutorDeps): TaskExecutor
           trigger,
           emits,
           trace,
-          maxSteps: maxStepsOf(handle.task),
           signal: handle.signal,
         });
         if (result.outcome === "done") {

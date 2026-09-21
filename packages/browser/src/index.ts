@@ -5,6 +5,7 @@ export type {
   CreatePageOptions,
   Driver,
   ExtractedRecord,
+  ExtractOptions,
   ExtractSpec,
   FieldSpec,
   LocatorStrategy,
@@ -19,6 +20,8 @@ export type {
   NetworkParts,
   NetworkRecord,
   Page,
+  PageInteraction,
+  DownloadedFile,
   PerceiveOptions,
   Perception,
   TargetProbe,
@@ -62,3 +65,5 @@ export {
   type EndpointPoolDeps,
 } from "./pool.js";
 export { resolveCdpWsUrl, CDP_ENDPOINT_UNREACHABLE } from "./cdp-url.js";
+
+export { withAutomationControl } from "./control.js";

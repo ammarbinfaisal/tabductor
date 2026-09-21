@@ -10,11 +10,17 @@ export {
   failBrowserAllocation,
   fulfillBrowserAllocation,
   requestBrowserSession,
+  ensureExecutionBrowserSession,
+  openBrowserProfileSession,
   type BrowserAdmission,
   type ClaimedBrowserAllocation,
 } from "./browser-fleet.js";
+export { browserTabKey, claimBrowserTab, releaseBrowserTab, assertBrowserTabLease } from "./browser-tabs.js";
 export {
   acknowledgeBrowserPause,
+  acknowledgeBrowserResume,
+  browserAutomationIsReady,
+  browserControlIsActive,
   appendBrowserRecordingSegment,
   appendBrowserSessionActivity,
   expireBrowserTakeovers,
@@ -24,6 +30,7 @@ export {
   requestBrowserTakeover,
   resumeBrowserAutomation,
   stopBrowserSession,
+  stopFinishedExecutionBrowsers,
   type BrowserSessionControlState,
 } from "./browser-session-control.js";
 export {
@@ -71,7 +78,7 @@ export {
   type RunResult,
   type TaskExecutor,
 } from "./executor.js";
-export { StubExecutor, parseStub, runStubScript, type StubScript } from "./stub-executor.js";
+export { StubResultExecutor, StubExecutor, parseStub, runStubScript, type StubScript } from "./stub-executor.js";
 export {
   dispatchEvent,
   dispatchToTask,
@@ -268,3 +275,15 @@ export { readBrowserMedia, expireBrowserRecordings } from "./browser-media.js";
 export { createSolverProvider, parseSolverRates, requestChallengeRecovery, advanceChallengeRecovery, type SolverProvider, type Challenge, type ChallengeKind } from "./challenge-recovery.js";
 
 export * from "./profile-auth.js";
+
+export { compileResultSchema, parseWorkflowResult, type ResultSchema } from "./result-schema.js";
+
+export { withWorkflowResult } from "./graph.js";
+
+export { recordProgress, recordCompletionError, recordRunOutcome } from "./record-progress.js";
+export type { RecordOutcome } from "./record-progress.js";
+
+export { checkWorkflowPrerequisites, persistPrerequisiteBlock, type PrerequisiteOptions } from "./prerequisites.js";
+export { destinationMappingSchema, destinationKey, type DestinationMapping, type DestinationEvidence, type StoredDestination } from "./destination-contracts.js";
+export { harnessTask, type HarnessTask } from "./intent-contract.js";
+export { AUTHENTICATION_EXECUTION_CONTRACT } from "./authentication-contract.js";

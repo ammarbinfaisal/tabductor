@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { browserSessions, browserProfileLeases, browserAllocationRequests, workflowExecutions } from "@tabductor/db";
+import { browserSessions, browserProfiles, browserProfileLeases, browserAllocationRequests, workflowExecutions } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import {
   claimBrowserAllocation,
@@ -15,6 +15,8 @@ import {
   fulfillBrowserAllocation,
   endBrowserSession,
   requestBrowserSession,
+  openBrowserProfileSession,
+  stopBrowserSession,
   resolveAccountIdentity,
 } from "@tabductor/engine";
 import { eq, sql } from "drizzle-orm";
@@ -22,6 +24,25 @@ import { eq, sql } from "drizzle-orm";
 let handle: MigratedTestDb;
 beforeEach(async () => { handle = await createMigratedTestDb(); });
 afterEach(async () => { await handle?.close(); });
+
+it("reuses profile setup across concurrent opens and prefers the live browser over old queued duplicates", async () => {
+  const accountId = await resolveAccountIdentity(handle.db, { provider: "fixture", subject: "setup_reopen" });
+  const profileId = await createBrowserProfile(handle.db, { accountId, name: "Setup" });
+  const input = { accountId, profileId };
+  const ids = await Promise.all(Array.from({ length: 5 }, () => openBrowserProfileSession(handle.db, input)));
+  expect(new Set(ids).size).toBe(1);
+  expect(await handle.db.select().from(browserAllocationRequests)).toHaveLength(1);
+  const allocation = (await claimBrowserAllocation(handle.db))!;
+  await fulfillBrowserAllocation(handle.db, { ...allocation, workerId: "setup_worker", podName: "setup-browser" });
+  const duplicate = await requestBrowserSession(handle.db, input);
+  expect(await openBrowserProfileSession(handle.db, input)).toBe(ids[0]);
+  await endBrowserSession(handle.db, ids[0]!);
+  expect(await openBrowserProfileSession(handle.db, input)).toBe(duplicate);
+  await endBrowserSession(handle.db, duplicate);
+  expect(await openBrowserProfileSession(handle.db, input)).not.toBe(duplicate);
+  const stranger = await resolveAccountIdentity(handle.db, { provider: "fixture", subject: "setup_stranger" });
+  await expect(openBrowserProfileSession(handle.db, { accountId: stranger, profileId })).rejects.toMatchObject({ code: "browser_profile_not_found" });
+});
 
 it("holds an exclusive profile lease and generation-fences allocation", async () => {
   const accountId = await resolveAccountIdentity(handle.db, { provider: "fixture", subject: "fleet_a" });
@@ -37,6 +58,26 @@ it("holds an exclusive profile lease and generation-fences allocation", async ()
   expect(await claimBrowserAllocation(handle.db)).toBeUndefined();
   await endBrowserSession(handle.db, sessionId);
   expect(await claimBrowserAllocation(handle.db)).toMatchObject({ sessionId: waitingSessionId });
+});
+
+it("keeps a reopened profile queued until its previous snapshot has been committed", async () => {
+  const accountId = await resolveAccountIdentity(handle.db, { provider: "fixture", subject: "save_then_reopen" });
+  const profileId = await createBrowserProfile(handle.db, { accountId, name: "Login" });
+  const sessionId = await openBrowserProfileSession(handle.db, { accountId, profileId });
+  const allocation = (await claimBrowserAllocation(handle.db))!;
+  await fulfillBrowserAllocation(handle.db, { ...allocation, workerId: "saving-worker", podName: "saving-browser" });
+  await stopBrowserSession(handle.db, { accountId, sessionId });
+  const nextId = await openBrowserProfileSession(handle.db, { accountId, profileId });
+  expect(nextId).not.toBe(sessionId);
+  expect(await claimBrowserAllocation(handle.db)).toBeUndefined();
+  await handle.db.transaction(async trx => {
+    await trx.update(browserProfiles).set({ snapshotBlobRef: "saved-login", snapshotGeneration: 1 }).where(eq(browserProfiles.id, profileId));
+    expect(await claimBrowserAllocation(trx)).toBeUndefined();
+    await endBrowserSession(trx, sessionId);
+  });
+  expect(await claimBrowserAllocation(handle.db)).toMatchObject({ sessionId: nextId });
+  const [profile] = await handle.db.select().from(browserProfiles).where(eq(browserProfiles.id, profileId));
+  expect(profile).toMatchObject({ snapshotBlobRef: "saved-login", snapshotGeneration: 1 });
 });
 
 it("takes one queue head per account before a second queued profile", async () => {

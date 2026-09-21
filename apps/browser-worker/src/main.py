@@ -20,8 +20,15 @@ from camoufox.async_api import AsyncCamoufox
 from .recording import Recorder
 from .observations import Observations
 from .auth_state import import_auth_state
+from .clipboard import paste_text
+from .extraction import extract
+from .perception import perceive
+from .snapshot_target import snapshot_target
+from .rpc_errors import command_error
+from fastapi.responses import JSONResponse
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
+from playwright.async_api import Error as PlaywrightError
 
 RPC_VERSION = "1"
 PROFILE_ROOT = Path(os.environ.get("TABDUCTOR_PROFILE_ROOT", "/profiles")).resolve()
@@ -52,6 +59,17 @@ class NavigateRequest(BaseModel):
     url: str = Field(min_length=1, max_length=4096)
 
 
+class SelectTabRequest(BaseModel):
+    generation: int = Field(ge=1)
+    page_id: str = Field(min_length=1, max_length=160)
+
+
+class PasteRequest(BaseModel):
+    generation: int = Field(ge=1)
+    input_generation: int = Field(ge=1)
+    text: str = Field(min_length=1, max_length=100_000)
+
+
 class CommandRequest(BaseModel):
     generation: int = Field(ge=1)
     method: str = Field(min_length=1, max_length=80)
@@ -76,11 +94,22 @@ class Session:
     profile: Path | None = None
     observations: Any = None
     frames: dict[str, Any] = field(default_factory=dict)
+    context_closed: bool = False
+    manager_closed: bool = False
+    tab_slots: dict[str, str] = field(default_factory=dict)
+    page_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
+    inflight: set[Any] = field(default_factory=set)
+    selected_page: str | None = None
+    dialog_policies: dict[str, dict] = field(default_factory=dict)
 
     def add_page(self, page: Any) -> str:
+        for existing_id, existing in self.pages.items():
+            if existing is page:
+                return existing_id
         page_id = f"p{self.next_page}"
         self.next_page += 1
         self.pages[page_id] = page
+        self.page_locks[page_id] = asyncio.Lock()
         if self.observations:
             self.observations.attach(page, page_id)
         return page_id
@@ -149,6 +178,23 @@ def require_page(current: Session, page_id: str | None) -> Any:
     if page is None:
         raise HTTPException(404, "page not found")
     return page
+
+
+async def checkpoint_cookies(current: Session):
+    """Keep session cookies on disk before a human can close the browser window."""
+    if current.context_closed:
+        return
+    try:
+        cookies = await current.context.cookies()
+    except PlaywrightError:
+        if current.context_closed:
+            return
+        raise
+    target = current.profile / ".tabductor-session-cookies.json"
+    temporary = target.with_suffix(".tmp")
+    temporary.write_text(json.dumps(cookies))
+    temporary.chmod(0o600)
+    temporary.replace(target)
 
 
 def locator_for(current, page, selector):
@@ -262,6 +308,9 @@ async def start_session(
         await manager.__aexit__(None, None, None)
         raise HTTPException(400, "could not restore imported authentication")
     session = Session(request.session_id, request.generation, manager, context, profile=profile)
+    current = session
+    context.on("close", lambda *_: setattr(current, "context_closed", True))
+    await checkpoint_cookies(current)
     session.observations = Observations(session)
     recorder = Recorder(PROFILE_ROOT / "recordings")
     recording_session_id = session.session_id
@@ -287,17 +336,21 @@ async def stop_session(session_id: str, generation: int, authorization: str | No
         current = require_session(generation)
         if current.session_id != session_id:
             raise HTTPException(404, "session not found")
+        await drain_commands(current)
         current.input_owner = "paused"
         await stop_control_vnc()
         if recorder:
             await recorder.finish()
         # Persistent Firefox profiles discard session cookies on a clean close.
         # Keep them inside the encrypted profile archive for the next allocation.
-        cookies_path = current.profile / ".tabductor-session-cookies.json"
-        cookies_path.write_text(json.dumps(await current.context.cookies()))
-        cookies_path.chmod(0o600)
-        await current.context.close()
-        await current.manager.__aexit__(None, None, None)
+        await checkpoint_cookies(current)
+        if not current.manager_closed:
+            try:
+                await current.manager.__aexit__(None, None, None)
+            except PlaywrightError:
+                if not current.context_closed:
+                    raise
+            current.manager_closed = True
         output = io.BytesIO()
         with tarfile.open(fileobj=output, mode="w:gz") as archive:
             for path in current.profile.rglob("*"):
@@ -317,6 +370,10 @@ async def control(session_id: str, request: ControlRequest, authorization: str |
         current = require_session(request.generation)
         if current.session_id != session_id:
             raise HTTPException(404, "session not found")
+        await drain_commands(current)
+        if current.context_closed:
+            return {"closed": True}
+        await checkpoint_cookies(current)
         if request.input_generation < current.input_generation or request.owner not in {"ai", "human", "paused"}:
             raise HTTPException(409, "stale input owner")
         if request.input_generation == current.input_generation and request.owner != current.input_owner:
@@ -327,6 +384,7 @@ async def control(session_id: str, request: ControlRequest, authorization: str |
                 if recorder:
                     await recorder.private()
                 await start_control_vnc()
+            current.dialog_policies.clear()
         current.input_generation = request.input_generation
         current.input_owner = request.owner
         return {"acknowledged": True, "input_generation": current.input_generation}
@@ -346,33 +404,115 @@ async def navigate(session_id: str, request: NavigateRequest, authorization: str
             raise HTTPException(400, "invalid website address")
         target = public_url(request.url)
         pages = [page for page in current.context.pages if not page.is_closed()]
-        page = pages[-1] if pages else await current.context.new_page()
+        page = current.pages.get(current.selected_page)
+        if page is None or page.is_closed():
+            page = pages[-1] if pages else await current.context.new_page()
         await page.goto(target, wait_until="domcontentloaded", timeout=30000)
         await page.bring_to_front()
         return {"navigated": True}
 
 
-@app.post("/v1/sessions/{session_id}/commands")
-async def command_locked(session_id: str, request: CommandRequest, authorization: str | None = Header(default=None), x_tabductor_rpc_version: str | None = Header(default=None)) -> dict[str, Any]:
+@app.get("/v1/sessions/{session_id}/tabs")
+async def list_tabs(session_id: str, generation: int, authorization: str | None = Header(default=None), x_tabductor_rpc_version: str | None = Header(default=None)):
+    authorize(authorization, x_tabductor_rpc_version)
+    current = require_session(generation)
+    if current.session_id != session_id:
+        raise HTTPException(404, "session not found")
+    async def describe(page):
+        page_id = current.add_page(page)
+        try:
+            title = await page.title()
+            selected = await page.evaluate("document.visibilityState === 'visible'")
+        except PlaywrightError:
+            title, selected = "", False
+        if selected:
+            current.selected_page = page_id
+        return {"pageId": page_id, "title": title[:500], "url": page.url[:4096], "selected": selected,
+                "tabKey": next((key for key, value in current.tab_slots.items() if value == page_id), None)}
+    return {"tabs": await asyncio.gather(*(describe(page) for page in current.context.pages if not page.is_closed()))}
+
+
+@app.post("/v1/sessions/{session_id}/tabs/select")
+async def select_tab(session_id: str, request: SelectTabRequest, authorization: str | None = Header(default=None), x_tabductor_rpc_version: str | None = Header(default=None)):
     authorize(authorization, x_tabductor_rpc_version)
     async with command_lock:
         current = require_session(request.generation)
         if current.session_id != session_id:
             raise HTTPException(404, "session not found")
-        if current.input_owner != "ai" or current.input_generation != request.input_generation:
-            raise HTTPException(409, "input ownership was revoked")
-        if request.command_id in current.commands:
-            raise HTTPException(409, "command already submitted; outcome must be reconciled")
-        if len(current.commands) >= 10000:
-            raise HTTPException(429, "session command budget exhausted")
-        current.commands.add(request.command_id)
-        if request.method == "page.insert_text" and recorder:
-            await recorder.private()
-        result = await command(session_id, request, authorization, x_tabductor_rpc_version)
-        if current.observations:
-            result["events"] = current.observations.read(request.event_cursor)
-            result["event_cursor"] = len(current.observations.events) - 1
-        return result
+        page = require_page(current, request.page_id)
+        await page.bring_to_front()
+        current.selected_page = request.page_id
+        return {"selected": True}
+
+
+@app.post("/v1/sessions/{session_id}/paste")
+async def paste(session_id: str, request: PasteRequest, authorization: str | None = Header(default=None), x_tabductor_rpc_version: str | None = Header(default=None)):
+    authorize(authorization, x_tabductor_rpc_version)
+    async with command_lock:
+        current = require_session(request.generation)
+        if current.session_id != session_id:
+            raise HTTPException(404, "session not found")
+        if current.context_closed or current.input_owner != "human" or current.input_generation != request.input_generation or not human_view_active:
+            raise HTTPException(409, "active human control required")
+        try:
+            await paste_text(request.text)
+        except (OSError, RuntimeError, asyncio.TimeoutError):
+            raise HTTPException(503, "remote clipboard unavailable") from None
+        return {"pasted": True}
+
+
+async def drain_commands(current: Session):
+    # Caller holds command_lock: no new command can enter while takeover/stop drains.
+    if current.inflight:
+        await asyncio.gather(*list(current.inflight), return_exceptions=True)
+
+
+@app.exception_handler(HTTPException)
+async def http_error_handler(request, error):
+    if request.url.path.endswith("/commands"):
+        error = command_error(error)
+    return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
+
+
+@app.post("/v1/sessions/{session_id}/commands")
+async def command_locked(session_id: str, request: CommandRequest, authorization: str | None = Header(default=None), x_tabductor_rpc_version: str | None = Header(default=None)) -> dict[str, Any]:
+    authorize(authorization, x_tabductor_rpc_version)
+    current = require_session(request.generation)
+    # Page commands serialize only with that page. Context-level creates share a lock.
+    lock_key = request.page_id or "browser"
+    if request.page_id and request.page_id not in current.pages:
+        raise HTTPException(404, "page not found")
+    page_lock = current.page_locks.setdefault(lock_key, asyncio.Lock())
+    async with page_lock:
+        async with command_lock:
+            if session is not current or current.session_id != session_id:
+                raise HTTPException(404, "session not found")
+            if current.input_owner != "ai" or current.input_generation != request.input_generation:
+                raise HTTPException(409, "input ownership was revoked")
+            if request.command_id in current.commands:
+                raise HTTPException(409, "command already submitted; outcome must be reconciled")
+            if len(current.commands) >= 10000:
+                raise HTTPException(429, "session command budget exhausted")
+            current.commands.add(request.command_id)
+            if request.method == "page.insert_text" and recorder:
+                await recorder.private()
+            operation = asyncio.create_task(command(session_id, request, authorization, x_tabductor_rpc_version))
+            current.inflight.add(operation)
+        try:
+            # A disconnected caller must not let takeover race an unfinished browser effect.
+            result = await asyncio.shield(operation)
+            if current.observations:
+                result["events"] = current.observations.read(request.event_cursor)
+                result["event_cursor"] = len(current.observations.events) - 1
+            return result
+        except Exception as error:
+            raise command_error(error) from None
+        finally:
+            try:
+                if not operation.done():
+                    await operation
+            finally:
+                current.inflight.discard(operation)
 
 
 async def command(
@@ -393,6 +533,27 @@ async def command(
         return {"value": None}
     if request.method == "network.part":
         return {"value": await current.observations.part(str(params["request_id"]), str(params["part"]))}
+    if request.method == "tab.acquire":
+        key = params.get("tab_key")
+        if not isinstance(key, str) or not key.strip() or len(key) > 160:
+            raise HTTPException(400, "invalid tab key")
+        page_id = current.tab_slots.get(key)
+        page = current.pages.get(page_id)
+        if page is None or page.is_closed():
+            # Use the browser's initial blank tab before opening another physical tab.
+            assigned = set(current.tab_slots.values())
+            page = next((candidate for candidate in current.context.pages
+                         if not candidate.is_closed() and candidate.url == "about:blank"
+                         and current.add_page(candidate) not in assigned), None)
+            if page is None:
+                if len(current.context.pages) >= 16:
+                    raise HTTPException(429, "session tab budget exhausted")
+                page = await current.context.new_page()
+            page_id = current.add_page(page)
+            current.tab_slots[key] = page_id
+        if current.observations:
+            current.observations.dialog_seen.discard(page_id)
+        return {"value": {"page_id": page_id, "url": page.url}}
     if request.method == "page.create":
         if len(current.context.pages) >= 16:
             raise HTTPException(429, "session tab budget exhausted")
@@ -404,19 +565,22 @@ async def command(
         await page.goto(public_url(str(params["url"])), wait_until=params.get("wait_until"), timeout=params.get("timeout"))
         return {"value": None}
     if request.method == "page.click":
-        await locator_for(current, page, str(params["selector"])).click()
+        async with snapshot_target(locator_for(current, page, str(params["selector"])), str(params["selector"])) as target:
+            await target.click(timeout=5000)
         return {"value": None}
     if request.method == "page.type":
-        await locator_for(current, page, str(params["selector"])).fill(str(params["text"]))
+        async with snapshot_target(locator_for(current, page, str(params["selector"])), str(params["selector"])) as target:
+            await target.fill(str(params["text"]), timeout=5000)
         return {"value": None}
     if request.method == "page.insert_text":
         locator = await secret_target(current, page, str(params["selector"]))
         if locator is None:
             raise HTTPException(409, "target is absent or ambiguous")
-        await locator.press_sequentially(str(params["text"]))
+        async with snapshot_target(locator, str(params["selector"])) as target:
+            await target.type(str(params["text"]))
         return {"value": None}
     if request.method == "page.wait_for":
-        await locator_for(current, page, str(params["selector"])).wait_for(state=params.get("state"), timeout=params.get("timeout"))
+        await locator_for(current, page, str(params["selector"])).first.wait_for(state=params.get("state"), timeout=params.get("timeout"))
         return {"value": None}
     if request.method == "page.wait_for_load_state":
         await page.wait_for_load_state(params["state"], timeout=params.get("timeout"))
@@ -426,7 +590,12 @@ async def command(
     if request.method == "page.url":
         return {"value": page.url}
     if request.method == "page.screenshot":
-        return {"value": base64.b64encode(await page.screenshot(type="png")).decode("ascii")}
+        target = locator_for(current, page, params["selector"]) if params.get("selector") else page
+        if params.get("selector"):
+            bounds = await target.bounding_box()
+            if not bounds or bounds["width"] * bounds["height"] > 4194304:
+                raise HTTPException(413, "element crop is absent or too large; choose a smaller visible element")
+        return {"value": base64.b64encode(await target.screenshot(type="png")).decode("ascii")}
     if request.method == "page.scroll":
         await page.keyboard.press("PageDown" if params.get("direction") == "down" else "PageUp")
         return {"value": None}
@@ -435,19 +604,81 @@ async def command(
         current.pages.pop(request.page_id or "", None)
         return {"value": None}
     if request.method == "page.upload":
-        await locator_for(current, page, str(params["selector"])).set_input_files({
-            "name": str(params["name"]),
-            "mimeType": str(params["mime_type"]),
-            "buffer": base64.b64decode(str(params["bytes"])),
-        })
+        async with snapshot_target(locator_for(current, page, str(params["selector"])), str(params["selector"])) as target:
+            await target.set_input_files({
+                "name": str(params["name"]),
+                "mimeType": str(params["mime_type"]),
+                "buffer": base64.b64decode(str(params["bytes"])),
+            })
         return {"value": None}
+    if request.method == "page.interact":
+        kind = params["kind"]
+        target = locator_for(current, page, params["selector"]) if params.get("selector") else None
+        async with snapshot_target(target, params.get("selector", "")) as target:
+            if kind == "press":
+                await (target.press(params["key"]) if target else page.keyboard.press(params["key"]))
+            elif kind == "select":
+                await target.select_option(params["values"])
+            elif kind == "hover":
+                await target.hover()
+            elif kind == "drag":
+                async with snapshot_target(locator_for(current, page, params["target"]), params["target"]) as destination:
+                    await target.hover()
+                    await page.mouse.down()
+                    try:
+                        await destination.hover()
+                    finally:
+                        await page.mouse.up()
+            elif kind == "dialog":
+                current.dialog_policies[request.page_id] = params
+            elif kind == "scroll":
+                if target:
+                    await target.evaluate("""(el, direction) => el.scrollBy(
+                      direction === 'left' ? -el.clientWidth : direction === 'right' ? el.clientWidth : 0,
+                      direction === 'up' ? -el.clientHeight : direction === 'down' ? el.clientHeight : 0)""", params["direction"])
+                else:
+                    await page.keyboard.press({"up":"PageUp", "down":"PageDown", "left":"ArrowLeft", "right":"ArrowRight"}[params["direction"]])
+            else:
+                raise HTTPException(400, "unknown interaction")
+        return {"value": None}
+    if request.method == "page.download":
+        async with page.expect_download(timeout=15000) as pending:
+            async with snapshot_target(locator_for(current, page, params["selector"]), params["selector"]) as target:
+                await target.click(timeout=5000)
+        download = await pending.value
+        try:
+            path = Path(await download.path())
+            if path.stat().st_size > 1000000:
+                raise HTTPException(413, "download exceeds 1 MB")
+            return {"value": {"name": download.suggested_filename, "mime": "application/octet-stream",
+                              "bytes": base64.b64encode(path.read_bytes()).decode("ascii")}}
+        finally:
+            await download.delete()
+    if request.method in ("page.tabs", "page.switch_tab"):
+        # Follow actual opener ownership; never expose another leased root tab.
+        root = page
+        assigned = set(current.tab_slots.values())
+        while current.add_page(root) not in assigned and await root.opener():
+            root = await root.opener()
+        owned = []
+        for candidate in current.context.pages:
+            ancestor = candidate
+            while ancestor and ancestor is not root:
+                if current.add_page(ancestor) in assigned:
+                    ancestor = None
+                    break
+                ancestor = await ancestor.opener()
+            if ancestor is root:
+                owned.append(candidate)
+        if request.method == "page.tabs":
+            return {"value": [{"id": current.add_page(p), "url": p.url, "title": await p.title()} for p in owned]}
+        selected = next((p for p in owned if current.add_page(p) == params["id"]), None)
+        if selected is None:
+            raise HTTPException(403, "tab is not owned by this run")
+        await selected.bring_to_front()
+        return {"value": {"page_id": current.add_page(selected), "url": selected.url}}
     if request.method == "page.query_all":
-        return {"value": await locator_for(current, page, str(params["selector"])).evaluate_all("""
-          (nodes, fields) => nodes.map((root) => Object.fromEntries(Object.entries(fields).map(([name, spec]) => {
-            const node = spec.selector ? root.querySelector(spec.selector) : root;
-            return [name, node ? (spec.attr ? node.getAttribute(spec.attr) : (node.textContent || '').trim()) : null];
-          })))
-        """, params.get("fields", {}))}
+        return {"value": await extract(locator_for(current, page, str(params["selector"])), params.get("fields", {}), params)}
     if request.method == "page.probe":
         locator = await secret_target(current, page, str(params["selector"]))
         if locator is None:
@@ -478,48 +709,7 @@ async def command(
         recovered = await page.locator('.g-recaptcha:visible,.cf-turnstile:visible').count() == 0
         return {"value": recovered}
     if request.method == "page.perceive":
-        value = await page.evaluate("""
-          (maxChars) => {
-            const candidates = [...document.querySelectorAll('a,button,input,textarea,select,[role],[data-testid]')].slice(0, 300);
-            const elements = candidates.map((el, i) => {
-              const testid = el.getAttribute('data-testid'); const role = el.getAttribute('role');
-              const name = el.getAttribute('aria-label') || el.getAttribute('alt') || el.getAttribute('placeholder') || null;
-              const text = (el.textContent || '').trim().slice(0, 300) || null;
-              el.setAttribute("data-tabductor-anchor", `e${i + 1}`);
-              const locator = testid ? `[data-testid="${CSS.escape(testid)}"]` : `[data-tabductor-anchor="e${i + 1}"]`;
-              return {anchor:`e${i + 1}`, tag:el.tagName.toLowerCase(), role, name, text,
-                strategy:testid?'testid':role?'role':text?'text':'css-path', locator};
-            });
-            return {url:location.href, title:document.title, elements, text:(document.body?.innerText || '').slice(0, maxChars)};
-          }
-        """, int(params.get("max_chars", 8000)))
-        for frame in page.frames:
-            if frame is page.main_frame or frame.is_detached():
-                continue
-            frame_id = next((key for key, value in current.frames.items() if value is frame), None)
-            if frame_id is None:
-                if len(current.frames) >= 1024:
-                    raise HTTPException(429, "session frame budget exhausted")
-                frame_id = f"f{len(current.frames) + 1}"
-                current.frames[frame_id] = frame
-            remaining = max(0, min(int(params.get("max_chars", 8000)), 32000) - len(value["text"]))
-            try:
-                child = await frame.evaluate("""(budget) => {
-                  const elements = [...document.querySelectorAll('a,button,input,textarea,select,[role],[data-testid]')].slice(0, 100).map((el,i) => {
-                    el.setAttribute('data-tabductor-anchor', `e${i+1}`);
-                    return {anchor:`e${i+1}`,tag:el.tagName.toLowerCase(),role:el.getAttribute('role'),
-                      name:el.getAttribute('aria-label')||el.getAttribute('placeholder'),text:(el.textContent||'').trim().slice(0,300)||null,
-                      strategy:'css-path',locator:`[data-tabductor-anchor="e${i+1}"]`};
-                  });
-                  return {elements,text:(document.body?.innerText||'').slice(0,budget)};
-                }""", remaining)
-            except Exception:
-                continue  # A detached/navigating frame is perceived again on the next step.
-            for element in child["elements"]:
-                element["anchor"] = frame_id + "-" + element["anchor"]
-                element["locator"] = f"@frame:{frame_id} >> " + element["locator"]
-            value["elements"].extend(child["elements"][:max(0, 400-len(value["elements"]))])
-            value["text"] += child["text"]
+        value = await perceive(current, page, params)
         challenge = await page.evaluate("""() => {
           const widget = document.querySelector('.g-recaptcha[data-sitekey],.cf-turnstile[data-sitekey]');
           if (widget && widget.getBoundingClientRect().height > 0) return {kind: widget.classList.contains('g-recaptcha') ? 'recaptcha_v2' : 'turnstile', websiteUrl: location.href, siteKey: widget.getAttribute('data-sitekey')};

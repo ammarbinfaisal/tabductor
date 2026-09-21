@@ -115,6 +115,34 @@ function renderTranscript(name: string, fxUrl: string, cache: Map<string, string
   return out;
 }
 
+/** Recorded fixtures bind semantic element descriptions to each fresh snapshot.
+ * This is test-only: production tool calls must carry the actual snapshot anchor. */
+function bindFixtureAnchors(inner: Llm): Llm {
+  return {async complete(request) {
+    let elements: Array<Record<string, unknown>> = [];
+    const visit = (value: unknown): void => {
+      if (typeof value === "string") {
+        for (const line of value.split("\n")) if (line.startsWith("{") || line.startsWith("[")) {
+          try {visit(JSON.parse(line));} catch { /* Non-JSON prose. */ }
+        }
+      } else if (value && typeof value === "object") {
+        if ("elements" in value && Array.isArray(value.elements)) elements = value.elements;
+        else for (const child of Object.values(value)) visit(child);
+      }
+    };
+    for (const message of request.messages) visit(message.toolResults ?? message.content);
+    const response=await inner.complete(request);
+    return {...response,toolCalls:response.toolCalls.map(call=>{
+      const anchor=call.args.anchor;
+      if(typeof anchor!=="string"||!anchor.startsWith("__ELEMENT__:"))return call;
+      const match=JSON.parse(anchor.slice("__ELEMENT__:".length)) as Record<string,string>;
+      const element=elements.find(e=>Object.entries(match).every(([key,value])=>key==="hrefEndsWith"?String(e.href).endsWith(value):e[key]===value));
+      if(!element)throw new Error(`fixture element unavailable: ${anchor}`);
+      return {...call,args:{...call.args,anchor:element.anchor}};
+    })};
+  }};
+}
+
 export async function startAgentRig(opts: StartAgentRigOptions): Promise<AgentRig> {
   const ownsChrome = !opts.chrome;
   const [handle, chrome, fx, testBlobs] = await Promise.all([
@@ -172,7 +200,7 @@ export async function startAgentRig(opts: StartAgentRigOptions): Promise<AgentRi
         throw new Error("startAgentRig needs either `fixtureFor` or `llmFor`");
       }
       const fixturePath = renderTranscript(opts.fixtureFor(task), fx.url, rendered, scratchDir);
-      const llm = createLlm("replay", { fixturePath, trace });
+      const llm = bindFixtureAnchors(createLlm("replay", { fixturePath, trace }));
       return opts.wrapLlm ? opts.wrapLlm(llm, task) : llm;
     },
   });
@@ -188,7 +216,7 @@ export async function startAgentRig(opts: StartAgentRigOptions): Promise<AgentRi
           if (opts.llmFor) return opts.llmFor({ trace, task });
           if (!opts.fixtureFor) throw new Error("startAgentRig needs either `fixtureFor` or `llmFor`");
           const fixturePath = renderTranscript(opts.fixtureFor(task), fx.url, rendered, scratchDir);
-          const llm = createLlm("replay", { fixturePath, trace });
+          const llm = bindFixtureAnchors(createLlm("replay", { fixturePath, trace }));
           return opts.wrapLlm ? opts.wrapLlm(llm, task) : llm;
         },
         onOutcome: async (input) => {

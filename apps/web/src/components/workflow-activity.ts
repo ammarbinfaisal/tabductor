@@ -6,6 +6,7 @@ import { api, asApiError, type RouterOutputs } from "../lib/api.js";
 export type ActivityEvent = RouterOutputs["event"]["list"]["items"][number];
 export type ActivityRun = RouterOutputs["run"]["list"]["items"][number];
 type ActivityState = {
+  progress: RouterOutputs["workflow"]["progress"] | null;
   events: ActivityEvent[];
   runs: ActivityRun[];
   packet: RouterOutputs["event"]["get"] | null;
@@ -20,7 +21,7 @@ type ActivityState = {
 };
 
 export function createActivityStore(workflowId: string, versionId: string | null) {
-  const store = createStore<ActivityState>(() => ({ events: [], runs: [], packet: null, packetKey: null, packetLoading: false, error: null, loading: true, tab: "packets", eventCursor: null, runCursor: null, zoom: 1 }));
+  const store = createStore<ActivityState>(() => ({ progress: null, events: [], runs: [], packet: null, packetKey: null, packetLoading: false, error: null, loading: true, tab: "packets", eventCursor: null, runCursor: null, zoom: 1 }));
   let fetching = false;
   let pageRequest = false;
   const scope = { workflowId, ...(versionId ? { versionId } : {}) };
@@ -32,10 +33,11 @@ export function createActivityStore(workflowId: string, versionId: string | null
       fetching = true;
       try {
         const packetKey = store.getState().packetKey;
-        const [events, runs, packet] = await Promise.all([
+        const [events, runs, packet, progress] = await Promise.all([
           api.event.list.query({ ...scope, limit: 100 }),
           api.run.list.query({ ...scope, limit: 100 }),
           packetKey ? api.event.get.query({ eventId: packetKey }) : Promise.resolve(null),
+          api.workflow.progress.query(scope),
         ]);
         // Replace the live window while retaining explicitly paged older records.
         const previous = store.getState();
@@ -44,6 +46,7 @@ export function createActivityStore(workflowId: string, versionId: string | null
           return [...fresh, ...prior.filter((item) => !ids.has(key(item)))];
         };
         store.setState({
+          progress,
           events: merge(events.items, previous.events, (e) => e.eventId),
           runs: merge(runs.items, previous.runs, (r) => r.id),
           eventCursor: previous.events.length ? previous.eventCursor : events.nextCursor,

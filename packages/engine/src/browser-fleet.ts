@@ -10,7 +10,7 @@ import {
   type BrowserSessionRow,
   type Db,
 } from "@tabductor/db";
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 
 export type BrowserAdmission = {
   reserve: (input: { accountId: string; sessionId: string }, trx: Db) => Promise<void>;
@@ -29,6 +29,21 @@ export async function createBrowserProfile(
     proxyRef: input.proxyRef ?? null,
   });
   return id;
+}
+
+/** Reopening profile setup returns its existing session, including concurrent requests. */
+export async function openBrowserProfileSession(db: Db, input: { accountId: string; profileId: string }): Promise<string> {
+  return db.transaction(async (trx) => {
+    const [profile] = await trx.select({ id: browserProfiles.id }).from(browserProfiles).where(and(
+      eq(browserProfiles.id, input.profileId), eq(browserProfiles.accountId, input.accountId),
+    )).for("update");
+    if (!profile) throw new AppError("browser_profile_not_found", "browser profile does not exist");
+    const [existing] = await trx.select({ id: browserSessions.id }).from(browserSessions).where(and(
+      eq(browserSessions.profileId, input.profileId), eq(browserSessions.accountId, input.accountId),
+      isNull(browserSessions.executionId), inArray(browserSessions.status, ["queued", "allocating", "ready", "running"]),
+    )).orderBy(sql`case when ${browserSessions.status} = 'queued' then 1 else 0 end`, asc(browserSessions.createdAt)).limit(1);
+    return existing?.id ?? await requestBrowserSession(trx, input);
+  });
 }
 
 /** Queue owned work. Profile ownership and credit admission occur when capacity is available. */
@@ -65,6 +80,26 @@ export async function requestBrowserSession(
     });
   });
   return sessionId;
+}
+
+/** One browser per execution/profile. Packet runs lease reusable tabs inside it. */
+export async function ensureExecutionBrowserSession(db: Db, input: {
+  accountId: string; profileId: string; executionId: string;
+}): Promise<string> {
+  return db.transaction(async (trx) => {
+    const [execution] = await trx.select({ id: workflowExecutions.id }).from(workflowExecutions)
+      .innerJoin(workflows, eq(workflows.id, workflowExecutions.workflowId)).where(and(
+        eq(workflowExecutions.id, input.executionId), eq(workflows.accountId, input.accountId),
+        eq(workflowExecutions.status, "running"),
+      )).for("update", { of: workflowExecutions });
+    if (!execution) throw new AppError("browser_execution_not_found", "active execution does not exist");
+    const [existing] = await trx.select({ id: browserSessions.id }).from(browserSessions).where(and(
+      eq(browserSessions.executionId, input.executionId), eq(browserSessions.profileId, input.profileId),
+      eq(browserSessions.accountId, input.accountId),
+      inArray(browserSessions.status, ["queued", "allocating", "ready", "running"]),
+    )).orderBy(sql`case when ${browserSessions.status} = 'queued' then 1 else 0 end`, asc(browserSessions.createdAt)).limit(1);
+    return existing?.id ?? requestBrowserSession(trx, input);
+  });
 }
 
 export type ClaimedBrowserAllocation = {

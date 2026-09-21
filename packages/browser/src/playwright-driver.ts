@@ -1,7 +1,9 @@
+import { PERCEPTION_SCRIPT } from "./perception-source.js";
 import { AppError } from "@tabductor/core";
 import {
   chromium,
   type Frame,
+  type ElementHandle,
   type Locator,
   type Page as PwPage,
   type Request as PwRequest,
@@ -114,6 +116,10 @@ async function resolveAcrossFrames(
   pwPage: PwPage,
   selector: string,
 ): Promise<{ locator: Locator; frame: Frame } | null> {
+  if (selector.startsWith("@frame:")) {
+    const target = frameTarget(pwPage, selector); const locator = target.frame.locator(target.selector);
+    return await locator.count() === 1 ? { locator, frame: target.frame } : null;
+  }
   const candidates: { locator: Locator; frame: Frame }[] = [];
   for (const frame of pwPage.frames()) {
     const loc = frame.locator(selector);
@@ -201,6 +207,19 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
 
   /** Which page's dialogs go where (S6a). Same popup inheritance as `netHooks`. */
   const dialogHooks = new Map<PwPage, DialogHook>();
+  const dialogPolicies = new Map<PwPage, { accept: boolean; promptText?: string }>();
+  const ownedTabs = async (root: PwPage): Promise<PwPage[]> => {
+    // Keep the original root while switching among its descendants.
+    while (await root.opener() && ourPages.has((await root.opener())!)) root = (await root.opener())!;
+    const result: PwPage[] = [];
+    for (const page of ourPages) {
+      if (page.isClosed()) continue;
+      let ancestor: PwPage | null = page;
+      while (ancestor && ancestor !== root) ancestor = await ancestor.opener();
+      if (ancestor === root) result.push(page);
+    }
+    return result;
+  };
 
   /**
    * Playwright dismisses dialogs itself when nothing is listening; registering a listener
@@ -210,7 +229,9 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
   const attachDialog = (page: PwPage, hook: DialogHook): void => {
     page.on("dialog", (dialog) => {
       hook({ type: dialog.type(), message: dialog.message() });
-      void dialog.dismiss().catch(() => undefined);
+      const policy = dialogPolicies.get(page);
+      dialogPolicies.delete(page);
+      void (policy?.accept ? dialog.accept(policy.promptText) : dialog.dismiss()).catch(() => undefined);
     });
   };
 
@@ -535,15 +556,15 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
     },
 
     async click(selector) {
-      await pwPage.locator(selector).first().click({ timeout: DEFAULT_TIMEOUT_MS });
+      await withTarget(pwPage, selector, target => target.click({ timeout: 5000 }));
     },
 
     async type(selector, text) {
-      await pwPage.locator(selector).first().fill(text, { timeout: DEFAULT_TIMEOUT_MS });
+      await withTarget(pwPage, selector, target => target.fill(text, { timeout: 5000 }));
     },
 
     async waitFor(selector, opts) {
-      await pwPage.waitForSelector(selector, {
+      await locatorOf(pwPage, selector).first().waitFor({
         state: opts?.state ?? "attached",
         timeout: opts?.timeout ?? DEFAULT_TIMEOUT_MS,
       });
@@ -574,30 +595,72 @@ async function connect(wsUrl: string): Promise<BrowserConn> {
       if (!hit) {
         throw new AppError("secrets_target_unresolved", `no unambiguous target for "${selector}"`);
       }
-      await hit.locator.fill(text, { timeout: DEFAULT_TIMEOUT_MS });
+      await withTarget(pwPage, selector, target => target.fill(text, { timeout: 5000 }));
     },
 
-    queryAll: (selector, fields) => extract(pwPage, selector, fields),
+    queryAll: (selector, fields, opts) => extract(pwPage, selector, fields, opts),
 
     perceive: (opts) => perceive(pwPage, opts),
 
     // `setInputFiles({name, mimeType, buffer})` — Playwright's own in-memory upload path, no
     // temp file created or cleaned up by this driver (S5f deliverable 1).
     async upload(selector, file) {
-      await pwPage
-        .locator(selector)
-        .first()
-        .setInputFiles(
+      await withTarget(pwPage, selector, target => target.setInputFiles(
           { name: file.name, mimeType: file.mimeType, buffer: file.bytes },
           { timeout: DEFAULT_TIMEOUT_MS },
-        );
+        ));
     },
 
     async scroll(direction) {
       await pwPage.keyboard.press(direction === "down" ? "PageDown" : "PageUp");
     },
 
-    screenshot: () => pwPage.screenshot({ type: "png" }),
+    async screenshot(opts) {
+      if (!opts?.selector) return pwPage.screenshot({ type: "png" });
+      const target = locatorOf(pwPage, opts.selector);
+      const bounds = await target.boundingBox();
+      if (!bounds || bounds.width * bounds.height > 4_194_304) throw new Error("element crop is absent or too large; choose a smaller visible element");
+      return withTarget(pwPage, opts.selector, node => node.screenshot({ type: "png" }));
+    },
+    async interact(action) {
+      if (action.kind === "press") {
+        if (action.selector) await withTarget(pwPage, action.selector, target => target.press(action.key));
+        else await pwPage.keyboard.press(action.key);
+      } else if (action.kind === "select") await withTarget(pwPage, action.selector, target => target.selectOption(action.values));
+      else if (action.kind === "hover") await withTarget(pwPage, action.selector, target => target.hover());
+      else if (action.kind === "drag") await withTarget(pwPage, action.selector, source => withTarget(pwPage, action.target, async target => {
+        await source.hover(); await pwPage.mouse.down();
+        try { await target.hover(); } finally { await pwPage.mouse.up(); }
+      }));
+      else if (action.kind === "dialog") dialogPolicies.set(pwPage, { accept: action.accept, promptText: action.promptText });
+      else if (action.kind === "scroll") {
+        if (action.selector) await withTarget(pwPage, action.selector, target => (target as Locator).evaluate((el, direction) => {
+          const node = el as unknown as { scrollBy: (x: number, y: number) => void; clientHeight: number; clientWidth: number };
+          node.scrollBy(direction === "left" ? -node.clientWidth : direction === "right" ? node.clientWidth : 0,
+            direction === "up" ? -node.clientHeight : direction === "down" ? node.clientHeight : 0);
+        }, action.direction));
+        else await pwPage.keyboard.press({ up: "PageUp", down: "PageDown", left: "ArrowLeft", right: "ArrowRight" }[action.direction]);
+      }
+    },
+    async download(selector) {
+      const pending = pwPage.waitForEvent("download", { timeout: DEFAULT_TIMEOUT_MS });
+      // Both promises are observed even if the click fails.
+      const [download] = await Promise.all([pending, withTarget(pwPage, selector, target => target.click())]);
+      const stream = await download.createReadStream();
+      const chunks: Buffer[] = []; let size = 0;
+      try { for await (const part of stream) { size += part.length; if (size > 1_000_000) throw new Error("download exceeds 1 MB"); chunks.push(Buffer.from(part)); } }
+      finally { stream.destroy(); await download.delete(); }
+      return { name: download.suggestedFilename(), mime: "application/octet-stream", bytes: Buffer.concat(chunks) };
+    },
+    async tabs() {
+      const owned = await ownedTabs(pwPage);
+      return Promise.all(owned.map(async p => ({id: pageIds.get(p)!, url: p.url(), title: await p.title()})));
+    },
+    async switchTab(id) {
+      const page = (await ownedTabs(pwPage)).find(p => pageIds.get(p) === id);
+      if (!page) throw new Error("tab is not owned by this run");
+      await page.bringToFront(); return wrap(page);
+    },
 
     title: () => pwPage.title(),
 
@@ -656,8 +719,10 @@ async function extract(
   pwPage: PwPage,
   selector: string,
   fields: ExtractSpec,
+  opts: import("./driver.js").ExtractOptions = {},
 ): Promise<ExtractedRecord[]> {
-  const root = pwPage.locator(selector);
+  const root = locatorOf(pwPage, selector);
+  if (Object.keys(fields).length > 32) throw new AppError("browser.invalid_extract_fields", "extraction supports at most 32 fields");
   // Validate even when there are no rows. Let Playwright parse its own selector language;
   // do not mistake a disconnected browser or other infrastructure error for bad syntax.
   for (const [name, field] of Object.entries(fields)) {
@@ -673,232 +738,86 @@ async function extract(
     }
   }
   const records: ExtractedRecord[] = [];
-  for (let index = 0, count = await root.count(); index < count; index++) {
+  const offset = Math.max(0, Math.floor(opts.offset ?? 0));
+  const limit = Math.max(1, Math.min(100, Math.floor(opts.limit ?? 100)));
+  const maxFieldChars = Math.max(1, Math.min(16_000, Math.floor(opts.maxFieldChars ?? 16_000)));
+  for (let index = offset, count = Math.min(await root.count(), offset + limit); index < count; index++) {
     const row = root.nth(index);
     const record: ExtractedRecord = {};
     for (const [name, field] of Object.entries(fields)) {
       const target = field.selector ? row.locator(field.selector).first() : row;
       // evaluateAll returns immediately for missing optional fields, preserving null
       // semantics without a locator auto-wait for every absent field.
-      record[name] = await target.evaluateAll((els: DomNode[], attr: string | undefined) => {
+      record[name] = await target.evaluateAll((els: DomNode[], args: { attr?: string; maxFieldChars: number }) => {
         const el = els[0];
-        return el ? (attr ? el.getAttribute(attr) : (el.textContent ?? "").trim()) : null;
-      }, field.attr);
+        const value = el ? (args.attr ? el.getAttribute(args.attr) : (el.textContent ?? "").trim()) : null;
+        if (value && value.length > args.maxFieldChars) throw new Error("extraction field exceeds maxFieldChars; narrow the selector or increase the bound");
+        return value;
+      }, { attr: field.attr, maxFieldChars });
     }
     records.push(record);
   }
   return records;
 }
 
-/** Character budget for `perceive()`'s `text` when the caller doesn't set one (§8: ~8k chars). */
-const DEFAULT_PERCEIVE_MAX_CHARS = 8000;
-
-/** Hard cap on how many salient elements one snapshot anchors — a defensive bound against a
- * pathological page, not a tuning knob a caller is expected to reach for. */
-const MAX_PERCEIVE_ELEMENTS = 300;
-
-/**
- * The perception builder (S4a §8), run as one in-page callback like `extract`. Every locator
- * it emits is either plain CSS (an attribute selector, or a full `:nth-of-type()` ancestor
- * path) or Playwright's own extended CSS (`:text-is()`, `:nth-match()`) — never a selector
- * this file's own `document.querySelectorAll` calls (used only to *count* matches for
- * disambiguation) could not parse itself; see the tier-by-tier comments below.
- */
-function perceiveInPage(args: { maxChars: number; maxElements: number }): Perception {
-  const { maxChars, maxElements } = args;
-  const norm = (s: string | null): string => (s ?? "").replace(/\s+/g, " ").trim();
-  // CSS attribute-value / text-argument escaping — the two characters that would otherwise
-  // end the quoted string early.
-  const escapeCss = (s: string): string => s.replace(/["\\]/g, "\\$&");
-
-  const roleOf = (el: DomNode): string | null => {
-    const explicit = el.getAttribute("role");
-    if (explicit) return explicit;
-    const tag = el.tagName.toLowerCase();
-    if (tag === "a") return el.getAttribute("href") !== null ? "link" : null;
-    if (tag === "button") return "button";
-    if (tag === "input") {
-      const type = (el.getAttribute("type") ?? "text").toLowerCase();
-      if (type === "submit" || type === "button" || type === "reset") return "button";
-      if (type === "checkbox") return "checkbox";
-      if (type === "radio") return "radio";
-      return "textbox";
-    }
-    if (tag === "textarea") return "textbox";
-    if (tag === "select") return "combobox";
-    if (/^h[1-6]$/.test(tag)) return "heading";
-    if (tag === "article") return "article";
-    if (tag === "main") return "main";
-    if (tag === "nav") return "navigation";
-    return null;
-  };
-
-  /** The one ARIA-ish attribute that gives an element an explicit name, cheapest first. */
-  const accessibleAttr = (el: DomNode): { attr: string; value: string } | null => {
-    const aria = el.getAttribute("aria-label");
-    if (aria) return { attr: "aria-label", value: norm(aria) };
-    const alt = el.getAttribute("alt");
-    if (alt) return { attr: "alt", value: norm(alt) };
-    const placeholder = el.getAttribute("placeholder");
-    if (placeholder) return { attr: "placeholder", value: norm(placeholder) };
-    if (el.tagName === "INPUT" || el.tagName === "BUTTON") {
-      const value = el.getAttribute("value");
-      if (value) return { attr: "value", value: norm(value) };
-    }
-    return null;
-  };
-
-  /** Fallback tier: a full `:nth-of-type()` ancestor path, standard CSS, always unique. */
-  const cssPath = (start: DomNode): string => {
-    const parts: string[] = [];
-    let node: DomNode | null = start;
-    while (node !== null && node.tagName.toLowerCase() !== "html") {
-      const current: DomNode = node;
-      const parent: DomNode | null = current.parentElement;
-      let part = current.tagName.toLowerCase();
-      if (parent) {
-        const siblings: DomNode[] = Array.from(parent.children).filter(
-          (c: DomNode) => c.tagName === current.tagName,
-        );
-        if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(current) + 1})`;
-      }
-      parts.unshift(part);
-      node = parent;
-    }
-    return parts.join(" > ");
-  };
-
-  /** Position (1-based) and count of `el` among `document.querySelectorAll(nativeSelector)` —
-   * `nativeSelector` must be real CSS the DOM's own engine can parse. */
-  const position = (nativeSelector: string, el: DomNode): { index: number; total: number } => {
-    const all = Array.from(document.querySelectorAll(nativeSelector));
-    return { index: all.indexOf(el) + 1, total: all.length };
-  };
-
-  /** `base` alone if it already picks out one element; otherwise Playwright's `:nth-match()`
-   * (resolved later by the driver's own selector engine, never by this in-page code). */
-  const uniqueLocator = (base: string, pos: { index: number; total: number }): string =>
-    pos.index > 0 && pos.total > 1 ? `:nth-match(${base}, ${pos.index})` : base;
-
-  // Interactive controls, anything the page author marked with a test id, headings, and
-  // article containers — document order, so anchor numbers (`e1`, `e2`, …) fall out
-  // deterministic across identical snapshots. Inlined rather than a module-level constant:
-  // `evaluate` serializes only this function's own source text into the page, so an outer
-  // `const` this body referenced would arrive as a `ReferenceError`, not a closure.
-  const salientSelector =
-    'a[href], button, input, textarea, select, [role], [data-testid], h1, h2, h3, h4, h5, h6, article';
-  const nodes = Array.from(document.querySelectorAll(salientSelector)).filter((el) => {
-    const style = getComputedStyle(el);
-    return style.display !== "none" && style.visibility !== "hidden" && style.visibility !== "collapse" && el.getClientRects().length > 0;
-  }).slice(0, maxElements);
-
-  const elements: AnchoredElement[] = [];
-  let n = 0;
-  for (const el of nodes) {
-    n++;
-    const anchor = `e${n}`;
-    const tag = el.tagName.toLowerCase();
-    const testId = el.getAttribute("data-testid");
-    const text = norm(el.textContent);
-    const acc = accessibleAttr(el);
-
-    let strategy: LocatorStrategy;
-    let locator: string;
-    if (testId) {
-      strategy = "testid";
-      const base = `[data-testid="${escapeCss(testId)}"]`;
-      locator = uniqueLocator(base, position(base, el));
-    } else if (acc) {
-      strategy = "role";
-      const base = `[${acc.attr}="${escapeCss(acc.value)}"]`;
-      locator = uniqueLocator(base, position(base, el));
-    } else if (["main", "navigation", "article", "region", "grid", "table", "list", "tablist"].includes(roleOf(el) ?? "")) {
-      // Containers change whenever their contents do. Never anchor them to the entire
-      // timeline/database text: that locator is stale as soon as one item updates.
-      strategy = "role";
-      const role = el.getAttribute("role");
-      const base = role ? `${tag}[role="${escapeCss(role)}"]` : tag;
-      locator = uniqueLocator(base, position(base, el));
-    } else if (text && text.length <= 160) {
-      strategy = "text";
-      const base = `${tag}:text-is("${escapeCss(text)}")`;
-      // `:text-is` is Playwright-only — the DOM's own `querySelectorAll` cannot parse it, so
-      // the match count for disambiguation is computed by hand instead of via `position()`.
-      const sameTag = Array.from(document.querySelectorAll(tag)).filter(
-        (n2) => norm(n2.textContent) === text,
-      );
-      locator = uniqueLocator(base, { index: sameTag.indexOf(el) + 1, total: sameTag.length });
-    } else {
-      strategy = "css-path";
-      locator = cssPath(el);
-    }
-
-    elements.push({
-      anchor,
-      tag,
-      role: roleOf(el),
-      name: testId ?? acc?.value ?? (text ? text.slice(0, 80) : null),
-      text: text ? text.slice(0, 200) : null,
-      strategy,
-      locator,
-    });
+const frameMaps = new WeakMap<PwPage, Map<string, Frame>>();
+function framesOf(page: PwPage): Map<string, Frame> {
+  let frames = frameMaps.get(page);
+  if (!frames) { frames = new Map(); frameMaps.set(page, frames); }
+  for (const frame of page.frames()) {
+    if (frame === page.mainFrame() || [...frames.values()].includes(frame)) continue;
+    frames.set(`f${frames.size + 1}`, frame);
   }
-
-  const full = norm(document.body.innerText);
-  const text =
-    full.length > maxChars
-      ? `${full.slice(0, maxChars)} … [truncated, showing ${maxChars} of ${full.length} chars]`
-      : full;
-
-  return { url: location.href, title: document.title, elements, text };
+  return frames;
 }
-
-/** How long `perceive` will keep re-looking at a page that is rendering nothing yet, and how
- * often. Bounded and short: this is a settle, not a load wait — the goal is to not hand the
- * model an empty shell, not to guarantee a page ever fills. */
-const SETTLE_TOTAL_MS = 6_000;
-const SETTLE_POLL_MS = 400;
-
-/**
- * True for a perception with nothing in it worth reasoning about.
- *
- * `goto` resolves at `domcontentloaded`, which for a client-rendered app is the moment the
- * *shell* arrives — before the framework has put anything in it. Perceiving there yields
- * `textChars: 0` and whatever static fallback markup the shell shipped with, which is how a
- * real run ended up clicking X's "Try again" button: not because the profile failed to load,
- * but because the agent was shown the page 449ms in, when that button was the only thing on
- * it.
- */
-function isBlank(p: Perception): boolean {
-  return p.text.trim().length === 0 && p.elements.length <= 2;
+function frameTarget(page: PwPage, selector: string): { frame: Frame; selector: string } {
+  const match = /^@frame:(f[0-9]+) >> ([\s\S]+)$/.exec(selector);
+  if (!match) return { frame: page.mainFrame(), selector };
+  const frame = framesOf(page).get(match[1]!);
+  if (!frame || frame.isDetached()) throw new Error("stale frame; perceive again");
+  return { frame, selector: match[2]! };
 }
-
-async function perceive(pwPage: PwPage, opts: PerceiveOptions = {}): Promise<Perception> {
-  const args = {
-    maxChars: opts.maxChars ?? DEFAULT_PERCEIVE_MAX_CHARS,
-    maxElements: MAX_PERCEIVE_ELEMENTS,
-  };
+function locatorOf(page: PwPage, selector: string): Locator {
+  const target = frameTarget(page, selector);
+  return target.frame.locator(target.selector);
+}
+/** Pin the actual DOM node before effects. A clone carrying our data attribute is not
+ * the observed node, and replacing the node between validation and click cannot retarget it. */
+async function withTarget<T>(page: PwPage, selector: string, action: (target: Locator | ElementHandle) => Promise<T>): Promise<T> {
+  const locator = locatorOf(page, selector);
+  if (!selector.includes("[data-tabductor-node=")) return action(locator);
+  if (await locator.count() !== 1) throw new Error("stale or ambiguous snapshot target; perceive again");
+  const handle = await locator.elementHandle();
+  if (!handle) throw new Error("stale snapshot target; perceive again");
   try {
-    let seen = await pwPage.evaluate(perceiveInPage, args);
-    // Only a real document gets the settle: `about:blank` is legitimately blank and would
-    // otherwise spend the whole budget proving it.
-    if (isBlank(seen) && /^https?:/.test(seen.url)) {
-      const deadline = Date.now() + SETTLE_TOTAL_MS;
-      while (Date.now() < deadline && isBlank(seen)) {
-        await new Promise((r) => setTimeout(r, SETTLE_POLL_MS));
-        seen = await pwPage.evaluate(perceiveInPage, args);
-      }
-    }
-    return seen;
-  } catch (err) {
-    // `connect`'s init script covers every page born after this connection attached, which is
-    // all of them in the normal case. A page the reused context already held — we connect to
-    // a browser the user is already driving (see `connect`'s comment on `newContext`) — is
-    // the one that predates it, and reaches `perceiveInPage` without the helper. Install it
-    // in place and retry once, rather than making the caller's perception fail over a
-    // transpiler artifact. Narrow on purpose: any other failure is the page's own and rethrows.
-    if (!(err instanceof Error && err.message.includes("__name is not defined"))) throw err;
-    await pwPage.evaluate(KEEP_NAMES_SHIM);
-    return await pwPage.evaluate(perceiveInPage, args);
+    const valid = await handle.evaluate(el => {
+      const node = el as unknown as {isConnected:boolean;getAttribute:(name:string)=>string|null};
+      const state = (globalThis as unknown as {__tabductorPerception?:{ids:WeakMap<object,string>}}).__tabductorPerception;
+      return node.isConnected && state?.ids.get(el) === node.getAttribute("data-tabductor-node");
+    });
+    if (!valid) throw new Error("snapshot node was replaced; perceive again");
+    return await action(handle);
+  } finally { await handle.dispose(); }
+}
+async function perceive(page: PwPage, opts: PerceiveOptions = {}): Promise<Perception> {
+  const frames = framesOf(page);
+  const selected = opts.selector ? frameTarget(page, opts.selector) : { frame: opts.frameId && opts.frameId !== "main" ? frames.get(opts.frameId) : page.mainFrame(), selector: undefined };
+  if (!selected.frame || selected.frame.isDetached()) throw new Error("frame unavailable; perceive again");
+  const value = await selected.frame.evaluate(`(${PERCEPTION_SCRIPT})(${JSON.stringify({ ...opts, selector: selected.selector })})`) as Perception;
+  const frameId = [...frames].find(([, frame]) => frame === selected.frame)?.[0];
+  if (frameId) for (const element of value.elements) {
+    element.anchor = `${frameId}-${element.anchor}`;
+    if (element.parentAnchor) element.parentAnchor = `${frameId}-${element.parentAnchor}`;
+    element.locator = `@frame:${frameId} >> ${element.locator}`;
+    element.actionLocator = `@frame:${frameId} >> ${element.actionLocator}`;
+    element.frameId = frameId;
+    try { element.frameOrigin = new URL(selected.frame.url()).origin; } catch { element.frameOrigin = "null"; }
   }
+  if (frameId && value.scopeAnchor) value.scopeAnchor = `${frameId}-${value.scopeAnchor}`;
+  const available = [...frames].filter(([, frame]) => !frame.isDetached());
+  const frameOffset = opts.frameOffset ?? 0;
+  value.frameOffset = frameOffset;
+  value.frames = available.slice(frameOffset, frameOffset + 50).map(([id, frame]) => ({id, url: frame.url().slice(0, 300)}));
+  value.nextFrameOffset = frameOffset + 50 < available.length ? frameOffset + 50 : null;
+  return value;
 }

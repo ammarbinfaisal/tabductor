@@ -97,10 +97,12 @@ it("fills a secret into fake-gram's login form; the server-side value is correct
   expect(submitAnchor).toBeDefined();
 
   await page.type(resolveAnchor(usernameAnchor!)!, "leak_probe_user");
-  const result = await broker.fill(sess.runId, "fakegram_password", passwordAnchor!);
+  const passwordNow = (await page.perceive()).elements.find(e => e.name === "password")!.anchor;
+  const result = await broker.fill(sess.runId, "fakegram_password", passwordNow);
   expect(result).toEqual({ ok: true });
 
-  await page.click(resolveAnchor(submitAnchor!)!);
+  const submitNow = (await page.perceive()).elements.find(e => e.tag === "button" && e.text === "Log in")!.anchor;
+  await page.click(resolveAnchor(submitNow)!);
   await page.waitFor('[data-testid="result"]');
 
   // 1. The server-side submitted value is correct.
@@ -123,7 +125,7 @@ it("fills a secret into fake-gram's login form; the server-side value is correct
   expect(logRows.length).toBeGreaterThan(0);
   expect(JSON.stringify(logRows)).not.toContain(plaintext);
   const filledRow = logRows.find((r) => r.action === "filled");
-  expect(filledRow).toMatchObject({ secretName: "fakegram_password", anchor: passwordAnchor });
+  expect(filledRow).toMatchObject({ secretName: "fakegram_password", anchor: passwordNow });
   expect(Object.keys(filledRow!)).not.toContain("value");
 });
 
@@ -265,7 +267,8 @@ it("fails further fills once a run exceeds its per-run rate limit", async () => 
   const first = await broker.fill(sess.runId, "rate_limited_secret", passwordAnchor);
   expect(first).toEqual({ ok: true });
 
-  await expect(broker.fill(sess.runId, "rate_limited_secret", passwordAnchor)).rejects.toMatchObject({
+  const refreshedPassword = (await sess.session.page.perceive()).elements.find(e => e.name === "password")!.anchor;
+  await expect(broker.fill(sess.runId, "rate_limited_secret", refreshedPassword)).rejects.toMatchObject({
     code: "secret_rate_limited",
   });
 

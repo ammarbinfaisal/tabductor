@@ -7,3 +7,4 @@ export {
 } from "./run.js";
 export type { CtxHost, EmitFn, EmitOutcome, GuardFailure, StateStore } from "./ctx.js";
 export { BOOTSTRAP } from "./bootstrap.js";
+export { runToolScript, type ToolScriptResult } from "./tool-script.js";

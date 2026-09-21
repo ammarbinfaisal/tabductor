@@ -2,6 +2,7 @@ import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { AppError } from "@tabductor/core";
 import { z } from "zod";
+import { actionSummarySchema, observationMetadataSchema, recoverySchema } from "./browser-actions.js";
 import type { Llm, LlmRequest } from "./llm.js";
 
 /**
@@ -12,7 +13,14 @@ import type { Llm, LlmRequest } from "./llm.js";
  * only its name and description travel, which is everything the replay's shape check needs.
  */
 
-const transcriptMessageSchema = z.object({ role: z.enum(["user", "assistant"]), content: z.string() });
+const transcriptMessageSchema = z.object({ role: z.enum(["user", "assistant", "tool"]), content: z.string(),
+  toolCalls: z.array(z.object({id:z.string(),name:z.string(),args:z.record(z.string(),z.unknown())})).optional(),
+  toolResults: z.array(z.object({id:z.string(),name:z.string(),result:z.union([
+    z.object({ok:z.literal(true),value:z.unknown(),images:z.array(z.object({data:z.string(),mime:z.enum(["image/png","image/jpeg"])})).optional()}),
+    z.object({ok:z.literal(false),error:z.string(),value:z.unknown().optional()})]).and(z.object({
+      action:actionSummarySchema.optional(),observation:observationMetadataSchema.optional(),recovery:recoverySchema.optional(),
+      code:z.string().optional(),outcomeUncertain:z.boolean().optional(),
+    }))})).optional(),context:z.string().optional(),actionSummaries:z.array(actionSummarySchema).optional() });
 
 const transcriptToolSchema = z.object({ name: z.string(), description: z.string() });
 

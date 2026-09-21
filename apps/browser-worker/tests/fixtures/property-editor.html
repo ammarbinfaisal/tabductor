@@ -1,0 +1,33 @@
+<!doctype html>
+<main><h1>Records</h1><div id="properties">Name</div><button id="add">Add property</button></main>
+<nav id="sidebar"></nav>
+<script>
+  sidebar.innerHTML = Array.from({length:450}, (_, i) => `<button>Sidebar ${i}</button>`).join('');
+  add.onclick = () => {
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-label', 'New property');
+    dialog.style = 'position:fixed;inset:20px 200px auto 20px;background:white;padding:20px;z-index:1';
+    dialog.setAttribute('aria-busy', 'true');
+    document.body.append(dialog);
+    setTimeout(() => {
+      dialog.innerHTML = '<div id="wrappers">' + '<div><span></span></div>'.repeat(180) + '</div>' +
+        '<label>Property name<input placeholder="Type property name…"></label><button>Text</button><button>URL</button>';
+      dialog.setAttribute('aria-busy', 'false');
+      const input = dialog.querySelector('input');
+      input.focus();
+      const commit = () => {
+        if (!input.value.trim()) return;
+        const column = document.createElement('span');
+        column.textContent = ' ' + input.value;
+        document.querySelector('#properties').append(column);
+        dialog.remove();
+      };
+      dialog.querySelectorAll('button').forEach(button => button.onclick = commit);
+      input.onkeydown = event => {
+        if (event.key === 'Escape') dialog.remove();
+        if (event.key === 'Enter') commit();
+      };
+    }, 200);
+  };
+</script>

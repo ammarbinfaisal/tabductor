@@ -55,6 +55,8 @@ export type AnchoredElement = {
   role: string | null;
   /** Best-effort accessible name (aria-label/alt/placeholder/value) or trimmed text. */
   name: string | null;
+  /** Explicit label/placeholder, excluding editable text and control values. */
+  controlLabel?: string | null;
   /** Trimmed, truncated text content — never raw HTML (§16 Threat 1). */
   text: string | null;
   strategy: LocatorStrategy;
@@ -63,6 +65,22 @@ export type AnchoredElement = {
    * anchor; resolve one back to this through `RunSession.resolveAnchor` (session.ts).
    */
   locator: string;
+  /** Exact node identity for this document; semantic locator above is compiler evidence. */
+  actionLocator?: string;
+  parentAnchor?: string | null;
+  frameId?: string;
+  frameOrigin?: string;
+  selectorHint?: string;
+  href?: string | null;
+  inputType?: string | null;
+  value?: string | null;
+  disabled?: boolean;
+  checked?: boolean | null;
+  selected?: boolean | null;
+  expanded?: boolean | null;
+  focused?: boolean;
+  inViewport?: boolean;
+  bounds?: { x: number; y: number; width: number; height: number };
 };
 
 export type Perception = {
@@ -71,12 +89,46 @@ export type Perception = {
   elements: AnchoredElement[];
   /** Main-page text, budgeted to `PerceiveOptions.maxChars` — no raw HTML ever appears here. */
   text: string;
+  /** Visible text outside active editors and input controls; unfocused rich text is readable. */
+  committedText?: string;
+  activeEditor?: boolean;
+  /** Whole-frame UI evidence, independent of element pagination. No raw field values. */
+  activeScope?: "dialog" | "menu" | "listbox" | "editor" | "page";
+  uiFingerprint?: string;
+  focusIdentity?: string;
+  snapshotId?: string;
+  pageId?: string;
+  frames?: Array<{ id: string; url: string }>;
+  frameOffset?: number;
+  nextFrameOffset?: number | null;
+  scopeAnchor?: string;
+  coverage?: { elementOffset: number; totalElements: number; nextElementOffset: number | null;
+    textOffset: number; totalTextChars: number; nextTextOffset: number | null; scanTruncated: boolean };
 };
 
 export type PerceiveOptions = {
   /** Character budget for `text` — tokens are provider-specific, chars are not (default 8000). */
   maxChars?: number;
+  elementOffset?: number;
+  elementLimit?: number;
+  textOffset?: number;
+  selector?: string;
+  query?: string;
+  role?: string;
+  inspect?: boolean;
+  structuralDetail?: boolean;
+  frameId?: string;
+  frameOffset?: number;
 };
+
+export type PageInteraction =
+  | { kind: "press"; selector?: string; key: string }
+  | { kind: "select"; selector: string; values: string[] }
+  | { kind: "hover"; selector: string }
+  | { kind: "drag"; selector: string; target: string }
+  | { kind: "scroll"; selector?: string; direction: "up" | "down" | "left" | "right" }
+  | { kind: "dialog"; accept: boolean; promptText?: string };
+export type DownloadedFile = { name: string; bytes: Buffer; mime: string };
 
 /**
  * What `probeTarget` (S5b) reports about a resolved locator — never its value. `frameOrigin`
@@ -96,6 +148,8 @@ export type TargetProbe = {
 export type LoadState = "domcontentloaded" | "load" | "networkidle";
 export type WaitOptions = { timeout?: number; state?: "attached" | "detached" | "visible" | "hidden" };
 export type NavigationOptions = { timeout?: number; waitUntil?: LoadState };
+/** Bounds are applied inside the driver, before data crosses the browser boundary. */
+export type ExtractOptions = { offset?: number; limit?: number; maxFieldChars?: number };
 
 export type Page = {
   /** Browser target identity, when supplied by the driver. */
@@ -105,7 +159,7 @@ export type Page = {
   type: (selector: string, text: string) => Promise<void>;
   waitFor: (selector: string, opts?: WaitOptions) => Promise<void>;
   waitForLoadState: (state: LoadState, opts?: { timeout?: number }) => Promise<void>;
-  queryAll: (selector: string, fields: ExtractSpec) => Promise<ExtractedRecord[]>;
+  queryAll: (selector: string, fields: ExtractSpec, opts?: ExtractOptions) => Promise<ExtractedRecord[]>;
   /**
    * Resolves `selector` across the page's own frame tree (main frame, then children — never
    * an arbitrary cross-document reach) and reports tag/type/contentEditable/frame origin,
@@ -131,7 +185,12 @@ export type Page = {
   /** `page.scroll` (S4b): a keypress, not a JS scroll — `Page.PageDown/PageUp` moves the
    * viewport the way a real user's keyboard would and needs no in-page `evaluate` at all. */
   scroll: (direction: "up" | "down") => Promise<void>;
-  screenshot: () => Promise<Buffer>;
+  screenshot: (opts?: { selector?: string }) => Promise<Buffer>;
+  interact?: (action: PageInteraction) => Promise<void>;
+  download?: (selector: string) => Promise<DownloadedFile>;
+  /** Only this page and its own popups are exposed, never another run's tab. */
+  tabs?: () => Promise<Array<{ id: string; url: string; title: string }>>;
+  switchTab?: (id: string) => Promise<Page>;
   title: () => Promise<string>;
   url: () => string;
   close: () => Promise<void>;
@@ -214,6 +273,8 @@ export type CreatePageOptions = {
 };
 
 export type BrowserConn = {
+  /** Wait without model polling during takeover. True means old actions must be discarded. */
+  waitForAutomation?: (signal?: AbortSignal) => Promise<boolean>;
   createPage: (opts?: CreatePageOptions) => Promise<Page>;
   /** `Browser.getVersion` — the health-check ping S3b's pool loop will run. */
   version: () => Promise<string>;

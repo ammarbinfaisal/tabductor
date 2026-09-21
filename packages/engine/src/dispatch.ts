@@ -48,6 +48,7 @@ export async function createWorkflowExecution(
   return db.transaction(async (db) => {
     const [workflow] = await db.select().from(workflows).where(eq(workflows.id, input.workflowId)).for("update");
     if (!workflow) throw new Error(`no workflow "${input.workflowId}"`);
+    if (workflow.blockedReasonJson) throw new AppError("workflow_blocked", workflow.blockedReasonJson.message, { details: workflow.blockedReasonJson });
     const versionId = input.workflowVersionId ?? await latestVersionId(db, workflow);
     if (!versionId) throw new Error(`workflow "${input.workflowId}" has no published version`);
     const [version] = await db.select({ id: workflowVersions.id, graph: workflowVersions.graphJson }).from(workflowVersions)
@@ -94,6 +95,7 @@ export async function dispatchEvent(db: Db, event: EventRow, metrics?: Metrics):
 
   const created: Dispatched[] = [];
   for (const { task } of subscribers) {
+    if (task.kind === "result") continue;
     const run = await createRun(db, {
       task,
       event,
@@ -122,7 +124,7 @@ export async function dispatchToTask(
   metrics?: Metrics,
 ): Promise<Dispatched | undefined> {
   const target = await resolveTask(db, taskId, event.executionId);
-  if (!target) return undefined;
+  if (!target || target.task.kind === "result") return undefined;
   return createRun(db, {
     task: target.task,
     event,
@@ -149,7 +151,7 @@ export async function triggerTask(
 ): Promise<{ event: EventRow; dispatched: Dispatched | undefined }> {
   return db.transaction(async (db) => {
     const target = await resolveTask(db, input.taskId, input.executionId);
-    if (!target) throw new AppError("task_not_triggerable", "task or active execution does not exist in this workflow");
+    if (!target || target.task.kind === "result") throw new AppError("task_not_triggerable", "task or active execution does not exist in this workflow");
     const executionId = input.executionId ?? await createWorkflowExecution(db, {
       workflowId: target.workflow.id,
       workflowVersionId: target.versionId,

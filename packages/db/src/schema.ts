@@ -43,6 +43,7 @@ export const RUN_STATUSES = [
   "queued",
   "running",
   "awaiting_approval",
+  "awaiting_human",
   "succeeded",
   "failed",
   "timed_out",
@@ -65,7 +66,7 @@ export type OverlapPolicy = (typeof OVERLAP_POLICIES)[number];
  * `decision` owns semantic work and the workflow store (`query`/`insert`/`upsert`). Both
  * kinds may be scheduled; browser alone can be compiled after trace validation.
  */
-export const TASK_KINDS = ["browser", "decision"] as const;
+export const TASK_KINDS = ["browser", "decision", "result"] as const;
 export type TaskKind = (typeof TASK_KINDS)[number];
 
 export const accounts = pgTable("accounts", {
@@ -261,6 +262,7 @@ export const workflows = pgTable("workflows", {
   userId: text("user_id").notNull(),
   name: text("name").notNull(),
   currentVersionId: text("current_version_id"),
+  blockedReasonJson: jsonb("blocked_reason_json").$type<{ code: string; message: string }>(),
   maxHops: integer("max_hops").notNull().default(20),
   createdAt: createdAt(),
 });
@@ -287,6 +289,9 @@ export const workflowExecutions = pgTable(
     modelSelectionJson: jsonb("model_selection_json").$type<{
       funding: "byo" | "platform"; provider: "openai" | "anthropic"; model: string; credentialId: string | null;
     }>(),
+    blockedReasonJson: jsonb("blocked_reason_json").$type<{ code: string; message: string }>(),
+    resultJson: jsonb("result_json"),
+    resultReady: boolean("result_ready").notNull().default(false),
     endedAt: ts("ended_at"),
     createdAt: createdAt(),
   },
@@ -323,6 +328,7 @@ export const tasks = pgTable(
       .references(() => workflowVersions.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     prompt: text("prompt"),
+    resultSchemaJson: jsonb("result_schema_json").$type<Record<string, unknown> | boolean>(),
     /** What the task may do (§4) — see `TASK_KINDS`. Backfilled `browser` on existing rows:
      * every task before S5a drove a page, so that is the only honest default. */
     kind: text("kind").$type<TaskKind>().notNull().default("browser"),
@@ -371,10 +377,10 @@ export const tasks = pgTable(
   },
   (t) => [
     uniqueIndex("tasks_version_name_key").on(t.workflowVersionId, t.name),
-    check("tasks_kind_check", sql`${t.kind} in ('browser','decision')`),
+    check("tasks_kind_check", sql`${t.kind} in ('browser','decision','result')`),
     // Only browser tasks may carry an engine-produced compiled script. `mode` stays open so
     // test-only executors can register without a schema migration.
-    check("tasks_kind_mode_check", sql`not (${t.kind} = 'decision' and ${t.mode} = 'compiled')`),
+    check("tasks_kind_mode_check", sql`not (${t.kind} in ('decision','result') and ${t.mode} = 'compiled')`),
   ],
 );
 
@@ -506,6 +512,7 @@ export const eventDefs = pgTable(
     /** The author's prompt — what the packet *means*. The schema below is compiled from it. */
     description: text("description").notNull().default(""),
     packetSchemaJson: jsonb("packet_schema_json").notNull().default({}),
+    recordJson: jsonb("record_json").$type<{ collection: string; key: string; status: RecordStatus }>(),
     /**
      * sha256 over (description + sorted emitter prompts + sorted consumer prompts) at the
      * time the schema was compiled. Publish compares the incoming document's hash against
@@ -995,9 +1002,11 @@ export const browserSessions = pgTable(
     podName: text("pod_name"),
     inputOwner: text("input_owner").$type<BrowserInputOwner>().notNull().default("ai"),
     inputOwnerGeneration: integer("input_owner_generation").notNull().default(1),
+    automationAcknowledgedGeneration: integer("automation_acknowledged_generation").notNull().default(1),
     pauseRequestedAt: ts("pause_requested_at"),
     pauseAcknowledgedAt: ts("pause_acknowledged_at"),
     takeoverExpiresAt: ts("takeover_expires_at"),
+    humanActionPending: boolean("human_action_pending").notNull().default(false),
     recordingStatus: text("recording_status").$type<BrowserRecordingStatus>().notNull().default("unavailable"),
     recordingStartedAt: ts("recording_started_at"),
     recordingEndedAt: ts("recording_ended_at"),
@@ -1015,6 +1024,15 @@ export const browserSessions = pgTable(
     check("browser_sessions_recording_status_check", sql`${t.recordingStatus} in ('unavailable','recording','partial','complete','expired')`),
   ],
 );
+
+/** Reusable tab slots, exclusively leased to one packet run at a time. */
+export const browserTabLeases = pgTable("browser_tab_leases", {
+  sessionId: text("session_id").notNull().references(() => browserSessions.id, { onDelete: "cascade" }),
+  tabKey: text("tab_key").notNull(),
+  runId: text("run_id").references(() => runs.id, { onDelete: "set null" }),
+  runGeneration: integer("run_generation"),
+  taskId: text("task_id").references(() => tasks.id, { onDelete: "set null" }),
+}, (t) => [primaryKey({ columns: [t.sessionId, t.tabKey] })]);
 
 /** Durable, cursor-addressable session activity. Payloads are metadata only: callers must
  * never put credential values, human keystrokes, or page bodies in this table. */
@@ -1440,3 +1458,76 @@ export const challengeAttempts = pgTable("challenge_attempts", {
   status: text("status").$type<"submitting" | "submitted" | "rejected" | "applying" | "solved" | "invalid" | "uncertain">().notNull(),
   createdAt: createdAt(),
 }, (t) => [index("challenge_attempts_challenge_idx").on(t.challengeId)]);
+
+/** Verified business progress is separate from task and event counts. */
+export const RECORD_STATUSES = ["extracted", "prepared", "pending", "saved", "skipped", "rejected", "failed"] as const;
+export type RecordStatus = (typeof RECORD_STATUSES)[number];
+export const workflowRecords = pgTable("workflow_records", {
+  executionId: text("execution_id").notNull().references(() => workflowExecutions.id, { onDelete: "cascade" }),
+  collection: text("collection").notNull(),
+  recordKey: text("record_key").notNull(),
+  sourceEventId: uuid("source_event_id").notNull().references(() => events.eventId),
+  status: text("status").$type<RecordStatus>().notNull(),
+  lastRunId: text("last_run_id").references(() => runs.id),
+  reason: text("reason"),
+  verificationJson: jsonb("verification_json").$type<{ snapshotId: string; url: string; recordKey?: string; checkedAt: string }>(),
+  createdAt: createdAt(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+}, t => [primaryKey({ columns: [t.executionId, t.collection, t.recordKey] }),
+  check("workflow_records_status_check", sql`${t.status} in ('extracted','prepared','pending','saved','skipped','rejected','failed')`),
+  check("workflow_records_saved_check", sql`${t.status} <> 'saved' or ${t.verificationJson} is not null`)]);
+export const runRecordOutcomes = pgTable("run_record_outcomes", {
+  runId: text("run_id").primaryKey().references(() => runs.id, { onDelete: "cascade" }),
+  status: text("status").$type<RecordStatus>().notNull(),
+  reason: text("reason").notNull(),
+  verificationJson: jsonb("verification_json").$type<{ snapshotId: string; url: string; recordKey?: string; checkedAt: string }>(),
+  createdAt: createdAt(),
+});
+
+/** Controller health includes fleets that intentionally keep zero warm workers. */
+export const browserFleetStatus = pgTable("browser_fleet_status", {
+  id: text("id").primaryKey(),
+  maxAllocated: integer("max_allocated").notNull(),
+  heartbeatAt: ts("heartbeat_at").notNull().defaultNow(),
+});
+
+/** Execution-scoped, immutable website mappings. Publication and readiness are atomic. */
+export const destinationPreparations = pgTable("destination_preparations", {
+  executionId: text("execution_id").notNull().references(() => workflowExecutions.id, { onDelete: "cascade" }),
+  destinationKey: text("destination_key").notNull(),
+  ownerRunId: text("owner_run_id").notNull().references(() => runs.id),
+  leaseGeneration: integer("lease_generation").notNull(),
+  status: text("status").$type<"preparing" | "ready">().notNull(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+}, t => [primaryKey({ columns: [t.executionId, t.destinationKey] })]);
+
+export const destinationContracts = pgTable("destination_contracts", {
+  id: text("id").primaryKey(),
+  executionId: text("execution_id").notNull().references(() => workflowExecutions.id, { onDelete: "cascade" }),
+  destinationKey: text("destination_key").notNull(),
+  revision: integer("revision").notNull(),
+  createdByRunId: text("created_by_run_id").notNull().references(() => runs.id),
+  contractJson: jsonb("contract_json").$type<Record<string, unknown>>().notNull(),
+  createdAt: createdAt(),
+}, t => [uniqueIndex("destination_contract_revision_key").on(t.executionId, t.destinationKey, t.revision)]);
+
+/** Cross-execution identity ledger; pending effects must be reconciled after a crash. */
+export const destinationRecords = pgTable("destination_records", {
+  workflowId: text("workflow_id").notNull().references(() => workflows.id, { onDelete: "cascade" }),
+  destinationKey: text("destination_key").notNull(),
+  recordKey: text("record_key").notNull(),
+  ownerRunId: text("owner_run_id").notNull().references(() => runs.id),
+  leaseGeneration: integer("lease_generation").notNull(),
+  status: text("status").$type<"pending" | "saved">().notNull(),
+  verificationJson: jsonb("verification_json").$type<Record<string, unknown>>(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+}, t => [primaryKey({ columns: [t.workflowId, t.destinationKey, t.recordKey] }),
+  check("destination_records_saved_check", sql`${t.status} <> 'saved' or ${t.verificationJson} is not null`)]);
+
+export const humanActionRequests = pgTable("human_action_requests", {
+  runId: text("run_id").primaryKey().references(() => runs.id, { onDelete: "cascade" }),
+  sessionId: text("session_id").notNull().references(() => browserSessions.id, { onDelete: "cascade" }),
+  reason: text("reason").notNull(), resumeWhen: text("resume_when").notNull(),
+  status: text("status").$type<"pending" | "resumed">().notNull().default("pending"),
+  createdAt: createdAt(), resumedAt: ts("resumed_at"),
+});

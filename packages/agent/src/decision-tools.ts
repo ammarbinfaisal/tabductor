@@ -1,3 +1,4 @@
+import { recordOutcomeTool } from "./record-tools.js";
 import type { Pool } from "pg";
 import type { Metrics } from "@tabductor/telemetry";
 import {
@@ -32,6 +33,8 @@ export type DecisionToolRegistryDeps = {
   pool: Pool;
   workflowId: string;
   emit: EmitFn;
+  recordOutcome?: import("@tabductor/engine").RunHandle["recordOutcome"];
+  recordCompletionError?: import("@tabductor/engine").RunHandle["recordCompletionError"];
   metrics?: Metrics;
   write: StoreWriteToolDeps;
 };
@@ -43,7 +46,11 @@ export function buildDecisionToolRegistry(deps: DecisionToolRegistryDeps): Agent
     storeToolToAgentTool(createStoreInsertTool(deps.write)),
     storeToolToAgentTool(createStoreUpsertTool(deps.write)),
     emitTool(deps.emit),
-    doneTool(),
+    ...(deps.recordOutcome ? [recordOutcomeTool(deps.recordOutcome)] : []),
+    { ...doneTool(), async execute(args, signal) {
+      const error = await deps.recordCompletionError?.();
+      return error ? { ok: false as const, error } : doneTool().execute(args, signal);
+    } },
     failTool(),
   ];
 }

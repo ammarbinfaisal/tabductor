@@ -124,7 +124,7 @@ export async function publishStoreSchema(
         .innerJoin(workflowVersions, eq(workflowVersions.id, tasks.workflowVersionId))
         .where(and(
           eq(workflowVersions.workflowId, input.workflowId),
-          inArray(runs.status, ["queued", "running", "awaiting_approval"]),
+          inArray(runs.status, ["queued", "running", "awaiting_approval", "awaiting_human"]),
         ));
       if (active.length > 0) {
         throw new AppError(STORE_MIGRATION_BUSY, "destructive migration is waiting for active runs to drain", {

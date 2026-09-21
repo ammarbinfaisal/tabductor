@@ -10,6 +10,8 @@ import {
   type StoreTablesSpec,
 } from "@tabductor/store";
 import { z } from "zod";
+import { bindIntent, type IntentContract } from "./intent-contract.js";
+import { parseGeneratedJson } from "./generated-json.js";
 import { eq } from "drizzle-orm";
 import { checkGraph, graphSchema, unauthorableModeReason, type Graph } from "./graph.js";
 import { GRAPH_AUTHORING_SYSTEM_PROMPT } from "./graph-authoring-prompts.js";
@@ -128,6 +130,7 @@ export type GraphGateContext = {
 export interface GraphCompiler {
   compile(input: {
     intent: string;
+    resultSchema?: Record<string, unknown> | boolean | null;
     current?: GraphDraftArtifact;
     gateContext?: GraphGateContext;
   }): Promise<GraphCompileResult>;
@@ -159,13 +162,8 @@ export async function readGraphAuthoring(db: Db, workflowVersionId: string): Pro
 const REGISTRY_GRANTS: Record<Graph["tasks"][number]["kind"], ReadonlySet<AuthorableGrantKey>> = {
   browser: new Set(["navigation", "action", "network.headers", "network.body", "secret.use", "secrets.read"]),
   decision: new Set(["store.write"]),
+  result: new Set(),
 };
-
-function unfence(text: string): string {
-  const trimmed = text.trim();
-  const match = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed);
-  return match?.[1] ?? trimmed;
-}
 
 function globMatches(pattern: string, value: string): boolean {
   if (pattern === "*") return true;
@@ -436,7 +434,7 @@ export function llmGraphCompiler(transport: ChatTransport, opts: { pool?: Pool; 
       const turns: Array<{ role: "user" | "assistant"; content: string }> = [
         {
           role: "user",
-          content: `${GRAPH_AUTHORING_SYSTEM_PROMPT}\n\nIntent:\n${input.intent}${input.current ? `\n\nCurrent draft:\n${JSON.stringify(input.current)}` : ""}`,
+          content: `${GRAPH_AUTHORING_SYSTEM_PROMPT}\n\nIntent:\n${input.intent}\n\nFinal result schema (null means any valid JSON):\n${JSON.stringify(input.resultSchema ?? null)}${input.current ? `\n\nCurrent draft:\n${JSON.stringify(input.current)}` : ""}`,
         },
       ];
       let lastChecks: GraphGateEntry[] = [];
@@ -448,7 +446,13 @@ export function llmGraphCompiler(transport: ChatTransport, opts: { pool?: Pool; 
           return { ok: false, error: "graph compiler refused", report: { checks, attempts: attempt } };
         }
         try {
-          const parsed = graphDraftArtifactSchema.parse(JSON.parse(unfence(answer.text ?? "")));
+          const raw = parseGeneratedJson(answer.text ?? "");
+          if (raw && typeof raw === "object" && "graph" in raw && raw.graph && typeof raw.graph === "object") {
+            const graph = raw.graph as Record<string, unknown>;
+            graph.automationPrompt = input.intent;
+            graph.intent = bindIntent(input.intent, graph.intent as Partial<IntentContract> | undefined);
+          }
+          const parsed = graphDraftArtifactSchema.parse(raw);
           const gated = await gateGraphDraft(parsed, { ...(input.gateContext ?? {}), ...(opts.pool ? { pool: opts.pool } : {}) });
           lastChecks = gated.checks;
           const failures = lastChecks.filter((check) => check.status === "fail");

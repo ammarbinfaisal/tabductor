@@ -5,5 +5,5 @@ export default async function SessionPage({ params }: { params: Promise<{ id: st
   const { id } = await params;
   const caller = await createServerCaller();
   await caller.browserSession.get({ sessionId: id });
-  return <><h1>Browser session</h1><SessionInspector sessionId={id} /></>;
+  return <><h1>Browser session</h1><SessionInspector key={id} sessionId={id} /></>;
 }

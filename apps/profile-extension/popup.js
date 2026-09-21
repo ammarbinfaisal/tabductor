@@ -1,3 +1,5 @@
+import {cookieAccessOrigin, cookieMatchesHost} from './cookie-access.js';
+
 const code = document.querySelector('#code');
 const status = document.querySelector('#status');
 const sync = document.querySelector('#sync');
@@ -13,15 +15,16 @@ document.querySelector('#review').addEventListener('click', async () => {
     if (!/^[A-Za-z0-9_-]{43}$/.test(grant.token) || Date.parse(grant.expiresAt) <= Date.now() || !Number.isFinite(Date.parse(grant.expiresAt))) throw Error('Create a fresh import code in Tabductor.');
     const [tab] = await chrome.tabs.query({active:true,currentWindow:true});
     if (!tab?.id || new URL(tab.url).origin !== grant.origin) throw Error('Open the website named in your import code, then reopen this extension.');
-    transfer = { grant, tabId:tab.id };
-    document.querySelector('#target').textContent = `${grant.origin} → ${grant.profileName} at ${server.origin}`;
+    const cookieOrigin = await cookieAccessOrigin(chrome.cookies, tab.id, grant.origin);
+    transfer = { grant, tabId:tab.id, cookieOrigin };
+    document.querySelector('#target').textContent = `${grant.origin} → ${grant.profileName} at ${server.origin}` + (cookieOrigin !== grant.origin ? ` (also needs cookie access to ${cookieOrigin})` : '');
     sync.hidden = false; status.textContent = 'Review the website, destination profile and server before allowing the transfer.';
   } catch (e) { error(e instanceof SyntaxError ? 'Paste the complete import code from Tabductor.' : e.message); }
 });
 sync.addEventListener('click', async () => {
   if (!transfer) return;
-  const {grant,tabId} = transfer;
-  const origins = [...new Set([grant.origin+'/*',grant.server+'/*'])];
+  const {grant,tabId,cookieOrigin} = transfer;
+  const origins = [...new Set([grant.origin+'/*',cookieOrigin+'/*',grant.server+'/*'])];
   let granted = false;
   sync.disabled = true;
   try {
@@ -37,7 +40,7 @@ sync.addEventListener('click', async () => {
     const partition = await chrome.cookies.getPartitionKey({tabId,frameId:0});
     const cookies = [...await chrome.cookies.getAll({storeId:store.id}), ...await chrome.cookies.getAll({storeId:store.id,partitionKey:partition.partitionKey})];
     const host = new URL(grant.origin).hostname;
-    const selected = cookies.filter(c=>{const domain=c.domain.replace(/^\./,'');return host===domain||host.endsWith('.'+domain)});
+    const selected = cookies.filter(c=>cookieMatchesHost(c,host));
     if (selected.some(c=>c.partitionKey)) throw Error('This site uses partitioned cookies. Open this cloud profile and sign in there to preserve its login correctly. Nothing was sent.');
     const payload = {origin:grant.origin,localStorage:result.localStorage,cookies:selected.map(c=>({name:c.name,value:c.value,domain:c.domain,path:c.path,expires:c.session?-1:c.expirationDate,httpOnly:c.httpOnly,secure:c.secure,sameSite:({strict:'Strict',lax:'Lax',no_restriction:'None',unspecified:'Lax'})[c.sameSite]}))};
     const response = await fetch(grant.server+'/api/profile-import',{method:'POST',redirect:'error',credentials:'omit',headers:{'Content-Type':'application/json',Authorization:'Bearer '+grant.token},body:JSON.stringify(payload)});

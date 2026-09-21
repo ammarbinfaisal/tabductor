@@ -13,7 +13,10 @@ RUN pip install --no-cache-dir -r requirements.txt \
   && camoufox fetch "${CAMOUFOX_BROWSER}" \
   && camoufox set "${CAMOUFOX_BROWSER}" \
   && camoufox active | grep -F "${CAMOUFOX_BROWSER}"
+RUN apt-get update && apt-get install -y --no-install-recommends xclip xdotool \
+  && rm -rf /var/lib/apt/lists/*
 COPY apps/browser-worker/src ./src
+COPY packages/browser/src/perception-script.js ./src/perception-script.js
 COPY apps/browser-worker/entrypoint.sh ./entrypoint.sh
 
 RUN useradd --create-home --uid 10001 worker && mkdir -p /profiles /opt/browser-data && chown -R worker:worker /worker /profiles /opt/browser-cache /opt/browser-data

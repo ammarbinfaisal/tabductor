@@ -36,6 +36,9 @@ export type ActionEvidence = {
   selector?: string;
   url?: string;
   fields?: string[];
+  extractionFields?: Record<string, unknown>;
+  structure?: unknown;
+  coverage?: unknown;
   /** `queryAll`'s row count — how much data the page actually had. */
   count?: number;
   direction?: string;
@@ -110,6 +113,9 @@ function actionOf(entry: TraceEntry): ActionEvidence | null {
     ...(str(entry.payload.selector) !== undefined ? { selector: str(entry.payload.selector)! } : {}),
     ...(str(entry.payload.url) !== undefined ? { url: str(entry.payload.url)! } : {}),
     ...(Array.isArray(fields) ? { fields: fields.map(String) } : {}),
+    ...(entry.payload.extractionFields && typeof entry.payload.extractionFields === "object" ? {extractionFields:entry.payload.extractionFields as Record<string,unknown>} : {}),
+    ...(entry.payload.elementStructure ? {structure:entry.payload.elementStructure} : {}),
+    ...(entry.payload.coverage ? {coverage:entry.payload.coverage} : {}),
     ...(num(entry.payload.count) !== undefined ? { count: num(entry.payload.count)! } : {}),
     ...(str(entry.payload.direction) !== undefined ? { direction: str(entry.payload.direction)! } : {}),
     ...(num(entry.payload.timeout) !== undefined ? { timeout: num(entry.payload.timeout)! } : {}),
@@ -222,6 +228,12 @@ export function buildEvidence(trace: RunTrace): RunEvidence {
  * invent the missing work").
  */
 export function missingEvidence(evidence: RunEvidence): string | null {
+  const unsupported = evidence.actions.find(a => a.ok && (
+    ["press","select","hover","drag","dialog","upload","download","switchTab","record.outcome"].includes(a.action) ||
+    a.action === "scroll" && (a.selector !== undefined || a.direction === "left" || a.direction === "right")
+  ));
+  if (unsupported) return `run ${evidence.runId} uses ${unsupported.action}, which the compiled runtime cannot yet reproduce; retain AI mode`;
+
   if (evidence.actions.length === 0) {
     return `run ${evidence.runId} recorded no actions — compilation needs an action trace (limits_json.storage.actions)`;
   }
@@ -241,6 +253,9 @@ function renderAction(action: ActionEvidence): string {
   if (action.count !== undefined) parts.push(`rows=${action.count}`);
   if (action.type !== undefined) parts.push(`type=${action.type}`);
   if (action.dedupeKey !== undefined) parts.push(`dedupeKey=${action.dedupeKey === null ? "none" : "yes"}`);
+  if (action.extractionFields) parts.push(`fieldSelectors=${JSON.stringify(action.extractionFields)}`);
+  if (action.structure) parts.push(`observedStructure=${JSON.stringify(action.structure)}`);
+  if (action.coverage) parts.push(`coverage=${JSON.stringify(action.coverage)}`);
   if (action.deduped) parts.push("deduped");
   if (action.timeout !== undefined) parts.push(`timeout=${action.timeout}ms`);
   for (const key of ["state", "waitUntil", "urlPattern", "method", "status", "afterIndex"] as const) {

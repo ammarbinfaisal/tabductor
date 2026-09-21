@@ -25,10 +25,10 @@ import { publishCandidatesVisitedStore } from "./store-support.js";
  * unambiguous (a thrown write, not a scripted "pretend to crash" tool call).
  */
 
-/** The loop's own wire format (`loop.ts`'s `untrustedBlock("tool results", results)`): four
- * lines, the JSON payload always third — stable because this file does not touch `loop.ts`. */
+/** Read native tool outcomes, with compatibility for text transcript fixtures. */
 function lastToolResults(messages: LlmMessage[]): Array<{ id: string; name: string; result: { ok: boolean; value?: unknown; error?: string } }> {
   const last = messages.at(-1);
+  if (last?.toolResults) return last.toolResults;
   if (!last || last.role !== "user") return [];
   const jsonLine = last.content.split("\n")[2];
   if (!jsonLine) return [];
@@ -139,14 +139,14 @@ it("plan (decision) -> act (browser) -> record (decision), then a re-fire plans 
   const wf = await seedWorkflow(handle.db, {
     workflowId,
     tasks: {
-      Plan: { kind: "decision", mode: "ai", emits: ["browse.request"] },
+      Plan: { kind: "decision", mode: "ai", emits: ["browse.request"], limits: { agent: { max_steps: 1 } } },
       Watch: {
         kind: "browser",
         mode: "stub",
         consumes: ["browse.request"],
         stub: { emits: [{ type: "tweet.detected", packet: { tweet_id: "t1", text: "hello", url: "https://x.com/t1" } }] },
       },
-      Record: { kind: "decision", mode: "ai", consumes: ["tweet.detected"], emits: ["doc.ready"] },
+      Record: { kind: "decision", mode: "ai", consumes: ["tweet.detected"], emits: ["doc.ready"], limits: { agent: { max_steps: 1 } } },
     },
   });
 

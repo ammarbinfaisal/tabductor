@@ -1,4 +1,5 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
+import { estimateModelInput } from "@tabductor/core";
 import { createOpenAI } from "@ai-sdk/openai";
 import { generateText, streamText, tool, type ToolSet, type LanguageModel } from "ai";
 import { llmPromptCompiler, PROMPT_SYSTEM_PROMPT, type PromptCompiler } from "./prompt-compiler.js";
@@ -117,7 +118,7 @@ export function fundedAuthoringModels(resolver: import("./model-funding.js").Mod
     output: usage.outputTokens ?? NaN, cachedInput: usage.inputTokenDetails.cacheReadTokens ?? 0,
     reasoning: usage.outputTokenDetails.reasoningTokens ?? 0 });
   const transport = (purpose: import("./model-funding.js").ModelPurpose, system: string): ChatTransport => ({
-    complete: (turns) => resolver.execute({ ...scope, purpose }, { inputTokenBound: Buffer.byteLength(JSON.stringify({ system, turns })) + 4096 }, async (config) => {
+    complete: (turns) => resolver.execute({ ...scope, purpose }, estimateModelInput({ system, turns }), async (config) => {
       const result = await generateText({ model: languageModel(config), system, messages: turns,
         maxOutputTokens: config.maxOutputTokens, maxRetries: 0 });
       const value: Awaited<ReturnType<ChatTransport["complete"]>> = result.finishReason === "content-filter" ? { refused: true } : { text: result.text };
@@ -126,7 +127,7 @@ export function fundedAuthoringModels(resolver: import("./model-funding.js").Mod
   });
   const workflowChatModel: import("./workflow-chat.js").WorkflowChatModel = { complete: (input) => {
     const tools: ToolSet = Object.fromEntries(input.tools.map((entry) => [entry.name, tool({ description: entry.description, inputSchema: entry.parameters })]));
-    return resolver.execute({ ...scope, purpose: "authoring" }, { inputTokenBound: Buffer.byteLength(JSON.stringify({ system: input.system, messages: input.messages, tools: input.tools })) + 4096 }, async (config) => {
+    return resolver.execute({ ...scope, purpose: "authoring" }, estimateModelInput({ system: input.system, messages: input.messages, tools: input.tools }), async (config) => {
       const result = streamText({ model: languageModel(config), system: input.system, messages: input.messages, tools,
         maxOutputTokens: config.maxOutputTokens, maxRetries: 0, ...(input.signal ? { abortSignal: input.signal } : {}) });
       for await (const part of result.fullStream) {

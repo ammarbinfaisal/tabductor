@@ -30,6 +30,7 @@ const STATUS_OPTIONS: Record<RunStatus, true> = {
   queued: true,
   running: true,
   awaiting_approval: true,
+  awaiting_human: true,
   succeeded: true,
   failed: true,
   timed_out: true,
@@ -176,7 +177,7 @@ export function WorkflowRuns({ workflowId }: { workflowId: string }) {
     triggerHref: run.triggerEventId
       ? `/workflows/${workflowId}?event=${run.triggerEventId}`
       : null,
-    cancellable: run.status === "queued" || run.status === "running" || run.status === "awaiting_approval",
+    cancellable: run.status === "queued" || run.status === "running" || run.status === "awaiting_approval" || run.status === "awaiting_human",
     inspectHref: `/workflows/${workflowId}/runs/${run.id}`,
   });
 

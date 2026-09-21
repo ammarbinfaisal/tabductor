@@ -1,5 +1,6 @@
+import { recordFailedRun } from "./record-progress.js";
 import { publish } from "@tabductor/bus";
-import { approvals, runs, schedules, tasks, RUN_STATUSES, type Db, type RunRow, type RunStatus } from "@tabductor/db";
+import { approvals, runs, schedules, tasks, workflowExecutions, RUN_STATUSES, type Db, type RunRow, type RunStatus } from "@tabductor/db";
 import { and, asc, eq, inArray, isNotNull, lte, sql } from "drizzle-orm";
 import { scheduleRetry } from "./retry.js";
 
@@ -79,7 +80,7 @@ export async function dueQueuedRuns(db: Db, limit = 100): Promise<RunRow[]> {
         sql`(${runs.notBefore} is null or ${runs.notBefore} <= now())`,
         sql`not exists (
           select 1 from ${schedules} s
-          join ${runs} live on live.task_id = s.task_id and live.status in ('running', 'awaiting_approval')
+          join ${runs} live on live.task_id = s.task_id and live.status in ('running', 'awaiting_approval', 'awaiting_human')
           where s.task_id = ${runs.taskId}
         )`,
       ),
@@ -99,6 +100,7 @@ export type FinishInput = {
   /** Queue the retry in the same transaction as failure and its system event. */
   retry?: boolean;
   staleHeartbeatMs?: number;
+  result?: unknown;
 };
 
 const EVENT_FOR: Record<FinishInput["status"], string | null> = {
@@ -127,7 +129,17 @@ export async function finishRun(db: Db, input: FinishInput): Promise<RunRow | un
       ))
       .returning();
     if (!row) return undefined;
+    if (input.status !== "succeeded") await recordFailedRun(trx, row);
 
+    const [finishedTask] = await trx.select({ kind: tasks.kind }).from(tasks).where(eq(tasks.id, row.taskId));
+    if (finishedTask?.kind === "result") {
+      if (input.status === "succeeded" && row.executionId && input.result !== undefined) {
+        await trx.update(workflowExecutions).set({ resultJson: input.result, resultReady: true })
+          .where(and(eq(workflowExecutions.id, row.executionId), eq(workflowExecutions.status, "running")));
+      }
+      // Finalizers cannot produce new workflow work, including lifecycle subscriptions.
+      return row;
+    }
     const type = EVENT_FOR[input.status];
     if (type) {
       await publish(trx, {
@@ -163,9 +175,10 @@ export async function cancelRun(db: Db, runId: string): Promise<RunRow | undefin
     const [row] = await trx
       .update(runs)
       .set({ status: "cancelled", endedAt: sql`now()`, error: "cancelled by user" })
-      .where(and(eq(runs.id, runId), inArray(runs.status, ["queued", "running", "awaiting_approval"])))
+      .where(and(eq(runs.id, runId), inArray(runs.status, ["queued", "running", "awaiting_approval", "awaiting_human"])))
       .returning();
     if (!row) return undefined;
+    await recordFailedRun(trx, row);
     await trx
       .update(approvals)
       .set({ status: "cancelled", decidedAt: sql`now()` })

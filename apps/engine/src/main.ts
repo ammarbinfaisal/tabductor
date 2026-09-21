@@ -5,6 +5,7 @@ import {
   createCompileLoop,
   createCompileWorker,
   createDecisionExecutor,
+  createResultExecutor,
   fundedLlm,
   type CompileWorker,
 } from "@tabductor/agent";
@@ -26,6 +27,7 @@ import {
   processPendingPaddleWebhookEvents,
   recordEngineBoot,
   StubExecutor,
+  StubResultExecutor,
   touchEngineHeartbeat,
   workflowIdForVersion,
   type ExecutorRegistry,
@@ -188,7 +190,12 @@ function compiledExecutorEntry(db: Db): TaskExecutor | undefined {
 const agentExecutor = agentExecutorEntry(handle.db);
 const decisionExecutor = decisionExecutorEntry(handle.db, handle.pool);
 const compiledExecutor = compiledExecutorEntry(handle.db);
+const resultExecutor = createResultExecutor({ db: handle.db,
+  llmFor: (run) => fundedLlm(modelResolver, () => modelScopeForTask(handle.db, run.task.id, "runtime", run.run.id)),
+});
 const executors: ExecutorRegistry = {
+  [executorKey("result", "ai")]: resultExecutor,
+  [executorKey("result", "stub")]: StubResultExecutor,
   [executorKey("browser", "stub")]: StubExecutor,
   ...(agentExecutor ? { [executorKey("browser", "ai")]: agentExecutor } : {}),
   ...(decisionExecutor ? { [executorKey("decision", "ai")]: decisionExecutor } : {}),
@@ -201,6 +208,9 @@ const dispatcher = createDispatcher(handle, {
   metrics: telemetry.metrics,
 });
 const engine = createEngine({
+  prerequisites: { browserMode: config.TABDUCTOR_DEPLOYMENT_MODE === "hosted" || process.env.BROWSER_MODE === "fleet" ? "fleet" : "endpoints",
+    platformProviders: [...(config.OPENAI_API_KEY ? ["openai"] : []), ...(config.ANTHROPIC_API_KEY ? ["anthropic"] : [])],
+    platformModels: parseModelRates(config.MODEL_RATES_JSON) },
   db: handle.db,
   dispatcher,
   executors,

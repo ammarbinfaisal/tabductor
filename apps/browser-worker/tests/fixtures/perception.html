@@ -1,0 +1,24 @@
+<!doctype html><html><head><title>Harness contract</title></head><body>
+<main><h1>Observation fixture</h1><article data-testid="record"><span class="author">Ada</span><a href="/record/1">Read record</a></article>
+<label for="entry">Account name</label><input id="entry" value="before" onkeydown="if(event.key==='Enter')document.querySelector('#status').textContent='Pressed'">
+<input aria-label="Private" type="password" value="never-observe-this">
+<input aria-label="Enabled" type="checkbox" checked><button disabled>Unavailable</button>
+<button aria-expanded="false" id="expand" onclick="this.setAttribute('aria-expanded','true')">Expand</button>
+<select aria-label="Choice" id="choice"><option value="a">Alpha</option><option value="b">Beta</option></select>
+<a href="/hidden" style="display:none">Hidden skip</a><div aria-hidden="true"><button>Hidden ancestor</button></div>
+<button id="insert" onclick="document.querySelector('#save').insertAdjacentHTML('beforebegin','<button id=wrong>Wrong target</button>')">Insert</button>
+<button id="clone" onclick="const el=document.querySelector('#save');el.replaceWith(el.cloneNode(true))">Clone save</button>
+<button id="save" onclick="document.querySelector('#status').textContent='Saved successfully'">Save</button><p id="status">Not saved</p>
+<button id="confirm" onclick="document.querySelector('#status').textContent=confirm('Save?')?'Confirmed':'Dismissed'">Confirm</button>
+<a href="/popup" target="_blank">Popup</a><a href="data:text/plain,downloaded-content" download="fixture.txt">Download</a><input type="file" aria-label="Upload">
+<button aria-label="Hover target" onmouseover="document.querySelector('#status').textContent='Hovered'">Hover</button>
+<div role="button" aria-label="Drag source" draggable="true" ondragstart="event.dataTransfer.setData('text/plain','fixture')" style="width:80px;height:40px">Drag</div>
+<div role="button" aria-label="Drop target" ondragover="event.preventDefault()" ondrop="event.preventDefault();document.querySelector('#status').textContent='Dropped'" style="width:80px;height:40px">Drop</div>
+<div id="scroll-box" role="region" aria-label="Scroll region" onscroll="this.dataset.scrolled=this.scrollTop>0?'yes':'no'" style="height:40px;overflow:auto"><div style="height:500px">Scrollable</div></div>
+<div id="shadow"></div><iframe srcdoc="<label for='inside'>Frame name</label><input id='inside'>"></iframe>
+<div id="many"></div><div id="long-text"></div></main>
+<script>
+document.querySelector('#shadow').attachShadow({mode:'open'}).innerHTML='<button aria-label="Shadow control">Shadow</button>';
+document.querySelector('#many').innerHTML=Array.from({length:450},(_,i)=>`<button>Control ${i}</button>`).join('');
+document.querySelector('#long-text').textContent='Long page paragraph. '.repeat(1500)+'Tail sentinel';
+</script></body></html>

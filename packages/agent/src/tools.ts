@@ -1,6 +1,16 @@
+import { browserMutation, observeAfterAction, readActionHistory, withActionSummaries, type BrowserActionSummary, type ObservationMetadata, type BrowserRecovery } from "./browser-actions.js";
+import { recordOutcomeTool } from "./record-tools.js";
+import { createHash } from "node:crypto";
+import { AppError } from "@tabductor/core";
+import { interactionProgress } from "./interaction-progress.js";
+import { destinationTools } from "./destination-tools.js";
+import { explorationTools, observationOptions, emptyMemory, readMemory } from "./exploration-tools.js";
 import type { NetworkReadPart, NetworkReadResult, Perception, RunSession } from "@tabductor/browser";
 import { NETWORK_READ_PARTS } from "@tabductor/browser";
 import { z } from "zod";
+import { batchTools, type CheckpointStore } from "./batch-tools.js";
+import { codeTool } from "./code-tool.js";
+import type { TraceRecorder } from "@tabductor/browser";
 
 /**
  * The browser node's LLM-facing tool registry (§4). A `ToolDef[]`, not a switch — S7 removes
@@ -15,19 +25,18 @@ import { z } from "zod";
  * defence is the navigation allowlist and capability grants (Phase 7), not this string.
  */
 
-export type ToolResult = { ok: true; value: unknown } | { ok: false; error: string; value?: unknown };
+export type ToolImage = { data: string; mime: "image/png" | "image/jpeg" };
+export type ToolResult = ({ ok: true; value: unknown } | { ok: false; error: string; value?: unknown }) & { images?: ToolImage[]; code?: string; outcomeUncertain?: boolean; action?: BrowserActionSummary; observation?: ObservationMetadata; recovery?: BrowserRecovery };
 
 export type AgentTool = {
   name: string;
   description: string;
   parameters: z.ZodTypeAny;
   /**
-   * Never throws. A stale anchor, a policy denial, a malformed emit packet — every failure
-   * this registry can produce comes back as `{ok:false, error}` so the loop hands it to the
-   * model as a tool result and lets the step budget arbitrate retries, rather than failing
-   * the run on the tool's first bad day.
+   * Recoverable tool errors return `{ok:false, error}`. Cancellation, lost control/lease,
+   * terminal resource failures and exhausted recovery remain exceptions.
    */
-  execute: (args: unknown) => Promise<ToolResult>;
+  execute: (args: unknown, signal?: AbortSignal) => Promise<ToolResult>;
 };
 
 /** What `emit`'s tool asks the executor to do — dedupe, validate, publish, trace; the tool
@@ -46,6 +55,18 @@ export type AgentToolDeps = {
   emit: EmitFn;
   /** Host-side broker call; plaintext never crosses this function boundary. */
   fillSecret?: FillSecretFn;
+  checkpoint?: CheckpointStore;
+  progress?: CheckpointStore;
+  recordOutcome?: import("@tabductor/engine").RunHandle["recordOutcome"];
+  recordCompletionError?: import("@tabductor/engine").RunHandle["recordCompletionError"];
+  memory?: CheckpointStore;
+  actions?: CheckpointStore;
+  beforeCall?: () => Promise<unknown>;
+  signal?: AbortSignal;
+  trace?: TraceRecorder;
+  destination?: import("@tabductor/engine").RunHandle["destination"];
+  requestHumanAction?: import("@tabductor/engine").RunHandle["requestHumanAction"];
+  verificationContext?: { mapping: import("@tabductor/engine").StoredDestination; packet: Record<string, unknown> };
 };
 
 /** Labelled marker around page/network-derived content (§16 Threat 1d). A string, not an
@@ -74,37 +95,44 @@ export function untrustedBlock(source: string, data: unknown): string {
  * These are the four `mapError` (executor.ts) turns into run outcomes: the endpoint died, the
  * run exhausted its budget, the pool is full, nothing is configured. None describes something
  * the model did, so none is something it can react to — handing "the browser you were driving
- * is gone" back as a tool result would just spend the remaining step budget re-asking a dead
+ * is gone" back as a tool result would just spend the remaining run time re-asking a dead
  * connection. Everything else is a fact about the *page*, and the model is exactly who should
  * hear it.
  */
 const TERMINAL_CODES = new Set([
+  "human_action_pending",
   "browser.disconnected",
   "resource_limit_exceeded",
   "endpoint_queue_full",
   "no_endpoint_configured",
+  "browser_input_revoked",
+  "browser_fresh_perception_required",
+  "run_lease_lost",
+  "agent_no_progress",
 ]);
 
-function defineTool<S extends z.ZodTypeAny>(spec: {
+export function defineTool<S extends z.ZodTypeAny>(spec: {
   name: string;
   description: string;
   parameters: S;
-  execute: (args: z.infer<S>) => Promise<ToolResult>;
+  execute: (args: z.infer<S>, signal?: AbortSignal) => Promise<ToolResult>;
 }): AgentTool {
   return {
     name: spec.name,
     description: spec.description,
     parameters: spec.parameters,
-    async execute(args) {
+    async execute(args, signal) {
+      signal?.throwIfAborted();
       const parsed = spec.parameters.safeParse(args);
       if (!parsed.success) {
         return {
           ok: false,
+          code: "invalid_arguments", outcomeUncertain: false,
           error: `invalid arguments for "${spec.name}": ${parsed.error.message}`,
         };
       }
       try {
-        return await spec.execute(parsed.data);
+        return await spec.execute(parsed.data, signal);
       } catch (err) {
         // `AgentTool.execute` is documented "never throws", and until now that held only for
         // the failures this file *authored* — a stale anchor, a bad emit packet. A driver
@@ -115,12 +143,13 @@ function defineTool<S extends z.ZodTypeAny>(spec: {
         // That is precisely backwards for `ai` mode, whose whole job is to explore a page it
         // has not seen and accumulate the trace S6 compiles a script from. A click that timed
         // out is an *observation* — the button is not there, re-perceive and try something
-        // else — and the step budget is what arbitrates how long the model keeps trying.
+        // else — while the run deadline and repeated-target guards still apply.
         if (err instanceof Error && "code" in err && TERMINAL_CODES.has(String(err.code))) throw err;
         const message = err instanceof Error ? err.message : String(err);
         // Playwright's timeouts carry a multi-line "Call log:" that is mostly its own
         // internals; the first line is the part that names what failed.
-        return { ok: false, error: `${spec.name} failed: ${message.split("\n")[0]!.trim()}` };
+        const details = err instanceof Error && "details" in err ? err.details as Record<string, unknown> : {};
+        return { ok: false, ...(err instanceof Error && "code" in err ? { code: String(err.code), outcomeUncertain: details.outcomeUncertain === true } : {}), error: `${spec.name} failed: ${err instanceof Error && "code" in err ? `[${String(err.code)}] ` : ""}${message.split("\n")[0]!.trim()}` };
       }
     },
   };
@@ -129,18 +158,42 @@ function defineTool<S extends z.ZodTypeAny>(spec: {
 /** Never the resolved locator — the model sees only the anchor (S4a). Elements carry no
  * `strategy` either; that field is provenance for the S6 compiler, not something the model
  * needs to act. */
-function summarizePerception(p: Perception): unknown {
-  return {
-    url: p.url,
-    title: p.title,
-    text: p.text,
-    elements: p.elements.map((e) => ({ anchor: e.anchor, tag: e.tag, role: e.role, name: e.name, text: e.text })),
-  };
+export function summarizePerception(p: Perception, offset = 0, limit = 100): Record<string, unknown> {
+  const coverage = p.coverage;
+  const baseOffset = coverage?.elementOffset ?? offset;
+  const candidates = coverage ? p.elements : p.elements.slice(offset, offset + limit);
+  const total = coverage?.totalElements ?? p.elements.length;
+  const text = p.text; // Driver respects maxChars and textOffset; never clip it again silently.
+  const base = { snapshotId: p.snapshotId, pageId: p.pageId, url: p.url.slice(0,4096), title: p.title.slice(0,500),
+    ...(p.url.length>4096||p.title.length>500 ? {metadataTruncated:true} : {}),
+    frames: [] as NonNullable<Perception["frames"]>, frameOffset: p.frameOffset ?? 0, nextFrameOffset: p.nextFrameOffset ?? null, scopeAnchor: p.scopeAnchor,
+    activeScope: p.activeScope, text, textOffset: coverage?.textOffset ?? 0, totalTextChars: coverage?.totalTextChars ?? text.length,
+    nextTextOffset: coverage?.nextTextOffset ?? null, totalElements: total, scanTruncated: coverage?.scanTruncated ?? false };
+  const elements: unknown[] = [];
+  let size = JSON.stringify(base).length + 128;
+  // Frame metadata shares the observation budget; retain space for at least one element.
+  for (const frame of p.frames ?? []) {
+    const cost = JSON.stringify(frame).length + 1;
+    if (size + cost + 2000 > 28000) break;
+    base.frames.push(frame); size += cost;
+  }
+  if (base.frames.length < (p.frames?.length ?? 0)) base.nextFrameOffset = base.frameOffset + base.frames.length;
+  for (const e of candidates) {
+    const { locator: _locator, actionLocator: _action, strategy: _strategy, ...visible } = e;
+    const item = Object.fromEntries(Object.entries({ ...visible, name: e.name?.slice(0, 160), text: e.text === e.name ? undefined : e.text?.slice(0, 160) })
+      .filter(([key, value]) => value !== null && value !== undefined && !(value === false && ["focused", "disabled"].includes(key))));
+    const cost = JSON.stringify(item).length + 1;
+    if (size + cost > 28000 && elements.length) break;
+    elements.push(item); size += cost;
+  }
+  const nextElementOffset = baseOffset + elements.length < total ? baseOffset + elements.length : null;
+  return { ...base, elements, elementOffset: baseOffset, nextElementOffset,
+    ...(nextElementOffset !== null ? { continuation: "Use page.perceive with nextElementOffset; preserve query, frameId and structuralDetail, and use the fresh scopeAnchor when continuing page.inspect." } : {}) };
 }
 
 async function perceptionResult(session: RunSession): Promise<ToolResult> {
   const perception = await session.page.perceive();
-  return { ok: true, value: untrustedBlock("page perception", summarizePerception(perception)) };
+  return { ok: true, value: summarizePerception(perception) };
 }
 
 /**
@@ -243,10 +296,40 @@ export function failTool(): AgentTool {
   });
 }
 
+function observationFingerprint(observed: unknown): string {
+  const value = typeof observed === "object" && observed ? observed as Record<string, unknown> : {};
+  return createHash("sha256").update(JSON.stringify({url:value.url,text:value.text,
+    elements: Array.isArray(value.elements) ? value.elements.map(e => {const {anchor, parentAnchor, ...rest}=e;return rest;}) : []})).digest("hex");
+}
+
 export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
   const { session, emit, fillSecret } = deps;
+  let actionHistory: unknown = [];
+  const actions = deps.actions ?? { get: async () => actionHistory, set: async (value: unknown) => { actionHistory = value; } };
+  const afterAction = (signal?: AbortSignal) => observeAfterAction(session, {
+    summarize: summarizePerception, beforeCall: deps.beforeCall,
+    signal: signal && deps.signal ? AbortSignal.any([signal, deps.signal]) : signal ?? deps.signal,
+  });
+  let verifiedIdentity: { url: string; recordKey?: string; destinationContractId?: string; committed?: boolean } | undefined;
   let recoveryRequired = false;
+  let recoveryAttempts = 0;
+  const failedTargets = new Map<string, number>();
+  let noProgressRejections = 0;
+  const rejectNoProgress = async (error: string): Promise<ToolResult> => {
+    noProgressRejections++;
+    await deps.trace?.record("runtime", { action: "interaction.no_progress", attempts: noProgressRejections });
+    if (noProgressRejections >= 3) throw new AppError("agent_no_progress", error);
+    return { ok: false, code: "interaction_no_progress", outcomeUncertain: false, error, value: summarizePerception(await session.page.perceive()) };
+  };
   let failedWait: string | null = null;
+  let memoryValue: unknown = emptyMemory();
+  const memory = deps.memory ?? { get: async () => memoryValue, set: async (value: unknown) => { memoryValue = value; } };
+  let verified = false;
+  let verifiedSnapshot: string | undefined;
+  let lastOperation = "", lastObservation = "", unchanged = 0;
+  const cycles = interactionProgress();
+  let restoredCycles = false;
+  const mutation = browserMutation;
   const waitKey = (args: unknown): string | null => {
     if (!args || typeof args !== "object") return null;
     const a = args as { anchor?: string; text?: string; state?: string };
@@ -254,14 +337,14 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
     return selector ? `${a.state ?? "visible"}:${selector}` : null;
   };
 
-  return [
+  const registry = [
     defineTool({
       name: "page.perceive",
-      description: "Inspect the current page again without navigating or interacting. Returns fresh text and anchors. Use after a timeout, DOM change, or unexpected result to choose a different target.",
-      parameters: z.object({ maxChars: z.number().int().positive().max(20_000).optional() }),
+      description: "Inspect the current page again without navigating or interacting. Returns fresh text and a bounded page of anchors. Use nextElementOffset as elementOffset to inspect further anchors. Use after a timeout, DOM change, or unexpected result to choose a different target.",
+      parameters: z.object(observationOptions),
       async execute(opts) {
         const perception = await session.page.perceive(opts);
-        return { ok: true, value: untrustedBlock("page perception", summarizePerception(perception)) };
+        return { ok: true, value: summarizePerception(perception) };
       },
     }),
 
@@ -269,9 +352,9 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
       name: "page.goto",
       description: "Navigate to a URL, waiting up to 60s for load by default. Returns fresh perception. Client-rendered apps may still need a response or visible-element wait.",
       parameters: z.object({ url: z.string().min(1), waitUntil: loadStateSchema.optional(), timeoutMs: waitTimeoutSchema }),
-      async execute({ url, waitUntil, timeoutMs }) {
+      async execute({ url, waitUntil, timeoutMs }, signal) {
         await session.page.goto(url, { waitUntil: waitUntil ?? "load", timeout: timeoutMs ?? AI_WAIT_TIMEOUT_MS });
-        return perceptionResult(session);
+        return afterAction(signal);
       },
     }),
 
@@ -289,11 +372,11 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
       name: "page.click",
       description: "Click the element at the given anchor (from the most recent perception).",
       parameters: z.object({ anchor: z.string().min(1) }),
-      async execute({ anchor }) {
+      async execute({ anchor }, signal) {
         const locator = mustResolve(session, anchor);
         if (typeof locator !== "string") return locator;
         await session.page.click(locator);
-        return perceptionResult(session);
+        return afterAction(signal);
       },
     }),
 
@@ -301,21 +384,26 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
       name: "page.type",
       description: "Type text into the element at the given anchor (from the most recent perception).",
       parameters: z.object({ anchor: z.string().min(1), text: z.string() }),
-      async execute({ anchor, text }) {
+      async execute({ anchor, text }, signal) {
         const locator = mustResolve(session, anchor);
         if (typeof locator !== "string") return locator;
         await session.page.type(locator, text);
-        return perceptionResult(session);
+        return afterAction(signal);
       },
     }),
 
     defineTool({
       name: "page.scroll",
       description: "Scroll the page one viewport up or down.",
-      parameters: z.object({ direction: z.enum(["up", "down"]) }),
-      async execute({ direction }) {
-        await session.page.scroll(direction);
-        return perceptionResult(session);
+      parameters: z.object({ direction: z.enum(["up", "down", "left", "right"]), anchor: z.string().optional() }),
+      async execute({ direction, anchor }, signal) {
+        if (session.page.interact) {
+          const selector = anchor ? mustResolve(session, anchor) : undefined;
+          if (selector && typeof selector !== "string") return selector;
+          await session.page.interact({kind:"scroll",direction, ...(selector ? {selector} : {})});
+        } else if (anchor || direction === "left" || direction === "right") return {ok:false,error:"driver does not support targeted scrolling"};
+        else await session.page.scroll(direction);
+        return afterAction(signal);
       },
     }),
 
@@ -369,7 +457,8 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
           if (typeof locator !== "string") return locator;
           root = locator;
         }
-        const records = await session.page.queryAll(root, args.fields);
+        const records = await session.page.queryAll(root, args.fields, { limit: 2 });
+        if (records.length > 1) return { ok: false, error: "anchor is ambiguous; perceive again or use page.extractBatch for repeated items" };
         return { ok: true, value: untrustedBlock("page.extract", { records }) };
       },
     }),
@@ -382,9 +471,9 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
               "Fill a named granted secret into the input at `anchor`. The secret value is inserted " +
               "host-side and is never returned to you.",
             parameters: z.object({ secretName: z.string().min(1), anchor: z.string().min(1) }),
-            async execute({ secretName, anchor }) {
+            async execute({ secretName, anchor }, signal) {
               await fillSecret(secretName, anchor);
-              return perceptionResult(session);
+              return afterAction(signal);
             },
           }),
         ]
@@ -442,38 +531,105 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
     }),
 
     emitTool(emit),
+    ...destinationTools(session, deps.destination, deps.requestHumanAction),
+    ...batchTools(session, emit, deps.checkpoint, deps.signal, deps.progress),
+    ...(deps.progress ? [defineTool({ name: "code.status", description: "Read the durable code journal: in-flight effects, accepted batch indexes/key hashes, and whether destination reconciliation is required. Check this and checkpoint.get before resuming interrupted collection.", parameters: z.object({}), execute: async () => ({ ok: true, value: await deps.progress!.get() }) })] : []),
+    ...explorationTools(session, memory, evidence => { verifiedIdentity = evidence; verified = true; verifiedSnapshot = session.snapshotId?.(); }, deps.verificationContext, { afterAction, actions }),
+    ...(deps.recordOutcome ? [recordOutcomeTool(deps.recordOutcome, () => verified && verifiedSnapshot === session.snapshotId?.()
+      ? { ...verifiedIdentity, snapshotId: verifiedSnapshot!, url: verifiedIdentity?.url ?? session.page.url(), recordKey: verifiedIdentity?.recordKey, checkedAt: new Date().toISOString() } : undefined)] : []),
     doneTool(),
     failTool(),
   ].map((tool): AgentTool => ({
     ...tool,
-    async execute(args) {
+    async execute(args, signal) {
+      signal?.throwIfAborted();
+      if (tool.name === "done" && (!verified || verifiedSnapshot !== session.snapshotId?.())) return {ok:false,error:"Verify a task-specific observable postcondition with page.verify before done. A successful action alone does not prove completion."};
+      if (tool.name === "done") {
+        const error = await deps.recordCompletionError?.();
+        if (error) return { ok: false, error };
+      }
+      const operation = tool.name + JSON.stringify(args, (key, value) =>
+        (key === "anchor" || key === "targetAnchor") && typeof value === "string" ? session.describeAnchor?.(value) ?? session.resolveAnchor(value) ?? value : value).replace(/s[a-f0-9]+-[0-9]+:/g, "");
+      if (!restoredCycles) { cycles.restore(readMemory(await memory.get()).interactions); restoredCycles = true; }
+      if (mutation.test(tool.name)) {
+        const cycle = cycles.check(operation);
+        if (cycle) {
+          const recent = readActionHistory(await actions.get()).filter(a => a.dispatch === "executed" && mutation.test(a.tool)).slice(-cycle.tools.length);
+          const description = recent.map(a => `${a.tool}${a.operation ? " " + a.operation : ""}${a.target?.name ? " on " + JSON.stringify(a.target.name) : ""} [${a.changes.join(", ")}]`).join(" → ");
+          const error = `Repeated browser cycle (${cycle.tools.join(" → ")}) without progress. Inspect the active editor or a different target; do not repeat this cycle.`;
+          await deps.trace?.record("runtime", { action: "interaction.cycle", tools: cycle.tools, exhausted: cycle.exhausted, rejectedAttempts: cycle.rejectedAttempts });
+          if (cycle.exhausted) throw new AppError("agent_no_progress", `${error} Historical page labels (untrusted): ${description}`);
+          return { ok: false, code: "interaction_cycle", outcomeUncertain: false, error,
+            recovery: { reason: "cycle", repetitions: 3, rejectedAttempts: cycle.rejectedAttempts, cycle: recent, suggestedTools: ["page.inspect", "page.find", "page.screenshot"] },
+            value: summarizePerception(await session.page.perceive()) };
+        }
+      }
+      if (mutation.test(tool.name) && (failedTargets.get(operation) ?? 0) >= 2) return rejectNoProgress("This target already failed twice. Choose a different target or inspect and resolve the obstruction before retrying.");
+      if (mutation.test(tool.name) && operation === lastOperation && unchanged >= 2) return rejectNoProgress("This action repeatedly produced no observable change. Inspect a different target or verify the expected outcome before acting again.");
+      if (mutation.test(tool.name)) verified = false;
       const wait = tool.name === "page.waitFor" ? waitKey(args) : null;
       const unavailable = tool.name === "emit" && typeof args === "object" && args !== null &&
         "type" in args && typeof args.type === "string" && /(?:^|\.)page_unavailable$/.test(args.type);
-      if (recoveryRequired && (unavailable || tool.name === "done" || tool.name === "fail")) {
+      if (recoveryRequired && (unavailable || tool.name === "done" || (tool.name === "fail" && recoveryAttempts < 2))) {
         return { ok: false, error: "A page tool failed, which does not prove the page is unavailable. Inspect the fresh perception, then try a different readiness target, interaction, or extraction before concluding. Visible task data should be used even if one optional tab or anchor failed." };
       }
+      if (recoveryRequired && tool.name.startsWith("page.")) recoveryAttempts++;
       if (recoveryRequired && wait !== null && wait === failedWait) {
         return { ok: false, error: "This same wait already failed. Choose a different target from the fresh perception, or extract the visible task data; repeating the same locator does not explore the page." };
       }
-      const result = await tool.execute(args);
+      const result = await tool.execute(args, signal);
+      if (tool.name === "record.outcome") await deps.trace?.record("action", { action: "record.outcome", ok: result.ok });
+      if (!result.ok && mutation.test(tool.name)) failedTargets.set(operation, (failedTargets.get(operation) ?? 0) + 1);
+      if (result.ok && tool.name === "page.verify" && deps.progress) {
+        const progress = await deps.progress.get() as Record<string, unknown> | null;
+        if (progress && !progress.inFlight) await deps.progress.set({ ...progress, requiresReconciliation: false });
+      }
+      if (result.ok && (mutation.test(tool.name) || ["page.perceive","page.find","page.inspect","page.waitFor","page.verify"].includes(tool.name))) {
+        const observed = tool.name === "page.verify" && result.value && typeof result.value === "object" && "perception" in result.value ? result.value.perception : result.value;
+        const fingerprint = observationFingerprint(observed);
+        if (mutation.test(tool.name)) {
+          unchanged = operation === lastOperation && fingerprint === lastObservation ? unchanged + 1 : 0;
+          lastOperation = operation;
+          cycles.record(operation, tool.name, observed);
+        } else if (fingerprint !== lastObservation) unchanged = 0;
+        // Paging/searching does not establish that a failed action's obstruction cleared.
+        if (mutation.test(tool.name)) failedTargets.delete(operation);
+        lastObservation = fingerprint;
+      }
+      if (result.ok && tool.name === "record.outcome") { cycles.acknowledge(); noProgressRejections = 0; }
+      if (!tool.name.startsWith("memory.")) {
+        const saved = readMemory(await memory.get());
+        saved.attempts = [...saved.attempts, {tool:tool.name,ok:result.ok,...(!result.ok?{error:result.error.slice(0,300)}:{})}].slice(-12);
+        saved.interactions = cycles.snapshot();
+        if ((result.ok || result.value !== undefined) && ["emit","emit.batch","page.verify","page.download"].includes(tool.name)) {
+          // Keep acknowledgement identifiers, not extracted page contents or screenshots.
+          const value = tool.name === "page.verify" ? {verified:result.ok} : result.value;
+          saved.acknowledgements = [...saved.acknowledgements,{tool:tool.name,value:{summary:JSON.stringify(value).slice(0,1000),dataOmitted:JSON.stringify(value).length>1000}}].slice(-6);
+        }
+        await memory.set(saved);
+      }
       if (!result.ok && tool.name.startsWith("page.") &&
           (result.error.startsWith(`${tool.name} failed:`) || result.error.startsWith("stale anchor"))) {
         recoveryRequired = true;
         failedWait = wait;
         try {
           const fresh = await session.page.perceive();
-          return { ...result, error: `${result.error} Re-inspect the attached current page and try a different target or extraction; this is not evidence that the whole page is unavailable.`, value: untrustedBlock("page after tool failure", summarizePerception(fresh)) };
+          lastObservation = observationFingerprint(summarizePerception(fresh));
+          return { ...result, error: `${result.error} Re-inspect the attached current page and try a different target or extraction; this is not evidence that the whole page is unavailable.`, value: summarizePerception(fresh) };
         } catch (err) {
           if (err instanceof Error && "code" in err && TERMINAL_CODES.has(String(err.code))) throw err;
           return result;
         }
       }
-      if (result.ok && ["page.goto", "page.click", "page.type", "page.scroll", "page.waitFor", "page.extract", "network.read", "network.waitForResponse"].includes(tool.name)) {
+      if (result.ok && (mutation.test(tool.name) || ["page.verify", "page.waitFor", "page.extract", "page.extractBatch", "network.read", "network.waitForResponse"].includes(tool.name))) {
         recoveryRequired = false;
+        recoveryAttempts = 0;
         failedWait = null;
       }
       return result;
     },
   }));
+  const summarized = registry.map(tool => withActionSummaries(tool, { session, actions, trace: deps.trace }));
+  summarized.push(codeTool(summarized, deps));
+  return summarized;
 }

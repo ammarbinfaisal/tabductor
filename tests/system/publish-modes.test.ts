@@ -98,7 +98,7 @@ it("publish compiles an internal prompt per node from the whole graph, and the a
   expect(brief).toContain("- tweet.detected — One new tweet: its text and permalink.");
   expect(brief).toContain("consumed by: Report");
   expect(brief).toContain(JSON.stringify(SCHEMAS["tweet.detected"]));
-  expect(brief).toContain("- page.goto:");
+  expect(brief).toContain("Native tool definitions");
   expect(brief).toContain('cron "0 7 * * *"');
   expect(brief).not.toContain("python.run");
   expect(brief).not.toContain("Workflow store tables");
@@ -106,14 +106,12 @@ it("publish compiles an internal prompt per node from the whole graph, and the a
   const decisionBrief = report$!.compiledPrompt!;
   expect(decisionBrief).toContain("## Events that trigger this node");
   expect(decisionBrief).toContain("emitted by: Scrape");
-  expect(decisionBrief).toContain("- store.query:");
-  expect(decisionBrief).toContain("- store.insert:");
-  expect(decisionBrief).toContain("- store.upsert:");
+  expect(decisionBrief).toContain("Native tool definitions");
   expect(decisionBrief).toContain("(none declared — do not call emit)");
   expect(scrape!.contentHash).toMatch(/^[0-9a-f]{64}$/);
 });
 
-it("an unchanged node's prompt is carried forward by hash; a neighbour's edit recompiles it", async () => {
+it("an unchanged node keeps its prompt and script hashes when an unrelated neighbour changes", async () => {
   const { handle: h, workflowId } = await fresh();
   const v1 = await publishVersion(h.db, { workflowId, graph: graph() }, { schemaGenerator: generator });
   const v2 = await publishVersion(h.db, { workflowId, graph: graph() }, { schemaGenerator: generator });
@@ -123,11 +121,11 @@ it("an unchanged node's prompt is carried forward by hash; a neighbour's edit re
   expect(s2!.compiledPrompt).toBe(s1!.compiledPrompt);
   expect(r2!.compiledPrompt).toBe(r1!.compiledPrompt);
 
-  // Report's prompt is part of Scrape's brief (the neighbour list), so both recompile.
+  // Unrelated prose does not enter the source prompt or invalidate its cache.
   const v3 = await publishVersion(h.db, { workflowId, graph: graph({ reportPrompt: "Write a PDF instead." }) }, { schemaGenerator: generator });
-  expect(v3.report.tasks.map((t) => t.status)).toEqual(["generated", "generated"]);
+  expect(v3.report.tasks.map((t) => t.status)).toEqual(["reused", "generated"]);
   const [, s3] = await rowsOf(h, v3.versionId);
-  expect(s3!.compiledPrompt).toContain("Write a PDF instead.");
+  expect(s3!.compiledPrompt).not.toContain("Write a PDF instead.");
   // ...but Scrape's *content* hash does not move, because Scrape does the same work (S6e).
   // The brief is context for an agent; the script is compiled from what this node does, and
   // hashing the brief meant every neighbour's wording change threw a working script away.
@@ -150,18 +148,18 @@ function scripted(replies: Array<string | Error | { refused: true }>): ChatTrans
   return t;
 }
 
-it("the model layer is gated on naming every emitted event, gets one repair turn, and sits atop the brief", async () => {
+it("publishes deterministic instructions with no model expansion or invented restrictions", async () => {
   const transport = scripted(["Open the page and extract tweets.", "Open the page, extract tweets, and emit tweet.detected once per tweet."]);
   const compiler = llmPromptCompiler(transport);
   const { handle: h, workflowId } = await fresh();
   const { versionId, report } = await publishVersion(h.db, { workflowId, graph: graph() }, { schemaGenerator: generator, promptCompiler: compiler });
 
   const [, scrape] = await rowsOf(h, versionId);
-  expect(scrape!.compiledPrompt!.startsWith("Open the page, extract tweets, and emit tweet.detected once per tweet.")).toBe(true);
+  expect(scrape!.compiledPrompt).toContain("Watch the timeline and report new tweets.");
   expect(scrape!.compiledPrompt).toContain('# Node "Scrape" (kind: browser)');
   // First attempt (1 turn), then the repair conversation (3 turns) — for Scrape; Report has
   // nothing to emit so its first reply passes.
-  expect(transport.turnsSeen).toEqual([1, 3, 1]);
+  expect(transport.turnsSeen).toEqual([]);
   expect(report.tasks.find((t) => t.name === "Scrape")?.status).toBe("generated");
 });
 
@@ -179,7 +177,7 @@ it("a model that fails or refuses leaves the brief as the compiled prompt, repor
 
   const refused = llmPromptCompiler(scripted([{ refused: true }, { refused: true }]));
   const again = await publishVersion(h.db, { workflowId, graph: graph({ scrapePrompt: "Different." }) }, { schemaGenerator: generator, promptCompiler: refused });
-  expect(again.report.tasks.every((t) => t.status === "brief")).toBe(true);
+  expect(again.report.tasks.find(t => t.name === "Scrape")?.status).toBe("generated");
 });
 
 it("a promoted browser task keeps its script and `compiled` across an unchanged publish, and loses both when its content changes", async () => {

@@ -1,3 +1,4 @@
+import { withAutomationControl } from "@tabductor/browser";
 import {
   createTraceRecorder,
   openRunSession,
@@ -11,7 +12,7 @@ import {
 } from "@tabductor/browser";
 import { AppError } from "@tabductor/core";
 import type { Db, RunRow, TaskRow } from "@tabductor/db";
-import type { RunHandle, RunResult, TaskExecutor } from "@tabductor/engine";
+import { harnessTask, type RunHandle, type RunResult, type TaskExecutor } from "@tabductor/engine";
 import type { PolicyGate } from "@tabductor/core";
 import type { SecretsBroker, SecretsBrokerRunDeps } from "@tabductor/secrets";
 import type { Metrics } from "@tabductor/telemetry";
@@ -19,14 +20,15 @@ import {
   asNumber,
   asRecord,
   makeEmitFn,
-  maxStepsOf,
+  maxInputTokensOf,
   storageFlagsOf as defaultStorageFlagsOf,
   toRunResult,
   triggerInfoOf,
 } from "./executor-shared.js";
 import type { Llm } from "./llm.js";
 import { runAgentLoop } from "./loop.js";
-import { buildToolRegistry } from "./tools.js";
+import { buildToolRegistry, summarizePerception } from "./tools.js";
+import { browserLoopControl } from "./browser-loop-control.js";
 
 /**
  * `AgentExecutor`: composes the tool registry + loop behind the engine's executor contract
@@ -105,8 +107,10 @@ async function connectionIsDead(lease: EndpointLease, timeoutMs = 2_000): Promis
 
 async function mapError(err: unknown, lease: EndpointLease | undefined): Promise<RunResult> {
   if (err instanceof AppError) {
+    if (err.code === "human_action_pending") return { ok: false, error: err.message, suspended: true };
     if (err.code === "browser.disconnected") return { ok: false, error: "browser.disconnected" };
     if (err.code === "resource_limit_exceeded") return { ok: false, error: "resource_limit_exceeded", permanent: true };
+    if (err.code === "agent_no_progress") return { ok: false, error: err.message, permanent: true };
     if (err.code === "endpoint_queue_full") return { ok: false, error: "endpoint_queue_full" };
     if (err.code === "no_endpoint_configured") return { ok: false, error: "no_endpoint_configured", permanent: true };
     return { ok: false, error: err.message };
@@ -142,9 +146,14 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
         const [emits, trigger] = await Promise.all([handle.declaredEmits(), triggerInfoOf(db, handle)]);
         const emit = makeEmitFn({ db, taskId: handle.task.id, handleEmit: handle.emit, trace });
         const llm = llmFor({ trace, task: handle.task, runId: handle.run.id });
+        const control = browserLoopControl(db, handle, lease.conn, session);
+        const mapping = harnessTask(handle.task.limitsJson)?.role === "write-record" ? await handle.destination?.read() : undefined;
         const tools = buildToolRegistry({
           session,
           emit,
+          destination: handle.destination, requestHumanAction: handle.requestHumanAction,
+          ...(mapping ? { verificationContext: { mapping, packet: handle.trigger!.packet as Record<string, unknown> } } : {}),
+          checkpoint: control.checkpoint, progress: control.progress, memory: control.memory, actions: control.actions, recordOutcome: handle.recordOutcome, recordCompletionError: handle.recordCompletionError, beforeCall: control.beforeStep, signal: handle.signal, trace,
           ...(deps.secrets
             ? { fillSecret: (secretName, anchor) => deps.secrets!.fill(handle.run.id, secretName, anchor) }
             : {}),
@@ -158,7 +167,9 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
           trigger,
           emits,
           trace,
-          maxSteps: maxStepsOf(handle.task),
+          maxInputTokens: maxInputTokensOf(handle.task),
+          beforeStep: control.beforeStep, checkpoint: control.checkpoint, memory: control.memory, actions: control.actions,
+          initialPerception: async () => await control.beforeStep() ?? summarizePerception(await withAutomationControl(lease!.conn, () => session!.page.perceive({elementLimit:50}), handle.signal)),
           signal: handle.signal,
         });
         const runResult = toRunResult(result);

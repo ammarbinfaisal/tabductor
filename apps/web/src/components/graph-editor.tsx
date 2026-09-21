@@ -7,6 +7,7 @@ import type {
   TaskSummary,
 } from "@tabductor/engine";
 import Link from "next/link";
+import { resultSchemaTextOf } from "../lib/result-schema.js";
 import { useStoreBridge } from "../lib/store.js";
 import {
   createEditorStore,
@@ -15,8 +16,6 @@ import {
   type EditorStore,
 } from "./editor-store.js";
 import { SectionLabel } from "./primitives.js";
-import { WorkflowChat } from "./workflow-chat.js";
-import { useMountHook } from "../lib/use-mount-hook.js";
 import { WorkflowWorkspace } from "./workflow-workspace.js";
 
 /** Graph, packet traces and conversational changes share one workflow document. */
@@ -42,18 +41,18 @@ export function GraphEditor(props: {
   if (!store || store.getState().workflowId !== props.workflowId) store = createEditorStore(props);
   const s = store;
   const state = useStoreBridge(s);
-  useMountHook(() => s.restoreConversation());
   const empty = state.graph.tasks.length === 0;
   const promptChanged = state.automationPrompt.trim() !== (state.graph.automationPrompt ?? "");
 
-  const publishReason = promptChanged ? "Build the edited prompt before publishing." : empty
-    ? "Describe the workflow in chat before publishing."
+  const schemaChanged = state.resultSchemaText !== resultSchemaTextOf(state.graph);
+  const publishReason = promptChanged || schemaChanged ? "Build the edited prompt and result schema before publishing." : empty
+    ? "Build the workflow from your prompt before publishing."
     : !state.dirty && state.versionId
       ? "All changes published."
       : null;
   const operationReason = !state.versionId
     ? "Publish the workflow first."
-    : state.dirty || promptChanged
+    : state.dirty || promptChanged || schemaChanged
       ? "Publish the current edits first."
       : null;
 
@@ -116,18 +115,22 @@ export function GraphEditor(props: {
       </nav>
       {state.workspaceTab === "automation" || (state.workspaceTab === "graph" && !props.showGraph) ? <div className="automation-workspace">
         <section className="automation-brief" aria-label="Automation prompt">
-          <SectionLabel>What should the browser do?</SectionLabel>
+          <SectionLabel>Direct the workflow</SectionLabel>
           <h2>One prompt. A repeatable routine.</h2>
-          <p>Write the instructions yourself or describe the outcome in chat. Review the automation, publish it, then run it once or add a schedule.</p>
-          <label className="field"><span>Automation prompt</span><textarea value={state.automationPrompt} disabled={state.busy} maxLength={20000}
+          <p>One prompt directs the entire workflow: its steps, constraints, and final result. Add a schema if you need a specific JSON output.</p>
+          <label className="field"><span>Workflow prompt</span><textarea value={state.automationPrompt} disabled={state.busy} maxLength={20000}
             placeholder="Open X, collect 100 unique tweets from my For You timeline, and add them to my Notion database at… Skip tweets already saved and verify each new entry."
             onChange={(event) => s.setAutomationPrompt(event.target.value)} /></label>
-          <button className="btn--primary" disabled={state.busy || !state.automationPrompt.trim()} onClick={() => void s.buildAutomation()}>{state.busy && !state.chatPending ? "Building…" : "Build automation"}</button>
+          <label className="field"><span>Result schema (optional, JSON Schema draft-07)</span>
+            <textarea className="mono" rows={7} disabled={state.busy} value={state.resultSchemaText}
+              placeholder={'{ "type": "object", "properties": { "summary": { "type": "string" } }, "required": ["summary"] }'}
+              onChange={(event) => s.setResultSchemaText(event.target.value)} /></label>
+          <p className="muted">Leave empty for free-form JSON. The final result follows your workflow prompt.</p>
+          <button className="btn--primary" disabled={state.busy || !state.automationPrompt.trim()} onClick={() => void s.buildAutomation()}>{state.busy ? "Building…" : "Build automation"}</button>
           <p className="muted">No schedule specified? It runs on demand.</p>
           {state.graph.tasks.length ? <div className="automation-outline"><h3>What it will do</h3><ol>{state.graph.tasks.map((task) => <li key={task.name}><strong>{task.label ?? task.name}</strong>{task.summary ? <p>{task.summary}</p> : null}</li>)}</ol></div> : null}
           <Link href={`/profiles?workflow=${encodeURIComponent(state.workflowId)}`}>Set up browser profiles and sign in ↗</Link>
         </section>
-        <WorkflowChat store={s} state={state} />
       </div> : <WorkflowWorkspace
         key={`${state.workflowId}:${state.versionId ?? "draft"}`}
         editor={s}

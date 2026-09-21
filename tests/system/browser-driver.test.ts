@@ -128,7 +128,6 @@ it("returns an actionable extraction error to the agent and supports a corrected
   const result = await runAgentLoop({
     tools: buildToolRegistry({ session: sess.session, emit: async () => ({ outcome: "deduped" }) }),
     task: { prompt: "Read tweet text." }, trigger: null, emits: [], trace: sess.trace,
-    maxSteps: 3,
     llm: { async complete(req) {
       const step = turn++;
       if (step === 1) {
@@ -139,7 +138,7 @@ it("returns an actionable extraction error to the agent and supports a corrected
         expect(req.messages.at(-1)!.content).toContain("first tweet");
         expect(req.messages.at(-1)!.content).toContain('"ok":true');
       }
-      return { usage: { in: 0, out: 0 }, toolCalls: [{
+      return { usage: { in: 0, out: 0 }, toolCalls: [...(step === 2 ? [{id:"verify",name:"page.verify",args:{textIncludes:"first tweet"}}] : []),{
         id: String(step), name: step === 2 ? "done" : "page.extract",
         args: step === 2 ? { result: "read" } : { fields: {
           text: { selector: step === 0 ? "span[" : '[data-testid="tweetText"]:has-text("first")' },

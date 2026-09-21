@@ -15,6 +15,7 @@ export {
   type ToolDef,
 } from "./llm.js";
 export { resolveModelId } from "./llm-live.js";
+export type { BrowserActionSummary, ObservationMetadata, BrowserRecovery } from "./browser-actions.js";
 export { costUsd, priceOf, type ModelPrice } from "./pricing.js";
 export {
   buildPerception,
@@ -59,3 +60,5 @@ export {
   type DecisionExecutorDeps,
 } from "./decision-executor.js";
 export { fundedLlm } from "./funded-llm.js";
+
+export { createResultExecutor } from "./result-executor.js";

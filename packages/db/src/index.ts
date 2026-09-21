@@ -43,6 +43,7 @@ export {
   browserProfiles,
   browserProfileImports,
   browserSessions,
+  browserTabLeases,
   browserProfileLeases,
   browserAllocationRequests,
   browserWorkers,
@@ -173,3 +174,8 @@ export {
   type Db,
   type DbHandle,
 } from "./client.js";
+
+export { workflowRecords, runRecordOutcomes, RECORD_STATUSES, type RecordStatus } from "./schema.js";
+export { destinationPreparations, destinationContracts, destinationRecords, humanActionRequests } from "./schema.js";
+
+export { browserFleetStatus } from "./schema.js";

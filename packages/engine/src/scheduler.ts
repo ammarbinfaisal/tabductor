@@ -1,3 +1,4 @@
+import { checkWorkflowPrerequisites, persistPrerequisiteBlock, type PrerequisiteOptions } from "./prerequisites.js";
 import { publish } from "@tabductor/bus";
 import { createLogger, type Logger } from "@tabductor/core";
 import { runs, schedules, type Db, type ScheduleRow } from "@tabductor/db";
@@ -31,10 +32,11 @@ export function scheduleValidationError(cron: string, timezone: string): string 
 }
 
 /** Statuses that mean "this task is already working" for the overlap policy. */
-const LIVE = ["queued", "running"] as const;
+const LIVE = ["queued", "running", "awaiting_human"] as const;
 
 export type SchedulerDeps = {
   db: Db;
+  prerequisites?: PrerequisiteOptions;
   /** Injected like `PolicyGate` (§17.2 rule 1); absent means no measurement, no cost. */
   metrics?: Metrics;
   tracer?: Tracer;
@@ -165,6 +167,11 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       )
       .returning({ id: schedules.id });
     if (claimed.length === 0) return false;
+    if (deps.prerequisites) {
+      const block = await checkWorkflowPrerequisites(db, row.taskId, deps.prerequisites);
+      await persistPrerequisiteBlock(db, row.taskId, block);
+      if (block) { metrics?.schedulerFires.add("blocked_prerequisite"); return false; }
+    }
 
     const live = await db
       .select({ id: runs.id })

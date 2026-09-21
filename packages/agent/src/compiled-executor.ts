@@ -1,3 +1,4 @@
+import { withAutomationControl } from "@tabductor/browser";
 import { AppError, SCRIPT_RUNTIME_VERSION } from "@tabductor/core";
 import {
   createTraceRecorder,
@@ -23,12 +24,13 @@ import {
   asNumber,
   asRecord,
   makeEmitFn,
-  maxStepsOf,
+  maxInputTokensOf,
   storageFlagsOf as defaultStorageFlagsOf,
   toRunResult,
   triggerInfoOf,
 } from "./executor-shared.js";
-import { buildToolRegistry } from "./tools.js";
+import { buildToolRegistry, summarizePerception } from "./tools.js";
+import { browserLoopControl } from "./browser-loop-control.js";
 
 /**
  * `(browser, compiled)` — the fast path, and the door back to the slow one.
@@ -187,7 +189,7 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
         };
 
         const compatibility = asRecord(asRecord(script.guardsMeta)?.compatibility);
-        const browserVersion = await lease.conn.version();
+        const browserVersion = await withAutomationControl(lease.conn, () => lease!.conn.version(), handle.signal);
         const compatible = compatibility?.runtimeVersion === SCRIPT_RUNTIME_VERSION && compatibility?.browserVersion === browserVersion;
         if (!compatible) {
           await db.transaction(async (trx) => {
@@ -225,14 +227,17 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
         });
 
         const [emits, trigger] = await Promise.all([handle.declaredEmits(), triggerInfoOf(db, handle)]);
+        const control = browserLoopControl(db, handle, lease.conn, session);
         const loop = await runAgentLoop({
           llm: llmFor({ trace, task: handle.task, runId: handle.run.id }),
-          tools: buildToolRegistry({ session, emit }),
+          tools: buildToolRegistry({ session, emit, destination: handle.destination, requestHumanAction: handle.requestHumanAction, checkpoint: control.checkpoint, progress: control.progress, memory: control.memory, actions: control.actions, recordOutcome: handle.recordOutcome, recordCompletionError: handle.recordCompletionError, beforeCall: control.beforeStep, signal: handle.signal, trace }),
           task: { prompt: handoffPrompt(handle.task, result.prompt, result.evidence) },
           trigger,
           emits,
           trace,
-          maxSteps: maxStepsOf(handle.task),
+          maxInputTokens: maxInputTokensOf(handle.task),
+          beforeStep: control.beforeStep, checkpoint: control.checkpoint, memory: control.memory, actions: control.actions,
+          initialPerception: async () => await control.beforeStep() ?? summarizePerception(await withAutomationControl(lease!.conn, () => session!.page.perceive({elementLimit:50}), handle.signal)),
           signal: handle.signal,
         });
         const runResult = toRunResult(loop);
@@ -243,6 +248,8 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
         }
         return runResult;
       } catch (err) {
+        if (err instanceof AppError && err.code === "human_action_pending") return { ok: false, error: err.message, suspended: true };
+        if (err instanceof AppError && err.code === "agent_no_progress") return { ok: false, error: err.message, permanent: true };
         if (err instanceof AppError && err.code === "no_endpoint_configured") {
           return { ok: false, error: "no_endpoint_configured", permanent: true };
         }

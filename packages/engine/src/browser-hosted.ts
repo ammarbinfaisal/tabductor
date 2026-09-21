@@ -5,8 +5,9 @@ import type { EndpointPool } from "@tabductor/browser";
 import { createCamoufoxWorkerDriver } from "@tabductor/browser/worker-driver";
 import { browserSessionActivity, browserSessions, browserCommands, workflowBrowserProfiles, workflows, runs, workflowVersions, tasks, browserBilling, type Db } from "@tabductor/db";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { createBrowserProfile, requestBrowserSession, type BrowserAdmission } from "./browser-fleet.js";
-import { requestBrowserTakeover, stopBrowserSession } from "./browser-session-control.js";
+import { createBrowserProfile, ensureExecutionBrowserSession, type BrowserAdmission } from "./browser-fleet.js";
+import { requestBrowserTakeover, browserAutomationIsReady } from "./browser-session-control.js";
+import { assertBrowserTabLease, browserTabKey, claimBrowserTab, releaseBrowserTab, type BrowserTabLease } from "./browser-tabs.js";
 import { assertRunLease } from "./run-lease.js";
 import { reserveCredits, settleCreditReservation } from "./credits.js";
 
@@ -58,26 +59,57 @@ export function createHostedBrowserPool(deps: { db: Db; tokenKey: string; worker
   const request = deps.fetch ?? fetch;
   return {
     async acquire(_endpointId, runId) {
-      const [row] = await deps.db.select({ run: runs, accountId: workflows.accountId, workflowId: workflows.id }).from(runs)
+      if (closed) throw new AppError("browser.disconnected", "browser pool closed");
+      const [row] = await deps.db.select({ run: runs, accountId: workflows.accountId, workflowId: workflows.id, task: tasks }).from(runs)
         .innerJoin(tasks, eq(tasks.id, runs.taskId)).innerJoin(workflowVersions, eq(workflowVersions.id, tasks.workflowVersionId))
         .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId)).where(eq(runs.id, runId));
       if (!row || !row.run.executionId || row.run.status !== "running") throw new AppError("run_lease_lost", "active execution is required for a hosted browser");
       const profileId = await ensureWorkflowBrowserProfile(deps.db, row.accountId, row.workflowId);
-      const sessionId = await requestBrowserSession(deps.db, { accountId: row.accountId, profileId, executionId: row.run.executionId });
-      const release = async () => { await stopBrowserSession(deps.db, { accountId: row.accountId, sessionId }); active.delete(sessionId); };
-      active.set(sessionId, release);
+      const sessionId = await ensureExecutionBrowserSession(deps.db, { accountId: row.accountId, profileId, executionId: row.run.executionId });
+      const tabLease: BrowserTabLease = { sessionId, tabKey: browserTabKey(row.task), runId,
+        runGeneration: row.run.leaseGeneration, taskId: row.task.id };
+      const leaseId = newId("tab_lease");
+      let released = false;
+      let closeConnection: (() => Promise<void>) | undefined;
+      const release = async () => {
+        if (released) return;
+        released = true;
+        try { await closeConnection?.(); } finally {
+          await releaseBrowserTab(deps.db, tabLease);
+          active.delete(leaseId);
+        }
+      };
+      active.set(leaseId, release);
       const started = Date.now();
       try {
         while (!closed && Date.now() - started < (deps.allocationTimeoutMs ?? 120_000)) {
           await deps.db.transaction((trx) => assertRunLease(trx, runId, row.run.leaseGeneration));
           const [session] = await deps.db.select().from(browserSessions).where(eq(browserSessions.id, sessionId));
           if (!session || ["ended", "failed", "stopping"].includes(session.status)) throw new AppError("browser_allocation_failed", "browser allocation ended");
-          if (session.status === "ready" && session.podName) {
+          if (["ready", "running"].includes(session.status) && session.podName) {
+            // Tab contention is governed by the run deadline, not browser allocation timeout.
+            while (!await claimBrowserTab(deps.db, tabLease)) {
+              if (closed) throw new AppError("browser.disconnected", "browser pool closed");
+              await new Promise((resolve) => setTimeout(resolve, 250));
+            }
+            if (closed || released) {
+              await releaseBrowserTab(deps.db, tabLease);
+              throw new AppError("browser.disconnected", "browser pool closed");
+            }
             const url = await deps.workerUrl(session.podName);
-            let inputGeneration = session.inputOwnerGeneration;
-            const driver = createCamoufoxWorkerDriver({ token: browserWorkerToken(deps.tokenKey, session.podName), sessionId, generation: session.generation,
+            const [latest] = await deps.db.select({ inputOwnerGeneration: browserSessions.inputOwnerGeneration })
+              .from(browserSessions).where(eq(browserSessions.id, sessionId));
+            let inputGeneration = latest!.inputOwnerGeneration;
+            const driver = createCamoufoxWorkerDriver({ token: browserWorkerToken(deps.tokenKey, session.podName), sessionId, generation: session.generation, tabKey: tabLease.tabKey,
               fetch: async (target, init) => {
                 const command = JSON.parse(String(init?.body)) as Record<string, unknown>;
+                const params = command.params as Record<string, unknown> | undefined;
+                const requestedTimeout = typeof params?.timeout === "number" ? params.timeout : 30000;
+                // Explicit long waits must finish before their transport deadline. Never accept infinity/zero as an unbounded wait.
+                if (params && ["page.wait_for", "page.wait_for_load_state", "page.goto"].includes(String(command.method))) {
+                  params.timeout = Math.min(120000, Math.max(1, Number.isFinite(requestedTimeout) ? requestedTimeout : 30000));
+                }
+                const transportTimeout = Math.max(60000, Number(params?.timeout ?? 30000) + 10000);
                 const commandId = newId("command");
                 await deps.db.insert(browserCommands).values({ id: commandId, sessionId, runId, runGeneration: row.run.leaseGeneration,
                   generation: session.generation, inputGeneration, method: String(command.method) });
@@ -86,26 +118,31 @@ export function createHostedBrowserPool(deps: { db: Db; tokenKey: string; worker
                 try {
                   const response = await deps.db.transaction(async (trx) => {
                     await assertRunLease(trx, runId, row.run.leaseGeneration);
+                    await assertBrowserTabLease(trx, tabLease);
                     const [owner] = await trx.select().from(browserSessions).where(and(eq(browserSessions.id, sessionId),
-                      eq(browserSessions.generation, session.generation), inArray(browserSessions.status, ["ready", "running"]))).for("update");
-                    if (!owner || owner.inputOwner !== "ai") {
+                      eq(browserSessions.generation, session.generation), inArray(browserSessions.status, ["ready", "running"]))).for("share");
+                    if (!owner || !browserAutomationIsReady(owner)) {
                       throw new AppError("browser_input_revoked", "browser input is paused for a human; wait for resume and perceive again");
                     }
                     if (owner.inputOwnerGeneration !== inputGeneration) {
-                      if (command.method !== "page.perceive") throw new AppError("browser_fresh_perception_required", "browser input changed; perceive the page before taking another action");
-                      inputGeneration = owner.inputOwnerGeneration;
+                      if (!["page.perceive", "browser.version", "tab.acquire", "page.create"].includes(String(command.method))) throw new AppError("browser_fresh_perception_required", "browser input changed; perceive the page before taking another action");
+                      if (command.method === "page.perceive") inputGeneration = owner.inputOwnerGeneration;
                     }
+                    await trx.update(browserCommands).set({ inputGeneration: owner.inputOwnerGeneration }).where(eq(browserCommands.id, commandId));
                     dispatched = true;
-                    const result = await request(target, { ...init, signal: AbortSignal.timeout(60_000), body: JSON.stringify({ ...command, command_id: commandId, input_generation: owner.inputOwnerGeneration }) });
+                    const result = await request(target, { ...init, signal: AbortSignal.timeout(transportTimeout), body: JSON.stringify({ ...command, command_id: commandId, input_generation: owner.inputOwnerGeneration }) });
                     // Consume the body while the lease is locked; headers alone do not mean the action finished.
                     const bytes = await result.arrayBuffer();
                     return new Response(bytes, { status: result.status, headers: result.headers });
                   });
-                  await deps.db.update(browserCommands).set({ status: response.ok ? "succeeded" : "uncertain", completedAt: sql`now()` }).where(eq(browserCommands.id, commandId));
+                  const failure = response.ok ? null : await response.clone().json().catch(() => null) as { detail?: { outcomeUncertain?: boolean } } | null;
+                  const outcome = response.ok ? "succeeded" : failure?.detail?.outcomeUncertain === false ? "rejected" : "uncertain";
+                  await deps.db.update(browserCommands).set({ status: outcome, completedAt: sql`now()` }).where(eq(browserCommands.id, commandId));
                   completed = true;
                   if (command.method !== "browser.events") await deps.db.insert(browserSessionActivity).values({ sessionId, kind: String(command.method),
                     offsetMs: Math.max(0, Date.now() - (session.readyAt ?? session.createdAt).getTime()),
-                    private: command.method === "page.insert_text", payloadJson: { commandId, outcome: response.ok ? "succeeded" : "uncertain" } });
+                    pageId: typeof command.page_id === "string" ? command.page_id : null,
+                    private: command.method === "page.insert_text", payloadJson: { commandId, outcome } });
                   if (response.ok && command.method === "page.perceive") {
                     const body = await response.clone().json() as { value?: { challenge?: { kind: string; websiteUrl: string; siteKey: string } } };
                     const challenge = body.value?.challenge;
@@ -117,8 +154,9 @@ export function createHostedBrowserPool(deps: { db: Db; tokenKey: string; worker
                         try {
                           outcome = await advanceChallengeRecovery(deps.db, challengeId, deps.solvers ?? [], async (token, details) => deps.db.transaction(async (trx) => {
                             await assertRunLease(trx, runId, row.run.leaseGeneration);
-                            const [owner] = await trx.select().from(browserSessions).where(eq(browserSessions.id, sessionId)).for("update");
-                            if (!owner || !["ready", "running"].includes(owner.status) || owner.generation !== session.generation || owner.inputOwner !== "ai" || owner.inputOwnerGeneration !== inputGeneration) return false;
+                            await assertBrowserTabLease(trx, tabLease);
+                            const [owner] = await trx.select().from(browserSessions).where(eq(browserSessions.id, sessionId)).for("share");
+                            if (!owner || !["ready", "running"].includes(owner.status) || owner.generation !== session.generation || !browserAutomationIsReady(owner) || owner.inputOwnerGeneration !== inputGeneration) return false;
                             const applied = await request(target, { ...init, signal: AbortSignal.timeout(15_000), body: JSON.stringify({ generation: session.generation, input_generation: inputGeneration,
                               command_id: newId("command"), method: "challenge.apply", page_id: command.page_id, params: { token, kind: details.kind, site_key: details.siteKey } }) });
                             return applied.ok && (await applied.json() as { value: boolean }).value === true;
@@ -136,7 +174,7 @@ export function createHostedBrowserPool(deps: { db: Db; tokenKey: string; worker
                           await deps.db.transaction((trx) => assertRunLease(trx, runId, row.run.leaseGeneration));
                           const [owner] = await deps.db.select().from(browserSessions).where(eq(browserSessions.id, sessionId));
                           if (!owner || !["ready", "running"].includes(owner.status)) throw new AppError("browser_input_revoked", "browser session stopped");
-                          if (owner.inputOwner === "ai") { inputGeneration = owner.inputOwnerGeneration; break; }
+                          if (browserAutomationIsReady(owner)) { inputGeneration = owner.inputOwnerGeneration; break; }
                           await new Promise((resolve) => setTimeout(resolve, 500));
                         }
                       }
@@ -148,8 +186,9 @@ export function createHostedBrowserPool(deps: { db: Db; tokenKey: string; worker
                       try {
                         const fresh = await deps.db.transaction(async (trx) => {
                           await assertRunLease(trx, runId, row.run.leaseGeneration);
-                          const [owner] = await trx.select().from(browserSessions).where(eq(browserSessions.id, sessionId)).for("update");
-                          if (!owner || !["ready", "running"].includes(owner.status) || owner.generation !== session.generation || owner.inputOwner !== "ai" || owner.inputOwnerGeneration !== inputGeneration) {
+                          await assertBrowserTabLease(trx, tabLease);
+                          const [owner] = await trx.select().from(browserSessions).where(eq(browserSessions.id, sessionId)).for("share");
+                          if (!owner || !["ready", "running"].includes(owner.status) || owner.generation !== session.generation || !browserAutomationIsReady(owner) || owner.inputOwnerGeneration !== inputGeneration) {
                             throw new AppError("browser_input_revoked", "browser input changed during recovery");
                           }
                           refreshDispatched = true;
@@ -173,8 +212,28 @@ export function createHostedBrowserPool(deps: { db: Db; tokenKey: string; worker
               },
             });
             const conn = await driver.connect(url);
+            closeConnection = () => conn.close();
+            if (closed || released) { await conn.close(); throw new AppError("browser.disconnected", "browser pool closed"); }
+            let agentGeneration = inputGeneration;
+            conn.waitForAutomation = async (signal) => {
+              for (;;) {
+                signal?.throwIfAborted();
+                if (closed || !active.has(leaseId)) throw new AppError("browser.disconnected", "browser session ended");
+                await deps.db.transaction((trx) => assertRunLease(trx, runId, row.run.leaseGeneration));
+                const [owner] = await deps.db.select().from(browserSessions).where(eq(browserSessions.id, sessionId));
+                if (!owner || owner.generation !== session.generation || !["ready", "running"].includes(owner.status)) {
+                  throw new AppError("browser.disconnected", "browser session ended");
+                }
+                if (browserAutomationIsReady(owner)) {
+                  const changed = agentGeneration !== owner.inputOwnerGeneration;
+                  agentGeneration = owner.inputOwnerGeneration;
+                  return changed;
+                }
+                await new Promise<void>((resolve) => setTimeout(resolve, 250));
+              }
+            };
             await deps.db.update(browserSessions).set({ status: "running" }).where(and(eq(browserSessions.id, sessionId), eq(browserSessions.status, "ready")));
-            return { conn, release: async () => { await conn.close(); await release(); } };
+            return { conn, release };
           }
           await new Promise((resolve) => setTimeout(resolve, 250));
         }

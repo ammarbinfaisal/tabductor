@@ -2,6 +2,7 @@ import { Ajv } from "ajv";
 import addFormatsModule from "ajv-formats";
 const addFormats = addFormatsModule.default ?? addFormatsModule;
 import type { SchemaGenerator, SchemaGenInput, SchemaGenResult } from "./schema-generator.js";
+import { parseGeneratedJson } from "./generated-json.js";
 
 /**
  * Everything the schema compiler does that is not a network call: the instructions, the
@@ -22,8 +23,10 @@ with a single JSON object: the JSON Schema for the event's packet. No prose, no 
 fences — the raw JSON object only.
 
 Rules for the schema:
-- Top level is {"type": "object"} with "properties", "required" listing every property, \
+- Top level is {"type": "object"} with "properties", "required" listing only required properties, \
 and "additionalProperties": false.
+- Unknown optional observations (counts, boolean flags, timestamps) must permit null using a type array, e.g. ["integer", "null"]. Never turn unknown into zero/false or require invented values. Preserve the same field type and nullability in downstream packets.
+- When upstream schemas are supplied, they are authoritative for shared fields. Keep their types and permit their null or missing values. Put derived identifiers and validated replacements in distinct fields; do not require a surrogate in place of an unknown source identifier.
 - Property types are limited to: "string" (optionally with "format": "date-time", \
 "date", "uri", "email", or "uuid"), "number", "integer", "boolean", "enum" of strings, \
 arrays of those, and at most one level of nested objects (which follow the same rules).
@@ -97,6 +100,23 @@ export function describeEvent(input: SchemaGenInput): string {
       ? "  (none)"
       : tasks.map((t) => `  - ${t.name}: ${t.prompt?.trim() || "(no prompt)"}`).join("\n");
 
+  const compatibility = input.compatibility ? `
+
+Repair this generated schema's cross-step compatibility. Keep all its declared fields and
+the event's record key. Do not remove a field to hide a conflict or make upstream data more
+restrictive. Preserve unknowns; a separate derived key may remain required.
+
+Previously generated schema:
+${JSON.stringify(input.compatibility.previousSchema)}
+
+Compatibility errors:
+${input.compatibility.errors.map(error => `- ${error}`).join("\n")}
+
+Schemas received by the tasks that emit this event:
+${JSON.stringify(input.compatibility.upstream)}
+
+Return the corrected raw JSON schema for ${input.eventType} only.` : "";
+
   return `Event type: ${input.eventType}
 
 Description of the packet:
@@ -106,17 +126,14 @@ Tasks that emit this event:
 ${list(input.emitters)}
 
 Tasks that consume this event:
-${list(input.consumers)}`;
+${list(input.consumers)}${compatibility}`;
 }
 
 export function parseSchema(
   text: string,
 ): { ok: true; schema: Record<string, unknown> } | { ok: false; error: string } {
-  // Tolerate a fenced reply rather than retrying over formatting — the fence is noise,
-  // the schema inside it is the work.
-  const unfenced = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   try {
-    const value: unknown = JSON.parse(unfenced);
+    const value = parseGeneratedJson(text);
     if (typeof value === "object" && value !== null && !Array.isArray(value)) {
       return { ok: true, schema: value as Record<string, unknown> };
     }

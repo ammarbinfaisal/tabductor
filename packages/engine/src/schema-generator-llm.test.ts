@@ -41,6 +41,17 @@ function scripted(...replies: Array<string | Error | { refused: true }>): ChatTr
 }
 
 describe("llmSchemaGenerator", () => {
+  it("accepts generated trailing commas only after strict schema validation", async () => {
+    const transport = scripted(GOOD.slice(0, -1) + ",}");
+    await expect(llmSchemaGenerator(transport).generate(INPUT)).resolves.toEqual({ ok: true, schema: JSON.parse(GOOD) });
+    expect(transport.calls).toHaveLength(1);
+
+    const invalid = scripted('{"type":"object","properties":{"text":{"type":"invalid",},},}', GOOD);
+    await expect(llmSchemaGenerator(invalid).generate(INPUT)).resolves.toEqual({ ok: true, schema: JSON.parse(GOOD) });
+    expect(invalid.calls).toHaveLength(2);
+    expect(invalid.calls[1]!.at(-1)!.content).toContain("ajv strict");
+  });
+
   it("passes the event, its description and both sides' prompts to the model", async () => {
     const transport = scripted(GOOD);
     const result = await llmSchemaGenerator(transport).generate(INPUT);
@@ -61,6 +72,22 @@ describe("llmSchemaGenerator", () => {
       schema: JSON.parse(GOOD),
     });
     expect(transport.calls).toHaveLength(1);
+  });
+
+  it("passes upstream contracts and every compatibility error to the repair model", async () => {
+    const transport = scripted(GOOD);
+    const upstream = { type: "object", properties: { tweet_id: { type: ["string", "null"] } } };
+    await llmSchemaGenerator(transport).generate({ ...INPUT, compatibility: {
+      previousSchema: JSON.parse(GOOD),
+      errors: ["tweet_id loses unknown/null values", "flag changes a shared field's type"],
+      upstream: [{ task: "Prepare tweet", eventType: "tweet.extracted", schema: upstream }],
+    } });
+    const prompt = transport.calls[0]![0]!.content;
+    expect(prompt).toContain(JSON.stringify(upstream));
+    expect(prompt).toContain("tweet_id loses unknown/null values");
+    expect(prompt).toContain("flag changes a shared field's type");
+    expect(prompt).toContain("Keep all its declared fields");
+    expect(prompt).toContain("separate derived key may remain required");
   });
 
   it("feeds the gate's verdict back and accepts the repair", async () => {

@@ -1204,7 +1204,7 @@ main:has(.automation-workspace) { max-width: 1440px; }
 .automation-tabs { display: flex; gap: 8px; border-bottom: var(--rule); margin-bottom: 24px; }
 .automation-tabs button { min-height: 44px; border: 0; border-radius: 0; background: transparent; padding: 12px 20px; }
 .automation-tabs button[aria-current] { border-bottom: 2px solid var(--accent-text); color: var(--accent-text); }
-.automation-workspace { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 32px; }
+.automation-workspace { width: 100%; max-width: 880px; margin-inline: auto; }
 .automation-brief { min-width: 0; padding: 24px 0; }
 .automation-brief h2 { font-size: var(--text-2xl); margin: 12px 0; }
 .automation-brief > p { color: var(--text-secondary); line-height: 1.6; }
@@ -1225,3 +1225,14 @@ main:has(.automation-workspace) { max-width: 1440px; }
 .browser-address input { width: 100%; min-height: 44px; }
 .session-controls { flex-wrap: wrap; }
 .session-controls button { min-height: 44px; }
+
+.workflow-create { width: 100%; max-width: 880px; margin: 0 auto var(--space-6); text-align: left; }
+.workflow-create textarea { width: 100%; min-height: 160px; resize: vertical; font-size: 16px; line-height: 1.6; }
+
+.browser-tabs { margin-block: 1.5rem 1rem; }
+.browser-tab-list { display: flex; gap: .75rem; overflow-x: auto; padding: .25rem .25rem .75rem; }
+.browser-tab { display: flex; flex-direction: column; gap: .25rem; text-align: left; flex: 0 0 16rem; min-height: 5rem; padding: .75rem 1rem; }
+.browser-tab[aria-pressed="true"] { outline: 2px solid currentColor; outline-offset: 2px; }
+.browser-tab-title { font-weight: 600; }
+.browser-tab-title, .browser-tab-url { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.browser-tab-url { font-size: .875rem; }

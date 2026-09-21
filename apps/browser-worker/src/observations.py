@@ -16,7 +16,7 @@ class Observations:
         self.requests = {}
         self.ids = {}
         self.attached = set()
-        self.dialog_seen = False
+        self.dialog_seen = set()
         self.roots = {}
         self.pending = {}
         current.context.on("page", self.enforce_tab_limit)
@@ -38,10 +38,15 @@ class Observations:
         self.roots[page] = root_id
         page.on("popup", lambda popup: self.attach(popup, root_id))
         async def dialog(value):
-            if self.current.input_owner == "ai" and not self.dialog_seen:
-                self.dialog_seen = True
+            if self.current.input_owner == "ai" and root_id not in self.dialog_seen:
+                self.dialog_seen.add(root_id)
                 self.event({"kind": "dialog", "page_id": root_id, "dialog": {"type": value.type, "message": "Browser dialog dismissed"}})
-            await value.dismiss()
+            page_id = self.current.add_page(page)
+            policy = self.current.dialog_policies.pop(page_id, None)
+            if policy and policy.get("accept"):
+                await value.accept(policy.get("promptText"))
+            else:
+                await value.dismiss()
         page.on("dialog", dialog)
 
     def request(self, request):

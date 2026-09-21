@@ -10,6 +10,7 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "js-tiktoken": "1.0.21",
     "zod": "^3.25.0"
   },
   "devDependencies": {

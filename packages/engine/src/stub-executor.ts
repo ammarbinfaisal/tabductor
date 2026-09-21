@@ -86,6 +86,18 @@ export async function runStubScript(handle: RunHandle): Promise<RunResult> {
 
 export const StubExecutor: TaskExecutor = { execute: runStubScript };
 
+/** Result fixtures can supply limits.stub.result; otherwise derive a schema sample. */
+export const StubResultExecutor: TaskExecutor = {
+  async execute(handle) {
+    const limits = handle.task.limitsJson as { stub?: { result?: unknown } } | null;
+    const result = limits?.stub && Object.hasOwn(limits.stub, "result")
+      ? limits.stub.result
+      : handle.task.resultSchemaJson && typeof handle.task.resultSchemaJson === "object"
+        ? sampleFromSchema(handle.task.resultSchemaJson) : null;
+    return { ok: true, result };
+  },
+};
+
 /**
  * The scriptless path: one valid sample per declared event, synthesized from its compiled
  * schema. Emit failures end the run exactly as scripted emits do — a schema the sampler

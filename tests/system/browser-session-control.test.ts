@@ -6,9 +6,15 @@ import {
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import {
   acknowledgeBrowserPause,
+  acknowledgeBrowserResume,
+  browserAutomationIsReady,
   appendBrowserRecordingSegment,
   appendBrowserSessionActivity,
   createBrowserProfile,
+  createWorkflow,
+  createWorkflowExecution,
+  publishVersion,
+  browserControlIsActive,
   expireBrowserTakeovers,
   finishBrowserRecording,
   requestBrowserSession,
@@ -32,9 +38,15 @@ const callerFor = (accountId: string) => createCaller({
   schemaGenerator: staticSchemaGenerator({}),
 });
 
-async function readySession(accountId: string, name: string) {
+async function readySession(accountId: string, name: string, setup = false) {
   const profileId = await createBrowserProfile(handle.db, { accountId, name });
-  const sessionId = await requestBrowserSession(handle.db, { accountId, profileId });
+  let executionId: string | undefined;
+  if (!setup) {
+    const workflowId = await createWorkflow(handle.db, { accountId, name, userId: "test" });
+    await publishVersion(handle.db, { workflowId, graph: { tasks: [], events: [] } }, { schemaGenerator: staticSchemaGenerator() });
+    executionId = await createWorkflowExecution(handle.db, { workflowId });
+  }
+  const sessionId = await requestBrowserSession(handle.db, { accountId, profileId, executionId });
   await handle.db.update(browserSessions).set({ status: "ready", readyAt: new Date() })
     .where(eq(browserSessions.id, sessionId));
   return { profileId, sessionId };
@@ -97,8 +109,14 @@ it("fences takeover, resume, activity, and recording writes by generation", asyn
 
   const resumed = await resumeBrowserAutomation(handle.db, { accountId, sessionId });
   expect(resumed).toMatchObject({ inputOwner: "ai", inputOwnerGeneration: 3 });
+  expect(browserAutomationIsReady(resumed)).toBe(false);
+  expect(await acknowledgeBrowserResume(handle.db, { sessionId, generation: 1, inputOwnerGeneration: 2 })).toBe(false);
+  expect(await acknowledgeBrowserResume(handle.db, { sessionId, generation: 1, inputOwnerGeneration: 3 })).toBe(true);
+  const [acknowledged] = await handle.db.select().from(browserSessions).where(eq(browserSessions.id, sessionId));
+  expect(browserAutomationIsReady(acknowledged!)).toBe(true);
   const stopped = await stopBrowserSession(handle.db, { accountId, sessionId });
   expect(stopped).toMatchObject({ status: "stopping", inputOwner: "paused", inputOwnerGeneration: 4 });
+  expect(await acknowledgeBrowserResume(handle.db, { sessionId, generation: 1, inputOwnerGeneration: 3 })).toBe(false);
 
   await expect(appendBrowserSessionActivity(handle.db, {
     sessionId,
@@ -124,6 +142,25 @@ it("keeps expired human control paused until an explicit resume", async () => {
 
   const resumed = await resumeBrowserAutomation(handle.db, { accountId, sessionId });
   expect(resumed).toMatchObject({ inputOwner: "ai", inputOwnerGeneration: 4 });
+});
+
+it("keeps profile control indefinitely while automation still requires an unexpired takeover", async () => {
+  const accountId = await resolveAccountIdentity(handle.db, { provider: "fixture", subject: "profile_control" });
+  const { sessionId } = await readySession(accountId, "Sign in", true);
+  const paused = await requestBrowserTakeover(handle.db, { accountId, sessionId });
+  expect(paused.takeoverExpiresAt).toBeNull();
+  await acknowledgeBrowserPause(handle.db, { sessionId, generation: paused.generation, inputOwnerGeneration: paused.inputOwnerGeneration });
+  const future = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  await expireBrowserTakeovers(handle.db, future);
+  const [session] = await handle.db.select().from(browserSessions).where(eq(browserSessions.id, sessionId));
+  expect(session).toMatchObject({ inputOwner: "human", takeoverExpiresAt: null });
+  expect(browserControlIsActive(session!, future.getTime())).toBe(true);
+  expect(browserControlIsActive({ ...session!, executionId: "automation" }, future.getTime())).toBe(false);
+  expect(browserControlIsActive({ ...session!, inputOwner: "paused" }, future.getTime())).toBe(false);
+  await expect(resumeBrowserAutomation(handle.db, { accountId, sessionId })).rejects.toMatchObject({ code: "browser_resume_conflict" });
+  await stopBrowserSession(handle.db, { accountId, sessionId });
+  const [stopped] = await handle.db.select().from(browserSessions).where(eq(browserSessions.id, sessionId));
+  expect(browserControlIsActive(stopped!)).toBe(false);
 });
 
 it("enforces account ownership in the session API and exposes ordered playback metadata", async () => {
@@ -171,4 +208,16 @@ it("cancels unallocated sessions and releases their profile lease", async () => 
   expect(await handle.db.select().from(browserProfileLeases).where(eq(browserProfileLeases.profileId, profileId))).toHaveLength(0);
 
   await expect(requestBrowserSession(handle.db, { accountId, profileId })).resolves.toMatch(/^session_/);
+});
+
+it("explains which owned browser blocks a queued session and clears the link after release", async () => {
+  const accountId = await resolveAccountIdentity(handle.db, { provider: "fixture", subject: "blocked_profile" });
+  const { sessionId: activeId, profileId } = await readySession(accountId, "Busy profile");
+  await handle.db.insert(browserProfileLeases).values({ profileId, sessionId: activeId, generation: 1 });
+  const sessionId = await requestBrowserSession(handle.db, { accountId, profileId });
+  const caller = callerFor(accountId);
+  expect(await caller.browserSession.get({ sessionId })).toMatchObject({ waitingForSessionId: activeId });
+  expect(await caller.browserSession.get({ sessionId: activeId })).toMatchObject({ waitingForSessionId: null });
+  await handle.db.delete(browserProfileLeases).where(eq(browserProfileLeases.profileId, profileId));
+  expect(await caller.browserSession.get({ sessionId })).toMatchObject({ waitingForSessionId: null });
 });

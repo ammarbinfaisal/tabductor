@@ -1,11 +1,12 @@
-import { browserSessions, browserProfiles, browserWorkers, workflowBrowserProfiles } from "@tabductor/db";
+import { browserSessions, browserProfiles, browserWorkers, browserTabLeases, tasks, workflowBrowserProfiles } from "@tabductor/db";
 import { and, eq, desc } from "drizzle-orm";
 import { AppError } from "@tabductor/core";
 import {
   getBrowserSessionPlayback,
+  browserControlIsActive,
   mintBrowserViewToken,
   ensureWorkflowBrowserProfile,
-  requestBrowserSession,
+  openBrowserProfileSession,
   listBrowserSessionActivity,
   requestBrowserTakeover,
   resumeBrowserAutomation,
@@ -17,8 +18,43 @@ import { LOCAL_ACCOUNT } from "../auth-context.js";
 import { procedure, requireBrowserSessionOwner, requireWorkflowOwner, router } from "../trpc.js";
 
 const sessionInput = z.object({ sessionId: z.string().min(1) });
+const workerTabs = z.object({ tabs: z.array(z.object({
+  pageId: z.string(), title: z.string(), url: z.string(), selected: z.boolean(), tabKey: z.string().nullable(),
+})) });
 
 export const browserSessionRouter = router({
+  tabs: procedure.input(sessionInput).query(async ({ ctx, input }) => {
+    await requireBrowserSessionOwner(ctx, input.sessionId);
+    const [row] = await ctx.db.select({ session: browserSessions, worker: browserWorkers }).from(browserSessions)
+      .innerJoin(browserWorkers, eq(browserWorkers.id, browserSessions.workerId)).where(eq(browserSessions.id, input.sessionId));
+    if (!row?.worker.endpointUrl || !["ready", "running"].includes(row.session.status)) return [];
+    const [response, leases] = await Promise.all([
+      fetch(`${row.worker.endpointUrl}/v1/sessions/${encodeURIComponent(input.sessionId)}/tabs?generation=${row.session.generation}`, {
+        headers: { authorization: `Bearer ${browserWorkerToken(process.env.BROWSER_WORKER_TOKEN_KEY ?? "", row.worker.podName)}`, "x-tabductor-rpc-version": "1" },
+        signal: AbortSignal.timeout(5000), cache: "no-store",
+      }),
+      ctx.db.select({ tabKey: browserTabLeases.tabKey, runId: browserTabLeases.runId, taskName: tasks.name }).from(browserTabLeases)
+        .leftJoin(tasks, eq(tasks.id, browserTabLeases.taskId)).where(eq(browserTabLeases.sessionId, input.sessionId)),
+    ]);
+    if (!response.ok) throw new AppError("browser_tabs_unavailable", "Browser tabs are temporarily unavailable");
+    return workerTabs.parse(await response.json()).tabs.map(tab => {
+      const lease = leases.find(item => item.tabKey === tab.tabKey);
+      return { ...tab, runId: lease?.runId ?? null, taskName: lease?.taskName ?? null };
+    });
+  }),
+  selectTab: procedure.input(sessionInput.extend({ pageId: z.string().min(1).max(160) })).mutation(async ({ ctx, input }) => {
+    await requireBrowserSessionOwner(ctx, input.sessionId);
+    const [row] = await ctx.db.select({ session: browserSessions, worker: browserWorkers }).from(browserSessions)
+      .innerJoin(browserWorkers, eq(browserWorkers.id, browserSessions.workerId)).where(eq(browserSessions.id, input.sessionId));
+    if (!row?.worker.endpointUrl || !["ready", "running"].includes(row.session.status))
+      throw new AppError("browser_session_not_found", "Active browser session not found");
+    const response = await fetch(`${row.worker.endpointUrl}/v1/sessions/${encodeURIComponent(input.sessionId)}/tabs/select`, {
+      method: "POST", headers: { authorization: `Bearer ${browserWorkerToken(process.env.BROWSER_WORKER_TOKEN_KEY ?? "", row.worker.podName)}`, "x-tabductor-rpc-version": "1", "content-type": "application/json" },
+      body: JSON.stringify({ generation: row.session.generation, page_id: input.pageId }), signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) throw new AppError("browser_tab_unavailable", "This tab is no longer available. Refresh the tab list.");
+    return { selected: true };
+  }),
   profiles: procedure.query(async ({ ctx }) => {
     const accountId = ctx.accountId ?? LOCAL_ACCOUNT;
     return ctx.db.select({ id: browserProfiles.id, name: browserProfiles.name, updatedAt: browserProfiles.updatedAt,
@@ -37,7 +73,7 @@ export const browserSessionRouter = router({
   importCode: procedure.input(z.object({ profileId: z.string().min(1), origin: profileOriginSchema })).mutation(({ ctx, input }) =>
     createProfileImport(ctx.db, { ...input, accountId: ctx.accountId ?? LOCAL_ACCOUNT })),
   openProfile: procedure.input(z.object({ profileId: z.string().min(1) })).mutation(async ({ ctx, input }) => ({
-    sessionId: await requestBrowserSession(ctx.db, { ...input, accountId: ctx.accountId ?? LOCAL_ACCOUNT }),
+    sessionId: await openBrowserProfileSession(ctx.db, { ...input, accountId: ctx.accountId ?? LOCAL_ACCOUNT }),
   })),
   navigate: procedure.input(sessionInput.extend({ url: z.string().url().max(4096) })).mutation(async ({ ctx, input }) => {
     await requireBrowserSessionOwner(ctx, input.sessionId);
@@ -45,7 +81,7 @@ export const browserSessionRouter = router({
     if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new AppError("navigation_invalid", "Use an HTTP or HTTPS website address");
     const [row] = await ctx.db.select({ session: browserSessions, worker: browserWorkers }).from(browserSessions)
       .innerJoin(browserWorkers, eq(browserWorkers.id, browserSessions.workerId)).where(eq(browserSessions.id, input.sessionId));
-    if (!row?.worker.endpointUrl || !["ready", "running"].includes(row.session.status) || row.session.inputOwner !== "human" || !row.session.takeoverExpiresAt || row.session.takeoverExpiresAt <= new Date())
+    if (!row?.worker.endpointUrl || !["ready", "running"].includes(row.session.status) || !browserControlIsActive(row.session))
       throw new AppError("browser_input_revoked", "Take control before navigating");
     const response = await fetch(`${row.worker.endpointUrl}/v1/sessions/${encodeURIComponent(input.sessionId)}/navigate`, {
       method: "POST", headers: { authorization: `Bearer ${browserWorkerToken(process.env.BROWSER_WORKER_TOKEN_KEY ?? "", row.worker.podName)}`, "x-tabductor-rpc-version": "1", "content-type": "application/json" },
@@ -60,15 +96,29 @@ export const browserSessionRouter = router({
     await requireWorkflowOwner(ctx, input.workflowId);
     const accountId = ctx.accountId ?? LOCAL_ACCOUNT;
     const profileId = await ensureWorkflowBrowserProfile(ctx.db, accountId, input.workflowId);
-    return { sessionId: await requestBrowserSession(ctx.db, { accountId, profileId }) };
+    return { sessionId: await openBrowserProfileSession(ctx.db, { accountId, profileId }) };
   }),
   viewerToken: procedure.input(sessionInput.extend({ access: z.enum(["view", "control"]).default("view") })).mutation(async ({ ctx, input }) => {
     const accountId = ctx.accountId ?? LOCAL_ACCOUNT;
     const [session] = await ctx.db.select().from(browserSessions).where(and(eq(browserSessions.id, input.sessionId), eq(browserSessions.accountId, accountId)));
     if (!session || !["ready", "running"].includes(session.status)) throw new AppError("browser_session_not_found", "active browser session not found");
-    if (input.access === "control" && (session.inputOwner !== "human" || !session.takeoverExpiresAt || session.takeoverExpiresAt.getTime() <= Date.now())) throw new AppError("browser_input_revoked", "wait for takeover acknowledgment before controlling the browser");
+    if (input.access === "control" && !browserControlIsActive(session)) throw new AppError("browser_input_revoked", "wait for takeover acknowledgment before controlling the browser");
     const expiresAt = Date.now() + 120_000;
-    return { token: mintBrowserViewToken(process.env.BROWSER_WORKER_TOKEN_KEY ?? "", { accountId, sessionId: session.id, generation: session.generation, inputGeneration: session.inputOwnerGeneration, access: input.access, expiresAt }), expiresAt };
+    return { token: mintBrowserViewToken(process.env.BROWSER_WORKER_TOKEN_KEY ?? "", { accountId, sessionId: session.id, generation: session.generation, inputGeneration: session.inputOwnerGeneration, access: input.access, expiresAt }), expiresAt, inputGeneration: session.inputOwnerGeneration };
+  }),
+  paste: procedure.input(sessionInput.extend({ text: z.string().min(1).max(100_000), inputGeneration: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+    await requireBrowserSessionOwner(ctx, input.sessionId);
+    const [row] = await ctx.db.select({ session: browserSessions, worker: browserWorkers }).from(browserSessions)
+      .innerJoin(browserWorkers, eq(browserWorkers.id, browserSessions.workerId)).where(eq(browserSessions.id, input.sessionId));
+    if (!row?.worker.endpointUrl || !["ready", "running"].includes(row.session.status) ||
+        !browserControlIsActive(row.session) || row.session.inputOwnerGeneration !== input.inputGeneration)
+      throw new AppError("browser_input_revoked", "Take control before pasting");
+    const response = await fetch(`${row.worker.endpointUrl}/v1/sessions/${encodeURIComponent(input.sessionId)}/paste`, {
+      method: "POST", headers: { authorization: `Bearer ${browserWorkerToken(process.env.BROWSER_WORKER_TOKEN_KEY ?? "", row.worker.podName)}`, "x-tabductor-rpc-version": "1", "content-type": "application/json" },
+      body: JSON.stringify({ generation: row.session.generation, input_generation: input.inputGeneration, text: input.text }), signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) throw new AppError("paste_failed", response.status === 404 ? "Open a new browser session to enable clipboard paste." : "The browser could not paste. Check that you still have control before trying again.");
+    return { pasted: true };
   }),
   get: procedure.input(sessionInput).query(async ({ ctx, input }) => {
     await requireBrowserSessionOwner(ctx, input.sessionId);

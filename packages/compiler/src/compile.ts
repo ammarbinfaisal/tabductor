@@ -181,6 +181,7 @@ export async function compileTask(deps: CompileDeps, input: CompileInput): Promi
     const [task] = await deps.db.select().from(tasks).where(eq(tasks.id, input.taskId));
     if (!task) return fail("kind", `no task ${input.taskId}`);
     if (!COMPILABLE_KINDS.has(task.kind)) return fail("kind", `kind "${task.kind}" is not compiled`);
+    if ((task.limitsJson as Record<string, unknown> | null)?.harness) return fail("kind", "Destination contract tasks require the fenced agent runtime");
 
     const sourceTrace = input.traces.find((t) => t.runId === input.sourceRunId);
     if (!sourceTrace) return fail("evidence", `no trace loaded for source run ${input.sourceRunId}`);

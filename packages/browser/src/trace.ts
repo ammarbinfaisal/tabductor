@@ -1,5 +1,6 @@
 import { newId } from "@tabductor/core";
 import { artifacts, traceEntries, type Db, type TraceKind } from "@tabductor/db";
+import { eq, sql } from "drizzle-orm";
 import type { BlobStore } from "./blob-store.js";
 
 /**
@@ -77,6 +78,9 @@ export function createTraceRecorder(
   const flushIntervalMs = options.flushIntervalMs ?? 1000;
   if (!Number.isSafeInteger(flushIntervalMs) || flushIntervalMs < 1) throw new Error("trace flush interval must be a positive integer");
   let seq = 0;
+  // Resuming a durable human wait reuses its run. Continue its trace instead of silently
+  // discarding new entries against the existing (run_id, seq) primary key.
+  let sequenceBase: Promise<number> | undefined;
   let entries: PendingEntry[] = [];
   let pendingArtifacts: PendingArtifact[] = [];
   // Serializes flushes: two overlapping inserts of the same buffer would duplicate rows,
@@ -115,6 +119,8 @@ export function createTraceRecorder(
       if (closed) return Promise.reject(new Error("trace recorder is closed"));
       if (!enabled(storageFlags, CATEGORY[kind])) return Promise.resolve();
       const entrySeq = seq++;
+      sequenceBase ??= db.select({ next: sql<number>`coalesce(max(${traceEntries.seq}), -1) + 1` }).from(traceEntries)
+        .where(eq(traceEntries.runId, runId)).then(rows => Number(rows[0]!.next));
       const createdAt = new Date();
       if (!timer) {
         timer = setInterval(() => {
@@ -136,7 +142,7 @@ export function createTraceRecorder(
           });
         }
 
-        entries.push({ runId, seq: entrySeq, kind, payloadJson: payload, blobRef, createdAt });
+        entries.push({ runId, seq: (await sequenceBase!) + entrySeq, kind, payloadJson: payload, blobRef, createdAt });
         if (entries.length >= BUFFER_LIMIT) await flush();
       })();
       const tracked = pending.finally(() => recording.delete(tracked));

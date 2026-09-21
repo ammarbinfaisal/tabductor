@@ -75,7 +75,7 @@ it("returns fresh perception after a failed wait and requires exploration before
   } as unknown as RunSession;
   const tools = new Map(buildToolRegistry({ session, emit }).map((t) => [t.name, t]));
   const failed = await tools.get("page.waitFor")!.execute({ anchor: "e29" });
-  expect(failed).toMatchObject({ ok: false, value: expect.stringContaining("Fresh tweets are visible") });
+  expect(failed).toMatchObject({ ok: false, value: expect.objectContaining({text:"Fresh tweets are visible"}) });
   expect(await tools.get("emit")!.execute({ type: "x.page_unavailable", packet: {} })).toMatchObject({ ok: false });
   expect(emit).not.toHaveBeenCalled();
   expect(await tools.get("page.waitFor")!.execute({ anchor: "e29" })).toMatchObject({ ok: false, error: expect.stringContaining("same wait") });

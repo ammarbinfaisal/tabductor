@@ -1,15 +1,18 @@
+import { bindIntent } from "./intent-contract.js";
 import { describe, expect, it } from "vitest";
 import { gateGraphDraft, graphDraftArtifactSchema, llmGraphCompiler } from "./graph-authoring.js";
 
 const valid = {
   graph: {
+    automationPrompt: "Read example.com each hour",
+    intent: bindIntent("Read example.com each hour", { requirements: [{ id: "source", description: "Read example.com", quote: "Read example.com", category: "source" }] }),
     tasks: [
       {
         name: "watch",
         kind: "browser",
         mode: "ai",
         prompt: "Open example.com and emit page.read after extracting the title.",
-        limits: {},
+        limits: { harness: { version: 1, role: "source", requirementIds: ["source"] } },
         emits: ["page.read"],
         consumes: [],
         schedule: {
@@ -32,6 +35,23 @@ const valid = {
 };
 
 describe("llmGraphCompiler", () => {
+  it("recovers trailing commas without changing task prompts or bypassing the graph gate", async () => {
+    const draft = structuredClone(valid);
+    draft.graph.tasks[0]!.prompt += ' Preserve literal ,} and ,] and "quotes".';
+    const source = JSON.stringify(draft);
+    const compiler = llmGraphCompiler({ complete: async () => ({ text: source.slice(0, -1) + ",}" }) });
+    const result = await compiler.compile({ intent: valid.graph.automationPrompt });
+    expect(result).toMatchObject({ ok: true, report: { attempts: 1 } });
+    if (result.ok) expect(result.artifact.graph.tasks[0]!.prompt).toBe(draft.graph.tasks[0]!.prompt);
+
+    draft.graph.tasks[0]!.emits.push("undeclared");
+    const invalid = JSON.stringify(draft);
+    const rejected = await llmGraphCompiler({ complete: async () => ({ text: invalid.slice(0, -1) + ",}" }) })
+      .compile({ intent: valid.graph.automationPrompt });
+    expect(rejected).toMatchObject({ ok: false, report: { attempts: 3 } });
+    expect(rejected.report.checks).toEqual(expect.arrayContaining([expect.objectContaining({ check: "event_wiring", status: "fail" })]));
+  });
+
   it("returns a gated graph draft and inert grant proposals", async () => {
     const compiler = llmGraphCompiler({ complete: async () => ({ text: JSON.stringify(valid) }) });
     const result = await compiler.compile({ intent: "Read example.com each hour" });

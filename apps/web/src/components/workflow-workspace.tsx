@@ -70,6 +70,14 @@ export function WorkflowWorkspace({ editor, state, showGraph = false, initialEve
   return (
     <div className="workflow-workspace workflow-workspace--inspection">
       <div className="workflow-workspace__main">
+        {live.progress?.blocked ? <div className="banner" role="status"><strong>Blocked</strong> · {live.progress.blocked.message}</div> : null}
+        {live.progress?.execution ? <section className="flow-selection" aria-label="Latest execution progress">
+          <h2>Latest execution · {live.progress.execution.status}</h2>
+          {live.progress.execution.records.tracked ? <>
+            <p><strong>{live.progress.execution.records.saved} verified destination saves</strong> from {live.progress.execution.records.total} tracked records.</p>
+            <p className="muted">Extracted, awaiting preparation: {live.progress.execution.records.extracted} · Prepared: {live.progress.execution.records.prepared} · Pending save: {live.progress.execution.records.pending} · Skipped: {live.progress.execution.records.skipped} · Rejected: {live.progress.execution.records.rejected} · Failed: {live.progress.execution.records.failed}</p>
+          </> : <p className="muted">Record progress is unavailable for this execution. Step and packet counts do not establish destination saves.</p>}
+        </section> : null}
         {showGraph ? <section className="flow-panel" aria-label="Workflow graph">
           <div className="flow-toolbar">
             <div><strong>Workflow graph</strong><span className="muted">{state.graph.tasks.length} steps · {state.graph.events.length} event types</span></div>
@@ -86,7 +94,7 @@ export function WorkflowWorkspace({ editor, state, showGraph = false, initialEve
           </div>
           {state.dirty ? <p className="flow-draft-note">Unpublished draft · activity below belongs to the published version.</p> : null}
           {flow.nodes.length === 0 ? (
-            <div className="flow-empty"><h2>Start with what you want to happen.</h2><p>Describe your workflow in chat. Its steps and event routes will appear here.</p></div>
+            <div className="flow-empty"><h2>Start with what you want to happen.</h2><p>Write your workflow prompt and build it. Its steps and event routes will appear here.</p></div>
           ) : (
             <div id="workflow-flow-viewport" className="flow-viewport" tabIndex={0} aria-label="Scrollable workflow graph. Select a step or event to inspect it.">
               <div style={{ width: flow.width * live.zoom, height: flow.height * live.zoom, minHeight: 360 }}>
@@ -111,11 +119,11 @@ export function WorkflowWorkspace({ editor, state, showGraph = false, initialEve
                     const selected = node.id === selectedId || path.has(node.id);
                     return (
                       <button key={node.id} style={{ left: node.x, top: node.y }} className={`flow-node flow-node--${node.kind}${selected ? " flow-node--selected" : ""}`} aria-pressed={selected} onClick={() => choose({ kind: node.kind, id: node.name })}>
-                        <span className="flow-node__kind">{node.kind === "event" ? "◇ Event" : definition?.kind === "decision" ? "⑂ Decision" : "▣ Browser"}{node.external ? " · input" : ""}</span>
+                        <span className="flow-node__kind">{node.kind === "event" ? "◇ Event" : definition?.kind === "result" ? "◎ Result" : definition?.kind === "decision" ? "⑂ Decision" : "▣ Browser"}{node.external ? " · input" : ""}</span>
                         <strong>{node.kind === "node" ? readableName(node.name, definition?.label) : eventName(state.graph, node.name)}</strong>
                         <span className="flow-node__meta">{node.kind === "event"
                           ? `${counts.get(node.name) ?? 0} recent packets`
-                          : latest ? <Stamp kind={latest.status} /> : definition?.consumes.length ? "Waiting for input" : "Entry · workflow start"}</span>
+                          : latest ? <Stamp kind={latest.status} /> : definition?.kind === "result" ? "After all steps finish" : definition?.consumes.length ? "Waiting for input" : "Entry · workflow start"}</span>
                       </button>
                     );
                   })}

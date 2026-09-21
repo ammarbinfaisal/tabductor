@@ -14,6 +14,12 @@ export type SchemaGenInput = {
   description: string;
   emitters: Array<{ name: string; prompt: string | null }>;
   consumers: Array<{ name: string; prompt: string | null }>;
+  /** Publish supplies actual upstream schemas when independently generated events conflict. */
+  compatibility?: {
+    previousSchema: Record<string, unknown>;
+    errors: string[];
+    upstream: Array<{ task: string; eventType: string; schema: Record<string, unknown> }>;
+  };
 };
 
 export type SchemaGenResult =
@@ -35,6 +41,7 @@ export interface SchemaGenerator {
 export function promptHashOf(input: SchemaGenInput): string {
   const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name);
   const canonical = JSON.stringify({
+    policyVersion: 3,
     type: input.eventType,
     description: input.description,
     emitters: [...input.emitters].sort(byName),

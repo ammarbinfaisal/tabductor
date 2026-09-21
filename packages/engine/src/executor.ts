@@ -14,7 +14,7 @@ export interface TaskExecutor {
  * validation again, and a policy denial (Phase 7) is a decision, not a fault. Absent or
  * false, the task's retry policy applies.
  */
-export type RunResult = { ok: true } | { ok: false; error: string; permanent?: boolean };
+export type RunResult = { ok: true; result?: unknown } | { ok: false; error: string; permanent?: boolean; suspended?: boolean; deferred?: boolean };
 
 /** Everything an executor is allowed to see, plus the one thing it may do to the world. */
 export type RunHandle = {
@@ -24,6 +24,14 @@ export type RunHandle = {
   trigger: EventRow | null;
   /** Aborted when cancellation, timeout, or a newer engine generation revokes ownership. */
   signal: AbortSignal;
+  recordOutcome?: (outcome: import("./record-progress.js").RecordOutcome) => Promise<void>;
+  recordCompletionError?: () => Promise<string | null>;
+  destination?: {
+    role: import("./intent-contract.js").HarnessTask["role"];
+    read: (id?: string) => Promise<import("./destination-contracts.js").StoredDestination>;
+    publish: (mapping: import("./destination-contracts.js").DestinationMapping, evidence: import("./destination-contracts.js").DestinationEvidence) => Promise<import("./destination-contracts.js").StoredDestination>;
+  };
+  requestHumanAction?: (input: { reason: string; resumeWhen: string }) => Promise<void>;
   /**
    * Validates `packet` against the event's compiled schema for this task's workflow
    * version and, if it passes, publishes through the outbox in one transaction. Rejects on

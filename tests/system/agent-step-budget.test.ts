@@ -1,16 +1,9 @@
 import { afterEach, expect, it } from "vitest";
-import { seedWorkflow, updateTask } from "@tabductor/engine";
-import { runsForTask, trigger, waitFor, waitForQuiet } from "./engine-support.js";
+import { seedWorkflow, triggerTask } from "@tabductor/engine";
+import { runsForTask, waitForQuiet } from "./engine-support.js";
 import { startAgentRig, waitForTraceRows, type AgentRig } from "./agent-support.js";
 
-/**
- * S4b spec §6, fourth bullet: a transcript that never calls `done`/`fail` exhausts
- * `limits_json.agent.max_steps` and fails `step_budget_exceeded`, trace intact. Fixture
- * `fixtures/transcripts/step-budget.jsonl` has exactly 3 turns — the task's `max_steps` is
- * set to 3 below so the loop asks the replay adapter for precisely as many completions as
- * the fixture has, and no more (a 4th call would throw `llm_replay_exhausted`, which would
- * itself be a bug in this test, not the thing under test).
- */
+/** AI runs continue past both the former default and legacy per-task step caps. */
 
 let rig: AgentRig | undefined;
 
@@ -19,36 +12,38 @@ afterEach(async () => {
   rig = undefined;
 });
 
-it("never calling done/fail exhausts max_steps and fails step_budget_exceeded, trace intact", async () => {
-  rig = await startAgentRig({ fixtureFor: () => "step-budget.jsonl" });
+it.each([undefined, 3])("finishes beyond 30 model turns with legacy max_steps=%s", async (maxSteps) => {
+  let turns = 0;
+  rig = await startAgentRig({ llmFor: ({ trace }) => ({ async complete() {
+    turns++;
+    await trace.record("llm", { turn: turns });
+    return { usage: { in: 1, out: 1 }, toolCalls: turns <= 40
+      ? [{ id: `read-${turns}`, name: "page.perceive", args: {} }]
+      : [{ id: "verify", name: "page.verify", args: { urlIncludes: "about:blank" } },
+        { id: "done", name: "done", args: { result: "finished" } }] };
+  } }) });
 
   const wf = await seedWorkflow(rig.handle.db, {
     tasks: {
-      Start: {},
-      Scrape: { mode: "ai", prompt: "Scroll around forever.", consumes: ["work.requested"] },
+      Scrape: { mode: "ai", prompt: "Observe the current page, then finish.",
+        limits: maxSteps === undefined ? {} : { agent: { max_steps: maxSteps } } },
     },
   });
-  await updateTask(rig.handle.db, {
-    taskId: wf.taskIds.Scrape!,
-    limits: { agent: { max_steps: 3 } },
-  });
-
-  await trigger(rig, wf.taskIds.Start!, "work.requested");
-  await waitFor("Scrape's run to fail", async () => {
-    const [row] = await runsForTask(rig!, wf.taskIds.Scrape!);
-    return row?.status === "failed" ? row : false;
-  });
+  await triggerTask(rig.handle.db, { taskId: wf.taskIds.Scrape! });
   await waitForQuiet(rig);
 
   const attempts = await runsForTask(rig, wf.taskIds.Scrape!);
   expect(attempts).toHaveLength(1);
-  expect(attempts[0]!.error).toBe("step_budget_exceeded");
+  expect(attempts[0]!.status, attempts[0]!.error ?? "").toBe("succeeded");
+  expect(turns).toBe(41);
 
-  const rows = await waitForTraceRows(rig, attempts[0]!.id, (r) => r.filter((x) => x.kind === "llm").length >= 3);
-  expect(rows.filter((r) => r.kind === "llm").length).toBe(3);
+  const rows = await waitForTraceRows(rig, attempts[0]!.id, (r) => r.filter((x) => x.kind === "llm").length >= 41);
+  expect(rows.filter((r) => r.kind === "llm").length).toBe(41);
   expect(
     rows.some(
       (r) => (r.payloadJson as { action?: string }).action === "agent.step_budget_exceeded",
     ),
-  ).toBe(true);
+  ).toBe(false);
+  expect(rows.some(row => (row.payloadJson as { action?: string; steps?: number }).action === "agent.done" &&
+    (row.payloadJson as { steps?: number }).steps === 41)).toBe(true);
 });

@@ -5,7 +5,7 @@ import type { RunSession } from "@tabductor/browser";
 
 /**
  * `AgentTool.execute` is documented "Never throws" — every failure comes back as
- * `{ok:false, error}` so the loop hands it to the model and the step budget arbitrates
+ * `{ok:false, error}` so the loop hands it to the model and the run deadline bounds
  * retries. That held only for failures this registry *authored* (a stale anchor, a bad emit
  * packet); a driver call underneath could still throw, and one that did ended the run.
  *
@@ -70,7 +70,7 @@ it("recovers the same way for every page tool, not just click", async () => {
 
 it("still throws for infrastructure failures the model cannot act on", async () => {
   // These four are what `mapError` turns into run outcomes. Handing "the browser you were
-  // driving is gone" back as a tool result would spend the rest of the step budget re-asking
+  // driving is gone" back as a tool result would spend the rest of the run re-asking
   // a dead connection.
   for (const code of [
     "browser.disconnected",

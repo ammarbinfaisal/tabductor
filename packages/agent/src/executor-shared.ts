@@ -10,7 +10,7 @@ import type { EmitFn, EmitOutcome } from "./tools.js";
  * What the browser and decision executors share: everything about
  * running `runAgentLoop` behind the engine's `TaskExecutor` contract that has nothing to do
  * with *how* a run's session comes to exist — reading the trigger's compiled schema, the
- * `emit` tool's host half (dedupe-claim then publish), the step-budget limit, and translating
+ * `emit` tool's host half (dedupe-claim then publish), and translating
  * an `AgentLoopResult` into the engine's `RunResult`. A browser run acquires a pool lease and
  * opens a page; a decision run acquires only a store-aware tool registry — everything below this line
  * is the part that was never about a page to begin with.
@@ -35,12 +35,10 @@ export function storageFlagsOf(task: TaskRow): StorageFlags {
   return storage ?? {};
 }
 
-/** `limits_json.agent.max_steps` — `undefined` lets `runAgentLoop` apply its own default, one
- * default kept in one place rather than restated at every call site. */
-export function maxStepsOf(task: TaskRow): number | undefined {
-  const agent = asRecord(asRecord(task.limitsJson)?.agent);
-  const maxSteps = agent ? asNumber(agent.max_steps) : undefined;
-  return maxSteps !== undefined && maxSteps > 0 ? maxSteps : undefined;
+/** Optional total request admission budget, including schemas and image allowance. */
+export function maxInputTokensOf(task: TaskRow): number | undefined {
+  const value = asNumber(asRecord(asRecord(task.limitsJson)?.agent)?.max_input_tokens);
+  return value !== undefined && Number.isSafeInteger(value) && value >= 4096 ? value : undefined;
 }
 
 export async function triggerInfoOf(db: Db, handle: RunHandle): Promise<TriggerInfo | null> {
@@ -56,7 +54,7 @@ export async function triggerInfoOf(db: Db, handle: RunHandle): Promise<TriggerI
  * *what* to publish, this decides *whether* — claim the dedupe key first (an atomic unique
  * insert, the same `claim`-then-act shape `packages/bus/src/dedupe.ts` uses for inbound
  * redelivery, applied here to outbound side effects instead), then publish. A publish that
- * fails validation releases the claim, so a corrected retry within the same run's step budget
+ * fails validation releases the claim, so a corrected retry within the same run
  * can still emit under that key — claiming before a validation outcome is known would
  * otherwise burn the key on a packet that was never actually sent.
  */
@@ -112,7 +110,7 @@ export function makeEmitFn(opts: {
 
 /**
  * The safety net `makeEmitFn`'s drain-on-emit cannot cover: a run that staged a store write
- * (`store.insert`/`upsert`) and then finished — `done`/`fail`, step-budget exhaustion, a
+ * (`store.insert`/`upsert`) and then finished — `done`/`fail`, cancellation, a
  * thrown error — without ever calling `emit` again. Nothing about §7's ordering rule requires
  * *every* store write to ride an emit; it only requires that when one does accompany an emit,
  * the two are atomic. A write with no emit downstream at all still has to land somewhere, so
@@ -140,12 +138,5 @@ export function toRunResult(result: AgentLoopResult): RunResult {
       return { ok: true };
     case "fail":
       return { ok: false, error: result.reason };
-    case "step_budget_exceeded":
-      // Retryable, not permanent — the deviation from S3b's `resource_limit_exceeded`
-      // precedent, argued in the S4b subphase doc: a script hitting a fixed resource cap
-      // replays into the identical wall on retry, but an LLM's sampling differs attempt to
-      // attempt, so a retried run can plausibly finish inside the same step budget where the
-      // first one didn't. Same class as `browser.disconnected`/`endpoint_queue_full`.
-      return { ok: false, error: "step_budget_exceeded" };
   }
 }

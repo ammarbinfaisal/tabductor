@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ASYNC_EVENT_EXECUTION_CONTRACT } from "./async-execution-contract.js";
+import { AUTHENTICATION_EXECUTION_CONTRACT } from "./authentication-contract.js";
 import { GRAPH_AUTHORING_SYSTEM_PROMPT } from "./graph-authoring-prompts.js";
 import { assemblePromptBrief, PROMPT_SYSTEM_PROMPT, type PromptCompileInput } from "./prompt-compiler.js";
 
@@ -17,6 +18,17 @@ const decisionInput: PromptCompileInput = {
   store: [{ name: "records", columns: ["source_id", "body"], primaryKey: ["source_id"] }],
 };
 
+it("keeps requested Google sign-in automated in generated and published browser guidance", () => {
+  const brief = assemblePromptBrief({ ...decisionInput,
+    workflow: { name: "Archive", originalRequest: "Ensure Login with Google into notion." },
+    task: { ...decisionInput.task, kind: "browser", prompt: "Prepare the destination." } });
+  expect(brief).toContain("Ensure Login with Google into notion.");
+  expect(brief).toContain(AUTHENTICATION_EXECUTION_CONTRACT);
+  expect(GRAPH_AUTHORING_SYSTEM_PROMPT).toContain(AUTHENTICATION_EXECUTION_CONTRACT);
+  expect(GRAPH_AUTHORING_SYSTEM_PROMPT).not.toContain("If sign-in or MFA is needed, call human_action.request");
+  expect(assemblePromptBrief(decisionInput)).not.toContain(AUTHENTICATION_EXECUTION_CONTRACT);
+});
+
 describe("asynchronous graph prompt contract", () => {
   it("is present in deterministic briefs even when no prompt model is configured", () => {
     const brief = assemblePromptBrief(decisionInput);
@@ -33,8 +45,8 @@ describe("asynchronous graph prompt contract", () => {
 
   it("authors any source-to-sink flow as generic asynchronously communicating stages", () => {
     expect(GRAPH_AUTHORING_SYSTEM_PROMPT).toContain(ASYNC_EVENT_EXECUTION_CONTRACT);
-    expect(GRAPH_AUTHORING_SYSTEM_PROMPT).toContain("different sites or external systems");
-    expect(GRAPH_AUTHORING_SYSTEM_PROMPT).toContain("each sink handles one event");
+    expect(GRAPH_AUTHORING_SYSTEM_PROMPT).toContain("different sites or systems in separate tasks connected by events");
+    expect(GRAPH_AUTHORING_SYSTEM_PROMPT).toContain("Every consumer processes its triggering item independently");
     expect(GRAPH_AUTHORING_SYSTEM_PROMPT).not.toContain("Notion");
   });
 });

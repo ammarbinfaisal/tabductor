@@ -1,5 +1,6 @@
+import { recordProgress } from "@tabductor/engine";
 import { AppError } from "@tabductor/core";
-import { workflows, workflowTriggerRequests } from "@tabductor/db";
+import { workflows, workflowTriggerRequests, workflowExecutions, runs } from "@tabductor/db";
 import { and, eq } from "drizzle-orm";
 import {
   getWorkflow,
@@ -30,10 +31,10 @@ export type WorkflowScheduleInput = {
  * nothing produced inside this graph; callers never need to learn its task id or name.
  */
 export function workflowEntryNames(graph: Graph): string[] {
-  if (graph.contractVersion === 2) return graph.tasks.filter((task) => task.entry).map((task) => task.name);
+  if (graph.contractVersion === 2) return graph.tasks.filter((task) => task.kind !== "result" && task.entry).map((task) => task.name);
   const internallyEmitted = new Set(graph.tasks.flatMap((task) => task.emits));
   return graph.tasks
-    .filter((task) => task.consumes.length === 0 || task.consumes.every((type) => !internallyEmitted.has(type)))
+    .filter((task) => task.kind !== "result" && (task.consumes.length === 0 || task.consumes.every((type) => !internallyEmitted.has(type))))
     .map((task) => task.name);
 }
 
@@ -159,5 +160,26 @@ export async function setWorkflowSchedule(ctx: Context, input: WorkflowScheduleI
     workflowId: input.workflowId,
     versionId: published.versionId,
     schedule: input.schedule,
+  };
+}
+
+/** Poll one traversal, never the latest run from a different invocation. */
+export async function workflowStatus(ctx: Context, input: { workflowId: string; executionId: string }) {
+  await requireWorkflowOwner(ctx, input.workflowId);
+  const [execution] = await ctx.db.select().from(workflowExecutions).where(and(
+    eq(workflowExecutions.id, input.executionId), eq(workflowExecutions.workflowId, input.workflowId),
+  ));
+  if (!execution) throw new AppError("execution_not_found", "No execution found for this workflow.");
+  const terminal = execution.status !== "running";
+  const attempts = terminal ? await ctx.db.select({ runId: runs.id, status: runs.status, error: runs.error })
+    .from(runs).where(eq(runs.executionId, execution.id)) : [];
+  return {
+    workflowId: execution.workflowId, executionId: execution.id, versionId: execution.workflowVersionId,
+    status: execution.blockedReasonJson && !terminal ? "blocked" as const : execution.status, finished: terminal,
+    blocked: execution.blockedReasonJson, records: await recordProgress(ctx.db, execution.id),
+    resultReady: terminal && execution.resultReady,
+    result: terminal && execution.resultReady ? execution.resultJson : null,
+    errors: attempts.filter((run) => run.error !== null),
+    createdAt: execution.createdAt, endedAt: execution.endedAt,
   };
 }

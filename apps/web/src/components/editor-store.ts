@@ -13,9 +13,11 @@ import type {
   ProposedGrant,
   TaskSummary,
 } from "@tabductor/engine";
+import { parseResultSchemaText, resultSchemaTextOf } from "../lib/result-schema.js";
 import { createStore } from "zustand/vanilla";
 import { api, asApiError, type ApiError } from "../lib/api.js";
 import { sendWorkflowMessage } from "../lib/workflow-chat-client.js";
+import { randomUUID } from "../lib/uuid.js";
 
 /**
  * The declarative editor's client state (U1). One vanilla store: the document being
@@ -57,6 +59,7 @@ export type WorkflowScheduleDraft = {
 export type EditorState = {
   workspaceTab: "automation" | "activity" | "graph";
   automationPrompt: string;
+  resultSchemaText: string;
   sidebar: "inspect" | "chat";
   chatMessages: Array<{ role: "user" | "assistant"; text: string; changes?: string[]; tools?: ChatToolActivity[] }>;
   chatPending: boolean;
@@ -143,6 +146,7 @@ export function createEditorStore(init: {
   const store = createStore<EditorState>(() => ({
     workspaceTab: "automation",
     automationPrompt: init.graph.automationPrompt ?? "",
+    resultSchemaText: resultSchemaTextOf(init.graph),
     sidebar: "chat",
     chatMessages: [],
     chatPending: false,
@@ -201,6 +205,7 @@ export function createEditorStore(init: {
     select: (selected: Selection) => store.setState({ selected }),
     setWorkspaceTab: (workspaceTab: EditorState["workspaceTab"]) => store.setState({ workspaceTab, selected: null }),
     setAutomationPrompt: (automationPrompt: string) => store.setState({ automationPrompt }),
+    setResultSchemaText: (resultSchemaText: string) => store.setState({ resultSchemaText }),
 
     async buildAutomation() {
       const state = store.getState();
@@ -208,11 +213,12 @@ export function createEditorStore(init: {
       if (!intent || state.busy) return;
       store.setState({ busy: true, error: null, notice: "Building your automation…" });
       try {
-        const result = await api.workflow.compileIntent.mutate({ workflowId: state.workflowId, intent,
+        const resultSchema = parseResultSchemaText(state.resultSchemaText);
+        const result = await api.workflow.compileIntent.mutate({ workflowId: state.workflowId, intent, resultSchema,
           current: { graph: state.graph, store: state.authoringStore, proposedGrants: [] } });
         if (!result.ok) throw new Error(result.error);
         const graph = { ...result.artifact.graph, automationPrompt: intent };
-        store.setState({ graph, automationPrompt: intent, authoringStore: result.artifact.store,
+        store.setState({ graph, automationPrompt: intent, resultSchemaText: resultSchemaTextOf(graph), authoringStore: result.artifact.store,
           authoringReport: result.report, proposedGrants: [], dirty: true, selected: null,
           scheduleDraft: workflowScheduleOf(graph).draft, notice: "Automation ready to review. Publish it, then run it when you’re ready." });
       } catch (error) { store.setState({ error: asApiError(error), notice: null }); }
@@ -313,7 +319,7 @@ export function createEditorStore(init: {
       const { graph } = store.getState();
       let name: string = kind;
       for (let n = 2; graph.tasks.some((t) => t.name === name); n += 1) name = `${kind}-${n}`;
-      edit((g) => ({ ...g, tasks: [...g.tasks, { ...emptyTask(name, kind), entry: g.tasks.length === 0 }] }));
+      edit((g) => ({ ...g, tasks: [...g.tasks, { ...emptyTask(name, kind), entry: kind !== "result" && g.tasks.length === 0 }] }));
       store.setState({ selected: { kind: "node", id: name } });
     },
 
@@ -404,7 +410,7 @@ export function createEditorStore(init: {
      * the per-event report so every failed event card can say why.
      */
     async save(confirmed = false) {
-      if (store.getState().busy || store.getState().automationPrompt.trim() !== (store.getState().graph.automationPrompt ?? "")) return;
+      if (store.getState().busy || store.getState().resultSchemaText !== resultSchemaTextOf(store.getState().graph) || store.getState().automationPrompt.trim() !== (store.getState().graph.automationPrompt ?? "")) return;
       const { workflowId, versionId: baseVersionId, graph, publishedPublic, authoringReport, authoringStore } = store.getState();
 
       const next = publicTypesOf(graph);
@@ -458,10 +464,10 @@ export function createEditorStore(init: {
     /** Start every externally triggerable entry behavior without exposing internal nodes. */
     async triggerWorkflow() {
       const state = store.getState();
-      if (!state.versionId || state.dirty || state.busy || state.automationPrompt.trim() !== (state.graph.automationPrompt ?? "")) return;
+      if (!state.versionId || state.dirty || state.busy || state.automationPrompt.trim() !== (state.graph.automationPrompt ?? "") || state.resultSchemaText !== resultSchemaTextOf(state.graph)) return;
       store.setState({ busy: true, error: null, notice: null });
       try {
-        triggerRequestId ??= crypto.randomUUID();
+        triggerRequestId ??= randomUUID();
         try { sessionStorage.setItem(triggerStorageKey, triggerRequestId); } catch { /* Keep the in-memory key. */ }
         const result = await api.workflow.trigger.mutate({ workflowId: state.workflowId, requestId: triggerRequestId });
         triggerRequestId = undefined;
@@ -478,7 +484,7 @@ export function createEditorStore(init: {
     /** A schedule edit is a publication: the resulting version becomes current atomically. */
     async publishSchedule(remove = false) {
       const state = store.getState();
-      if (!state.versionId || state.dirty || state.busy || state.automationPrompt.trim() !== (state.graph.automationPrompt ?? "")) return;
+      if (!state.versionId || state.dirty || state.busy || state.automationPrompt.trim() !== (state.graph.automationPrompt ?? "") || state.resultSchemaText !== resultSchemaTextOf(state.graph)) return;
       const cron = state.scheduleDraft.cron.trim();
       const timezone = state.scheduleDraft.timezone.trim();
       if (!remove && (!cron || !timezone)) return;
@@ -523,6 +529,7 @@ export function createEditorStore(init: {
         versionId: got.versionId,
         graph: draft.graph,
         automationPrompt: draft.graph.automationPrompt ?? "",
+        resultSchemaText: resultSchemaTextOf(draft.graph),
         taskIds: Object.fromEntries(got.tasks.map((t) => [t.name, t.id])),
         publishedTasks: Object.fromEntries(got.tasks.map((t) => [t.name, t])),
         eventSchemas: got.eventSchemas,
@@ -552,7 +559,7 @@ export type WorkflowScheduleView = {
 export function workflowScheduleOf(graph: Graph): WorkflowScheduleView {
   const internallyEmitted = new Set(graph.tasks.flatMap((task) => task.emits));
   const entries = graph.tasks.filter(
-    (task) => graph.contractVersion === 2 ? task.entry : task.consumes.length === 0 || task.consumes.every((type) => !internallyEmitted.has(type)),
+    (task) => task.kind !== "result" && (graph.contractVersion === 2 ? task.entry : task.consumes.length === 0 || task.consumes.every((type) => !internallyEmitted.has(type))),
   );
   const schedules = entries.flatMap((task) => task.schedule ? [task.schedule] : []);
   const first = schedules[0];

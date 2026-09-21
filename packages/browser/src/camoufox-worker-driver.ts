@@ -1,3 +1,4 @@
+import { AppError } from "@tabductor/core";
 import { randomUUID } from "node:crypto";
 import type {
   BrowserConn,
@@ -20,6 +21,8 @@ export type CamoufoxWorkerDriverOptions = {
   token: string;
   sessionId: string;
   generation: number;
+  /** Reuse the primary page for this exclusively leased workflow tab. */
+  tabKey?: string;
   fetch?: typeof globalThis.fetch;
 };
 
@@ -42,7 +45,7 @@ export function createCamoufoxWorkerDriver(options: CamoufoxWorkerDriverOptions)
       let consuming: Promise<void> = Promise.resolve();
 
       const rpc = async <T>(method: string, pageId?: string, params: Record<string, unknown> = {}, consume = true): Promise<T> => {
-        if (closed) throw new Error("camoufox worker connection is closed");
+        if (closed) throw new AppError("browser.disconnected", "camoufox worker connection is closed");
         let response: Response;
         try {
           response = await request(`${base}/v1/sessions/${encodeURIComponent(options.sessionId)}/commands`, {
@@ -63,13 +66,18 @@ export function createCamoufoxWorkerDriver(options: CamoufoxWorkerDriverOptions)
             }),
           });
         } catch (error) {
+          if (error instanceof AppError) throw error;
           for (const callback of disconnected) callback();
-          throw error;
+          throw new AppError("browser.disconnected", "Browser transport failed; reconcile in-flight effects before retrying", { cause: error });
         }
         if (!response.ok) {
           const detail = await response.text();
-          if (response.status >= 500) for (const callback of disconnected) callback();
-          throw new Error(`camoufox worker ${method} failed (${response.status}): ${detail.slice(0, 500)}`);
+          let parsed: { code?: string; message?: string; outcomeUncertain?: boolean } = {};
+          try { parsed = (JSON.parse(detail) as { detail: typeof parsed }).detail ?? {}; } catch { /* Older worker. */ }
+          const code = parsed.code ?? (response.status === 409 && /ownership|input owner/.test(detail) ? "browser_input_revoked" : "browser_command_failed");
+          if (code === "browser.disconnected") for (const callback of disconnected) callback();
+          throw new AppError(code, parsed.message ?? `Browser command ${method} failed (HTTP ${response.status}); inspect the current page before retrying`,
+            { details: { method, status: response.status, outcomeUncertain: parsed.outcomeUncertain ?? true } });
         }
         const result = await response.json() as RpcResult<T>;
         if (consume && result.events) {
@@ -80,6 +88,7 @@ export function createCamoufoxWorkerDriver(options: CamoufoxWorkerDriverOptions)
               if (closed || event.sequence <= eventCursor) continue;
               eventCursor = event.sequence;
               const hooks = pageHooks.get(event.page_id);
+              if (!hooks) continue;
               if (event.kind === "dialog" && event.dialog) { hooks?.onDialog?.(event.dialog); continue; }
               if (!event.request_id || !event.record) continue;
               if (event.kind === "request") {
@@ -121,8 +130,8 @@ export function createCamoufoxWorkerDriver(options: CamoufoxWorkerDriverOptions)
         polling.unref?.();
       };
 
-      const pageOf = (pageId: string, hooks: CreatePageOptions): Page => {
-        let currentUrl = "about:blank";
+      const pageOf = (pageId: string, hooks: CreatePageOptions, retained = false, url = "about:blank"): Page => {
+        let currentUrl = url;
         return {
           id: pageId,
           async goto(url: string, opts: NavigationOptions = {}) {
@@ -147,12 +156,12 @@ export function createCamoufoxWorkerDriver(options: CamoufoxWorkerDriverOptions)
             state,
             ...(opts.timeout === undefined ? {} : { timeout: opts.timeout }),
           }),
-          queryAll: (selector: string, fields: ExtractSpec) => rpc("page.query_all", pageId, { selector, fields }),
+          queryAll: (selector, fields, opts) => rpc("page.query_all", pageId, { selector, fields, ...opts }),
           probeTarget: (selector: string) => rpc<TargetProbe | null>("page.probe", pageId, { selector }),
           insertTextRaw: (selector: string, text: string) => rpc("page.insert_text", pageId, { selector, text }),
           async perceive(opts: PerceiveOptions = {}): Promise<Perception> {
             const result = await rpc<Perception>("page.perceive", pageId, {
-              ...(opts.maxChars === undefined ? {} : { max_chars: opts.maxChars }),
+              ...opts,
             });
             currentUrl = result.url;
             return result;
@@ -164,21 +173,38 @@ export function createCamoufoxWorkerDriver(options: CamoufoxWorkerDriverOptions)
             bytes: file.bytes.toString("base64"),
           }),
           scroll: (direction) => rpc("page.scroll", pageId, { direction }),
-          async screenshot() {
-            return Buffer.from(await rpc<string>("page.screenshot", pageId), "base64");
+          async screenshot(opts) {
+            return Buffer.from(await rpc<string>("page.screenshot", pageId, opts), "base64");
+          },
+          interact: (action) => rpc("page.interact", pageId, action),
+          async download(selector) {
+            const file = await rpc<{ name: string; mime: string; bytes: string }>("page.download", pageId, { selector });
+            return { ...file, bytes: Buffer.from(file.bytes, "base64") };
+          },
+          tabs: () => rpc("page.tabs", pageId),
+          async switchTab(id) {
+            const selected = await rpc<{page_id: string; url: string}>("page.switch_tab", pageId, {id});
+            return pageOf(selected.page_id, hooks, true, selected.url);
           },
           title: () => rpc("page.title", pageId),
           url: () => currentUrl,
-          close: () => rpc("page.close", pageId),
+          async close() {
+            pageHooks.delete(pageId);
+            if (!retained) await rpc("page.close", pageId);
+          },
         };
       };
 
+      let primaryCreated = false;
       return {
         async createPage(hooks = {}) {
-          const created = await rpc<{ page_id: string }>("page.create");
+          const retained = options.tabKey !== undefined && !primaryCreated;
+          const created = await rpc<{ page_id: string; url?: string }>(retained ? "tab.acquire" : "page.create", undefined,
+            retained ? { tab_key: options.tabKey! } : {});
+          primaryCreated = true;
           pageHooks.set(created.page_id, hooks);
           if (hooks.network || hooks.onDialog) startPolling();
-          return pageOf(created.page_id, hooks);
+          return pageOf(created.page_id, hooks, retained, created.url);
         },
         version: () => rpc("browser.version"),
         onDisconnect: (callback) => { disconnected.add(callback); },

@@ -1,3 +1,10 @@
+import { checkWorkflowPrerequisites, persistPrerequisiteBlock, refreshWorkflowBlocks, type PrerequisiteOptions } from "./prerequisites.js";
+import { recordEmitted, recordRunOutcome, recordCompletionError } from "./record-progress.js";
+import { harnessTask } from "./intent-contract.js";
+import { claimDestinationPreparation, claimDestinationRecord, prepareDestinationContract, readDestinationContract } from "./destination-contracts.js";
+import { normalizeRecord, recordProcessingSchema } from "./record-processing.js";
+import { requestHumanAction } from "./human-action.js";
+import { parseWorkflowResult } from "./result-schema.js";
 import { publish, type Dispatcher } from "@tabductor/bus";
 import { createLogger, type Logger } from "@tabductor/core";
 import {
@@ -26,12 +33,13 @@ import {
   startRun,
 } from "./run-state.js";
 import { createScheduler, type Scheduler } from "./scheduler.js";
-import { StubExecutor } from "./stub-executor.js";
+import { StubExecutor, StubResultExecutor } from "./stub-executor.js";
 import { assertRunLease } from "./run-lease.js";
 import { settleWorkflowExecutions } from "./execution-state.js";
 
 export type EngineDeps = {
   db: Db;
+  prerequisites?: PrerequisiteOptions;
   dispatcher: Dispatcher;
   /** Keyed by `executorKey(kind, mode)`; defaults to `{ "browser:stub": StubExecutor }`. */
   executors?: ExecutorRegistry;
@@ -75,7 +83,7 @@ export type Engine = {
  */
 export function createEngine(deps: EngineDeps): Engine {
   const { db, dispatcher } = deps;
-  const executors: ExecutorRegistry = deps.executors ?? { [executorKey("browser", "stub")]: StubExecutor };
+  const executors: ExecutorRegistry = deps.executors ?? { [executorKey("browser", "stub")]: StubExecutor, [executorKey("result", "stub")]: StubResultExecutor };
   const watchdogIntervalMs = deps.watchdogIntervalMs ?? 250;
   const shutdownGraceMs = deps.shutdownGraceMs ?? 5_000;
   const heartbeatIntervalMs = deps.heartbeatIntervalMs ?? 2_000;
@@ -88,6 +96,7 @@ export function createEngine(deps: EngineDeps): Engine {
       ? undefined
       : createScheduler({
           db,
+          prerequisites: deps.prerequisites,
           logger: log,
           ...(metrics ? { metrics } : {}),
           tracer,
@@ -101,6 +110,7 @@ export function createEngine(deps: EngineDeps): Engine {
   const inFlight = new Set<Promise<void>>();
   /** Run ids this process already handed to an executor, so the pickup poll skips them. */
   const claimed = new Set<string>();
+  let nextPrerequisiteRefresh = 0;
 
   const track = (work: Promise<void>): void => {
     const tracked = work.finally(() => inFlight.delete(tracked));
@@ -138,6 +148,10 @@ export function createEngine(deps: EngineDeps): Engine {
    * with the delivery path or with another engine.
    */
   const pickUpQueuedRuns = async (): Promise<void> => {
+    if (deps.prerequisites && Date.now() >= nextPrerequisiteRefresh) {
+      nextPrerequisiteRefresh = Date.now() + 30_000;
+      track(refreshWorkflowBlocks(db, deps.prerequisites).catch(error => log.error("prerequisite refresh failed", { error: String(error) })));
+    }
     for (const run of await dueQueuedRuns(db)) launch(run.id, null);
   };
 
@@ -161,6 +175,12 @@ export function createEngine(deps: EngineDeps): Engine {
     if (!row) return;
 
     const { task } = row;
+    if (row.run.status !== "queued") return;
+    if (deps.prerequisites) {
+      const block = await checkWorkflowPrerequisites(db, task.id, deps.prerequisites, row.run.executionId);
+      await persistPrerequisiteBlock(db, task.id, block, runId, block && row.run.executionId ? await checkWorkflowPrerequisites(db, task.id, deps.prerequisites) : block);
+      if (block) return;
+    }
     // A retry or a polled pickup arrives without the event in hand; the run row remembers it.
     const trigger = delivered ?? (await triggerEvent(db, row.run));
     const causationId = trigger?.eventId ?? null;
@@ -206,6 +226,24 @@ export function createEngine(deps: EngineDeps): Engine {
     result: RunResult,
     causationId: string | null,
   ): Promise<void> => {
+    if (!result.ok && result.suspended) return;
+    if (!result.ok && result.deferred) {
+      await db.update(runs).set({ status: "queued", notBefore: new Date(Date.now() + 1000), deadlineAt: null, error: result.error })
+        .where(and(eq(runs.id, run.id), eq(runs.status, "running"), eq(runs.leaseGeneration, run.leaseGeneration)));
+      return;
+    }
+    if (result.ok && task.kind === "result") {
+      try {
+        if (result.result === undefined) throw new Error("result_missing: result node returned no JSON");
+        parseWorkflowResult(JSON.stringify(result.result), task.resultSchemaJson);
+      } catch (error) {
+        result = { ok: false, error: error instanceof Error ? error.message : String(error), permanent: true };
+      }
+    }
+    if (result.ok) {
+      const error = await recordCompletionError(db, run, task);
+      if (error) result = { ok: false, error, permanent: true };
+    }
     const status = result.ok ? "succeeded" : "failed";
     const finished = await finishRun(db, {
       runId: run.id,
@@ -215,6 +253,7 @@ export function createEngine(deps: EngineDeps): Engine {
       causationId,
       leaseGeneration: run.leaseGeneration,
       retry: !result.ok && !result.permanent,
+      ...(result.ok && task.kind === "result" ? { result: result.result } : {}),
     });
     // Only the writer that actually moved the run counts it — the watchdog may have reaped
     // this run first, in which case it is `timed_out` and belongs to whoever reaped it.
@@ -232,10 +271,36 @@ export function createEngine(deps: EngineDeps): Engine {
       task: ctx.task,
       trigger: ctx.trigger,
       signal,
+      recordOutcome: outcome => recordRunOutcome(db, ctx.run, ctx.task, ctx.trigger, outcome),
+      recordCompletionError: () => recordCompletionError(db, ctx.run, ctx.task),
+      ...(harnessTask(ctx.task.limitsJson)?.destination ? { destination: {
+        role: harnessTask(ctx.task.limitsJson)!.role,
+        read: (id?: string) => readDestinationContract(db, ctx.run, ctx.task, ctx.trigger, id),
+        publish: (mapping: import("./destination-contracts.js").DestinationMapping, evidence: import("./destination-contracts.js").DestinationEvidence) => db.transaction(async trx => {
+          const contract = await prepareDestinationContract(trx, ctx.run, ctx.task, mapping, evidence);
+          const d = harnessTask(ctx.task.limitsJson)!.destination!;
+          await emitFromRun(trx, ctx, d.readyEvent, { [d.contractField]: contract.id }, { dedupeKey: `destination:${ctx.run.executionId}:${contract.id}` });
+          return contract;
+        }),
+      } } : {}),
+      ...(ctx.run.executionId && ctx.task.kind === "browser" ? { requestHumanAction: (input: { reason: string; resumeWhen: string }) => requestHumanAction(db, ctx.run, ctx.task, input) } : {}),
       emit: (type, packet, opts) => emitFromRun(db, ctx, type, packet, opts),
       declaredEmits: () => declaredEmitsOf(db, ctx.task),
     };
     try {
+      if (harnessTask(ctx.task.limitsJson)?.role === "prepare-destination") {
+        const claim = await claimDestinationPreparation(db, ctx.run, ctx.task);
+        if (claim === "ready") return { ok: true };
+        if (claim === "busy") return { ok: false, deferred: true, error: "destination_preparation_busy: another active run owns setup" };
+      }
+      if (harnessTask(ctx.task.limitsJson)?.role === "write-record") {
+        const claim = await claimDestinationRecord(db, ctx.run, ctx.task, ctx.trigger);
+        if (claim === "saved") {
+          await recordRunOutcome(db, ctx.run, ctx.task, ctx.trigger, { status: "skipped", reason: "Destination ledger already contains a verified save for this identity" });
+          return { ok: true };
+        }
+        if (claim === "busy") return { ok: false, deferred: true, error: "destination_record_busy: another active run owns this identity" };
+      }
       return await executor.execute(handle);
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -333,20 +398,30 @@ async function emitFromRun(
   packet: unknown,
   opts?: { withTx?: (trx: Db) => Promise<void>; dedupeKey?: string },
 ): Promise<EventRow | null> {
+  const processing = recordProcessingSchema.safeParse((ctx.task.limitsJson as Record<string, unknown>)?.recordProcessing);
+  if (processing.success && processing.data.eventType === type) packet = normalizeRecord(packet, processing.data);
+  const h = harnessTask(ctx.task.limitsJson);
+  const [declared] = h?.role === "source" ? await db.select({ record: eventDefs.recordJson }).from(eventDefs)
+    .where(and(eq(eventDefs.workflowVersionId, ctx.task.workflowVersionId), eq(eventDefs.eventType, type))) : [];
+  if (h?.role === "source" && h.destination && declared?.record) {
+    const contract = await readDestinationContract(db, ctx.run, ctx.task, ctx.trigger);
+    packet = { ...(packet as Record<string, unknown>), [h.destination.contractField]: contract.id };
+  }
   const check = await validatePacket(db, ctx.task.id, type, packet);
   if (!check.ok) throw new Error(check.error);
 
   return db.transaction(async (trx) => {
     await assertRunLease(trx, ctx.run.id, ctx.run.leaseGeneration);
-    if (opts?.dedupeKey) {
-      const key = `emit:${type}:${opts.dedupeKey}`;
+    const identity = processing.success && processing.data.eventType === type ? (packet as Record<string, unknown>)[processing.data.identityField] : null;
+    if (opts?.dedupeKey || identity) {
+      const key = identity ? `record:${ctx.run.executionId}:${type}:${identity}` : `emit:${type}:${opts!.dedupeKey}`;
       const claimed = await trx.insert(taskState).values({ taskId: ctx.task.id, key, value: {} })
         .onConflictDoNothing()
         .returning({ taskId: taskState.taskId });
       if (claimed.length === 0) return null;
     }
     if (opts?.withTx) await opts.withTx(trx);
-    return publish(trx, {
+    const event = await publish(trx, {
       type,
       executionId: ctx.run.executionId,
       sourceTaskId: ctx.task.id,
@@ -354,6 +429,8 @@ async function emitFromRun(
       causationId: ctx.trigger?.eventId ?? null,
       packet,
     });
+    await recordEmitted(trx, ctx.run, ctx.task, event);
+    return event;
   });
 }
 
@@ -389,7 +466,7 @@ async function declaredEmitsOf(
 /** Run timeout lives in `limits_json.run_timeout_ms`; anything non-numeric means no limit. */
 function runTimeoutMs(task: TaskRow): number | undefined {
   const limits = task.limitsJson;
-  if (typeof limits !== "object" || limits === null || Array.isArray(limits)) return undefined;
+  if (typeof limits !== "object" || limits === null || Array.isArray(limits)) return task.kind === "result" ? 120_000 : undefined;
   const value = Reflect.get(limits, "run_timeout_ms");
-  return typeof value === "number" && value > 0 ? value : undefined;
+  return typeof value === "number" && value > 0 ? value : task.kind === "result" ? 120_000 : undefined;
 }

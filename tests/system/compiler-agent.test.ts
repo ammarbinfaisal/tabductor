@@ -1,3 +1,4 @@
+import { SCRIPT_RUNTIME_VERSION } from "@tabductor/core";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, it } from "vitest";
@@ -50,7 +51,7 @@ type Entry = { seq: number; kind: string; payload: Record<string, unknown> };
 
 function trace(runId: string, entries: (seq: () => number) => Entry[]): RunTrace {
   let n = 0;
-  return { runId, entries: [{ seq: -1, kind: "runtime", payload: { browserVersion: "test-browser-v1", runtimeVersion: "tabductor-static-v1" } }, ...entries(() => n++)] };
+  return { runId, entries: [{ seq: -1, kind: "runtime", payload: { browserVersion: "test-browser-v1", runtimeVersion: SCRIPT_RUNTIME_VERSION } }, ...entries(() => n++)] };
 }
 
 /** What a first exploratory run actually leaves behind: looking, guessing, one dead end, then

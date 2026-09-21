@@ -7,14 +7,17 @@ import { liveLlm, providerFromEnv, resolveModelId, type LlmProvider } from "./ll
 import { costUsd } from "./pricing.js";
 import { recordLlm, replayLlm } from "./transcript.js";
 
-/**
- * The interface S4b's loop composes: one call in, one call out, no conversation state held
- * here — the loop owns `messages`, this just answers one turn. `system`/`messages` are plain
- * text, matching the schema compiler's `ChatTransport` precedent (`engine/schema-generator-
- * llm.ts`) rather than the richer multi-part message shape a provider SDK natively wants;
- * anything richer is S4b's problem to build on top; not ours to anticipate.
- */
-export type LlmMessage = { role: "user" | "assistant"; content: string };
+/** The loop owns conversation state. Text remains readable in transcripts; native tool
+ * identities and image parts are retained separately for the provider transport. */
+export type LlmMessage = {
+  role: "user" | "assistant" | "tool";
+  /** Human-readable form for transcripts; native parts below are authoritative on the wire. */
+  content: string;
+  toolCalls?: LlmToolCall[];
+  toolResults?: Array<{id:string;name:string;result:import("./tools.js").ToolResult}>;
+  context?: string;
+  actionSummaries?: import("./browser-actions.js").BrowserActionSummary[];
+};
 
 /** A tool's parameters are a zod schema, not hand-written JSON Schema — validated at the
  * definition site and converted to JSON Schema by the AI SDK when a request is live. */

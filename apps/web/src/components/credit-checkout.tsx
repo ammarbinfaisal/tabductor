@@ -2,6 +2,7 @@
 import { createStore } from "zustand/vanilla";
 import { api, asApiError } from "../lib/api.js";
 import { useStoreBridge } from "../lib/store.js";
+import { randomUUID } from "../lib/uuid.js";
 const store = createStore<{ busy: boolean; error: string | null }>(() => ({ busy: false, error: null }));
 export function CreditCheckout({ packs }: { packs: { priceId: string; creditUnits: number }[] }) {
   const { busy, error } = useStoreBridge(store);
@@ -11,7 +12,7 @@ export function CreditCheckout({ packs }: { packs: { priceId: string; creditUnit
     try {
       // Preserve the same intent across an interrupted checkout request.
       const storageKey = `credit-purchase:${priceId}`;
-      const operationId = sessionStorage.getItem(storageKey) ?? crypto.randomUUID();
+      const operationId = sessionStorage.getItem(storageKey) ?? randomUUID();
       sessionStorage.setItem(storageKey, operationId);
       const result = await api.account.createCreditPurchase.mutate({ operationId, priceId });
       if (!result.checkoutUrl) throw new Error("Checkout is still being prepared. Retry in a moment.");

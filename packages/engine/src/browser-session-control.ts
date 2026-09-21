@@ -1,4 +1,5 @@
 import { AppError, newId } from "@tabductor/core";
+import { resumeHumanActions } from "./human-action.js";
 import {
   browserAllocationRequests,
   browserProfileLeases,
@@ -11,11 +12,16 @@ import {
   type BrowserSessionRow,
   type Db,
 } from "@tabductor/db";
-import { and, asc, eq, gt, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 
 const ACTIVE_SESSION_STATUSES = ["ready", "running"] as const;
 const TAKEOVER_TTL_MS = 10 * 60 * 1_000;
 const ACTIVITY_PAGE_MAX = 200;
+
+/** Profile setup has human ownership until stopped; automation takeover has a lease. */
+export function browserControlIsActive(session: Pick<BrowserSessionRow, "executionId" | "inputOwner" | "takeoverExpiresAt"> & { humanActionPending?: boolean }, now = Date.now()): boolean {
+  return session.inputOwner === "human" && (session.executionId === null || session.humanActionPending === true || (session.takeoverExpiresAt?.getTime() ?? 0) > now);
+}
 
 export type BrowserSessionControlState = Pick<
   BrowserSessionRow,
@@ -24,6 +30,7 @@ export type BrowserSessionControlState = Pick<
   | "generation"
   | "inputOwner"
   | "inputOwnerGeneration"
+  | "automationAcknowledgedGeneration"
   | "pauseRequestedAt"
   | "pauseAcknowledgedAt"
   | "takeoverExpiresAt"
@@ -36,6 +43,7 @@ function controlState(row: BrowserSessionRow): BrowserSessionControlState {
     generation: row.generation,
     inputOwner: row.inputOwner,
     inputOwnerGeneration: row.inputOwnerGeneration,
+    automationAcknowledgedGeneration: row.automationAcknowledgedGeneration,
     pauseRequestedAt: row.pauseRequestedAt,
     pauseAcknowledgedAt: row.pauseAcknowledgedAt,
     takeoverExpiresAt: row.takeoverExpiresAt,
@@ -89,7 +97,7 @@ export async function requestBrowserTakeover(
       inputOwnerGeneration: sql`${browserSessions.inputOwnerGeneration} + 1`,
       pauseRequestedAt: sql`now()`,
       pauseAcknowledgedAt: null,
-      takeoverExpiresAt: expiresAt,
+      takeoverExpiresAt: sql`case when ${browserSessions.executionId} is null then null else ${expiresAt}::timestamptz end`,
     }).where(and(
       eq(browserSessions.id, input.sessionId),
       eq(browserSessions.accountId, input.accountId),
@@ -125,7 +133,7 @@ export async function acknowledgeBrowserPause(
       eq(browserSessions.inputOwnerGeneration, input.inputOwnerGeneration),
       eq(browserSessions.inputOwner, "paused"),
       inArray(browserSessions.status, ACTIVE_SESSION_STATUSES),
-      gt(browserSessions.takeoverExpiresAt, sql`now()`),
+      or(isNull(browserSessions.executionId), eq(browserSessions.humanActionPending, true), gt(browserSessions.takeoverExpiresAt, sql`now()`)),
     )).returning();
     if (!updated) throw new AppError("browser_pause_stale", "browser pause acknowledgement lost ownership");
     await appendControlActivity(trx, {
@@ -146,6 +154,7 @@ export async function resumeBrowserAutomation(
   return db.transaction(async (trx) => {
     const [updated] = await trx.update(browserSessions).set({
       inputOwner: "ai",
+      humanActionPending: false,
       inputOwnerGeneration: sql`${browserSessions.inputOwnerGeneration} + 1`,
       pauseRequestedAt: null,
       pauseAcknowledgedAt: null,
@@ -154,6 +163,7 @@ export async function resumeBrowserAutomation(
       eq(browserSessions.id, input.sessionId),
       eq(browserSessions.accountId, input.accountId),
       inArray(browserSessions.inputOwner, ["paused", "human"]),
+      isNotNull(browserSessions.executionId),
       inArray(browserSessions.status, ACTIVE_SESSION_STATUSES),
     )).returning();
     if (!updated) {
@@ -162,11 +172,33 @@ export async function resumeBrowserAutomation(
     }
     await appendControlActivity(trx, {
       sessionId: input.sessionId,
-      kind: "automation_resumed",
+      kind: "automation_resume_requested",
       payload: { inputOwnerGeneration: updated.inputOwnerGeneration, requiresFreshPerception: true },
     });
+    await resumeHumanActions(trx, input.sessionId);
     return controlState(updated);
   });
+}
+
+/** Resume becomes usable only after the worker drains old commands and acknowledges it. */
+export async function acknowledgeBrowserResume(db: Db,
+  input: { sessionId: string; generation: number; inputOwnerGeneration: number },
+): Promise<boolean> {
+  return db.transaction(async trx => {
+    const [updated] = await trx.update(browserSessions).set({ automationAcknowledgedGeneration: input.inputOwnerGeneration })
+      .where(and(eq(browserSessions.id, input.sessionId), eq(browserSessions.generation, input.generation),
+        eq(browserSessions.inputOwnerGeneration, input.inputOwnerGeneration), eq(browserSessions.inputOwner, "ai"),
+        inArray(browserSessions.status, ACTIVE_SESSION_STATUSES),
+        sql`${browserSessions.automationAcknowledgedGeneration} < ${input.inputOwnerGeneration}`)).returning();
+    if (!updated) return false;
+    await appendControlActivity(trx, { sessionId: input.sessionId, kind: "automation_resumed",
+      payload: { inputOwnerGeneration: input.inputOwnerGeneration, requiresFreshPerception: true } });
+    return true;
+  });
+}
+
+export function browserAutomationIsReady(session: Pick<BrowserSessionRow, "inputOwner" | "inputOwnerGeneration" | "automationAcknowledgedGeneration">): boolean {
+  return session.inputOwner === "ai" && session.automationAcknowledgedGeneration === session.inputOwnerGeneration;
 }
 
 /**
@@ -211,6 +243,15 @@ export async function stopBrowserSession(
   });
 }
 
+/** Execution-owned browsers survive packet completion and close after all work settles. */
+export async function stopFinishedExecutionBrowsers(db: Db): Promise<number> {
+  const sessions = await db.select({ id: browserSessions.id, accountId: browserSessions.accountId }).from(browserSessions)
+    .where(and(inArray(browserSessions.status, ["queued", "allocating", "ready", "running"]),
+      sql`exists (select 1 from workflow_executions x where x.id = ${browserSessions.executionId} and x.status <> 'running')`));
+  for (const session of sessions) await stopBrowserSession(db, { accountId: session.accountId, sessionId: session.id });
+  return sessions.length;
+}
+
 /** Expired takeover windows remain paused; resuming automation is always explicit. */
 export async function expireBrowserTakeovers(db: Db, now = new Date()): Promise<number> {
   return db.transaction(async (trx) => {
@@ -220,6 +261,8 @@ export async function expireBrowserTakeovers(db: Db, now = new Date()): Promise<
       takeoverExpiresAt: null,
     }).where(and(
       eq(browserSessions.inputOwner, "human"),
+      eq(browserSessions.humanActionPending, false),
+      isNotNull(browserSessions.executionId),
       lte(browserSessions.takeoverExpiresAt, now),
       inArray(browserSessions.status, ACTIVE_SESSION_STATUSES),
     )).returning({ id: browserSessions.id, inputOwnerGeneration: browserSessions.inputOwnerGeneration });
@@ -352,5 +395,8 @@ export async function getBrowserSessionPlayback(
   const segments = await db.select().from(browserRecordingSegments)
     .where(eq(browserRecordingSegments.sessionId, input.sessionId))
     .orderBy(asc(browserRecordingSegments.sequence));
-  return { session, segments };
+  const [blockingSession] = session.status === "queued" ? await db.select({ id: browserSessions.id })
+    .from(browserProfileLeases).innerJoin(browserSessions, eq(browserSessions.id, browserProfileLeases.sessionId))
+    .where(and(eq(browserProfileLeases.profileId, session.profileId), eq(browserSessions.accountId, input.accountId))) : [];
+  return { session, segments, waitingForSessionId: blockingSession?.id ?? null };
 }

@@ -42,18 +42,18 @@ it("publishes, updates, triggers, and schedules without exposing task ids", asyn
   };
   const control = createWorkflowControl(context);
 
-  const published = await control.publish({ name: "Morning check", intent: "Check what is due" }) as {
+  const published = await control.publish({ prompt: "Check what is due" }) as {
     workflowId: string;
     versionId: string;
   };
   expect(published.workflowId).toMatch(/^wf_/);
   expect(JSON.stringify(published)).not.toContain("task_");
 
-  const updated = await control.update({ workflowId: published.workflowId, intent: "Also retain a decision history" }) as {
+  const updated = await control.update({ workflowId: published.workflowId, prompt: "Check what is due and retain a decision history" }) as {
     versionId: string;
   };
   expect(updated.versionId).not.toBe(published.versionId);
-  expect(compile.mock.calls[1]?.[0].current?.graph.tasks).toHaveLength(1);
+  expect(compile.mock.calls[1]?.[0].current?.graph.tasks).toHaveLength(2);
 
   const triggered = await control.trigger({ workflowId: published.workflowId }) as {
     accepted: number;
@@ -91,7 +91,7 @@ it("rejects an MCP update compiled from a version that changed during authoring"
   const api = createCaller(context);
   const workflowId = await api.workflow.create({ name: "Concurrent update" });
   const initial = await api.workflow.publishVersion({ workflowId, graph });
-  const update = createWorkflowControl(context).update({ workflowId, intent: "Change the workflow" });
+  const update = createWorkflowControl(context).update({ workflowId, prompt: "Change the workflow" });
   await compiling;
   const winner = await api.workflow.publishVersion({ workflowId, expectedVersionId: initial.versionId, graph });
   resume();

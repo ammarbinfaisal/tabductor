@@ -1,3 +1,4 @@
+import { SCRIPT_RUNTIME_VERSION } from "@tabductor/core";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFileSync, writeFileSync, mkdtempSync } from "node:fs";
@@ -65,7 +66,7 @@ it("validating a script that posts a form does not post the form", async () => {
   const trace: RunTrace = {
     runId: "run_post",
     entries: [
-      { seq: -1, kind: "runtime", payload: { browserVersion: "test-browser-v1", runtimeVersion: "tabductor-static-v1" } },
+      { seq: -1, kind: "runtime", payload: { browserVersion: "test-browser-v1", runtimeVersion: SCRIPT_RUNTIME_VERSION } },
       { seq: 0, kind: "navigation", payload: { url, cause: "initial" } },
       { seq: 1, kind: "action", payload: { action: "goto", url, ok: true } },
       { seq: 2, kind: "action", payload: { action: "perceive", elementCount: 12, ok: true } },

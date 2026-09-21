@@ -1,0 +1,1 @@
+ALTER TABLE "browser_sessions" ADD COLUMN "human_action_pending" boolean DEFAULT false NOT NULL;

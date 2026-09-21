@@ -158,19 +158,20 @@ it("a compile that fails changes nothing about the run that earned it", async ()
 /** A failed ai run compiles nothing: no job, no script, and the task stays `ai`. */
 it("a failed ai run does not even queue a compile", async () => {
   rig = await startAgentRig({
-    fixtureFor: () => "step-budget.jsonl",
+    llmFor: () => ({ complete: async () => ({ toolCalls: [{ id: "fail", name: "fail", args: { reason: "fixture cannot complete" } }], usage: { in: 1, out: 1 } }) }),
     compileLoop: { compilerFixture: "compiler-tweets-goto.jsonl" },
   });
   const db = rig.handle.db;
   const wf = await seedWorkflow(db, {
-    tasks: { Scrape: { mode: "ai", prompt: "Never finish.", emits: ["tweet.detected"], limits: { agent: { max_steps: 2 } } } },
+    tasks: { Scrape: { mode: "ai", prompt: "Report why the task cannot finish.", emits: ["tweet.detected"] } },
   });
   const taskId = wf.taskIds.Scrape!;
 
   await triggerTask(db, { taskId });
   await waitForQuiet(rig as never);
   const run = (await runsForTask(rig as never, taskId))[0]!;
-  expect(run.status).not.toBe("succeeded");
+  expect(run.status).toBe("failed");
+  expect(run.error).toBe("fixture cannot complete");
 
   expect(await jobsFor(rig, taskId)).toHaveLength(0);
   expect((await db.select().from(tasks).where(eq(tasks.id, taskId)))[0]!.mode).toBe("ai");
@@ -193,7 +194,7 @@ it("a recovered deopt queues a recompile, and the replacement script runs on the
   });
   const db = rig.handle.db;
   const wf = await seedWorkflow(db, {
-    tasks: { Scrape: { mode: "ai", prompt: "Watch the feed and report new items.", emits: ["tweet.detected"] } },
+    tasks: { Scrape: { mode: "ai", prompt: "Watch the feed and report new items.", emits: ["tweet.detected"], limits: { agent: { max_steps: 1 } } } },
   });
   const taskId = wf.taskIds.Scrape!;
 
@@ -213,6 +214,7 @@ it("a recovered deopt queues a recompile, and the replacement script runs on the
   const first = (await runsForTask(rig as never, taskId))[0]!;
   expect(first.status, first.error ?? "").toBe("succeeded");
   expect(first.modeUsed).toBe("compiled");
+  expect((await traceRowsFor(rig, first.id)).filter(row => row.kind === "llm").length).toBeGreaterThan(1);
 
   const [queued] = await jobsFor(rig, taskId);
   expect(queued).toMatchObject({ status: "queued", reason: "recompile", runId: first.id });

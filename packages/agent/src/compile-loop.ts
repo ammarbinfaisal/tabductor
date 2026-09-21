@@ -74,6 +74,7 @@ export function createCompileLoop(deps: CompileHooksDeps): CompileLoop {
 
   const afterAiRun: CompileLoop["afterAiRun"] = async ({ task, run, ok }) => {
     if (task.kind !== "browser" || task.mode !== "ai") return { enqueued: false, reason: "not a browser ai task" };
+    if ((task.limitsJson as Record<string, unknown> | null)?.harness) return { enqueued: false, reason: "task uses fenced intent/destination capabilities" };
     try {
       if (run.executionId) {
         const [assisted] = await db.select({ id: browserSessions.id }).from(browserSessions)

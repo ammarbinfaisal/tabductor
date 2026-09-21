@@ -1,3 +1,7 @@
+import { checkRecordContracts, recordContractIssues } from "./record-contracts.js";
+import { intentSchema, intentErrors, harnessTask, destinationSchemaErrors, taskIntentDigest } from "./intent-contract.js";
+import { recordProcessingSchema } from "./record-processing.js";
+import { compileResultSchema } from "./result-schema.js";
 import { Ajv } from "ajv";
 import addFormatsModule from "ajv-formats";
 const addFormats = addFormatsModule.default ?? addFormatsModule;
@@ -51,8 +55,9 @@ import type { GraphCompileReport, GraphDraftArtifact, ProposedGrant } from "./gr
  * The document is event-centric: events are first-class entries describing a packet in
  * plain language, tasks declare which types they consume (their triggers) and emit, and
  * topology is *derived* by matching types — there are no authored edges. Nothing in the
- * document is JSON Schema; packet schemas are compiled from the descriptions at publish
- * time by the injected SchemaGenerator and gated deterministically with ajv.
+ * packet declaration is JSON Schema; packet schemas are compiled from the descriptions at publish
+ * time by the injected SchemaGenerator and gated deterministically with ajv. A result node
+ * may separately declare its final output as a draft-07 JSON Schema.
  *
  * Publishing is append-only (§5): every save writes a *new* `workflow_versions` row with
  * fresh task rows and repoints `workflows.current_version_id`. Nothing is updated in place,
@@ -74,6 +79,8 @@ export const graphEventSchema = z.object({
    * when there is no path by which `true` survives an author not writing it.
    */
   public: z.boolean().default(false),
+  record: z.object({ collection: z.string().min(1).max(120), key: z.string().min(1).max(120),
+    status: z.enum(["extracted", "prepared", "pending", "saved", "skipped", "rejected", "failed"]) }).optional(),
 });
 
 /**
@@ -107,7 +114,7 @@ const RETIRED_MODES: ReadonlyMap<string, string> = new Map([
 ]);
 
 /** Mirrors `tasks_kind_mode_check`: decision work stays semantic and is never script-compiled. */
-const NOT_COMPILABLE: readonly NodeKind[] = ["decision"];
+const NOT_COMPILABLE: readonly NodeKind[] = ["decision", "result"];
 
 /** The reason a mode cannot be *authored*, or `undefined` when it can. Shared by `checkGraph`
  * and `updateTask` so the in-place edit path cannot admit what publish refuses. */
@@ -137,6 +144,7 @@ export const graphTaskSchema = z.object({
   kind: z.enum(NODE_KINDS).default("browser"),
   mode: z.string().min(1).default("stub"),
   prompt: z.string().nullable().default(null),
+  resultSchema: z.union([z.record(z.unknown()), z.boolean()]).nullable().optional(),
   /** `limits_json`: run timeout, retry policy, and the StubExecutor script. */
   limits: z.record(z.unknown()).default({}),
   /** Event types this task may emit. The types' schemas live on the events, not here. */
@@ -149,6 +157,7 @@ export const graphTaskSchema = z.object({
 });
 
 export const graphSchema = z.object({
+  intent: intentSchema.optional(),
   /** User-facing automation brief; internal task prompts remain separate. */
   automationPrompt: z.string().max(20000).optional(),
   contractVersion: z.literal(2).optional(),
@@ -162,6 +171,18 @@ export const graphSchema = z.object({
 export type Graph = z.infer<typeof graphSchema>;
 export type GraphTask = z.infer<typeof graphTaskSchema>;
 export type GraphEvent = z.infer<typeof graphEventSchema>;
+
+/** The workflow prompt directs execution and output; result instructions are internal. */
+export function withWorkflowResult(graph: Graph, prompt: string, resultSchema?: Record<string, unknown> | boolean | null): Graph {
+  const existing = graph.tasks.find((task) => task.kind === "result");
+  let name = existing?.name ?? "result";
+  for (let n = 2; !existing && graph.tasks.some((task) => task.name === name || task.logicalId === name); n++) name = `result-${n}`;
+  const output = graphTaskSchema.parse({ ...existing, name, logicalId: existing?.logicalId ?? name,
+    kind: "result", entry: false, mode: "ai", label: "Result", summary: "The final JSON output of this workflow.",
+    prompt: `Produce the final JSON outcome requested by the workflow instructions. Use the completed execution's evidence and report failures honestly.\n\nWorkflow instructions:\n${prompt}`,
+    resultSchema: resultSchema ?? null, emits: [], consumes: [], schedule: null });
+  return { ...graph, automationPrompt: prompt, tasks: [...graph.tasks.filter((task) => task.kind !== "result"), output] };
+}
 
 export const GRAPH_INVALID = "graph_invalid";
 export const GRAPH_COMPILE_FAILED = "graph_compile_failed";
@@ -199,6 +220,9 @@ const invalid = (message: string, details: Record<string, unknown>): AppError =>
  * this graph never produces. (The old edge model made the same call for entry edges.)
  */
 export function checkGraph(graph: Graph): void {
+  const contractErrors = intentErrors(graph);
+  if (contractErrors.length) throw invalid(contractErrors.join("; "), { diagnostics: contractErrors });
+  if (graph.tasks.filter((task) => task.kind === "result").length > 1) throw invalid("a workflow may have only one result node", {});
   const seen = new Set<string>();
   const declared = new Set(graph.events.map((e) => e.type));
   const identities = new Set<string>();
@@ -217,6 +241,31 @@ export function checkGraph(graph: Graph): void {
   }
 
   for (const task of graph.tasks) {
+    if (task.limits.recordProcessing) {
+      const processing = recordProcessingSchema.safeParse(task.limits.recordProcessing);
+      if (!processing.success || !task.emits.includes(processing.data.eventType) || processing.data.sourceIdField === processing.data.identityField)
+        throw invalid("record_processing_invalid: declare a valid operation for an emitted record event with a separate identity field", { task: task.name });
+      if (graph.events.find(e => e.type === processing.data.eventType)?.record?.key !== processing.data.identityField)
+        throw invalid("record_processing_identity_missing: normalized events must declare their host-derived identity", { task: task.name });
+    }
+    const h = harnessTask(task.limits);
+    if (h?.role === "write-record" && h.destination) for (const type of task.consumes) {
+      const event = graph.events.find(e => e.type === type);
+      if (event?.record?.key !== h.destination.identityField) throw invalid("destination_record_identity_missing: writer events must declare the stable identity", { task: task.name, eventType: type });
+    }
+    if (task.kind === "result") {
+      if (!task.prompt?.trim()) throw invalid("a result node requires a prompt", { task: task.name });
+      if (task.entry || task.schedule || task.emits.length || task.consumes.length) {
+        throw invalid("a result node runs automatically at the end; it cannot be an entry, scheduled, or wired to events", { task: task.name });
+      }
+      if (!["ai", "stub"].includes(task.mode)) throw invalid("a result node must use ai or stub mode", { task: task.name });
+      if (task.resultSchema !== undefined && task.resultSchema !== null) {
+        try { compileResultSchema(task.resultSchema); }
+        catch (error) { throw invalid(`invalid result schema: ${error instanceof Error ? error.message : String(error)}`, { task: task.name }); }
+      }
+    } else if (task.resultSchema !== undefined && task.resultSchema !== null) {
+      throw invalid("only a result node may declare a result schema", { task: task.name });
+    }
     const logicalId = task.logicalId ?? task.name;
     if (identities.has(logicalId)) throw invalid(`duplicate logical task identity "${logicalId}"`, { task: task.name });
     identities.add(logicalId);
@@ -309,7 +358,15 @@ function genInputFor(graph: Graph, event: GraphEvent): SchemaGenInput {
       .map((t) => ({ name: t.name, prompt: t.prompt }));
   return {
     eventType: event.type,
-    description: event.description,
+    description: event.description + (event.record ? `\nRecord tracking: ${JSON.stringify(event.record)}. The record key must be a required string or integer.` : "") +
+      graph.tasks.filter(t => t.emits.includes(event.type) || t.consumes.includes(event.type)).flatMap(t => {
+        const d = harnessTask(t.limits)?.destination;
+        return d ? [`\nHost destination envelope: required string ${d.contractField}; ${event.type === d.readyEvent ? "readiness contains ONLY this reference" : `required content fields ${d.requiredFields.join(", ")} and identity string ${d.identityField}`}.`] : [];
+      }).join("") + graph.tasks.flatMap(t => {
+        const config = recordProcessingSchema.safeParse(t.limits.recordProcessing);
+        return config.success && config.data.eventType === event.type
+          ? [`\nFixed normalization contract: ${JSON.stringify(config.data)}. Include these fields. identityField is a required string. nullableFields must accept null; sourceIdField remains optional/nullable when source data is missing.`] : [];
+      }).join(""),
     emitters: touching("emits"),
     consumers: touching("consumes"),
   };
@@ -365,7 +422,9 @@ async function compileEventSchemas(
   const queue = [...pending];
   const worker = async (): Promise<void> => {
     for (let item = queue.shift(); item; item = queue.shift()) {
-      const result = await generator.generate(genInputFor(graph, item.event));
+      const ready = graph.tasks.map(t => harnessTask(t.limits)?.destination).find(d => d?.readyEvent === item.event.type);
+      const result = ready ? { ok: true as const, schema: { type: "object", properties: { [ready.contractField]: { type: "string" } }, required: [ready.contractField], additionalProperties: false } }
+        : await generator.generate(genInputFor(graph, item.event));
       if (!result.ok) {
         item.entry = { type: item.event.type, status: "failed", error: result.error };
         continue;
@@ -386,7 +445,72 @@ async function compileEventSchemas(
   };
   await Promise.all(Array.from({ length: COMPILE_CONCURRENCY }, worker));
 
+  if (compiled.every(item => item.entry.status !== "failed")) {
+    await repairEventContracts(graph, compiled, generator, ajv);
+  }
   return compiled;
+}
+
+/** Independent schema generation can disagree at an edge. Repair the generated output,
+ * never the source contract, before making the author fix compiler-owned JSON. Each event
+ * gets at most two repairs; fan-out and longer chains propagate through subsequent passes. */
+async function repairEventContracts(
+  graph: Graph,
+  compiled: CompiledEvent[],
+  generator: SchemaGenerator,
+  ajv: Ajv,
+): Promise<void> {
+  const attempts = new Map<string, number>();
+  for (;;) {
+    const schemas = new Map(compiled.map(item => [item.event.type, item.schema]));
+    const issues = recordContractIssues(graph, schemas);
+    if (issues.length === 0) return;
+    const outputs = new Set(issues.map(issue => issue.details.output));
+    const candidates = compiled.filter(item => outputs.has(item.event.type) && (attempts.get(item.event.type) ?? 0) < 2);
+    if (candidates.length === 0) {
+      const report: CompileReport = { events: compiled.map(item => outputs.has(item.event.type)
+        ? { type: item.event.type, status: "failed", error: issues.filter(issue => issue.details.output === item.event.type).map(issue => issue.message).join("; ") }
+        : item.entry), tasks: [] };
+      const first = issues[0]!;
+      throw new AppError(first.code, first.message, { details: { ...first.details, report } });
+    }
+    // Let upstream repairs settle before spending a downstream event's attempts. Cycles
+    // still make bounded progress using a snapshot of all schemas from this pass.
+    const ready = candidates.filter(item => !graph.tasks.some(task => task.emits.includes(item.event.type) && task.consumes.some(input => outputs.has(input))));
+    const pending = ready.length ? ready : candidates;
+    const worker = async (): Promise<void> => {
+      for (let item = pending.shift(); item; item = pending.shift()) {
+        const eventType = item.event.type;
+        attempts.set(eventType, (attempts.get(eventType) ?? 0) + 1);
+        const input = genInputFor(graph, item.event);
+        input.compatibility = {
+          previousSchema: item.schema,
+          errors: issues.filter(issue => issue.details.output === eventType).map(issue => issue.message),
+          upstream: graph.tasks.filter(task => task.emits.includes(eventType)).flatMap(task => task.consumes.flatMap(sourceType => {
+            const schema = schemas.get(sourceType);
+            return schema ? [{ task: task.name, eventType: sourceType, schema }] : [];
+          })),
+        };
+        const result = await generator.generate(input);
+        if (!result.ok) {
+          item.entry = { type: item.event.type, status: "failed", error: result.error };
+          continue;
+        }
+        try {
+          ajv.compile(result.schema);
+          const properties = asRecord(result.schema.properties);
+          const removed = Object.keys(asRecord(item.schema.properties)).filter(field => !(field in properties));
+          if (removed.length) throw new Error(`compatibility repair removed declared fields: ${removed.join(", ")}`);
+          item.schema = result.schema;
+          item.entry = { type: item.event.type, status: "generated" };
+        } catch (err) {
+          item.entry = { type: item.event.type, status: "failed", error: `schema compatibility repair failed: ${err instanceof Error ? err.message : String(err)}` };
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: COMPILE_CONCURRENCY }, worker));
+    if (compiled.some(item => item.entry.status === "failed")) return;
+  }
 }
 
 type PreviousTask = {
@@ -437,22 +561,23 @@ function promptInputFor(
       .map((t) => t.name)
       .sort();
   return {
-    workflow: { name: workflowName },
+    workflow: { name: workflowName, originalRequest: graph.automationPrompt, intent: graph.intent },
     task: {
       name: task.name,
       kind: task.kind,
       prompt: task.prompt,
+      contract: harnessTask(task.limits) ?? undefined,
       schedule: task.schedule ? { cron: task.schedule.cron, tz: task.schedule.tz } : null,
     },
     consumes: [...task.consumes].sort().map((type) => ({
       type,
-      description: eventByType.get(type)?.description ?? "",
+      description: (eventByType.get(type)?.description ?? "") + (eventByType.get(type)?.record ? `\nRecord tracking: ${JSON.stringify(eventByType.get(type)!.record)}` : ""),
       schema: schemas.get(type) ?? { type: "object" },
       emitters: who("emits", type),
     })),
     emits: [...task.emits].sort().map((type) => ({
       type,
-      description: eventByType.get(type)?.description ?? "",
+      description: (eventByType.get(type)?.description ?? "") + (eventByType.get(type)?.record ? `\nRecord tracking: ${JSON.stringify(eventByType.get(type)!.record)}` : ""),
       schema: schemas.get(type) ?? { type: "object" },
       consumers: who("consumes", type),
     })),
@@ -556,6 +681,7 @@ async function compileTaskPrompts(
     if (
       task.kind === "browser" &&
       task.mode === "ai" &&
+      ![...task.consumes, ...task.emits].some(type => graph.events.find(event => event.type === type)?.record) &&
       prev?.mode === "compiled" &&
       prev.contentHash === contentHash
     ) {
@@ -616,6 +742,8 @@ export async function publishVersion(
   deps: PublishDeps,
 ): Promise<PublishedVersion> {
   const graph = graphSchema.parse(input.graph);
+  // Trusted policy/intent inputs participate in script hashes through the persisted limits.
+  if (graph.intent) for (const task of graph.tasks) task.limits = { ...task.limits, intentDigest: taskIntentDigest(graph.intent, harnessTask(task.limits)), harnessPolicyVersion: 1 };
   checkGraph(graph);
   const failedGateChecks = input.authoring?.report.checks.filter((check) => check.status === "fail") ?? [];
   if (failedGateChecks.length > 0) {
@@ -754,6 +882,9 @@ export async function publishVersion(
   }
 
   const schemas = new Map(compiled.map((c) => [c.event.type, c.schema]));
+  checkRecordContracts(graph, schemas);
+  const destinationErrors = destinationSchemaErrors(graph.tasks, schemas);
+  if (destinationErrors.length) throw invalid(destinationErrors.join("; "), { diagnostics: destinationErrors });
   const compiledTasks = await compileTaskPrompts(
     db,
     graph,
@@ -829,6 +960,7 @@ export async function publishVersion(
         workflowVersionId: versionId,
         name: task.name,
         prompt: task.prompt,
+        resultSchemaJson: task.resultSchema ?? null,
         kind: task.kind,
         mode,
         limitsJson: task.limits,
@@ -891,6 +1023,7 @@ export async function publishVersion(
         eventType: item.event.type,
         description: item.event.description,
         packetSchemaJson: item.schema,
+        recordJson: item.event.record ?? null,
         promptHash: item.promptHash,
         public: item.event.public,
       });
@@ -1035,6 +1168,7 @@ export async function readGraph(db: Db, versionId: string): Promise<Graph> {
 
   return {
     ...(stored.success && stored.data.automationPrompt !== undefined ? { automationPrompt: stored.data.automationPrompt } : {}),
+    ...(stored.success && stored.data.intent ? { intent: stored.data.intent } : {}),
     ...(stored.success && stored.data.contractVersion ? { contractVersion: stored.data.contractVersion, externalInputs: stored.data.externalInputs,
       systemInputs: stored.data.systemInputs, maxRuns: stored.data.maxRuns } : {}),
     tasks: taskRows.map((row): GraphTask => {
@@ -1052,6 +1186,7 @@ export async function readGraph(db: Db, versionId: string): Promise<Graph> {
         // row mode.
         mode: row.mode === "compiled" ? "ai" : row.mode,
         prompt: row.prompt,
+        ...(row.kind === "result" ? { resultSchema: row.resultSchemaJson } : {}),
         limits: asRecord(row.limitsJson),
         emits: emitRows
           .filter((e) => e.taskId === row.id)
@@ -1077,7 +1212,7 @@ export async function readGraph(db: Db, versionId: string): Promise<Graph> {
     events: eventRows
       .map((e): GraphEvent => {
         const presentation = stored.success ? stored.data.events.find((event) => event.type === e.eventType) : undefined;
-        return { type: e.eventType, description: e.description, public: e.public,
+        return { type: e.eventType, description: e.description, public: e.public, ...(e.recordJson ? { record: e.recordJson } : {}),
           ...(presentation?.label ? { label: presentation.label } : {}),
           ...(presentation?.summary ? { summary: presentation.summary } : {}),
         };

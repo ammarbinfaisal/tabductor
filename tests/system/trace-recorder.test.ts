@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
-import { AppError } from "@tabductor/core";
+import { AppError, SCRIPT_RUNTIME_VERSION } from "@tabductor/core";
+import { createTraceRecorder } from "@tabductor/browser";
 import {
   artifactRows,
   blobFiles,
@@ -93,7 +94,21 @@ it("close flushes what the buffer still held", async () => {
   // The document request's `network` row (S3b) joins the two already here — its response
   // settles, and is written, before `goto`'s own action entry is (the entry is written after
   // `goto` resolves, by which point the response that let it resolve already landed).
-  expect(payloadOf(rows[0]!)).toMatchObject({ runtimeVersion: "tabductor-static-v1", browserVersion: rig.chrome.version });
+  expect(payloadOf(rows[0]!)).toMatchObject({ runtimeVersion: SCRIPT_RUNTIME_VERSION, browserVersion: rig.chrome.version });
   expect(rows.map((r) => r.kind)).toEqual(["runtime", "navigation", "network", "action"]);
   expect(rows.map((r) => r.seq)).toEqual([0, 1, 2, 3]);
+});
+
+it("appends to the same run trace after durable suspension", async () => {
+  sess = await openSession(rig);
+  await sess.trace.record("runtime", { phase: "before-human" });
+  await sess.close();
+  const before = await traceRows(rig, sess.runId);
+  const resumed = createTraceRecorder(rig.handle.db, rig.blobs, sess.runId);
+  await resumed.record("runtime", { phase: "after-human" });
+  await resumed.close();
+  const after = await traceRows(rig, sess.runId);
+  expect(after).toHaveLength(before.length + 1);
+  expect(after.at(-1)?.seq).toBe(before.at(-1)!.seq + 1);
+  expect(payloadOf(after.at(-1)!)).toEqual({ phase: "after-human" });
 });

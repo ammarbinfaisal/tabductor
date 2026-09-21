@@ -61,6 +61,10 @@ export function layoutFlow(graph: Graph): FlowLayout {
     node.x = 40 + column * 252;
     node.y = 64 + row * 164;
   }
+  // Finalizers have no event subscriptions, but visually belong after the traversal.
+  const finalizers = new Set(graph.tasks.filter((task) => task.kind === "result").map((task) => flowId("node", task.name)));
+  const lastColumn = Math.max(40, ...nodes.filter((node) => !finalizers.has(node.id)).map((node) => node.x));
+  for (const node of nodes) if (finalizers.has(node.id)) { node.x = lastColumn + 252; node.y = 64; }
   return {
     nodes, edges,
     width: Math.max(720, ...nodes.map((n) => n.x + 240)),

@@ -27,8 +27,8 @@ export default async function WorkflowsPage() {
     <>
       <div className="row row--between" style={{ marginBottom: "var(--space-5)" }}>
         <h1 style={{ fontSize: "var(--text-xl)" }}>Workflows</h1>
-        <CreateWorkflow />
       </div>
+      <CreateWorkflow />
 
       <table className="ledger">
         <thead>
