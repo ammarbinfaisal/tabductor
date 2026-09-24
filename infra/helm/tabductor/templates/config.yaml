@@ -1,3 +1,6 @@
+{{- if not .Values.fleet.enabled }}
+{{- fail "fleet.enabled must be true: browser runs require Camoufox workers" }}
+{{- end }}
 {{- if not .Values.existingConfigSecret }}
 apiVersion: v1
 kind: Secret
@@ -16,8 +19,12 @@ stringData:
   TABDUCTOR_DEPLOYMENT_MODE: {{ ternary "local" "hosted" .Values.fixtureMode.enabled | quote }}
   BROWSER_WEB_URL: {{ printf "http://%s-web:3000" (include "tabductor.fullname" .) | quote }}
   BROWSER_GATEWAY_URL: {{ printf "http://%s-gateway:8081" (include "tabductor.fullname" .) | quote }}
-  BROWSER_MODE: {{ ternary "fleet" "cdp" .Values.fleet.enabled | quote }}
+  BROWSER_MODE: "fleet"
   BROWSER_WORKER_TOKEN_KEY: {{ .Values.fleet.workerTokenKey | quote }}
+  {{- if .Values.pythonRunner.enabled }}
+  {{- $existing := lookup "v1" "Secret" .Release.Namespace (printf "%s-config" (include "tabductor.fullname" .)) }}
+  PYTHON_RUNNER_TOKEN: {{ if and $existing $existing.data (index $existing.data "PYTHON_RUNNER_TOKEN") }}{{ index $existing.data "PYTHON_RUNNER_TOKEN" | b64dec | quote }}{{ else }}{{ randAlphaNum 48 | quote }}{{ end }}
+  {{- end }}
   BROWSER_RATE_VERSION: {{ .Values.fleet.rateVersion | quote }}
   BROWSER_UNITS_PER_MINUTE: {{ .Values.fleet.unitsPerMinute | quote }}
   BROWSER_MAX_SECONDS: {{ .Values.fleet.maxSeconds | quote }}

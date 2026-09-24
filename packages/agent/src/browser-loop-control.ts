@@ -22,6 +22,8 @@ export function browserLoopControl(db: Db, handle: RunHandle, conn: BrowserConn,
     },
   });
   return {
+    workspace: store(`agent-workspace:${handle.run.id}`),
+    context: store(`agent-context:${handle.run.triggerEventId ?? handle.run.id}`),
     actions: store(`agent-actions:${handle.run.triggerEventId ?? handle.run.id}`),
     memory: store(`agent-memory:${handle.run.triggerEventId ?? handle.run.id}`),
     progress: store(`agent-code-progress:${handle.run.triggerEventId ?? handle.run.id}`),

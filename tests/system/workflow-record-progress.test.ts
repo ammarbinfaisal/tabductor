@@ -55,7 +55,7 @@ it("keeps unknown counts, rejects silent drops, and counts only verified saves",
     const [execution] = await db.db.select().from(workflowExecutions).where(eq(workflowExecutions.id, f.executionId));
     expect(execution?.status).toBe("failed");
   }, { timeout: 5000 });
-  expect(await recordProgress(db.db, f.executionId)).toEqual({ tracked: true, total: 4, extracted: 0, prepared: 0, pending: 0, saved: 1, skipped: 1, rejected: 1, failed: 1 });
+  expect(await recordProgress(db.db, f.executionId)).toEqual({ tracked: true, total: 4, extracted: 0, prepared: 0, pending: 0, saved: 1, skipped: 1, rejected: 1, failed: 1,verifiedSaved:1,aiAssessedSaved:0 });
   const failed = await db.db.select().from(runs).where(eq(runs.executionId, f.executionId));
   expect(failed.some(run => run.error?.startsWith("record_outcome_missing"))).toBe(true);
   const [saved] = await db.db.select().from(events).where(eq(events.type, "item.saved"));

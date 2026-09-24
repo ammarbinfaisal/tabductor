@@ -10,7 +10,7 @@ import base64
 import io
 import tarfile
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 fake = types.ModuleType("camoufox.async_api")
 fake.AsyncCamoufox = None
@@ -66,6 +66,78 @@ class Fencing(unittest.IsolatedAsyncioTestCase):
         await worker.control("session-a", worker.ControlRequest(generation=2, input_generation=3, owner="ai"), "Bearer fixture-token", "1")
         with self.assertRaises(worker.HTTPException):
             await self.command("three", input_generation=1)
+
+    async def test_takeover_cancels_proxy_scopes_before_draining_callbacks(self):
+        waiting = asyncio.create_task(asyncio.Event().wait())
+        async def close():
+            waiting.cancel()
+        scope = types.SimpleNamespace(close=AsyncMock(side_effect=close))
+        worker.session.proxy_scopes = {"cell": scope}
+        worker.session.inflight.add(waiting)
+        await asyncio.wait_for(worker.control("session-a", worker.ControlRequest(generation=2,
+            input_generation=2, owner="human"), "Bearer fixture-token", "1"), 1)
+        scope.close.assert_awaited_once()
+        self.assertTrue(waiting.cancelled())
+        self.assertEqual(worker.session.proxy_scopes, {})
+
+    async def test_unchanged_control_does_not_cancel_or_wait_for_active_cell(self):
+        waiting = asyncio.create_task(asyncio.Event().wait())
+        scope = types.SimpleNamespace(close=AsyncMock())
+        worker.session.proxy_scopes = {"cell": scope}
+        worker.session.inflight.add(waiting)
+        try:
+            for _ in range(3):
+                result = await asyncio.wait_for(worker.control("session-a", worker.ControlRequest(
+                    generation=2, input_generation=1, owner="ai"), "Bearer fixture-token", "1"), 0.5)
+                self.assertEqual(result, {"acknowledged": True, "input_generation": 1})
+            scope.close.assert_not_awaited()
+            self.assertEqual(worker.checkpoint_cookies.await_count, 3)
+            self.assertFalse(waiting.done())
+            self.assertEqual(worker.session.proxy_scopes, {"cell": scope})
+        finally:
+            waiting.cancel()
+            await asyncio.gather(waiting, return_exceptions=True)
+            worker.session.inflight.clear()
+
+    async def test_invalid_control_does_not_close_active_scopes(self):
+        scope = types.SimpleNamespace(close=AsyncMock())
+        worker.session.proxy_scopes = {"cell": scope}
+        worker.session.input_generation = 2
+        for generation, owner in [(1, "ai"), (2, "human"), (3, "invalid")]:
+            with self.subTest(generation=generation, owner=owner):
+                with self.assertRaises(worker.HTTPException):
+                    await worker.control("session-a", worker.ControlRequest(generation=2,
+                        input_generation=generation, owner=owner), "Bearer fixture-token", "1")
+        scope.close.assert_not_awaited()
+        self.assertEqual(worker.session.proxy_scopes, {"cell": scope})
+        self.assertEqual(worker.session.input_owner, "ai")
+
+    async def test_automation_errors_keep_distinct_codes_and_safe_messages(self):
+        request = types.SimpleNamespace(url=types.SimpleNamespace(path="/v1/sessions/session-a/automation"))
+        for detail, code, uncertain in [
+            ("input ownership was revoked", "browser_input_revoked", False),
+            ("command already submitted", "browser_outcome_uncertain", True),
+            ("invocation already open or capacity exhausted", "browser_invocation_conflict", False),
+            ("target is absent or ambiguous", "browser_stale_target", False),
+        ]:
+            with self.subTest(code=code):
+                response = await worker.http_error_handler(request, worker.HTTPException(409, detail + " secret-value"))
+                payload = json.loads(response.body)["detail"]
+                self.assertEqual(payload["code"], code)
+                self.assertEqual(payload["outcomeUncertain"], uncertain)
+                self.assertNotIn("secret-value", payload["message"])
+
+    async def test_expiry_and_takeover_preserve_uncertainty_of_submitted_operations(self):
+        for owner, code in [("ai", "browser_invocation_expired"), ("paused", "browser_input_revoked")]:
+            worker.session.input_owner = owner
+            for method, uncertain in [("start", False), ("poll", True), ("callback", True)]:
+                with self.subTest(owner=owner, method=method):
+                    with self.assertRaises(worker.HTTPException) as caught:
+                        await worker.automation("session-a", worker.CommandRequest(generation=2,
+                            input_generation=1, command_id="missing", method=method, page_id="p1",
+                            params={"invocation": "expired-cell"}), "Bearer fixture-token", "1")
+                    self.assertEqual(caught.exception.detail["code"], code)
+                    self.assertEqual(caught.exception.detail["outcomeUncertain"], uncertain)
 
     async def test_stale_allocation_cannot_issue_commands(self):
         with self.assertRaises(worker.HTTPException):
@@ -136,6 +208,40 @@ class Fencing(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(worker.HTTPException) as caught:
                 await self.command(f"failure-{i}")
             self.assertEqual(caught.exception.detail["code"], code)
+            self.assertNotIn("secret-value", str(caught.exception.detail))
+
+    async def test_harness_click_distinguishes_preflight_from_dispatched_timeout(self):
+        from playwright.async_api import TimeoutError
+        for i, (effects, code, uncertain) in enumerate([
+            ([TimeoutError("missing target secret-value")], "browser_target_not_ready", False),
+            ([None, TimeoutError("dispatched secret-value")], "browser_timeout", True),
+        ]):
+            click = AsyncMock(side_effect=effects)
+            worker.session.pages["p1"].locator = Mock(return_value=types.SimpleNamespace(click=click))
+            with self.assertRaises(worker.HTTPException) as caught:
+                await worker.command_locked("session-a", worker.CommandRequest(generation=2,
+                    input_generation=1, command_id=f"click-{i}", method="page.harness", page_id="p1",
+                    params={"method":"click","args":{"selector":"a","timeoutMs":500}}), "Bearer fixture-token", "1")
+            self.assertEqual(caught.exception.detail["code"], code)
+            self.assertEqual(caught.exception.detail["outcomeUncertain"], uncertain)
+            self.assertNotIn("secret-value", str(caught.exception.detail))
+            self.assertEqual(click.await_count, len(effects))
+
+    async def test_closed_page_is_recoverable_only_when_browser_and_context_are_alive(self):
+        from playwright.async_api import Error
+        worker.session.pages["p1"].title = AsyncMock(side_effect=Error("Target page, context or browser has been closed secret-value"))
+        worker.session.pages["p1"].is_closed = lambda: True
+        for i, (connected, context_closed, expected) in enumerate([
+            (True, False, "browser_page_closed"),
+            (False, False, "browser.disconnected"),
+            (True, True, "browser.disconnected"),
+        ]):
+            worker.session.context = types.SimpleNamespace(browser=types.SimpleNamespace(is_connected=lambda: connected))
+            worker.session.context_closed = context_closed
+            with self.assertRaises(worker.HTTPException) as caught:
+                await self.command(f"closed-{i}")
+            self.assertEqual(caught.exception.detail["code"], expected)
+            self.assertTrue(caught.exception.detail["outcomeUncertain"])
             self.assertNotIn("secret-value", str(caught.exception.detail))
 
 

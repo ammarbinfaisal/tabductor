@@ -26,7 +26,7 @@ export {
   type Perception,
 } from "./perception.js";
 export {
-  buildToolRegistry,
+  buildBrowserCodeTools,
   doneTool,
   emitTool,
   failTool,
@@ -62,3 +62,6 @@ export {
 export { fundedLlm } from "./funded-llm.js";
 
 export { createResultExecutor } from "./result-executor.js";
+export { remotePythonRunner, localPythonRunnerForTest, type PythonRunner, type RunnerScope } from "./python-runner.js";
+
+export { validatePythonCandidate } from "./python-validation.js";

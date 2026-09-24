@@ -21,11 +21,19 @@ const STAMP_VARS: Record<string, string> = {
   compile_failed: "var(--compile-failed)",
   loop: "var(--map-annotation)",
   revoked: "var(--status-cancelled)",
+  ready: "var(--status-running)",
+  allocating: "var(--status-queued)",
+  stopping: "var(--status-timed-out)",
+  ended: "var(--status-queued)",
+  awaiting_approval: "var(--status-timed-out)",
+  awaiting_human: "var(--status-timed-out)",
 };
 
 const STAMP_LABELS: Record<string, string> = {
   timed_out: "TIMED OUT",
   compile_failed: "FAILED",
+  awaiting_approval: "NEEDS APPROVAL",
+  awaiting_human: "NEEDS YOU",
 };
 
 export function Stamp({ kind, landing }: { kind: string; landing?: boolean }) {

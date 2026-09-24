@@ -4,7 +4,8 @@ import { expect, it } from "vitest";
 import { launchChrome } from "@tabductor/testkit";
 import { openRunSession, playwrightDriver } from "@tabductor/browser";
 import { AllowAllGate } from "@tabductor/policy";
-import { buildToolRegistry, liveLlm, runAgentLoop } from "@tabductor/agent";
+import { liveLlm, runAgentLoop } from "@tabductor/agent";
+import { buildToolRegistry } from "../../packages/agent/src/tools.js";
 
 // This incident used gpt-5.6-luna. Keep that model fixed while evaluating the harness.
 // No external website or account is modified: the browser only visits this local fixture.

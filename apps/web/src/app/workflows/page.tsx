@@ -5,37 +5,31 @@ import { CreateWorkflow } from "./create-workflow.js";
 
 /** Server component: the list is read through the same caller the tests drive. */
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Workflows" };
 
 export default async function WorkflowsPage() {
   const workflows = await (await createServerCaller()).workflow.list();
 
-  if (workflows.length === 0) {
-    return (
-      <div className="stack" style={{ alignItems: "center", paddingTop: "var(--space-9)", textAlign: "center" }}>
-        <h1 style={{ fontSize: "var(--text-3xl)", fontWeight: 500 }}>
-          Describe it. Publish it. Watch it run.
-        </h1>
-        <p className="muted" style={{ maxWidth: "42ch" }}>
-          Describe the outcome and constraints. The system compiles and maintains the execution plan.
-        </p>
-        <CreateWorkflow />
-      </div>
-    );
-  }
-
   return (
-    <>
-      <div className="row row--between" style={{ marginBottom: "var(--space-5)" }}>
-        <h1 style={{ fontSize: "var(--text-xl)" }}>Workflows</h1>
+    <div className="workflows-page">
+      <div className="page-heading">
+        <div><span className="eyebrow">Automation workspace</span><h1>Workflows<span className="heading-count">{workflows.length.toString().padStart(2, "0")}</span></h1>
+        <p className="muted">From an idea to a browser in motion.</p></div>
+        <Link className="btn" href="/sessions">View sessions ↗︎</Link>
       </div>
-      <CreateWorkflow />
-
+      <section className="workflow-launch" aria-label="Create a workflow">
+        <div className="workflow-launch__intro"><span className="section-label">01 / Create</span><h2>Set things<br /> in motion.</h2><p>Describe a routine.<br /> Let your browser handle it.</p><span className="launch-path">Prompt <span>→</span> Run <span>→</span> Watch live</span></div>
+        <CreateWorkflow />
+      </section>
+      <div className="section-heading"><h2>Your workflows</h2><span className="muted">{workflows.length} total</span></div>
+      <div className="table-scroll">
       <table className="ledger">
         <thead>
           <tr>
             <th>Name</th>
             <th>Last run</th>
             <th>Status</th>
+            <th><span className="sr-only">Actions</span></th>
           </tr>
         </thead>
         <tbody>
@@ -61,11 +55,13 @@ export default async function WorkflowsPage() {
                   <span className="muted">—</span>
                 )}
               </td>
-              <td className="mono muted">{w.currentVersionId ? "Published" : "Draft"}</td>
+              <td><span className="publication-state">{w.currentVersionId ? "Published" : "Draft"}</span></td>
+              <td><Link className="btn btn--quiet" href={`/workflows/${w.id}/runs`}>View runs ↗︎</Link></td>
             </tr>
           ))}
         </tbody>
-      </table>
-    </>
+      </table></div>
+      {!workflows.length ? <div className="empty-workflows"><h2>Your first workflow starts above.</h2><p className="muted">Once created, your workflows and their latest runs appear here.</p></div> : null}
+    </div>
   );
 }

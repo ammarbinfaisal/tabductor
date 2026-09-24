@@ -10,6 +10,7 @@
     "lint": "eslint packages apps/engine && node packages/secrets/scripts/leak-lint.mjs && pnpm -F web lint",
     "test": "vitest run",
     "test:system": "vitest run --project system",
+    "test:python-harness": "node scripts/test-python-harness.mjs",
     "test:live-eval": "vitest run -c vitest.live-eval.config.ts",
     "dev:engine": "tsx watch apps/engine/src/main.ts",
     "staging:up": "bash scripts/staging/up.sh",
@@ -21,6 +22,7 @@
     "local:down": "node scripts/local/down.mjs"
   },
   "devDependencies": {
+    "@kubernetes/client-node": "^2.0.0",
     "@opentelemetry/api": "^1.9.0",
     "@tabductor/agent": "workspace:*",
     "@tabductor/browser": "workspace:*",
@@ -39,6 +41,7 @@
     "@trpc/server": "^11.0.0",
     "@types/node": "^24.0.0",
     "@types/pg": "^8.11.0",
+    "@types/ws": "^8.18.0",
     "@typescript-eslint/parser": "^8.0.0",
     "ajv": "^8.17.1",
     "drizzle-orm": "^0.44.0",
@@ -47,6 +50,7 @@
     "pg": "^8.13.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
-    "vitest": "^3.2.0"
+    "vitest": "^3.2.0",
+    "ws": "^8.18.0"
   }
 }

@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { ASYNC_EVENT_EXECUTION_CONTRACT, AUTHENTICATION_EXECUTION_CONTRACT } from "@tabductor/engine";
 import { z } from "zod";
 import { runAgentLoop, type RunAgentLoopOptions } from "./loop.js";
 import type { LlmRequest } from "./llm.js";
@@ -8,7 +7,44 @@ import type { RunSession } from "@tabductor/browser";
 
 const trace = { record: vi.fn(async () => undefined), flush: async () => undefined, close: async () => undefined };
 
-it("supplies corrected authentication guidance even for previously published browser prompts", async () => {
+it("keeps Python guidance and terminal recovery with the screenshot tool present", async () => {
+  const requests: LlmRequest[] = [];
+  const result = await runAgentLoop({ llm: { complete: async request => {
+    requests.push(request);
+    return { toolCalls: requests.length === 1 ? [] : [{ id: "finish", name: "browser.python", args: {} }], usage: { in: 1, out: 1 } };
+  } }, tools: [
+    { name: "browser.screenshot", description: "image", parameters: z.object({}), execute: async () => ({ ok: true, value: null }) },
+    { name: "browser.python", description: "python", parameters: z.object({}), execute: async () => ({ ok: true, value: null, terminal: { outcome: "done", result: "ok" } }) },
+  ], task: { prompt: "finish" }, trigger: null, emits: [], trace });
+  expect(result).toEqual({ outcome: "done", result: "ok" });
+  expect(requests[0]!.system).toContain("synchronous playwright.sync_api");
+  expect(requests[1]!.messages.some(m => m.content.includes("finish through workflow.done/fail inside Python"))).toBe(true);
+});
+
+it.each(["1", "0"])("records actual parameters only in dev mode (%s)", async (devMode) => {
+  vi.stubEnv("TABDUCTOR_DEV_MODE", devMode);
+  try {
+    const args = { code: "await page.goto('https://example.com')\nprint(await page.title())", options: { count: 3 }, empty: "", enabled: false };
+    const originalArgs = structuredClone(args);
+    const record = vi.fn();
+    await runAgentLoop({
+      llm: { complete: async () => ({ toolCalls: [{ id: "call-1", name: "done", args }], usage: { in: 1, out: 1 } }) },
+      tools: [{ name: "done", description: "finish", parameters: z.object({}), execute: async () => {
+        args.options.count = 99;
+        return { ok: true, value: null };
+      } }],
+      task: { prompt: "finish" }, trigger: null, emits: [], trace: { ...trace, record },
+    });
+    const payload = record.mock.calls.find(([kind, payload]) => kind === "action" && payload.action === "tool.call")?.[1];
+    expect(payload).toMatchObject({ tool: "done", callId: "call-1", ok: true });
+    if (devMode === "1") expect(payload.args).toEqual(originalArgs);
+    else expect(payload).not.toHaveProperty("args");
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
+
+it("does not append browser-specific guidance to published browser prompts", async () => {
   let request: LlmRequest | undefined;
   await runAgentLoop({ llm: { complete: async input => {
     request = input;
@@ -16,9 +52,9 @@ it("supplies corrected authentication guidance even for previously published bro
   } }, tools: [
     { name: "page.perceive", description: "observe", parameters: z.object({}), execute: async () => ({ ok: true, value: null }) },
     { name: "done", description: "finish", parameters: z.object({}), execute: async () => ({ ok: true, value: null }) },
-  ], task: { prompt: "Ensure Login with Google into notion. If sign-in is needed, request takeover." }, trigger: null, emits: [], trace });
-  expect(request!.system).toContain(AUTHENTICATION_EXECUTION_CONTRACT);
-  expect(request!.system).toContain("Attempt the authorized browser flow first");
+  ], task: { prompt: "Ensure Login with Google into notion." }, trigger: null, emits: [], trace });
+  expect(request!.system).not.toContain("Authentication:");
+  expect(request!.system).not.toContain("Work toward the user's requested outcome using the interface");
 });
 
 it("makes no model calls during takeover and discards actions planned before resume", async () => {
@@ -66,12 +102,12 @@ it("honors cancellation after more than 30 turns even when the model never calls
   expect(result).toEqual({ outcome: "fail", reason: "run_cancelled" });
 });
 
-it("allows failure after bounded recovery even if the same wait keeps failing", async () => {
+it.each([false, true])("allows AI failure directly and bounds static recovery (compiled=%s)", async (compiled) => {
   const session = { page: { waitFor: async () => { throw new Error("not found"); }, perceive: async () => ({ url: "https://fixture.test", text: "", title: "", elements: [] }) },
     resolveAnchor: () => "article" } as unknown as RunSession;
-  const tools = new Map(buildToolRegistry({ session, emit: async () => ({ outcome: "deduped" }) }).map((tool) => [tool.name, tool]));
+  const tools = new Map(buildToolRegistry({ session, compiled, emit: async () => ({ outcome: "deduped" }) }).map((tool) => [tool.name, tool]));
   await tools.get("page.waitFor")!.execute({ anchor: "e1" });
-  expect(await tools.get("fail")!.execute({ reason: "blocked" })).toMatchObject({ ok: false });
+  expect(await tools.get("fail")!.execute({ reason: "blocked" })).toMatchObject({ ok: !compiled });
   await tools.get("page.waitFor")!.execute({ anchor: "e1" });
   await tools.get("page.waitFor")!.execute({ anchor: "e1" });
   expect(await tools.get("fail")!.execute({ reason: "blocked after recovery" })).toMatchObject({ ok: true });
@@ -138,9 +174,5 @@ describe("runAgentLoop system contract", () => {
     });
 
     expect(result.outcome).toBe("done");
-    expect(request?.system).toContain(ASYNC_EVENT_EXECUTION_CONTRACT);
-    expect(request?.system).toContain("returns without waiting for any consumer");
-    expect(request?.system).toContain("emit each complete item immediately");
-    expect(request?.system).toContain("A consumes list is not a join");
   });
 });

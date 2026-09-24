@@ -4,6 +4,8 @@ import { createStore } from "zustand/vanilla";
 import { api, asApiError, type RouterOutputs } from "../lib/api.js";
 import { useStoreBridge } from "../lib/store.js";
 import { useMountHook } from "../lib/use-mount-hook.js";
+import { Stamp } from "./primitives.js";
+import { sessionPresentation } from "../lib/session-presentation.js";
 import { attachRemotePaste } from "../lib/remote-paste.js";
 
 type Playback = RouterOutputs["browserSession"]["get"];
@@ -39,9 +41,13 @@ async function refresh(id: string) {
   const [data, activity] = await Promise.all([api.browserSession.get.query({ sessionId: id }), api.browserSession.activity.query({ sessionId: id, after: cursor, limit: 200 })]);
   if (currentId !== id) return;
   state.setState((old) => ({ data, activity: [...old.activity, ...activity] }));
-  const active = ["ready", "running"].includes(data.session.status);
+  const { active } = sessionPresentation(data.session.status);
   if (!active) {
+    connectionAttempt++;
+    connecting = false;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
     disconnect?.(); disconnect = undefined;
+    state.setState({ connected: false });
     return;
   }
   const setup = data.session.executionId === null;
@@ -50,6 +56,7 @@ async function refresh(id: string) {
     (desiredAccess === "view" || data.session.inputOwner === "human")) await connect(id, desiredAccess);
 }
 async function connect(id: string, access: "view" | "control") {
+  if (currentId !== id || !sessionPresentation(state.getState().data?.session.status).active) return;
   const attempt = ++connectionAttempt;
   connecting = true;
   desiredAccess = access;
@@ -103,7 +110,10 @@ async function action(id: string, kind: "takeover" | "resume" | "stop") {
       }
       throw new Error("Waiting for the browser to acknowledge takeover. Refresh its status before trying again.");
     }
-    disconnect?.();
+    connectionAttempt++;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    disconnect?.(); disconnect = undefined;
+    state.setState({ connected: false });
     if (kind === "resume") { await api.browserSession.resume.mutate({ sessionId: id }); await connect(id, "view"); }
     else await api.browserSession.stop.mutate({ sessionId: id });
     await refresh(id);
@@ -118,7 +128,7 @@ export function SessionInspector({ sessionId }: { sessionId: string }) {
     connecting = false;
     state.setState({ data: null, activity: [], tabs: [], tabsError: null, selectingTab: null, error: null, connected: false });
     let disposed = false, polling = false;
-    const poll = () => { if (polling || disposed) return; polling = true; void refresh(sessionId).catch(report).finally(() => { polling = false; }); };
+    const poll = () => { if (polling || disposed) return; polling = true; void refresh(sessionId).catch(error => { if (!disposed) report(error); }).finally(() => { polling = false; }); };
     poll();
     const timer = setInterval(poll, 1000);
     let tabsPolling = false;
@@ -132,62 +142,71 @@ export function SessionInspector({ sessionId }: { sessionId: string }) {
     return () => { disposed = true; currentId = ""; connectionAttempt++; clearInterval(timer); clearInterval(tabsTimer); if (reconnectTimer) clearTimeout(reconnectTimer); disconnect?.(); disconnect = undefined; };
   });
   const session = view.data?.session;
-  const active = session && ["ready", "running"].includes(session.status);
+  const { active, stopped, replay } = sessionPresentation(session?.status, session?.recordingStatus, view.data?.segments.some(segment => segment.status === "ready"));
   const setup = session?.executionId === null;
   const resuming = session?.inputOwner === "ai" && session.automationAcknowledgedGeneration !== session.inputOwnerGeneration;
-  return <>
-    <p>Status: <strong>{session?.status ?? "Loading…"}</strong> · input: {resuming ? "Resuming…" : session?.inputOwner ?? "—"}</p>
-    {resuming ? <p role="status">Waiting for the browser to acknowledge automation control.</p> : null}
-    {session?.status === "stopping" ? <p role="status">Saving profile… Wait for this to finish before reopening it. Any queued session using this profile will start after the save completes.</p> : null}
-    {session?.error ? <p role="alert">This session ended with an error ({session.error}). Its latest profile changes may not have been saved.</p> : null}
-    {session?.status === "ended" && !session.error && session.readyAt ? <p role="status">Profile saved. You can reopen it from Profiles.</p> : null}
-    {session?.status === "queued" ? <p role="status">{view.data?.waitingForSessionId ? <>
-      This profile is open in another browser. <Link href={`/sessions/${view.data.waitingForSessionId}`}>Open that browser</Link> to watch it or finish signing in, then stop it to save the profile and let this session start.
-    </> : "Waiting for a browser to become available. Live viewing will be available when this session is ready."}</p> : null}
-    {view.error ? <p role="alert">{view.error}</p> : null}
-    {active ? <p role="status">{view.connected ? setup ? "You have control. Sign in and update your profile, then stop the session to save it." : "Live browser connected." : setup ? "Connecting your profile browser…" : "Connecting live view…"}</p> : null}
-    <div className="row session-controls">
-      {!setup ? <>
-      <button disabled={!active} onClick={() => void connect(sessionId, "view").catch(report)}>Watch live</button>
-      <button disabled={!active || session.inputOwner === "human"} onClick={() => void action(sessionId, "takeover")}>Take control</button>
-      <button disabled={!active || session.inputOwner === "ai"} onClick={() => void action(sessionId, "resume")}>Resume automation</button>
-      </> : null}
-      <button disabled={!session || ["ended", "failed", "stopping"].includes(session.status)} onClick={() => void action(sessionId, "stop")}>Stop session & save profile</button>
+  return <section className="session-console" aria-label="Browser session">
+    <div className="console-header">
+      <div className="row"><span className="eyebrow">{stopped ? "Session replay" : "Live browser"}</span><Stamp kind={session?.status ?? "loading"} /></div>
+      <span className="console-connection">{active ? view.connected ? "Connected" : "Connecting…" : stopped ? "Session stopped" : "Waiting for browser"}</span>
     </div>
-    <form className="browser-address" onSubmit={event => { event.preventDefault(); const data = new FormData(event.currentTarget); void api.browserSession.navigate.mutate({ sessionId, url: String(data.get("url")) }).catch(report); }}>
-      <label>Website address<input name="url" type="url" required placeholder="https://x.com" disabled={!active || session.inputOwner !== "human"} /></label>
-      <button disabled={!active || session.inputOwner !== "human"}>Go</button>
-    </form>
-    {setup ? <p className="muted">Profile setup stays under your control until you stop the session. Sign-in activity is private in recordings.</p> : <>
-      <p>Choose Take control to navigate and sign in. When finished, resume automation.</p>
-      <p className="muted">Taking control makes the rest of this session private in recordings. Disconnecting control pauses input; resume explicitly when you are finished.</p>
-    </>}
-    {active ? <section className="browser-tabs" aria-label="Browser tabs">
-      <h2>Tabs <span className="muted">({view.tabs.length})</span></h2>
-      <p className="muted">Choose a tab to watch. Tasks take turns on shared tabs and work in parallel on different tabs.</p>
-      {view.tabsError ? <p role="status">{view.tabsError}</p> : null}
-      {!view.tabsError && !view.tabs.length ? <p role="status">Waiting for browser tabs…</p> : null}
-      <div className="browser-tab-list">{view.tabs.map(tab => <button type="button" key={tab.pageId}
-        className="browser-tab" aria-pressed={tab.selected} disabled={view.selectingTab !== null}
-        onClick={() => void selectTab(sessionId, tab.pageId)}>
-        <span className="browser-tab-title">{tab.title || "New tab"}</span>
-        <span className="browser-tab-url" title={tab.url}>{tab.url}</span>
-        <span className="muted">{view.selectingTab === tab.pageId ? "Selecting…" : tab.selected ? "Viewing · " : ""}
-          {tab.taskName ? `${tab.taskName} · ${tab.runId ? "Working" : "Available"}` : "Browser tab"}</span>
-      </button>)}</div>
-    </section> : null}
-    <div id="session-viewer" className="session-viewer" aria-label="Live browser" />
-    {active && view.connected && desiredAccess === "control" && session.inputOwner === "human" ? <p className="muted">Click inside the browser, then use Ctrl+V or ⌘V to paste text from your clipboard.</p> : null}
-    <h2>Playback</h2>
-    <PlaybackVideo sessionId={sessionId} />
-    <h2>Activity</h2><ol className="session-timeline">{view.activity.map((item) => <li key={item.cursor}>
-      <button onClick={() => { const video = document.getElementById("session-playback") as HTMLVideoElement | null; if (video) video.currentTime = item.offsetMs / 1000; }}>
-        {(item.offsetMs / 1000).toFixed(1)}s · {item.kind}{item.private ? " · private" : ""}
-      </button>
-    </li>)}</ol>
-    {view.data?.segments.some((segment) => segment.status !== "ready") ? <p className="muted">Private intervals and recording gaps are unavailable for playback.</p> : null}
-  </>;
+    {view.error ? <div className="banner banner--error" role="alert">{view.error}</div> : null}
+    {session?.error ? <div className="banner banner--error" role="alert">This session ended with an error ({session.error}). Its latest profile changes may not have been saved.</div> : null}
+    {!stopped ? <>
+      <div className="console-toolbar">
+        <div className="row"><span className="muted">Control</span><strong>{resuming ? "Resuming…" : session?.inputOwner === "human" ? "You" : session?.inputOwner === "ai" ? "Automation" : "Paused"}</strong></div>
+        <div className="row session-controls">
+          {!setup ? <>
+            {!view.connected ? <button disabled={!active} onClick={() => void connect(sessionId, "view").catch(report)}>Reconnect</button> : null}
+            {session?.inputOwner === "human" ? <button className="btn--primary" disabled={!active} onClick={() => void action(sessionId, "resume")}>Resume automation</button>
+              : <button disabled={!active || resuming} onClick={() => void action(sessionId, "takeover")}>Take control</button>}
+          </> : null}
+          <button className="btn--destructive" disabled={!session || session.status === "stopping"} onClick={() => void action(sessionId, "stop")}>Stop & save profile</button>
+        </div>
+      </div>
+      {resuming ? <p className="console-note" role="status">Waiting for the browser to acknowledge automation control.</p> : null}
+      {active && session?.inputOwner === "human" ? <form className="browser-address" onSubmit={event => { event.preventDefault(); const data = new FormData(event.currentTarget); void api.browserSession.navigate.mutate({ sessionId, url: String(data.get("url")) }).catch(report); }}>
+        <label><span className="sr-only">Website address</span><input name="url" type="url" required placeholder="Enter a website address…" /></label><button>Go →</button>
+      </form> : null}
+      {active ? <section className="browser-tabs" aria-label="Browser tabs">
+        {view.tabsError ? <p className="console-note" role="status">{view.tabsError}</p> : null}
+        {!view.tabsError && !view.tabs.length ? <p className="console-note" role="status">Waiting for browser tabs…</p> : null}
+        <div className="browser-tab-list">{view.tabs.map(tab => <button type="button" key={tab.pageId}
+          className="browser-tab" aria-pressed={tab.selected} disabled={view.selectingTab !== null}
+          onClick={() => void selectTab(sessionId, tab.pageId)}>
+          <span className="browser-tab-title">{tab.title || "New tab"}</span>
+          <span className="browser-tab-url" title={tab.url}>{tab.url.length > 48 ? `${tab.url.slice(0, 47)}…` : tab.url}</span>
+          <span className="browser-tab-meta">{view.selectingTab === tab.pageId ? "Selecting…" : tab.selected ? "Viewing" : "Open tab"}{tab.taskName ? ` · ${tab.taskName}` : ""}</span>
+        </button>)}</div>
+      </section> : null}
+    </> : null}
+    <div className="live-viewport" hidden={stopped}>
+      <div id="session-viewer" className="session-viewer" aria-label="Live browser" />
+      {!view.connected ? <div className="viewer-empty" role="status">
+        <span className="viewer-glyph" aria-hidden="true">▣</span>
+        <h2>{session?.status === "stopping" ? "Finishing your session" : active ? "Connecting to your browser" : "Your browser is getting ready"}</h2>
+        <p>{session?.status === "stopping" ? "Saving your profile and finalizing the recording. Replay becomes available after the session stops."
+          : view.data?.waitingForSessionId ? <>This profile is in use. <Link href={`/sessions/${view.data.waitingForSessionId}`}>Open its browser</Link> and stop it to let this session begin.</>
+          : "This view connects automatically when the browser is ready."}</p>
+      </div> : null}
+    </div>
+    {replay ? <div className="replay-surface"><PlaybackVideo key={sessionId} sessionId={sessionId} /><p className="console-note">Private intervals and recording gaps are unavailable for playback.</p></div>
+      : stopped ? <div className="viewer-empty"><span className="viewer-glyph" aria-hidden="true">▣</span><h2>{session?.recordingStatus === "expired" ? "Recording expired" : "No recording available"}</h2><p>{session?.recordingStatus === "expired" ? "This session’s recording is no longer retained." : "This session has no playable recording. Private activity is excluded from replay."}</p></div> : null}
+    {active ? <p className="console-note">{setup ? "You have control. Sign in, then stop the session to save your profile."
+      : session?.inputOwner === "human" ? "You have control. Click inside the browser to type or paste. Resume automation when you’re ready."
+      : "Watching live. Take control whenever you need to sign in or help the workflow."} <span className="muted">Human control makes the rest of the session private in recordings.</span></p> : null}
+    {session?.status === "ended" && !session.error && session.readyAt ? <p className="console-note">Profile saved. <Link href="/profiles">Open profiles ↗︎</Link></p> : null}
+    <details className="session-activity">
+      <summary>Session activity <span className="muted">{view.activity.length} events</span></summary>
+      {view.activity.length ? <ol className="session-timeline">{view.activity.map(item => <li key={item.cursor}>
+        {replay && !item.private ? <button className="btn--quiet" onClick={() => { const video = document.getElementById("session-playback") as HTMLVideoElement | null; if (video) video.currentTime = item.offsetMs / 1000; }}>
+          {(item.offsetMs / 1000).toFixed(1)}s · {item.kind}
+        </button> : <span>{(item.offsetMs / 1000).toFixed(1)}s · {item.kind}{item.private ? " · private" : ""}</span>}
+      </li>)}</ol> : <p className="muted">No activity recorded yet.</p>}
+    </details>
+  </section>;
 }
+
 function PlaybackVideo({ sessionId }: { sessionId: string }) {
   useMountHook(() => {
     const video = document.getElementById("session-playback") as HTMLVideoElement | null;
@@ -200,7 +219,7 @@ function PlaybackVideo({ sessionId }: { sessionId: string }) {
       if (disposed || !Hls.isSupported()) return;
       const hls = new Hls(); hls.loadSource(src); hls.attachMedia(video); destroy = () => hls.destroy();
     });
-    return () => { disposed = true; destroy?.(); };
+    return () => { disposed = true; destroy?.(); video.removeAttribute("src"); video.load(); };
   });
   return <video id="session-playback" controls playsInline preload="none" aria-label="Session recording" style={{ width: "100%", maxHeight: "60vh" }} />;
 }

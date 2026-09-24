@@ -7,6 +7,7 @@ docker run --rm --network none -v "$PWD/apps/browser-worker:/worker:ro" \
 import sys
 import asyncio
 import unittest
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
@@ -15,6 +16,51 @@ from src import main as worker
 
 
 class BrowserContract(unittest.IsolatedAsyncioTestCase):
+    async def test_closed_oauth_popup_recovers_to_its_root_in_a_persistent_browser(self):
+        with tempfile.TemporaryDirectory() as profile:
+            async with AsyncCamoufox(headless=True, persistent_context=True, user_data_dir=profile) as context:
+                worker.TOKEN = "popup-test"
+                worker.recorder = None
+                worker.command_lock = asyncio.Lock()
+                worker.session = worker.Session("popup-test", 1, None, context)
+                current = worker.session
+                context.on("close", lambda *_: setattr(current, "context_closed", True))
+                ordinal = 0
+
+                async def call(method, page_id=None, params=None):
+                    nonlocal ordinal
+                    ordinal += 1
+                    result = await worker.command_locked("popup-test", worker.CommandRequest(generation=1,
+                        input_generation=1, command_id=str(ordinal), method=method, page_id=page_id,
+                        params=params or {}), "Bearer popup-test", "1")
+                    return result["value"]
+
+                root = (await call("tab.acquire", params={"tab_key":"destination"}))["page_id"]
+                unrelated = (await call("tab.acquire", params={"tab_key":"other-task"}))["page_id"]
+                page = current.pages[root]
+                await page.set_content("<title>Destination</title><button onclick=\"window.open('about:blank')\">Sign in</button>")
+                async with page.expect_popup() as opened:
+                    await page.locator("button").click()
+                popup = await opened.value
+                popup_id = current.add_page(popup)
+                await call("page.switch_tab", root, {"id":popup_id})
+                await page.set_content("<title>Signed in</title><main>Database ready</main>")
+                await popup.close()
+                with self.assertRaises(worker.HTTPException) as closed:
+                    await call("page.perceive", popup_id)
+                self.assertEqual(closed.exception.detail["code"], "browser_page_closed")
+                tabs = await call("page.tabs", root)
+                self.assertEqual([tab["id"] for tab in tabs], [root])
+                self.assertEqual(tabs[0]["title"], "Signed in")
+                with self.assertRaises(worker.HTTPException):
+                    await call("page.switch_tab", root, {"id":unrelated})
+                await call("page.switch_tab", root, {"id":root})
+                self.assertIn("Database ready", (await call("page.perceive", root))["text"])
+                await context.close()
+                with self.assertRaises(worker.HTTPException) as disconnected:
+                    await call("page.perceive", root)
+                self.assertEqual(disconnected.exception.detail["code"], "browser.disconnected")
+
     async def test_repeated_anchors_and_bounded_collection_use_playwright_fields(self):
         async with AsyncCamoufox(headless=True) as browser:
             page = await browser.new_page()

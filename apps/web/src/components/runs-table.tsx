@@ -96,6 +96,7 @@ export function RunsTable({ source }: { source: RunsSource }) {
         <h1>Runs</h1>
         <div className="row">
           <select
+            aria-label="Filter runs by status"
             value={state.status}
             onChange={(e) => store.narrow({ status: e.target.value as RunStatus | "" })}
           >
@@ -112,7 +113,7 @@ export function RunsTable({ source }: { source: RunsSource }) {
 
       {state.error ? <div className="banner banner--error">The runs list didn&apos;t load. {state.error}</div> : null}
 
-      <table className="ledger">
+      <div className="table-scroll"><table className="ledger">
         <thead>
           <tr>
             <th>Phase</th>
@@ -148,7 +149,8 @@ export function RunsTable({ source }: { source: RunsSource }) {
                   <span className="muted">—</span>
                 )}
               </td>
-              <td>
+              <td className="run-row-actions">
+                {run.inspectHref ? <Link className="btn btn--quiet" href={run.inspectHref}>{run.cancellable ? "Watch live ↗︎" : "View run →"}</Link> : null}
                 {source.cancel && run.cancellable ? (
                   <button className="btn--destructive" onClick={() => void cancel(run.key)}>Cancel</button>
                 ) : null}
@@ -156,7 +158,7 @@ export function RunsTable({ source }: { source: RunsSource }) {
             </tr>
           ))}
         </tbody>
-      </table>
+      </table></div>
 
       {state.items.length === 0 ? <p className="muted">{source.emptyHint}</p> : null}
       {state.nextCursor ? <button onClick={() => store.more()}>Older</button> : null}

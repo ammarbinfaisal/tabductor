@@ -15,11 +15,13 @@ RUN pip install --no-cache-dir -r requirements.txt \
   && camoufox active | grep -F "${CAMOUFOX_BROWSER}"
 RUN apt-get update && apt-get install -y --no-install-recommends xclip xdotool \
   && rm -rf /var/lib/apt/lists/*
+RUN useradd --create-home --uid 10001 worker && mkdir -p /profiles /opt/browser-data && chown -R worker:worker /worker /profiles /opt/browser-cache /opt/browser-data
 COPY apps/browser-worker/src ./src
+COPY vendor/browser-harness/src/browser_harness/camoufox.py vendor/browser-harness/src/browser_harness/playwright_worker.py vendor/browser-harness/src/browser_harness/playwright_manifest.json /worker/harness/browser_harness/
+ENV PYTHONPATH=/worker/harness
 COPY packages/browser/src/perception-script.js ./src/perception-script.js
 COPY apps/browser-worker/entrypoint.sh ./entrypoint.sh
 
-RUN useradd --create-home --uid 10001 worker && mkdir -p /profiles /opt/browser-data && chown -R worker:worker /worker /profiles /opt/browser-cache /opt/browser-data
 USER worker
 EXPOSE 8080
 CMD ["sh", "entrypoint.sh"]

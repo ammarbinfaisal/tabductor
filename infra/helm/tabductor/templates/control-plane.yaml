@@ -99,6 +99,10 @@ spec:
             - secretRef: { name: {{ include "tabductor.configSecret" . }} }
           env:
             - { name: SECRETS_KEK_FILE_PATH, value: /app/data/secrets-kek.json }
+            {{- if .Values.pythonRunner.enabled }}
+            - { name: BROWSER_AGENT_BACKEND, value: python }
+            - { name: PYTHON_RUNNER_URL, value: "ws://{{ include "tabductor.fullname" . }}-python-runner:8092" }
+            {{- end }}
           resources: {{- toYaml .Values.resources.engine | nindent 12 }}
           volumeMounts:
             - { name: kek, mountPath: /app/data }

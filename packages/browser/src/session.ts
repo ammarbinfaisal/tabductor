@@ -1,4 +1,5 @@
 import { withAutomationControl } from "./control.js";
+import { proxyMember } from "./playwright-contract.js";
 import { randomBytes } from "node:crypto";
 import { AppError, SCRIPT_RUNTIME_VERSION } from "@tabductor/core";
 import type { PolicyGate, TaskCtx } from "@tabductor/core";
@@ -554,7 +555,7 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
   const makePage = (raw: Page): Page => {
     const pageAct: typeof act = (action, detail, fn, onResult) => act(action, { ...detail,
       ...(typeof detail.selector === "string" ? { selector: evidenceLocators.get(detail.selector) ?? detail.selector } : {}), pageId: raw.id }, async () => {
-        const mutation = ["goto","click","type","scroll","press","select","hover","drag","upload","download","switchTab","dialog"].includes(action);
+        const mutation = ["goto","click","type","scroll","press","select","hover","drag","upload","download","switchTab","dialog","harness.js"].includes(action);
         if (!mutation) return fn();
         anchorMap.clear(); anchorDetails.clear(); latestPerception = undefined; currentSnapshotId = undefined;
         dispatchSequence++; dispatchStatus = "uncertain";
@@ -566,6 +567,57 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
       }, onResult);
     return {
     id: raw.id,
+    ...(raw.proxy ? {proxy: async (command: import("./playwright-contract.js").ProxyCommand, opts: import("./playwright-contract.js").ProxyOptions) => {
+      const call = command.call;
+      const spec = call ? proxyMember(call) : undefined;
+      if (command.command === "close") return raw.proxy!(command, opts);
+      const networkRead = call && ["Request", "Response", "APIResponse"].includes(call.target.class) &&
+        ["body","text","json","headers","all_headers","headers_array","header_value","header_values","post_data","post_data_buffer","post_data_json"].includes(call.member);
+      if (networkRead) {
+        const url = String(await raw.proxy!({command:"call",call:{target:call.target,member:"url",args:[],kwargs:{},callback:call.callback}},opts));
+        const verdict = await gate.checkNetworkRead(taskCtx, {index:0,url}, call.member.includes("header") ? {headers:true} : {body:true});
+        if (!verdict.allow) throw new AppError("network_read_denied", "Network evidence access denied",{details:{outcomeUncertain:false}});
+      }
+      if (call?.member === "goto") {
+        visitCount++;
+        if (limits?.maxVisits !== undefined && visitCount > limits.maxVisits) return limitBreach("goto","max_visits",{});
+      }
+      if (call?.member === "new_page") {
+        tabCount++;
+        if (limits?.maxTabs !== undefined && tabCount > limits.maxTabs) return limitBreach("new_page","max_tabs",{});
+      }
+      if (spec?.kind === "effect") {
+        anchorMap.clear(); anchorDetails.clear(); latestPerception=undefined; currentSnapshotId=undefined;
+        dispatchSequence++; dispatchStatus="uncertain";
+      }
+      const action = call?.member === "set_input_files" ? "upload" : call?.target.class === "Download" && call.member === "save_as" ? "download" : `playwright.${call?.target.class ?? "session"}.${call?.member ?? command.command}`;
+      return act(action,
+        {pageId:raw.id}, async () => {
+          const value = await raw.proxy!(command, opts);
+          if (spec?.kind === "effect") dispatchStatus="executed";
+          if (networkRead && call) {
+            if (call.member === "all_headers" || call.member === "headers")
+              return (await gate.redact(taskCtx,{headers:value as Record<string,string>})).headers;
+            if (call.member === "headers_array")
+              return Promise.all((value as Array<{name:string;value:string}>).map(async h=>({...h,value:(await gate.redact(taskCtx,{headers:{[h.name]:h.value}})).headers?.[h.name]??""})));
+            if (call.member === "header_value" || call.member === "header_values") {
+              const name=String(call.args[0]??call.kwargs.name);
+              const clean=async(v:string)=>(await gate.redact(taskCtx,{headers:{[name]:v}})).headers?.[name]??"";
+              return Array.isArray(value)?Promise.all(value.map(clean)):typeof value==="string"?clean(value):value;
+            }
+            if (typeof value === "string") return (await gate.redact(taskCtx,{body:value})).body;
+            if (call.member === "json" || call.member === "post_data_json") return JSON.parse((await gate.redact(taskCtx,{body:JSON.stringify(value)})).body??"null");
+          }
+          return value;
+        });
+    }} : {}),
+    ...(raw.harness ? { harness: (method: string, args: Record<string, unknown>) => {
+      const actions: Record<string,string> = {click:"click",click_at_xy:"click",fill:"type",type_text:"type",press_key:"press",
+        scroll:"scroll",upload:"upload",download:"download",js:"harness.js",request:"harness.js",paste:"type",new_tab:"click"};
+      return pageAct(actions[method] ?? "harness.read", { method, ...(typeof args.selector === "string" ? {selector:args.selector} : {}) },
+        () => waitWithinBudget(`harness.${method}`, typeof args.timeoutMs === "number" ? args.timeoutMs : undefined,
+          timeoutMs => raw.harness!(method, {...args,timeoutMs})));
+    } } : {}),
     async goto(url, opts) {
       visitCount++;
       if (limits?.maxVisits !== undefined && visitCount > limits.maxVisits) {

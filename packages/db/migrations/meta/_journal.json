@@ -337,6 +337,41 @@
       "when": 1789909760540,
       "tag": "0047_destination_preparation_ownership",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1790042380388,
+      "tag": "0048_browser_sdk_helpers",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1790132358023,
+      "tag": "0049_browser_helper_language",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1790200000000,
+      "tag": "0050_python_playwright_runtime",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1790245873047,
+      "tag": "0051_native_captcha_jobs",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1790253337297,
+      "tag": "0052_dazzling_overlord",
+      "breakpoints": true
     }
   ]
 }

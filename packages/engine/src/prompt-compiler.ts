@@ -4,7 +4,6 @@ import type { NodeKind } from "./graph.js";
 import { renderIntent, type IntentContract, type HarnessTask } from "./intent-contract.js";
 import type { ChatTransport } from "./schema-generator-llm.js";
 import { ASYNC_EVENT_EXECUTION_CONTRACT } from "./async-execution-contract.js";
-import { AUTHENTICATION_EXECUTION_CONTRACT } from "./authentication-contract.js";
 
 /** Deterministic publish-time task instructions. Original intent and task contracts are
  * authoritative; native tool definitions carry parameter schemas at runtime. Unrelated
@@ -55,7 +54,7 @@ export interface PromptCompiler {
 
 /**
  * The tool surface per kind, as the executors actually build it (`packages/agent`'s
- * `buildToolRegistry` / `buildDecisionToolRegistry`). Restated
+ * `buildBrowserCodeTools` / `buildDecisionToolRegistry`). Restated
  * here as documentation for the model rather than imported: `packages/engine` cannot import
  * `packages/agent` (agent already imports engine), and the names are a stable contract that
  * `*-registry-isolation.test.ts` pins on the other side.
@@ -63,53 +62,16 @@ export interface PromptCompiler {
 export const TOOL_SURFACE: Record<NodeKind, ReadonlyArray<{ name: string; hint: string }>> = {
   result: [],
   browser: [
-    { name: "page.perceive", hint: "inspect fresh text, state and snapshot anchors; use textOffset and elementOffset for continuation" },
-    { name: "page.find", hint: "search visible controls by text or role, optionally in a frame" },
-    { name: "page.inspect", hint: "inspect one anchor's descendants and field selector hints" },
-    { name: "page.screenshot", hint: "view the viewport or an element crop as an image" },
-    { name: "page.verify", hint: "assert task-specific observable postconditions before done" },
-    { name: "page.press", hint: "press keys or shortcuts" },
-    { name: "page.select", hint: "select native options by value" },
-    { name: "page.hover", hint: "reveal hover menus" },
-    { name: "page.drag", hint: "drag between current anchors" },
-    { name: "page.dialog", hint: "arm a one-shot dialog accept/dismiss policy before triggering it" },
-    { name: "page.upload", hint: "upload bounded file bytes or a downloaded file handle, subject to grants" },
-    { name: "page.download", hint: "retain a bounded download outside model history, subject to grants" },
-    { name: "file.read", hint: "read a bounded downloaded-file slice" },
-    { name: "file.release", hint: "release a downloaded-file handle" },
-    { name: "tabs.list", hint: "list the run's tab and its owned popups" },
-    { name: "tabs.switch", hint: "switch to an owned tab and refresh anchors" },
-    { name: "memory.get", hint: "read durable exploration facts, pending work, attempts and acknowledgements" },
-    { name: "memory.set", hint: "save compact facts and pending work" },
-    { name: "page.waitForLoadState", hint: "wait for an explicit browser load state" },
-    { name: "network.waitForResponse", hint: "wait for an observed network URL and then inspect the UI" },
-    { name: "batch.read", hint: "read a bounded batch slice, preferably inside browser.code; check result.ok and iterate result.value.records (count is the total batch size)" },
-    { name: "batch.release", hint: "release batch memory" },
-    { name: "page.goto", hint: "navigate the tab to a URL (subject to the navigation allowlist)" },
-    { name: "page.click", hint: "click an anchored element from the current perception" },
-    { name: "page.type", hint: "type into an anchored input" },
-    { name: "page.scroll", hint: "scroll the page or a container" },
-    { name: "page.waitFor", hint: "wait for text or a selector to appear" },
-    { name: "page.extract", hint: "extract fields from one item anchor (default: whole page); each field reads its first Playwright selector match or null. For repeated items, extract each anchor separately and emit each validated record immediately. Correct invalid field selectors and retry, omitting only optional fields" },
-    { name: "page.extractBatch", hint: "bounded collection extraction (up to 100 items) with fields scoped to each item; returns a batch handle and preview instead of full model context" },
-    { name: "browser.code", hint: "isolated JavaScript with URL and URLSearchParams for bounded loops, parsing, normalization and calls to the same browser tools; check batch.read result.ok, iterate result.value.records and emit validated per-record events with emit.batch" },
-    { name: "emit.batch", hint: "up to 100 individual event emissions with stable per-record dedupe keys and partial-failure acknowledgements; never assumes downstream completion" },
-    { name: "checkpoint.get", hint: "read bounded durable progress for this run; reacquire ephemeral batch handles and anchors after retry" },
-    { name: "checkpoint.set", hint: "save stable identities and compact progress after accepted events" },
-    { name: "network.list", hint: "list the XHR/fetch responses observed so far" },
-    { name: "network.read", hint: "read one observed response body" },
-    { name: "emit", hint: "durably hand off one event packet for asynchronous consumers, validated against its schema" },
-    { name: "record.outcome", hint: "explicit input-record disposition: prepared, skipped, rejected, failed, or a saved record verified by page.verify(recordKey, urlIncludes)" },
-    { name: "done", hint: "finish only after explicit record disposition and required verification" },
-    { name: "fail", hint: "finish the run as failed, with a reason" },
+    { name: "browser.screenshot", hint: "Capture the current page directly as an image; optionally crop with selector." },
+    { name: "browser.python", hint: "Use Playwright directly: standard synchronous Python from playwright.sync_api with the supplied page, context and expect. Use normal Playwright methods and workspace files. workflow is separate: workflow.input supplies current data and workflow.done/fail completes the run." },
   ],
   decision: [
     { name: "store.query", hint: "one SELECT against the workflow store, read-only" },
     { name: "store.insert", hint: "stage a row insert, committed with the next emit" },
     { name: "store.upsert", hint: "stage a row upsert, committed with the next emit" },
     { name: "emit", hint: "durably hand off one event packet for asynchronous consumers, validated against its schema" },
-    { name: "record.outcome", hint: "explicit input-record disposition: prepared, skipped, rejected, failed, or a saved record verified by page.verify(recordKey, urlIncludes)" },
-    { name: "done", hint: "finish only after explicit record disposition and required verification" },
+    { name: "record.outcome", hint: "explicit input-record disposition: prepared, skipped, rejected, failed, or a saved record verified by workflow.record.verify against bound identity and fields" },
+    { name: "done", hint: "finish after assessing the requested outcome and recording any required record disposition; verification helpers are optional in AI mode" },
     { name: "fail", hint: "finish the run as failed, with a reason" },
   ],
 };
@@ -117,7 +79,7 @@ export const TOOL_SURFACE: Record<NodeKind, ReadonlyArray<{ name: string; hint: 
 const KIND_ROLE: Record<NodeKind, string> = {
   result: "Generate the final JSON result from the completed workflow execution.",
   browser:
-    "You drive a real, logged-in browser through page.* tools. You have no store access; everything you learn leaves this node only as emitted events.",
+    "Use Playwright directly in browser.python: standard synchronous Python from playwright.sync_api with the supplied page, context and expect. browser.screenshot captures a direct image. workflow provides separate task services. Explore freely in AI mode. You have no store access; everything you learn leaves this node only as emitted events.",
   decision:
     "You perform semantic work: inspect the trigger, query or update the workflow store, and decide what to emit. You have no browser.",
 };
@@ -140,7 +102,7 @@ export function promptInputHash(input: PromptCompileInput): string {
     tools: TOOL_SURFACE[input.task.kind],
     role: KIND_ROLE[input.task.kind],
     workflow: input.workflow,
-    rendererVersion: 3,
+    rendererVersion: 9,
     task: input.task,
     consumes: [...input.consumes].sort(byType).map((e) => ({ ...e, emitters: [...e.emitters].sort() })),
     emits: [...input.emits].sort(byType).map((e) => ({ ...e, consumers: [...e.consumers].sort() })),
@@ -174,8 +136,6 @@ export function assemblePromptBrief(input: PromptCompileInput): string {
   if (input.workflow.intent) sections.push(renderIntent(input.workflow.intent, task.contract ?? null));
   else if (input.workflow.originalRequest) sections.push(`## Original workflow request\n${input.workflow.originalRequest}`);
 
-  if (task.kind === "browser") sections.push(AUTHENTICATION_EXECUTION_CONTRACT);
-
   sections.push(["## Author's instructions", task.prompt?.trim() || "(the author left this node's prompt empty)"].join("\n"));
 
   sections.push(
@@ -197,7 +157,7 @@ export function assemblePromptBrief(input: PromptCompileInput): string {
 
   sections.push(
     [
-      "## Events this node must emit",
+      "## Declared output events",
       input.emits.length === 0
         ? "(none declared — do not call emit)"
         : input.emits
@@ -244,7 +204,7 @@ schemas), the neighbouring nodes, the tools its kind has, and the workflow store
 
 Respond with plain text instructions for the agent running this node — no markdown headings, \
 no code fences, no preamble. Rules:
-- Turn the author's intent into concrete, ordered steps using only the tools listed.
+- State the requested outcome, explicit user constraints, and available capabilities. Leave browser interaction strategy to the executing agent; do not invent DOM, label, editability, or discovery prerequisites.
 - For every event the node must emit, say exactly when to emit it, once or many times, and \
 which packet fields to fill from what — name each event type verbatim.
 - When the declared event represents one record, extract each item within its own anchor and emit \
@@ -258,8 +218,8 @@ only when the requested result genuinely requires aggregation and defines comple
 at most twice before choosing another approach. Drop only optional fields; never treat selector syntax \
 errors as proof that a visible page is unavailable.
 - Say what to do when the trigger packet is missing or empty, when nothing is found, and when \
-a step fails: use record.outcome with skipped, rejected or failed and a reason; never silently finish an input record. Preserve unknown optional fields as null instead of inventing counts or flags.
-- For browser.code, process batches of at most 25, checkpoint acknowledged items, inspect tools.budget() and yield before deadlines. Never replay uncertain browser effects; inspect the destination first.
+a step fails. When record tracking is declared, record an appropriate outcome with a reason; otherwise assess completion against the requested task outcome. Preserve unknown optional fields as null instead of inventing counts or flags.
+- For browser.python, process batches of at most 25, checkpoint acknowledged items, inspect workflow.status() and yield before deadlines. Inspect uncertain effects before deciding the next action; AI mode remains available for exploration and recovery.
 - Never invent tools, fields, tables or events that the brief does not list.
 - Keep it under 600 words. The brief itself is appended after your text, so do not restate \
 schemas or tool lists.`;

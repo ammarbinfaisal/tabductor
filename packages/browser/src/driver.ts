@@ -73,6 +73,7 @@ export type AnchoredElement = {
   selectorHint?: string;
   href?: string | null;
   inputType?: string | null;
+  contentEditable?: boolean;
   value?: string | null;
   disabled?: boolean;
   checked?: boolean | null;
@@ -152,6 +153,9 @@ export type NavigationOptions = { timeout?: number; waitUntil?: LoadState };
 export type ExtractOptions = { offset?: number; limit?: number; maxFieldChars?: number };
 
 export type Page = {
+  proxy?: (command: import("./playwright-contract.js").ProxyCommand, opts: import("./playwright-contract.js").ProxyOptions) => Promise<unknown>;
+  /** Camoufox harness primitives; all calls still cross the worker input fence. */
+  harness?: (method: string, args: Record<string, unknown>) => Promise<unknown>;
   /** Browser target identity, when supplied by the driver. */
   id?: string;
   goto: (url: string, opts?: NavigationOptions) => Promise<void>;

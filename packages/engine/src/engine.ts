@@ -1,12 +1,9 @@
 import { checkWorkflowPrerequisites, persistPrerequisiteBlock, refreshWorkflowBlocks, type PrerequisiteOptions } from "./prerequisites.js";
 import { recordEmitted, recordRunOutcome, recordCompletionError } from "./record-progress.js";
-import { harnessTask } from "./intent-contract.js";
-import { claimDestinationPreparation, claimDestinationRecord, prepareDestinationContract, readDestinationContract } from "./destination-contracts.js";
 import { normalizeRecord, recordProcessingSchema } from "./record-processing.js";
-import { requestHumanAction } from "./human-action.js";
 import { parseWorkflowResult } from "./result-schema.js";
 import { publish, type Dispatcher } from "@tabductor/bus";
-import { createLogger, type Logger } from "@tabductor/core";
+import { AppError, createLogger, type Logger } from "@tabductor/core";
 import {
   eventDefs,
   events,
@@ -266,41 +263,20 @@ export function createEngine(deps: EngineDeps): Engine {
     ctx: { run: RunRow; task: TaskRow; trigger: EventRow | null },
     signal: AbortSignal,
   ): Promise<RunResult> => {
+    const [inputDefinition] = ctx.trigger ? await db.select({ record: eventDefs.recordJson }).from(eventDefs)
+      .where(and(eq(eventDefs.workflowVersionId, ctx.task.workflowVersionId), eq(eventDefs.eventType, ctx.trigger.type))) : [];
     const handle: RunHandle = {
+      ...(inputDefinition?.record ? { recordInput: { key: inputDefinition.record.key, packet: ctx.trigger!.packet as Record<string, unknown> } } : {}),
       run: ctx.run,
       task: ctx.task,
       trigger: ctx.trigger,
       signal,
       recordOutcome: outcome => recordRunOutcome(db, ctx.run, ctx.task, ctx.trigger, outcome),
       recordCompletionError: () => recordCompletionError(db, ctx.run, ctx.task),
-      ...(harnessTask(ctx.task.limitsJson)?.destination ? { destination: {
-        role: harnessTask(ctx.task.limitsJson)!.role,
-        read: (id?: string) => readDestinationContract(db, ctx.run, ctx.task, ctx.trigger, id),
-        publish: (mapping: import("./destination-contracts.js").DestinationMapping, evidence: import("./destination-contracts.js").DestinationEvidence) => db.transaction(async trx => {
-          const contract = await prepareDestinationContract(trx, ctx.run, ctx.task, mapping, evidence);
-          const d = harnessTask(ctx.task.limitsJson)!.destination!;
-          await emitFromRun(trx, ctx, d.readyEvent, { [d.contractField]: contract.id }, { dedupeKey: `destination:${ctx.run.executionId}:${contract.id}` });
-          return contract;
-        }),
-      } } : {}),
-      ...(ctx.run.executionId && ctx.task.kind === "browser" ? { requestHumanAction: (input: { reason: string; resumeWhen: string }) => requestHumanAction(db, ctx.run, ctx.task, input) } : {}),
       emit: (type, packet, opts) => emitFromRun(db, ctx, type, packet, opts),
       declaredEmits: () => declaredEmitsOf(db, ctx.task),
     };
     try {
-      if (harnessTask(ctx.task.limitsJson)?.role === "prepare-destination") {
-        const claim = await claimDestinationPreparation(db, ctx.run, ctx.task);
-        if (claim === "ready") return { ok: true };
-        if (claim === "busy") return { ok: false, deferred: true, error: "destination_preparation_busy: another active run owns setup" };
-      }
-      if (harnessTask(ctx.task.limitsJson)?.role === "write-record") {
-        const claim = await claimDestinationRecord(db, ctx.run, ctx.task, ctx.trigger);
-        if (claim === "saved") {
-          await recordRunOutcome(db, ctx.run, ctx.task, ctx.trigger, { status: "skipped", reason: "Destination ledger already contains a verified save for this identity" });
-          return { ok: true };
-        }
-        if (claim === "busy") return { ok: false, deferred: true, error: "destination_record_busy: another active run owns this identity" };
-      }
       return await executor.execute(handle);
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -400,13 +376,6 @@ async function emitFromRun(
 ): Promise<EventRow | null> {
   const processing = recordProcessingSchema.safeParse((ctx.task.limitsJson as Record<string, unknown>)?.recordProcessing);
   if (processing.success && processing.data.eventType === type) packet = normalizeRecord(packet, processing.data);
-  const h = harnessTask(ctx.task.limitsJson);
-  const [declared] = h?.role === "source" ? await db.select({ record: eventDefs.recordJson }).from(eventDefs)
-    .where(and(eq(eventDefs.workflowVersionId, ctx.task.workflowVersionId), eq(eventDefs.eventType, type))) : [];
-  if (h?.role === "source" && h.destination && declared?.record) {
-    const contract = await readDestinationContract(db, ctx.run, ctx.task, ctx.trigger);
-    packet = { ...(packet as Record<string, unknown>), [h.destination.contractField]: contract.id };
-  }
   const check = await validatePacket(db, ctx.task.id, type, packet);
   if (!check.ok) throw new Error(check.error);
 

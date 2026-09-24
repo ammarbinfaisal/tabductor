@@ -74,7 +74,6 @@ export function createCompileLoop(deps: CompileHooksDeps): CompileLoop {
 
   const afterAiRun: CompileLoop["afterAiRun"] = async ({ task, run, ok }) => {
     if (task.kind !== "browser" || task.mode !== "ai") return { enqueued: false, reason: "not a browser ai task" };
-    if ((task.limitsJson as Record<string, unknown> | null)?.harness) return { enqueued: false, reason: "task uses fenced intent/destination capabilities" };
     try {
       if (run.executionId) {
         const [assisted] = await db.select({ id: browserSessions.id }).from(browserSessions)
@@ -138,7 +137,9 @@ export function createCompileLoop(deps: CompileHooksDeps): CompileLoop {
 }
 
 export type CompileWorkerDeps = {
+  validatePython?: import("@tabductor/compiler").CompileDeps["validatePython"];
   db: Db;
+  blobs?: { get(ref: string): Promise<Buffer> };
   /** The compiler's model, per job. Kept a factory for the same reason executors keep one:
    * a transcript-replaying test rig picks a fixture per task. */
   compileLlmFor: (opts: { task: TaskRow; job: CompileJobRow }) => CompilerLlm;
@@ -214,12 +215,13 @@ export function createCompileWorker(deps: CompileWorkerDeps): CompileWorker {
         job.reason === "promote"
           ? await previousCleanAiRunIds(db, { taskId: task.id, excludeRunId: job.runId, limit: 2 })
           : [];
-      const traces = await loadRunTraces(db, [job.runId, ...priorIds]);
+      const traces = await loadRunTraces(db, [job.runId, ...priorIds], deps.blobs);
 
       const result = await withTimeout(
         compileTask(
           {
             db,
+            validatePython: deps.validatePython,
             llm: deps.compileLlmFor({ task, job }),
             ...(deps.metrics ? { metrics: deps.metrics } : {}),
           },

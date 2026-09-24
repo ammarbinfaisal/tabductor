@@ -50,10 +50,11 @@ const envSchema = z.object({
     .string()
     .default("")
     .transform((s) => s.split(",").map((d) => d.trim()).filter(Boolean)),
-  // Publish-time schema compilation picks a provider from whichever of these is set
-  // (Anthropic first). SCHEMA_MODEL overrides that provider's default model id.
+  // Publish-time schema compilation prefers AI Gateway, then Anthropic, then OpenAI.
+  // SCHEMA_MODEL overrides that provider's default model id.
   ANTHROPIC_API_KEY: optionalSetting,
   OPENAI_API_KEY: optionalSetting,
+  AI_GATEWAY_API_KEY: optionalSetting,
   SCHEMA_MODEL: optionalSetting,
   MODEL_RATES_JSON: optionalSetting,
   // Provider credentials are deliberately named after the providers' own terminology.

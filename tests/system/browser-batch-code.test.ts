@@ -37,7 +37,7 @@ it("browser code extracts 100 records, durably emits each once across batch retr
         if (!verified.ok) throw new Error(verified.error);
         return {emitted};
       }` } }]
-      : [{ id: "done", name: "done", args: {} }] }) };
+      : [{ id: "done", name: "browser.code", args: { source: "export default async api => api.run.done({})" } }] }) };
   } });
   try {
     const wf = await seedWorkflow(rig.handle.db, { tasks: { Start: {}, Collect: { mode: "ai", prompt: "Collect 100 items", consumes: ["work.requested"], emits: ["item.found"] } },

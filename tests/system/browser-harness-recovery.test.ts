@@ -3,7 +3,7 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { launchChrome, type Chrome } from "@tabductor/testkit";
 import { openRunSession, playwrightDriver, type BrowserConn, type RunSession, type TraceRecorder } from "@tabductor/browser";
 import { AllowAllGate } from "@tabductor/policy";
-import { buildToolRegistry } from "@tabductor/agent";
+import { buildToolRegistry } from "../../packages/agent/src/tools.js";
 
 let chrome: Chrome;
 let conn: BrowserConn;

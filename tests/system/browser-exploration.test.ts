@@ -4,7 +4,7 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import { launchChrome, type Chrome } from "@tabductor/testkit";
 import { openRunSession, playwrightDriver, type BrowserConn, type RunSession } from "@tabductor/browser";
 import { AllowAllGate } from "@tabductor/policy";
-import { buildToolRegistry } from "@tabductor/agent";
+import { buildToolRegistry } from "../../packages/agent/src/tools.js";
 import { runAgentLoop } from "../../packages/agent/src/loop.js";
 import { summarizePerception } from "../../packages/agent/src/tools.js";
 

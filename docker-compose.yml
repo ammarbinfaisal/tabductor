@@ -25,6 +25,8 @@ x-app: &app
     BLOB_SECRET_KEY: tabductor
     BLOB_BUCKET: tabductor-blobs
     LOG_LEVEL: ${LOG_LEVEL:-info}
+    # Local containers use production builds, but enable development diagnostics.
+    TABDUCTOR_DEV_MODE: ${TABDUCTOR_DEV_MODE:-1}
     POLICY_NAVIGATION_MODE: ${POLICY_NAVIGATION_MODE:-permissive}
     # Unset = telemetry is a no-op (techical_plan §17.2 rule 2). The telemetry profile
     # below sets it for the containers that should export.
@@ -42,6 +44,7 @@ x-app: &app
     # schema, or a run of an `ai`-mode task, that fails.
     ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    AI_GATEWAY_API_KEY: ${AI_GATEWAY_API_KEY:-}
     SCHEMA_MODEL: ${SCHEMA_MODEL:-}
     # Next starts from /app/apps/web while the engine starts from /app. Use the
     # same absolute path so every process wraps credentials with the persisted key.
@@ -97,6 +100,12 @@ services:
     command: ["node", "--import", "tsx", "apps/engine/src/main.ts"]
     environment:
       <<: *app-env
+      # Compose uses .env for interpolation; solver credentials must be explicitly
+      # forwarded to the engine. Keep them out of web, workers and Python cells.
+      CAPSOLVER_API_KEY: ${CAPSOLVER_API_KEY:-}
+      TWO_CAPTCHA_API_KEY: ${TWO_CAPTCHA_API_KEY:-}
+      ANTI_CAPTCHA_API_KEY: ${ANTI_CAPTCHA_API_KEY:-}
+      SOLVER_RATES_JSON: ${SOLVER_RATES_JSON:-}
       # The navigation guard's domain allowlist (impl-phases §0.1). Suffix match includes
       # subdomains, so `x.com` covers `api.x.com` but never `notx.com`.
       #

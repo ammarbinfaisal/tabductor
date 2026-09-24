@@ -87,6 +87,8 @@ it("repairs malformed model JSON using only this execution's evidence and return
   expect(output).toEqual({ ok: true, result: { count: 0 } });
   expect(completeModel).toHaveBeenCalledTimes(2);
   expect(completeModel.mock.calls[0]![0].tools).toEqual([]);
+  expect(completeModel.mock.calls[0]![0].output).toEqual({ type: "json", schema: task!.resultSchemaJson });
+  expect(completeModel.mock.calls[1]![0].output).toEqual({ type: "json", schema: task!.resultSchemaJson });
   expect(completeModel.mock.calls[0]![0].messages[0]!.content).toContain("upstream failed");
   expect(completeModel.mock.calls[0]![0].messages[0]!.content).not.toContain("other_execution_only");
   await finishRun(db.db, { runId: started.id, taskId: started.taskId, leaseGeneration: started.leaseGeneration,

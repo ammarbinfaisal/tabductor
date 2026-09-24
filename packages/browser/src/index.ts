@@ -1,3 +1,5 @@
+export { PLAYWRIGHT_API_VERSION, playwrightManifest, proxyMember } from "./playwright-contract.js";
+export type { ProxyReference, ProxyCall, ProxyCallback, ProxyOptions, ProxyCommand } from "./playwright-contract.js";
 export type {
   Anchor,
   AnchoredElement,

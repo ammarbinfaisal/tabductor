@@ -127,7 +127,7 @@ resource "aws_s3_bucket_policy" "blobs" {
   policy = jsonencode({ Version = "2012-10-17", Statement = [{ Effect = "Deny", Principal = "*", Action = "s3:*", Resource = [aws_s3_bucket.blobs.arn, "${aws_s3_bucket.blobs.arn}/*"], Condition = { Bool = { "aws:SecureTransport" = "false" } } }] })
 }
 resource "aws_ecr_repository" "images" {
-  for_each             = toset(["app", "browser-worker"])
+  for_each             = toset(["app", "browser-worker", "python-broker", "python-runner"])
   name                 = "${var.name}/${each.key}"
   image_tag_mutability = "IMMUTABLE"
   image_scanning_configuration { scan_on_push = true }

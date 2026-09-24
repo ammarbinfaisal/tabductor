@@ -18,9 +18,8 @@ it.each([undefined, 3])("finishes beyond 30 model turns with legacy max_steps=%s
     turns++;
     await trace.record("llm", { turn: turns });
     return { usage: { in: 1, out: 1 }, toolCalls: turns <= 40
-      ? [{ id: `read-${turns}`, name: "page.perceive", args: {} }]
-      : [{ id: "verify", name: "page.verify", args: { urlIncludes: "about:blank" } },
-        { id: "done", name: "done", args: { result: "finished" } }] };
+      ? [{ id: `read-${turns}`, name: "browser.code", args: {source:"export default async api => api.page.perceive({})"} }]
+      : [{ id: "finish", name: "browser.code", args: {source:"export default async api => { await api.page.verify({urlIncludes:'about:blank'}); return api.run.done({result:'finished'}); }"} }] };
   } }) });
 
   const wf = await seedWorkflow(rig.handle.db, {

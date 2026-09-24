@@ -262,7 +262,7 @@ it.each(["missing", "browser", "runtime"])("demotes %s compatibility before runn
   let modelCalls = 0;
   rig = await startAgentRig({ compiled: {}, llmFor: () => ({ complete: async () => {
     modelCalls++;
-    return { toolCalls: [{id:"verify",name:"page.verify",args:{urlIncludes:"about:blank"}}, { id: "finish", name: "done", args: {} }], usage: { in: 0, out: 0 } };
+    return { toolCalls: [{id:"verify",name:"browser.code",args:{source:"export default async api => { await api.page.verify({urlIncludes:\"about:blank\"}); return api.run.done({}); }"}}], usage: { in: 0, out: 0 } };
   } }) });
   const { taskId, scriptId } = await compiledTask();
   await rig.handle.db.update(compiledScripts).set({ guardsMeta: mismatch === "missing" ? {} : {

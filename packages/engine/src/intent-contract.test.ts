@@ -39,6 +39,7 @@ it("normalizes without inventing source facts or turning fetch quantity into sav
 
 it("canonicalizes database views without conflating different destination databases", () => {
   const id = "abcdabcdabcdabcdabcdabcdabcdabcd";
+  expect(destinationKey(`https://app.notion.com/p/workspace/${id}?v=view1`)).toBe(destinationKey(`https://www.notion.so/${id}?v=view2`));
   expect(destinationKey(`https://www.notion.so/Archive-${id}?v=view1`)).toBe(destinationKey(`https://www.notion.so/${id}?v=view2#section`));
   expect(destinationKey(`https://www.notion.so/${id}`)).not.toBe(destinationKey("https://www.notion.so/11111111111111111111111111111111"));
   expect(destinationKey("https://app.test/?db=one")).not.toBe(destinationKey("https://app.test/?db=two"));

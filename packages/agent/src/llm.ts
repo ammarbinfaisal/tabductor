@@ -3,7 +3,7 @@ import { AppError } from "@tabductor/core";
 import type { TraceRecorder } from "@tabductor/browser";
 import type { Metrics } from "@tabductor/telemetry";
 import type { z } from "zod";
-import { liveLlm, providerFromEnv, resolveModelId, type LlmProvider } from "./llm-live.js";
+import { liveLlm, resolveModelId, type LlmProvider } from "./llm-live.js";
 import { costUsd } from "./pricing.js";
 import { recordLlm, replayLlm } from "./transcript.js";
 
@@ -13,10 +13,13 @@ export type LlmMessage = {
   role: "user" | "assistant" | "tool";
   /** Human-readable form for transcripts; native parts below are authoritative on the wire. */
   content: string;
+  /** Assistant prose alongside native tool calls; retained as reasoning/plan context. */
+  text?: string;
   toolCalls?: LlmToolCall[];
   toolResults?: Array<{id:string;name:string;result:import("./tools.js").ToolResult}>;
   context?: string;
   actionSummaries?: import("./browser-actions.js").BrowserActionSummary[];
+  contextMemory?: string;
 };
 
 /** A tool's parameters are a zod schema, not hand-written JSON Schema — validated at the
@@ -32,6 +35,10 @@ export type LlmRequest = {
   system: string;
   messages: LlmMessage[];
   tools: ToolDef[];
+  /** Require the provider to generate JSON. When present, an object schema is sent as the
+   * provider's native structured-output contract; parsing and draft-07 validation remain the
+   * caller's responsibility so repair loops can inspect invalid responses. */
+  output?: { type: "json"; schema: Record<string, unknown> | boolean | null };
 };
 
 export type LlmToolCall = { id: string; name: string; args: Record<string, unknown> };

@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { AppError, newId } from "@tabductor/core";
 import {
   challengeAttempts,
+  captchaJobs,
   browserBilling,
   modelOperations,
   creditLedgerEntries,
@@ -113,6 +115,19 @@ export async function appendCreditAdjustment(db: Db, input: CreditAdjustmentInpu
   return db.transaction(async (trx) => {
     await lockCreditAccount(trx, input.accountId);
     return appendCreditAdjustmentLocked(trx, input);
+  });
+}
+
+/** Grant once per server-verified login (or local server startup), including concurrent requests. */
+export async function seedLoginCredits(db: Db, input: { accountId: string; loginId: string }): Promise<CreditLedgerEntryRow> {
+  if (!input.loginId.trim()) throw new AppError("credit_login_invalid", "A server-verified login identifier is required");
+  const loginDigest = createHash("sha256").update(input.loginId).digest("hex");
+  return appendCreditAdjustment(db, {
+    accountId: input.accountId,
+    kind: "adjustment",
+    units: 1000,
+    idempotencyKey: `login-seed:${input.accountId}:${loginDigest}`,
+    metadata: { reason: "login_startup_seed" },
   });
 }
 
@@ -277,6 +292,7 @@ export async function expireCreditReservations(db: Db, now = new Date(), limit =
       lt(creditReservations.expiresAt, now),
       sql`not exists (select 1 from ${modelOperations} where ${modelOperations.reservationId} = ${creditReservations.id})`,
       sql`not exists (select 1 from ${browserBilling} where ${browserBilling.reservationId} = ${creditReservations.id})`,
+      sql`not exists (select 1 from ${captchaJobs} where ${captchaJobs.reservationId} = ${creditReservations.id})`,
       sql`not exists (select 1 from ${challengeAttempts} where ${challengeAttempts.reservationId} = ${creditReservations.id})`,
     )).orderBy(asc(creditReservations.expiresAt)).limit(boundedLimit);
   let count = 0;

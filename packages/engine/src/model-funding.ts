@@ -5,13 +5,42 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { reserveCredits, settleCreditReservation } from "./credits.js";
 
+export const modelProviderSchema = z.enum(["openai", "anthropic", "openai-compatible"]);
+export type ModelProvider = z.infer<typeof modelProviderSchema>;
+const platformModelProviderSchema = z.enum(["openai", "anthropic"]);
+const compatibleBaseUrlSchema = z.string().trim().min(1).max(2048).url().refine((value) => {
+  const url = new URL(value);
+  return (url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password && !url.search && !url.hash;
+}, "base URL must be an http(s) URL without credentials, query parameters, or a fragment");
+
+export const modelCredentialInputSchema = z.object({
+  provider: modelProviderSchema,
+  label: z.string().trim().min(1).max(120),
+  apiKey: z.string().min(1).max(4096),
+  baseUrl: compatibleBaseUrlSchema.optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.provider === "openai-compatible" && !value.baseUrl) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["baseUrl"], message: "an OpenAI-compatible credential requires a base URL" });
+  }
+  if (value.provider !== "openai-compatible" && value.baseUrl) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["baseUrl"], message: "a base URL is only supported for OpenAI-compatible credentials" });
+  }
+});
+
 export const modelSelectionSchema = z.object({
   scope: z.string().min(1).max(200).default("account"),
   funding: z.enum(["byo", "platform"]),
-  provider: z.enum(["openai", "anthropic"]),
+  provider: modelProviderSchema,
   model: z.string().trim().min(1).max(200),
   credentialId: z.string().min(1).optional(),
-}).strict().refine((v) => v.funding === "byo" ? Boolean(v.credentialId) : !v.credentialId, "BYO requires a credential; platform models must not specify one");
+}).strict().superRefine((value, ctx) => {
+  if (value.funding === "byo" ? !value.credentialId : Boolean(value.credentialId)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["credentialId"], message: "BYO requires a credential; platform models must not specify one" });
+  }
+  if (value.funding === "platform" && !platformModelProviderSchema.safeParse(value.provider).success) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["provider"], message: "OpenAI-compatible models require your own credential" });
+  }
+});
 
 const rateSchema = z.object({
   provider: z.enum(["openai", "anthropic"]), model: z.string().min(1), version: z.string().min(1),
@@ -23,7 +52,7 @@ export type ModelRate = z.infer<typeof rateSchema>;
 export type ModelUsage = { input: number; output: number; cachedInput?: number; reasoning?: number };
 export type ModelPurpose = "authoring" | "schema" | "graph" | "prompt" | "runtime" | "recovery" | "trace_compilation";
 export type ModelScope = { accountId: string; workflowId?: string; runId?: string; purpose: ModelPurpose };
-export type ModelCallConfig = { provider: "openai" | "anthropic"; model: string; apiKey: string; maxOutputTokens: number };
+export type ModelCallConfig = { provider: ModelProvider; model: string; apiKey: string; baseUrl?: string; maxOutputTokens: number };
 
 export function parseModelRates(value: string | undefined): ModelRate[] {
   if (!value) return [];
@@ -35,13 +64,15 @@ export function parseModelRates(value: string | undefined): ModelRate[] {
 }
 
 export async function saveModelCredential(db: Db, wrapper: KeyWrapper,
-  input: { accountId: string; provider: "openai" | "anthropic"; label: string; apiKey: string }) {
-  if (!input.apiKey.trim() || input.apiKey.length > 4096) throw new AppError("model_credential_invalid", "a provider API key is required");
-  const value = Buffer.from(input.apiKey);
+  input: { accountId: string } & z.input<typeof modelCredentialInputSchema>) {
+  const { accountId, ...credentialInput } = input;
+  const validated = modelCredentialInputSchema.parse(credentialInput);
+  if (!validated.apiKey.trim()) throw new AppError("model_credential_invalid", "a provider API key is required");
+  const value = Buffer.from(validated.apiKey);
   try {
     const envelope = await encryptEnvelope(wrapper, value);
-    const [row] = await db.insert(modelCredentials).values({ id: newId("modelkey"), accountId: input.accountId,
-      provider: input.provider, label: input.label, envelope }).returning({ id: modelCredentials.id, provider: modelCredentials.provider, label: modelCredentials.label });
+    const [row] = await db.insert(modelCredentials).values({ id: newId("modelkey"), accountId,
+      provider: validated.provider, label: validated.label, baseUrl: validated.baseUrl ?? null, envelope }).returning({ id: modelCredentials.id, provider: modelCredentials.provider, label: modelCredentials.label, baseUrl: modelCredentials.baseUrl });
     return row!;
   } finally { zero(value); }
 }
@@ -127,7 +158,7 @@ export function createModelResolver(deps: { db: Db; wrapper: KeyWrapper; rates: 
         eq(modelCredentials.id, selection.credentialId!), eq(modelCredentials.accountId, scope.accountId),
         eq(modelCredentials.provider, selection.provider), isNull(modelCredentials.revokedAt))) : [];
       if (selection.funding === "byo" && !credential) throw new AppError("model_credential_missing", "the selected BYO credential is unavailable");
-      const platformKey = deps.platformKeys[selection.provider];
+      const platformKey = selection.provider === "openai-compatible" ? undefined : deps.platformKeys[selection.provider];
       if (selection.funding === "platform" && !platformKey) throw new AppError("model_platform_unavailable", "the selected platform provider is unavailable");
       const id = input.operationId ?? newId("modelop");
       await deps.db.transaction(async (trx) => {
@@ -144,7 +175,8 @@ export function createModelResolver(deps: { db: Db; wrapper: KeyWrapper; rates: 
         }
       });
       try {
-        const invoke = (apiKey: string) => call({ provider: selection.provider, model: selection.model, apiKey, maxOutputTokens });
+        const invoke = (apiKey: string) => call({ provider: selection.provider, model: selection.model, apiKey,
+          ...(credential?.baseUrl ? { baseUrl: credential.baseUrl } : {}), maxOutputTokens });
         const result = credential ? await withEnvelope(deps.wrapper, credential.envelope, (value) => invoke(value.toString("utf8"))) : await invoke(platformKey!);
         validateUsage(result.usage);
         // Persist observed usage before settlement, so an unexpected provider overrun remains reconcilable.

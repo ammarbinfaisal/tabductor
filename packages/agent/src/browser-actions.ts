@@ -23,7 +23,7 @@ export const observationMetadataSchema = z.object({
 });
 export type ObservationMetadata = z.infer<typeof observationMetadataSchema>;
 export const recoverySchema = z.object({
-  reason: z.enum(["cycle", "observation_unavailable", "observation_unsettled"]),
+  reason: z.enum(["cycle", "observation_unavailable", "observation_unsettled", "page_closed"]),
   repetitions: z.number().optional(), rejectedAttempts: z.number().optional(),
   cycle: z.array(actionSummarySchema).max(6).optional(),
   suggestedTools: z.array(z.string()).max(6),
@@ -100,7 +100,7 @@ export function observedChanges(before: Observation | undefined, after: Observat
 }
 
 export const terminalBrowserError = (error: unknown): boolean => error instanceof AppError && [
-  "human_action_pending", "browser.disconnected", "resource_limit_exceeded", "endpoint_queue_full",
+  "browser.disconnected", "resource_limit_exceeded", "endpoint_queue_full",
   "no_endpoint_configured", "browser_input_revoked", "browser_fresh_perception_required", "run_lease_lost", "agent_no_progress",
 ].includes(error.code);
 
@@ -132,7 +132,9 @@ export async function observeAfterAction(session: RunSession, opts: {
   } catch (error) {
     if (opts.signal?.aborted || terminalBrowserError(error)) throw error;
     return { ok: true, value: null, observation: { stability: "unavailable", durationMs: Date.now() - started, activeScope: last ? activeScope(last) : "page" },
-      recovery: { reason: "observation_unavailable", suggestedTools: ["page.perceive"] } };
+      recovery: error instanceof AppError && error.code === "browser_page_closed"
+        ? { reason: "page_closed", suggestedTools: ["tabs.list", "tabs.switch", "page.verify"] }
+        : { reason: "observation_unavailable", suggestedTools: ["page.perceive"] } };
   }
 }
 
@@ -149,6 +151,7 @@ export function withActionSummaries(tool: AgentTool, deps: {
   if (!browserMutation.test(tool.name) && tool.name !== "page.verify") return tool;
   return { ...tool, async execute(args, signal) {
     const input = args && typeof args === "object" ? args as Record<string, unknown> : {};
+    if (tool.name === "tabs.switch" && input.id === deps.session.page.id) return tool.execute(args, signal);
     const target = actionTarget(deps.session.anchorInfo?.(String(input.anchor ?? "")));
     const before = deps.session.lastPerception?.();
     const dispatchBefore = deps.session.dispatchState?.().sequence;

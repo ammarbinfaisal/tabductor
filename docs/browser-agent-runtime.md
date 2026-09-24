@@ -1,7 +1,9 @@
 # Browser agent runtime
 
-Browser tasks retain the same session, policy checks, event schemas and run lease whether
-the model calls a tool directly or invokes it from JavaScript. These are browser-task tools,
+> Runtime update: browser execution and compilation now use Python with one Playwright proxy. See [harness-summary.md](harness-summary.md) for the current contract; earlier JavaScript/anchor SDK details below describe the superseded implementation.
+
+Browser tasks retain the same session, policy checks, event schemas and run lease through
+the single model-facing `browser.code` tool and its tracked JavaScript SDK. These are browser-task tools,
 not a new task kind or a general-purpose server runtime.
 
 ## Control and context
@@ -107,36 +109,64 @@ and accepted event keys to reconcile repeated observations.
 
 ## `browser.code`
 
-The tool accepts a module exporting an async function. Its only capability is
-`await tools.call(name, args)`, returning the same `{ok, value, error}` contract as direct
-tools. It can invoke browser, batch, checkpoint, and emit tools; lifecycle and recursive
-code calls are unavailable. Page/network strings remain labelled untrusted data.
+Browser tasks expose only `browser.code({source, timeoutMs})`. Programs export
+`default async function(api)` and use namespaced methods such as `api.page.perceive({})`,
+`api.emit({type,packet,dedupeKey})` and `api.run.done({result})`. Each SDK operation takes
+one object and returns `{ok,value,error}`. The tool description includes the current
+operation schemas. `api.call(name,args)` remains available as equivalent syntax.
+
+`api.input` is the immutable current trigger packet. Ordinary return ends an invocation;
+only host-validated `api.run.done` or `api.run.fail` ends the task. `api.run.deopt` hands
+control back to the agent. Terminal outcomes are host-owned and cannot be forged by
+returning an object. Calls after a terminal outcome are fenced.
+
+The return limit counts the whole JSON-serialized value, including escaping, URLs, keys
+and element metadata. `page.perceive.maxChars` only limits page text. Return selected
+fields and a few anchors instead of whole SDK results. An `output_too_large` result
+includes the actual character count, the last operation receipt and a bounded partial
+observation when available. It does not roll back completed operations. Continue with a
+smaller read-only observation; do not repeat writes to shorten the return.
+
+An OAuth popup can close normally after sign-in. The worker reports `browser_page_closed`
+when the page closed but the browser and context are alive. Tab listing and switching
+remain tied to the run's original tab, so the agent can return to the surviving destination
+and verify login. Switching tabs is allowed during reconciliation and does not clear an
+uncertain write. A real browser or context loss still reports `browser.disconnected`.
+
+`api.helpers.define({name,source})` saves an immutable revision of a task helper exporting
+`default async function(api,args)`. Helpers contain no eager top-level code or imports.
+`api.helpers.call(name,args)` invokes the revision pinned at invocation start in the same
+isolate. Changes become visible in the next invocation. Definitions are scoped by workflow,
+task name and task content hash, with 32 names and 256 revisions per task definition.
+Compiled artifacts bundle the exact helper revisions they used. Helper-local variables
+are ephemeral; only explicit checkpoints and memory survive fresh isolates.
+
 `URL` and `URLSearchParams` support URL parsing, relative resolution, query parameters,
 and normalization without network access. Their data-only bridge accepts at most 65,536
 characters per request, 4 MB of requests and 10,000 operations per invocation; object-URL
 creation is unavailable.
 
 ```js
-export default async function (tools) {
-  const batch = await tools.call("page.extractBatch", {
+export default async function (api) {
+  const batch = await api.call("page.extractBatch", {
     selector: "article",
     fields: { url: { selector: "a", attr: "href" }, text: { selector: ".body" } },
     limit: 25,
   });
   if (!batch.ok) throw new Error(batch.error);
-  const data = await tools.call("batch.read", { batchId: batch.value.batchId });
+  const data = await api.call("batch.read", { batchId: batch.value.batchId });
   if (!data.ok) throw new Error(data.error);
   const records = data.value.records.filter(row => row.url);
   for (const row of records) row.url = new URL(row.url, "https://fixture.test").href;
   if (!records.length) return { accepted: 0 };
-  const emitted = await tools.call("emit.batch", {
+  const emitted = await api.call("emit.batch", {
     type: "item.found", // Must be declared by this task, with a matching packet schema.
     items: records.map(packet => ({ packet, dedupeKey: packet.url })),
   });
   if (!emitted.ok) return { partial: emitted.value, error: emitted.error };
-  await tools.call("checkpoint.set", { value: { lastAcceptedUrl: records.at(-1).url } });
-  await tools.call("batch.release", { batchId: batch.value.batchId });
-  if ((await tools.budget()).remainingMs < 5000) await tools.yield();
+  await api.call("checkpoint.set", { value: { lastAcceptedUrl: records.at(-1).url } });
+  await api.call("batch.release", { batchId: batch.value.batchId });
+  if ((await api.budget()).remainingMs < 5000) await api.yield();
   return { accepted: emitted.value.count };
 }
 ```
@@ -146,7 +176,7 @@ Programs run in a fresh isolated-vm isolate: 32 MB, up to 30 seconds of active w
 no filesystem, process, independent HTTP client, imports, or arbitrary in-page JavaScript.
 Concurrent guest calls are serialized. Cancellation and termination fence queued calls;
 an in-flight browser effect may already have happened and must be reconciled, not blindly
-replayed. `tools.budget()` reports remaining wall time/calls and `tools.yield()` stops further
+replayed. `api.budget()` reports remaining wall time/calls and `api.yield()` stops further
 calls. Admission yields with five seconds remaining (one fifth of shorter custom deadlines)
 and before exhausting the call budget. Process batches of at most 25 records and return
 short summaries between batches.
@@ -155,16 +185,26 @@ short summaries between batches.
 by index and stable key hash; the event bus retains full dedupe keys. A deadline drains admitted
 host work for up to five seconds. Settled wall-clock expirations can return a resumable yielded
 result. Unsettled effects or CPU/memory failures remain terminal. Ambiguous action outcomes
-block another code invocation until the destination is inspected and `page.verify` succeeds;
+block further effects while allowing reads and reconciliation; `page.verify` must succeed
+against the exact destination record before writes resume;
 recovery never blindly replays an external write. Only queued calls are guaranteed cancelled.
 
-Nested tool calls and code outcomes are traced as metadata; raw program source and
-extracted content are not copied into the default trace. Emitted packets retain the
-normal durable event record. Code execution is exploratory and does not itself promote
-the task to a compiled script.
+Every SDK operation records an invocation ID, sequence, operation ID, arguments, result,
+resolved target and duration. Before dispatching an effect, the runtime persists its in-flight
+journal and flushes the trace. Lost acknowledgements leave an uncertain operation for
+reconciliation. Blocked calls are recorded too. Invocation evidence includes source, input,
+API schemas and the helper revisions actually used.
 
-The browser contract is recorded as `tabductor-static-v3`; scripts compiled against
-the previous runtime fall back to AI before execution and must be recompiled for reuse.
+Evidence is bounded to 64,000 characters per value. Secret fields, image/file bytes and
+secret-fill/password invocations are omitted explicitly. Disabling action storage disables
+SDK trace evidence; disabling network storage omits network operation contents and the
+associated invocation source. The compiler refuses incomplete or omitted evidence.
+Active guest execution is bounded separately from host waits (up to 125 seconds per host
+call, still subject to session/run deadlines). No browser or policy boundary is bypassed.
+
+The browser contract is `tabductor-sdk-v4`. Older compiled artifacts fall back to AI before
+executing and must be recompiled. AI, compiled and recovery paths use the same SDK host.
+See [trace compilation](trace-compilation.md) for validation and promotion.
 
 ## Regression checks
 
@@ -256,12 +296,9 @@ compaction. It does not expose another workflow node's conversation. Accepted ev
 remain the durable cross-node handoff. Truncated acknowledgement summaries are marked as
 such; event deduplication and checkpoints still govern reconciliation.
 
-Default traces now retain bounded structural observation metadata, coverage and extraction
-field selectors, without copying page text, form values or image bytes into metadata. The
-compiler receives these fields as evidence. The runtime contract is `tabductor-static-v3`;
-older compiled artifacts fall back to AI. Runs using interactions the static compiler cannot
-yet reproduce remain in AI mode with an explicit compilation refusal, rather than promoting
-a script that silently omits those actions.
+Native observation traces retain structural metadata. The SDK journal additionally retains
+bounded arguments and results for compilation, subject to storage flags and redaction.
+Missing evidence causes an explicit refusal; compilation never guesses omitted work.
 
 Run the shared real-browser worker checks with the source asset mounted explicitly:
 
@@ -305,8 +342,10 @@ Every real decision receiving a data packet must produce an acknowledged output 
 published decisions. Rejected records remain visible with reasons. Engine completion and
 watchdog failures also enforce the disposition; model compliance is not the only safeguard.
 
-To count a saved record, the browser must use `page.verify` with `recordKey` equal to the
-input's stable identity and `urlIncludes` naming its destination. That identity must appear
+To count a saved destination record, use `api.page.verify` with `recordKey` equal to the
+input's stable identity, `urlIncludes` naming its destination, and `recordAnchor` pointing
+to the exact saved row or opened record container. Required mapped values and exact identity
+must occur in committed content; active editors and scopes containing multiple records fail. That identity must appear
 in the current observation's text, URL, or element value. Then `record.outcome` with `saved`
 records the snapshot, identity, URL and timestamp. A saved event without this matching proof
 is rejected. This is observable evidence chosen by the model, not an independent audit of
@@ -321,8 +360,8 @@ pending, rejected or failed records cannot be marked successful. Task success is
 substitute for a destination save. Older executions without record contracts explicitly show
 tracking as unavailable; their historical counts are not fabricated.
 
-Record-aware browser workflows stay in AI mode until the static runtime can reproduce
-record verification and disposition. Republish existing workflows to install the new record
+Record-aware browser workflows can compile when complete SDK evidence passes the same
+verification and disposition checks as AI execution. Republish existing workflows to install the new record
 metadata and regenerate nullable schemas and prompts. Existing published versions and
 historical runs are not rewritten by these source changes.
 
@@ -359,3 +398,22 @@ Apply database migrations `0043_breezy_jack_power.sql` and `0044_broad_skaar.sql
 normal migration runner, then deploy the updated engine, fleet, browser worker and web
 services. Republish existing workflows to add record contracts and regenerate schemas and
 prompts. Source changes alone do not update running containers or published workflow versions.
+
+## SDK rollout
+
+Apply migration `0048_browser_sdk_helpers.sql` through the normal migration runner before
+deploying the updated engine. Rebuild the browser worker for the shared perception asset
+(`contentEditable` field evidence). Existing published task prompts receive current SDK
+instructions at runtime. Destination setup lets the agent choose how to establish usable
+storage from the interface. `destination.field.observe` optionally retains an anchor;
+publication does not require that call, matching DOM labels, or `contenteditable` attributes.
+Mappings still require the authorized destination and all required data and identity fields;
+saved outcomes still require committed-content verification.
+Notion URLs under `app.notion.com`, `notion.com` and `notion.so` share database identity.
+No historical run results or destination saves are rewritten.
+
+## Python browser nodes
+
+The opt-in Python backend uses the forked browser-harness SDK, run-scoped files,
+and Camoufox calls. Compiled JavaScript deopts enter the AI loop through that
+Python tool. See [Python runtime and rollout](python-browser-harness.md).

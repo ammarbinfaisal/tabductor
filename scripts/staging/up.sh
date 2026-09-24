@@ -30,9 +30,14 @@ image_tag="${TABDUCTOR_IMAGE##*:}"
 browser_image_repo="${TABDUCTOR_BROWSER_IMAGE%:*}"
 browser_image_tag="${TABDUCTOR_BROWSER_IMAGE##*:}"
 
+runner_args=(--set pythonRunner.enabled=true)
+  docker build -t tabductor-python-broker:local -f "${TABDUCTOR_REPO_ROOT}/apps/python-runner/Dockerfile" "${TABDUCTOR_REPO_ROOT}"
+  docker build -t tabductor-python-runner:local -f "${TABDUCTOR_REPO_ROOT}/vendor/browser-harness/Dockerfile.tabductor" "${TABDUCTOR_REPO_ROOT}/vendor/browser-harness"
+  kind load docker-image tabductor-python-broker:local tabductor-python-runner:local --name "${TABDUCTOR_CLUSTER_NAME}"
+
 # First reconcile durable services and a one-shot migration with the application stopped.
 helm upgrade --install "${TABDUCTOR_RELEASE}" "${chart}" \
-  --namespace "${TABDUCTOR_NAMESPACE}" \
+  --namespace "${TABDUCTOR_NAMESPACE}" "${runner_args[@]}" \
   --set-string image.repository="${image_repo}" \
   --set-string image.tag="${image_tag}" \
   --set-string fleet.workerImage="${browser_image_repo}:${browser_image_tag}" \
@@ -41,7 +46,7 @@ helm upgrade --install "${TABDUCTOR_RELEASE}" "${chart}" \
   --wait --timeout 5m
 kubectl -n "${TABDUCTOR_NAMESPACE}" delete job "${TABDUCTOR_RELEASE}-tabductor-migrate" --ignore-not-found
 helm upgrade "${TABDUCTOR_RELEASE}" "${chart}" \
-  --namespace "${TABDUCTOR_NAMESPACE}" \
+  --namespace "${TABDUCTOR_NAMESPACE}" "${runner_args[@]}" \
   --set-string image.repository="${image_repo}" \
   --set-string image.tag="${image_tag}" \
   --set-string fleet.workerImage="${browser_image_repo}:${browser_image_tag}" \
@@ -53,7 +58,7 @@ kubectl -n "${TABDUCTOR_NAMESPACE}" wait --for=condition=complete \
 
 # Start application processes only after the schema is current.
 helm upgrade "${TABDUCTOR_RELEASE}" "${chart}" \
-  --namespace "${TABDUCTOR_NAMESPACE}" \
+  --namespace "${TABDUCTOR_NAMESPACE}" "${runner_args[@]}" \
   --set-string image.repository="${image_repo}" \
   --set-string image.tag="${image_tag}" \
   --set-string fleet.workerImage="${browser_image_repo}:${browser_image_tag}" \

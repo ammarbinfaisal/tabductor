@@ -2,7 +2,7 @@ import { configuredKeyWrapper } from "@tabductor/secrets";
 import { modelCredentials, modelSelections, modelOperations, creditReservations, paymentPurchases, accountMcpTokens } from "@tabductor/db";
 import { AppError, loadConfig } from "@tabductor/core";
 import {
-  saveModelCredential, setModelSelection, modelSelectionSchema, parseModelRates,
+  saveModelCredential, setModelSelection, modelSelectionSchema, modelCredentialInputSchema, parseModelRates,
   createAccountMcpToken,
   createPaddleCreditPurchase,
   createPaddleTransactionClient,
@@ -20,13 +20,13 @@ export const accountRouter = router({
   modelSettings: procedure.query(async ({ ctx }) => {
     const accountId = accountIdOf(ctx.accountId);
     const [credentials, selections] = await Promise.all([
-      ctx.db.select({ id: modelCredentials.id, provider: modelCredentials.provider, label: modelCredentials.label, createdAt: modelCredentials.createdAt })
+      ctx.db.select({ id: modelCredentials.id, provider: modelCredentials.provider, label: modelCredentials.label, baseUrl: modelCredentials.baseUrl, createdAt: modelCredentials.createdAt })
         .from(modelCredentials).where(and(eq(modelCredentials.accountId, accountId), isNull(modelCredentials.revokedAt))),
       ctx.db.select().from(modelSelections).where(eq(modelSelections.accountId, accountId)),
     ]);
     return { credentials, selections, platformModels: parseModelRates(loadConfig().MODEL_RATES_JSON) };
   }),
-  saveModelCredential: procedure.input(z.object({ provider: z.enum(["openai", "anthropic"]), label: z.string().trim().min(1).max(120), apiKey: z.string().min(1).max(4096) }).strict())
+  saveModelCredential: procedure.input(modelCredentialInputSchema)
     .mutation(({ ctx, input }) => saveModelCredential(ctx.db, configuredKeyWrapper(loadConfig()), { ...input, accountId: accountIdOf(ctx.accountId) })),
   setModel: procedure.input(modelSelectionSchema).mutation(({ ctx, input }) => setModelSelection(ctx.db, accountIdOf(ctx.accountId), input)),
   revokeModelCredential: procedure.input(z.object({ id: z.string().min(1) })).mutation(async ({ ctx, input }) => {

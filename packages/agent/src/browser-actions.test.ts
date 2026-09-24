@@ -59,6 +59,29 @@ it("propagates cancellation and takeover rather than describing them as successf
   await expect(observeAfterAction(session, { summarize: summarizePerception })).rejects.toMatchObject({ code: "run_lease_lost" });
 });
 
+it("preserves an executed login click and directs recovery to surviving tabs when the popup closes", async () => {
+  const click = vi.fn(async () => {});
+  const session = {resolveAnchor:()=>"button",page:{click,perceive:async()=>{
+    throw new AppError("browser_page_closed", "Popup closed");
+  }}} as unknown as RunSession;
+  const tools = new Map(buildToolRegistry({session,emit:async()=>({outcome:"deduped"})}).map(t=>[t.name,t]));
+  expect(await tools.get("page.click")!.execute({anchor:"e1"})).toMatchObject({
+    ok:true,action:{dispatch:"executed"},observation:{stability:"unavailable"},
+    recovery:{reason:"page_closed",suggestedTools:["tabs.list","tabs.switch","page.verify"]},
+  });
+  expect(click).toHaveBeenCalledTimes(1);
+});
+
+it("exposes popup closure discovered while recovering a timed-out load wait", async () => {
+  const session = {page:{waitForLoadState:async()=>{throw new AppError("browser_timeout","Load timed out");},
+    perceive:async()=>{throw new AppError("browser_page_closed","Popup closed");}}} as unknown as RunSession;
+  const tools = new Map(buildToolRegistry({session,emit:async()=>({outcome:"deduped"})}).map(t=>[t.name,t]));
+  expect(await tools.get("page.waitForLoadState")!.execute({state:"load"})).toMatchObject({
+    ok:false,code:"browser_page_closed",error:expect.stringContaining("tabs.list"),
+    recovery:{reason:"page_closed"},
+  });
+});
+
 it("captures labels before dispatch without retaining entered values, anchors or URL queries", async () => {
   const actions = store();
   const target = { tag: "input", role: "textbox", name: "typed-secret", value: "typed-secret", controlLabel: "Property name", anchor: "expired", inputType: "text" } as AnchoredElement;
@@ -167,4 +190,16 @@ it("propagates terminal cycle failures from browser.code without an uncertain in
   const code=codeTool([nested],{progress});
   await expect(code.execute({source:'export default async function(tools) { await tools.call("page.click", {}); }'})).rejects.toMatchObject({code:"agent_no_progress"});
   expect(await progress.get()).toMatchObject({inFlight:null});
+});
+
+it("selects the current tab repeatedly without dispatch or no-progress failures", async () => {
+  const actions = store();
+  const switchTab = vi.fn();
+  const session = {page:{id:"p2",switchTab,perceive:async()=>perception({text:"Choose an account"})}} as unknown as RunSession;
+  const tools = new Map(buildToolRegistry({session,actions,emit:async()=>({outcome:"deduped"})}).map(t=>[t.name,t]));
+  for (let i = 0; i < 8; i++) {
+    expect(await tools.get("tabs.switch")!.execute({id:"p2"})).toMatchObject({ok:true,value:{text:"Choose an account"}});
+  }
+  expect(switchTab).not.toHaveBeenCalled();
+  expect(await actions.get()).toEqual([]);
 });

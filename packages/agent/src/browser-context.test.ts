@@ -18,6 +18,15 @@ it("uses native tool call IDs and image content without serializing image bytes 
   expect(image.requestBytes).toBeGreaterThan(100000);expect(image.inputTokenBound).toBeLessThan(12000);
 });
 
+it("keeps the assistant's recovery plan beside native tool calls", () => {
+  const wire = toModelMessages([{ role: "assistant", content: "transcript copy", text: "The row already exists; fill its empty fields without creating another.",
+    toolCalls: [{ id: "inspect", name: "browser.python", args: { source: "print(accessibility_tree('main')['tree'])" } }] }]);
+  expect(wire[0]).toMatchObject({ role: "assistant", content: [
+    { type: "text", text: expect.stringContaining("row already exists") }, { type: "tool-call", toolCallId: "inspect" },
+  ] });
+  expect(JSON.stringify(wire)).not.toContain("transcript copy");
+});
+
 it("returns native skipped outcomes for every call after a terminal action",async()=>{
   let saw:LlmMessage[]=[];let step=0;
   await runAgentLoop({llm:{complete:async req=>{saw=req.messages;return{usage:{in:1,out:1},toolCalls:step++===0?[{id:"bad",name:"page.fail",args:{}},{id:"skip",name:"write",args:{}}]:[{id:"end",name:"done",args:{}}]};}},
@@ -48,7 +57,7 @@ it("retains exploration memory across registry recreation and detects repeated i
   let state:unknown=null;const memory={get:async()=>state,set:async(v:unknown)=>{state=v;}};
   const page={click:async()=>{},perceive:async()=>({url:"https://fixture.test",title:"static",text:"unchanged",elements:[]})};
   const session={page,resolveAnchor:()=>"button"} as unknown as RunSession;
-  const registry=()=>new Map(buildToolRegistry({session,memory,emit:async()=>({outcome:"deduped"})}).map(t=>[t.name,t]));
+  const registry=()=>new Map(buildToolRegistry({session,compiled:true,memory,emit:async()=>({outcome:"deduped"})}).map(t=>[t.name,t]));
   const first=registry();await first.get("memory.set")!.execute({facts:["Panel is collapsed"],pending:["expand it"]});
   expect((await registry().get("memory.get")!.execute({})).value).toMatchObject({facts:["Panel is collapsed"]});
   for(let i=0;i<3;i++)expect(await first.get("page.click")!.execute({anchor:"e1"})).toMatchObject({ok:true});
@@ -80,7 +89,7 @@ it("blocks repeated failing targets across fresh snapshot names without disconne
   const session = { page: { click: async () => { clicks++; throw new Error("target obstructed"); },
     perceive: async () => ({ url: "https://fixture.test", title: "", text: "unchanged", elements: [] }) },
     resolveAnchor: () => '[data-tabductor-node="stable"]' } as unknown as RunSession;
-  const tools = new Map(buildToolRegistry({ session, emit: async () => ({ outcome: "deduped" }) }).map(t => [t.name, t]));
+  const tools = new Map(buildToolRegistry({ session, compiled:true, emit: async () => ({ outcome: "deduped" }) }).map(t => [t.name, t]));
   for (const anchor of ["sabc-1:e1", "sabc-2:e3"]) expect(await tools.get("page.click")!.execute({ anchor })).toMatchObject({ ok: false });
   expect(await tools.get("page.click")!.execute({ anchor: "sabc-3:e9" })).toMatchObject({ ok: false, error: expect.stringContaining("failed twice") });
   expect(clicks).toBe(2);

@@ -44,6 +44,10 @@ export async function launchChrome(): Promise<Chrome> {
       `--user-data-dir=${userDataDir}`,
       "--no-first-run",
       "--no-default-browser-check",
+      // Disposable test profiles must not wait for a desktop keyring in SSH/headless runs.
+      "--password-store=basic",
+      "--use-mock-keychain",
+      "--disable-features=HttpsUpgrades",
       "--disable-gpu",
       "--mute-audio",
       "about:blank",

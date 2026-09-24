@@ -103,7 +103,9 @@ export function describeEvent(input: SchemaGenInput): string {
   const compatibility = input.compatibility ? `
 
 Repair this generated schema's cross-step compatibility. Keep all its declared fields and
-the event's record key. Do not remove a field to hide a conflict or make upstream data more
+the event's record key. Add missing host-required destination fields using their exact names,
+mark them required, and use string types for destination references and identities.
+Do not remove a field to hide a conflict or make upstream data more
 restrictive. Preserve unknowns; a separate derived key may remain required.
 
 Previously generated schema:

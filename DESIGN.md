@@ -1,3 +1,5 @@
+> **Superseded September 2026:** The current user-requested minimal, futuristic light/dark direction is documented in [docs/ui-design.md](docs/ui-design.md). The historical constraints below no longer govern the UI.
+
 # Design: Ruled Ink
 **Date:** 2026-08-10 · **Status:** confirmed · **Token block: LOCKED**
 **Direction confirmed by the user at plan time: "calm technical document"** — light, editorial, generous spacing; the workflow reads as a specification you annotate, not a control room.

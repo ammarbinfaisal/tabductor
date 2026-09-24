@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Graph } from "@tabductor/engine";
 import { api } from "../lib/api.js";
-import { sendWorkflowMessage } from "../lib/workflow-chat-client.js";
 import { createEditorStore } from "./editor-store.js";
 
 vi.mock("../lib/api.js", () => ({
@@ -17,8 +16,6 @@ vi.mock("../lib/api.js", () => ({
   },
   asApiError: (err: Error) => ({ message: err.message, details: {} }),
 }));
-
-vi.mock("../lib/workflow-chat-client.js", () => ({ sendWorkflowMessage: vi.fn() }));
 
 beforeEach(() => vi.clearAllMocks());
 afterEach(() => vi.unstubAllGlobals());
@@ -56,92 +53,94 @@ it("runs without crypto.randomUUID and preserves the request ID across a failed 
   expect(vi.mocked(api.workflow.trigger.mutate).mock.calls[2]![0].requestId).not.toBe(first.requestId);
 });
 
-it("builds a pasted prompt once and prevents running or publishing unbuilt prompt edits", async () => {
-  const graph: Graph = { tasks: [], events: [] };
-  const store = createEditorStore({ workflowId: "wf", versionId: "v1", graph, tasks: [], eventSchemas: {} });
-  store.setAutomationPrompt("Check the dashboard daily");
-  await store.save();
-  await store.triggerWorkflow();
-  expect(api.workflow.publishVersion.mutate).not.toHaveBeenCalled();
-  expect(api.workflow.trigger.mutate).not.toHaveBeenCalled();
-  vi.mocked(api.workflow.compileIntent.mutate).mockResolvedValue({ ok: true, artifact: { graph: { ...graph, automationPrompt: "Check the dashboard daily" }, store: null, proposedGrants: [] }, report: { checks: [], attempts: 1 } });
-  await store.buildAutomation();
-  expect(api.workflow.compileIntent.mutate).toHaveBeenCalledExactlyOnceWith({ workflowId: "wf", intent: "Check the dashboard daily", resultSchema: null, current: { graph, store: null, proposedGrants: [] } });
-  expect(store.getState()).toMatchObject({ graph: { ...graph, automationPrompt: "Check the dashboard daily" }, dirty: true, busy: false, workspaceTab: "automation" });
-});
+const automationGraph: Graph = {
+  automationPrompt: "Check the dashboard daily",
+  tasks: [{ name: "Read", kind: "browser", mode: "ai", prompt: "Read the dashboard", emits: [], consumes: [], limits: {}, schedule: null, position: null }],
+  events: [],
+};
 
-it("takes the optional result schema with the directing prompt and requires rebuilding schema edits", async () => {
-  const graph: Graph = { automationPrompt: "Collect articles and return titles", tasks: [], events: [] };
-  const store = createEditorStore({ workflowId: "wf", versionId: "v1", graph, tasks: [], eventSchemas: {} });
-  store.setResultSchemaText('{"type":"array","items":{"type":"string"}}');
-  await store.save();
-  await store.triggerWorkflow();
-  expect(api.workflow.publishVersion.mutate).not.toHaveBeenCalled();
-  expect(api.workflow.trigger.mutate).not.toHaveBeenCalled();
+function mockPublication(graph: Graph) {
+  vi.mocked(api.workflow.publishVersion.mutate).mockResolvedValue({ versionId: "v2", taskIds: {}, taskModes: {}, report: { events: [], tasks: [] } });
+  vi.mocked(api.workflow.get.query).mockResolvedValue({
+    workflow: { id: "wf", accountId: "acct_local", name: "Workflow", maxHops: 20, userId: "user", currentVersionId: "v2", blockedReasonJson: null, createdAt: new Date() },
+    versionId: "v2", graph, tasks: [], eventSchemas: {}, authoring: { report: null, proposedGrants: [] },
+  });
   vi.mocked(api.workflow.compileIntent.mutate).mockResolvedValue({ ok: true, artifact: { graph, store: null, proposedGrants: [] }, report: { checks: [], attempts: 1 } });
-  await store.buildAutomation();
+}
+
+it.each([null, "v1"])("compiles and publishes a prompt in one action (base version %s)", async (versionId) => {
+  const graph: Graph = versionId ? { ...automationGraph, automationPrompt: "Old prompt" } : { tasks: [], events: [] };
+  const store = createEditorStore({ workflowId: "wf", versionId, graph, tasks: [], eventSchemas: {} });
+  store.setAutomationPrompt("  Check the dashboard daily  ");
+  await store.triggerWorkflow();
+  expect(api.workflow.trigger.mutate).not.toHaveBeenCalled();
+  mockPublication(automationGraph);
+  const publishing = store.save();
+  expect(store.getState()).toMatchObject({ busy: true, publishing: true });
+  await store.save(); // A second click cannot start another compile or publication.
+  await publishing;
+  expect(api.workflow.compileIntent.mutate).toHaveBeenCalledExactlyOnceWith({ workflowId: "wf", intent: automationGraph.automationPrompt, resultSchema: null, current: { graph, store: null, proposedGrants: [] } });
+  expect(api.workflow.publishVersion.mutate).toHaveBeenCalledExactlyOnceWith({ workflowId: "wf", expectedVersionId: versionId, graph: automationGraph, authoring: { report: { checks: [], attempts: 1 }, proposedGrants: [] } });
+  expect(store.getState()).toMatchObject({ graph: automationGraph, versionId: "v2", dirty: false, busy: false, publishing: false });
+});
+
+it("compiles result schema edits during publish and rejects invalid JSON before any API calls", async () => {
+  const store = createEditorStore({ workflowId: "wf", versionId: "v1", graph: automationGraph, tasks: [], eventSchemas: {} });
+  store.setResultSchemaText('{"type":"array","items":{"type":"string"}}');
+  await store.triggerWorkflow();
+  expect(api.workflow.trigger.mutate).not.toHaveBeenCalled();
+  mockPublication(automationGraph);
+  await store.save();
   expect(api.workflow.compileIntent.mutate).toHaveBeenCalledWith(expect.objectContaining({
-    intent: graph.automationPrompt, resultSchema: { type: "array", items: { type: "string" } },
+    intent: automationGraph.automationPrompt, resultSchema: { type: "array", items: { type: "string" } },
   }));
+  expect(api.workflow.publishVersion.mutate).toHaveBeenCalledTimes(1);
   store.setResultSchemaText("invalid JSON");
-  await store.buildAutomation();
+  await store.save();
   expect(api.workflow.compileIntent.mutate).toHaveBeenCalledTimes(1);
+  expect(api.workflow.publishVersion.mutate).toHaveBeenCalledTimes(1);
+  expect(store.getState()).toMatchObject({ busy: false, publishing: false, notice: null });
   expect(store.getState().error).not.toBeNull();
-  expect(store.getState().busy).toBe(false);
-  expect(sendWorkflowMessage).not.toHaveBeenCalled();
 });
 
-it("streams conversational edits without coupling the request to the selected node", async () => {
-  const graph: Graph = { tasks: [{ name: "Read", kind: "browser", mode: "ai", prompt: "Read page", emits: [], consumes: [], limits: {}, schedule: null, position: null }], events: [] };
-  const store = createEditorStore({ workflowId: "wf", versionId: "v1", graph, tasks: [], eventSchemas: {} });
-  store.select({ kind: "node", id: "Read" });
-  const updated = { ...graph, tasks: [{ ...graph.tasks[0]!, prompt: "Read page and check totals" }] };
-  vi.mocked(sendWorkflowMessage).mockImplementation(async (_input, emit) => {
-    emit({ type: "tool", activity: { id: "tool1", label: "Updating draft", status: "running" } });
-    emit({ type: "draft", artifact: { graph: updated, store: null, proposedGrants: [] } });
-    emit({ type: "text", text: "Added a totals check." });
-    emit({ type: "tool", activity: { id: "tool1", label: "Updating draft", status: "complete" } });
-    emit({ type: "done" });
-  });
-  store.setAuthoringIntent("Also check totals");
-  await store.sendMessage();
-  expect(sendWorkflowMessage).toHaveBeenCalledWith(expect.objectContaining({ current: expect.objectContaining({ graph }), messages: [{ role: "user", text: "Also check totals" }] }), expect.any(Function), expect.any(AbortSignal));
-  expect(store.getState()).toMatchObject({ graph: updated, dirty: true, chatPending: false, selected: null });
-  expect(store.getState().chatMessages[1]).toMatchObject({ text: "Added a totals check.", tools: [{ id: "tool1", status: "complete" }] });
+it("stops publication when prompt compilation fails and retains the prompt for retry", async () => {
+  const store = createEditorStore({ workflowId: "wf", versionId: "v1", graph: automationGraph, tasks: [], eventSchemas: {} });
+  store.setAutomationPrompt("Updated prompt");
+  vi.mocked(api.workflow.compileIntent.mutate).mockResolvedValueOnce({ ok: false, error: "Could not prepare automation", report: { checks: [], attempts: 1 } });
+  await store.save();
   expect(api.workflow.publishVersion.mutate).not.toHaveBeenCalled();
-  store.setAuthoringIntent("Explain that change");
-  await store.sendMessage();
-  expect(vi.mocked(sendWorkflowMessage).mock.calls[1]?.[0]).toMatchObject({ current: expect.objectContaining({ graph: updated }), messages: expect.arrayContaining([{ role: "assistant", text: "Added a totals check." }]) });
+  expect(store.getState()).toMatchObject({ graph: automationGraph, automationPrompt: "Updated prompt", versionId: "v1", busy: false, publishing: false, error: { message: "Could not prepare automation" } });
 });
 
-it("retains completed draft changes when a streaming connection fails", async () => {
-  const graph: Graph = { tasks: [], events: [] };
-  const updated = { tasks: [], events: [{ type: "review", description: "Review", public: false }] };
-  const store = createEditorStore({ workflowId: "wf", versionId: null, graph, tasks: [], eventSchemas: {} });
-  vi.mocked(sendWorkflowMessage).mockImplementation(async (_input, emit) => {
-    emit({ type: "draft", artifact: { graph: updated, store: null, proposedGrants: [] } });
-    throw new Error("Connection interrupted");
-  });
-  store.setAuthoringIntent("Add a review step");
-  await store.sendMessage();
-  expect(store.getState()).toMatchObject({ graph: updated, dirty: true, chatPending: false, busy: false });
-  expect(store.getState().chatMessages[1]?.text).toContain("Connection interrupted");
+it("retries a failed publication without recompiling the prepared automation", async () => {
+  const store = createEditorStore({ workflowId: "wf", versionId: null, graph: { tasks: [], events: [] }, tasks: [], eventSchemas: {} });
+  store.setAutomationPrompt(automationGraph.automationPrompt!);
+  mockPublication(automationGraph);
+  vi.mocked(api.workflow.publishVersion.mutate).mockRejectedValueOnce(new Error("Publish failed"));
+  await store.save();
+  expect(store.getState()).toMatchObject({ dirty: true, versionId: null, busy: false, publishing: false, error: { message: "Publish failed" } });
+  await store.triggerWorkflow();
+  expect(api.workflow.trigger.mutate).not.toHaveBeenCalled();
+  await store.save();
+  expect(api.workflow.compileIntent.mutate).toHaveBeenCalledTimes(1);
+  expect(api.workflow.publishVersion.mutate).toHaveBeenCalledTimes(2);
+  expect(store.getState()).toMatchObject({ dirty: false, versionId: "v2", error: null });
 });
 
-it("refreshes published metadata after chat publishes without publishing a second time", async () => {
-  const graph: Graph = { tasks: [], events: [] };
-  const store = createEditorStore({ workflowId: "wf", versionId: "v1", graph, tasks: [], eventSchemas: {} });
-  vi.mocked(sendWorkflowMessage).mockImplementation(async (_input, emit) => {
-    emit({ type: "published", versionId: "v2" });
-    emit({ type: "text", text: "Published your changes." });
-    emit({ type: "done" });
-  });
-  vi.mocked(api.workflow.get.query).mockResolvedValue({ workflow: { id: "wf", accountId: "acct_local", name: "Workflow", maxHops: 20, userId: "user", currentVersionId: "v2", blockedReasonJson: null, createdAt: new Date() }, versionId: "v2", graph, tasks: [], eventSchemas: {}, authoring: { report: null, proposedGrants: [] } });
-  store.setAuthoringIntent("Publish the draft");
-  await store.sendMessage();
-  expect(store.getState()).toMatchObject({ versionId: "v2", dirty: false, busy: false });
+it("checks generated share visibility changes and publishes on confirmation without recompiling", async () => {
+  const store = createEditorStore({ workflowId: "wf", versionId: null, graph: { tasks: [], events: [] }, tasks: [], eventSchemas: {} });
+  const graph = { ...automationGraph, events: [{ type: "shared", description: "Shared result", public: true }] };
+  store.setAutomationPrompt(graph.automationPrompt!);
+  mockPublication(graph);
+  await store.save();
   expect(api.workflow.publishVersion.mutate).not.toHaveBeenCalled();
+  expect(store.getState()).toMatchObject({ busy: false, publishing: false, dirty: true, confirmVisibility: { adding: ["shared"], removing: [] } });
+  await store.save(true);
+  expect(api.workflow.compileIntent.mutate).toHaveBeenCalledTimes(1);
+  expect(api.workflow.publishVersion.mutate).toHaveBeenCalledTimes(1);
+  expect(store.getState()).toMatchObject({ dirty: false, versionId: "v2", confirmVisibility: null });
 });
+
 
 it("keeps legacy sample nodes as unpublished edits until real execution is published, including after reload", async () => {
   const graph: Graph = {
@@ -267,21 +266,19 @@ it("runs and schedules the published workflow through workflow-level controls", 
   });
 });
 
-it("restores local conversation and its checked draft only against the same published version", () => {
+it("restores a local draft only against the same published version", () => {
   const graph: Graph = { tasks: [], events: [{ type: "ready", description: "Ready", public: false }] };
-  const saved = { versionId: "v1", dirty: true, graph, authoringStore: null, proposedGrants: [], chatMessages: [{ role: "assistant", text: "Updated the draft", tools: [{ id: "tool", label: "Updating draft", status: "running" }] }] };
+  const saved = { versionId: "v1", dirty: true, graph, authoringStore: null, proposedGrants: [] };
   const storage = { getItem: vi.fn(() => JSON.stringify(saved)), setItem: vi.fn() };
   vi.stubGlobal("localStorage", storage);
   try {
     const store = createEditorStore({ workflowId: "wf", versionId: "v1", graph: { tasks: [], events: [] }, tasks: [], eventSchemas: {} });
-    const cleanup = store.restoreConversation();
+    const cleanup = store.restoreDraft();
     expect(store.getState()).toMatchObject({ graph, dirty: true, authoringReport: { checks: [], attempts: 1 } });
-    expect(store.getState().chatMessages[0]?.tools?.[0]?.status).toBe("error");
     cleanup?.();
     const newer = createEditorStore({ workflowId: "wf", versionId: "v2", graph: { tasks: [], events: [] }, tasks: [], eventSchemas: {} });
-    const stop = newer.restoreConversation();
+    const stop = newer.restoreDraft();
     expect(newer.getState().graph.events).toHaveLength(0);
-    expect(newer.getState().chatMessages).toHaveLength(1);
     stop?.();
   } finally { vi.unstubAllGlobals(); }
 });

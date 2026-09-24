@@ -1,0 +1,3 @@
+[submodule "vendor/browser-harness"]
+	path = vendor/browser-harness
+	url = https://github.com/ammarbinfaisal/browser-harness.git

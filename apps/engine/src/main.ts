@@ -1,3 +1,4 @@
+import { validatePythonCandidate } from "@tabductor/agent";
 import { eq } from "drizzle-orm";
 import {
   createAgentExecutor,
@@ -7,9 +8,10 @@ import {
   createDecisionExecutor,
   createResultExecutor,
   fundedLlm,
+  remotePythonRunner,
   type CompileWorker,
 } from "@tabductor/agent";
-import { createEndpointPool, configuredBlobStore, playwrightDriver } from "@tabductor/browser";
+import { configuredBlobStore } from "@tabductor/browser";
 import { createDispatcher, publish } from "@tabductor/bus";
 import { loadConfig } from "@tabductor/core";
 import { browserWorkers, createDb, type Db } from "@tabductor/db";
@@ -17,12 +19,13 @@ import {
   createEngine,
   createHostedBrowserPool,
   createSolverProvider,
+  createCaptchaProviders,
+  createCaptchaService,
   createModelResolver,
   modelScopeForTask,
   parseModelRates,
   parseSolverRates,
   executorKey,
-  pickWorkflowEndpoint,
   parsePaddleCreditPacks,
   processPendingPaddleWebhookEvents,
   recordEngineBoot,
@@ -50,6 +53,11 @@ import type { Pool } from "pg";
  */
 
 const config = loadConfig();
+if (process.env.BROWSER_AGENT_BACKEND && process.env.BROWSER_AGENT_BACKEND !== "python")
+  throw new Error("Browser execution is Python-only; remove BROWSER_AGENT_BACKEND=javascript");
+if (process.env.BROWSER_MODE && process.env.BROWSER_MODE !== "fleet")
+  throw new Error("Browser execution requires the Camoufox fleet; CDP endpoints are no longer supported");
+const pythonRunner = remotePythonRunner(process.env.PYTHON_RUNNER_URL ?? "", process.env.PYTHON_RUNNER_TOKEN ?? "");
 // One of the two places `initTelemetry` may be called (§17.2 rule 1). Everything below
 // receives what it needs by injection; no package here imports the OTel SDK. With no OTLP
 // endpoint configured this is inert — no exporters, no sockets, no timers.
@@ -63,22 +71,24 @@ const handle = createDb(config.DATABASE_URL);
  * endpoints fails `no_endpoint_configured` at run time instead of the whole `(browser, ai)`
  * mode being withheld at boot because the *table* was empty.
  */
-const endpointFor = (db: Db) => async (handle: RunHandle) =>
-  config.TABDUCTOR_DEPLOYMENT_MODE === "hosted" || process.env.BROWSER_MODE === "fleet" ? handle.run.id : pickWorkflowEndpoint(db, await workflowIdForVersion(db, handle.task.workflowVersionId));
+const endpointFor = (_db: Db) => async (handle: RunHandle) => handle.run.id;
 
 /** One pool, one blob store, one gate for every browser-facing piece below — the compile
  * loop's dry run borrows an endpoint through the same pool the runs do, so the two never
  * hold one endpoint twice. */
 const solverRates = parseSolverRates(config.SOLVER_RATES_JSON);
 const solverKeys = { capsolver: config.CAPSOLVER_API_KEY, "2captcha": config.TWO_CAPTCHA_API_KEY, "anti-captcha": config.ANTI_CAPTCHA_API_KEY };
+const unratedSolvers = Object.entries(solverKeys)
+  .filter(([name, key]) => key && !solverRates.some(rate => rate.name === name))
+  .map(([name]) => name);
+if (unratedSolvers.length) log.warn("CAPTCHA provider keys are configured but these providers are disabled: add their rates to SOLVER_RATES_JSON", { providers: unratedSolvers });
 const solvers = solverRates.map((rate) => createSolverProvider({ ...rate, apiKey: solverKeys[rate.name] ?? "" }));
-const browserPool = config.TABDUCTOR_DEPLOYMENT_MODE === "hosted" || process.env.BROWSER_MODE === "fleet"
-  ? createHostedBrowserPool({ db: handle.db, solvers, tokenKey: process.env.BROWSER_WORKER_TOKEN_KEY ?? "", workerUrl: async (podName) => {
+const captchaProviders = createCaptchaProviders({ keys: solverKeys, rates: solverRates });
+const browserPool = createHostedBrowserPool({ db: handle.db, solvers, challengeRecovery: "agent", tokenKey: process.env.BROWSER_WORKER_TOKEN_KEY ?? "", workerUrl: async (podName) => {
       const [worker] = await handle.db.select().from(browserWorkers).where(eq(browserWorkers.podName, podName));
       if (!worker?.endpointUrl) throw new Error("worker endpoint is unavailable");
       return worker.endpointUrl;
-    } })
-  : createEndpointPool({ db: handle.db, driver: playwrightDriver, metrics: telemetry.metrics, logger: log });
+    } });
 const blobs = configuredBlobStore(config);
 // S7: one persisted evaluator shared by browser, decision-store, and secret paths.
 const gate = new RuntimeSafetyGate({ navAllowlist: config.HARNESS_NAV_ALLOWLIST });
@@ -111,6 +121,8 @@ const compileLoop = createCompileLoop({
 function compileWorkerEntry(db: Db): CompileWorker | undefined {
   return createCompileWorker({
     db,
+    validatePython: (source,evidence,plan) => validatePythonCandidate(pythonRunner,source,evidence,plan),
+    blobs,
     compileLlmFor: ({ task, job }) => fundedLlm(modelResolver, () => modelScopeForTask(db, task.id, "trace_compilation", job.runId)),
     publish: async (input) => {
       await publish(db, input);
@@ -125,7 +137,8 @@ const compileWorker = compileWorkerEntry(handle.db);
 /** Browser tasks resolve the account model at call time. */
 function agentExecutorEntry(db: Db): ReturnType<typeof createAgentExecutor> | undefined {
 
-  const executor = createAgentExecutor({
+  const executor = createAgentExecutor({ pythonRunner,
+    captchaFor: run => createCaptchaService({ db, handle: run, providers: captchaProviders }),
     pool: browserPool,
     gate,
     blobs,
@@ -175,13 +188,19 @@ function decisionExecutorEntry(db: Db, pool: Pool): ReturnType<typeof createDeci
 /** Compiled recovery uses the same account model source. */
 function compiledExecutorEntry(db: Db): TaskExecutor | undefined {
 
-  return createCompiledExecutor({
+  return createCompiledExecutor({ pythonRunner,
+    captchaFor: run => createCaptchaService({ db, handle: run, providers: captchaProviders }),
     pool: browserPool,
     gate,
     blobs,
     db,
     endpointFor: endpointFor(db),
     metrics: telemetry.metrics,
+    secrets: secretsBroker,
+    registerSecretRun: (runId, run) => {
+      liveSecretRuns.set(runId, run);
+      return () => liveSecretRuns.delete(runId);
+    },
     onOutcome: (input) => compileLoop.afterCompiledRun(input),
     llmFor: ({ trace, task, runId }) => fundedLlm(modelResolver, () => modelScopeForTask(db, task.id, "recovery", runId), trace),
   });
@@ -208,7 +227,7 @@ const dispatcher = createDispatcher(handle, {
   metrics: telemetry.metrics,
 });
 const engine = createEngine({
-  prerequisites: { browserMode: config.TABDUCTOR_DEPLOYMENT_MODE === "hosted" || process.env.BROWSER_MODE === "fleet" ? "fleet" : "endpoints",
+  prerequisites: { browserMode: "fleet",
     platformProviders: [...(config.OPENAI_API_KEY ? ["openai"] : []), ...(config.ANTHROPIC_API_KEY ? ["anthropic"] : [])],
     platformModels: parseModelRates(config.MODEL_RATES_JSON) },
   db: handle.db,

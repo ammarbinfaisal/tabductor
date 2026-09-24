@@ -1,5 +1,6 @@
 import { AppError } from "@tabductor/core";
 import { randomUUID } from "node:crypto";
+import type { ProxyCallback } from "./playwright-contract.js";
 import type {
   BrowserConn,
   CreatePageOptions,
@@ -130,10 +131,62 @@ export function createCamoufoxWorkerDriver(options: CamoufoxWorkerDriverOptions)
         polling.unref?.();
       };
 
-      const pageOf = (pageId: string, hooks: CreatePageOptions, retained = false, url = "about:blank"): Page => {
+      const pageOf = (pageId: string, hooks: CreatePageOptions, retained = false, url = "about:blank", rootPageId = pageId): Page => {
         let currentUrl = url;
         return {
           id: pageId,
+          async proxy(command, opts) {
+            const send = async <T>(method: string, params: Record<string, unknown> = {}): Promise<T> => {
+              const response = await request(`${base}/v1/sessions/${encodeURIComponent(options.sessionId)}/automation`, {
+                method:"POST", headers:{authorization:`Bearer ${options.token}`,"content-type":"application/json","x-tabductor-rpc-version":RPC_VERSION},
+                signal: command.command === "close" ? AbortSignal.timeout(5000) : opts.signal,
+                body:JSON.stringify({generation:options.generation,input_generation:1,command_id:randomUUID(),page_id:rootPageId,method,
+                  params:{...params,invocation:opts.invocation}}),
+              });
+              if (!response.ok) {
+                const body = await response.json().catch(() => ({})) as {detail?:{code?:string;message?:string;outcomeUncertain?:boolean}|string};
+                const detail = typeof body.detail === "object" ? body.detail : {};
+                const legacyOwnership = response.status === 409 && typeof body.detail === "string" && /ownership|input owner/.test(body.detail);
+                const code = detail.code ?? (legacyOwnership ? "browser_input_revoked" : "browser_command_failed");
+                throw new AppError(code,
+                  detail.message ?? `Browser proxy ${method} failed (HTTP ${response.status}); inspect the page before retrying`,
+                  {details:{method,status:response.status,outcomeUncertain:detail.outcomeUncertain ?? true}});
+              }
+              return ((await response.json()) as {value:T}).value;
+            };
+            if (command.command !== "call") return send(command.command,{target:command.target,message:command.message,timeout:command.timeout,call:command.call,pin:command.pin});
+            const call = command.call!;
+            if (["goto", "go_back", "go_forward"].includes(call.member) && call.member === "goto") {
+              const destination = String(call.args[0] ?? call.kwargs.url);
+              if (hooks.onNavigationRequest && !await hooks.onNavigationRequest({url:destination,cause:"initial"}))
+                throw new AppError("navigation_denied","Navigation denied",{details:{outcomeUncertain:false}});
+            }
+            const { ticket } = await send<{ticket:string}>("start",{...call});
+            const pending = new Set<Promise<void>>();
+            let callbackError: unknown;
+            for (;;) {
+              opts.signal?.throwIfAborted();
+              const reply = await send<{pending:boolean;events:ProxyCallback[];result?:{ok:boolean;value?:unknown;code?:string;error?:string;outcomeUncertain?:boolean}}>("poll",{ticket});
+              for (const event of reply.events) {
+                const task = (async () => {
+                  let result;
+                  try { if (!opts.callback) throw new Error("Callback transport unavailable"); result={ok:true,value:await opts.callback(event)}; }
+                  catch(error) {result={ok:false,error:String(error)};}
+                  await send("callback",{ticket:event.id,result});
+                })().catch(error => {callbackError=error;});
+                pending.add(task); void task.finally(() => pending.delete(task));
+              }
+              if (callbackError) throw callbackError;
+              if (!reply.pending) {
+                await Promise.all(pending);
+                if (!reply.result?.ok) throw new AppError(reply.result?.code ?? "browser_proxy_error",reply.result?.error ?? "Browser operation failed",
+                  {details:{outcomeUncertain:reply.result?.outcomeUncertain ?? true}});
+                if (call.member === "goto") currentUrl=String(call.args[0] ?? call.kwargs.url);
+                return reply.result.value;
+              }
+            }
+          },
+          harness: (method, args) => rpc("page.harness", pageId, { method, args }),
           async goto(url: string, opts: NavigationOptions = {}) {
             if (hooks.onNavigationRequest && !await hooks.onNavigationRequest({ url, cause: "initial" })) {
               throw new Error("navigation denied by runtime safety policy");
@@ -181,10 +234,12 @@ export function createCamoufoxWorkerDriver(options: CamoufoxWorkerDriverOptions)
             const file = await rpc<{ name: string; mime: string; bytes: string }>("page.download", pageId, { selector });
             return { ...file, bytes: Buffer.from(file.bytes, "base64") };
           },
-          tabs: () => rpc("page.tabs", pageId),
+          // A successful OAuth flow may close the selected popup. Tab discovery and
+          // ownership checks must remain anchored to the run's original tab.
+          tabs: () => rpc("page.tabs", rootPageId),
           async switchTab(id) {
-            const selected = await rpc<{page_id: string; url: string}>("page.switch_tab", pageId, {id});
-            return pageOf(selected.page_id, hooks, true, selected.url);
+            const selected = await rpc<{page_id: string; url: string}>("page.switch_tab", rootPageId, {id});
+            return pageOf(selected.page_id, hooks, true, selected.url, rootPageId);
           },
           title: () => rpc("page.title", pageId),
           url: () => currentUrl,

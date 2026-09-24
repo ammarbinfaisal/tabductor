@@ -153,6 +153,27 @@ it("cancellation fences later calls even if guest catches the rejection", async 
   expect(call).toHaveBeenCalledTimes(1);
 });
 
+it("reports oversized output separately after draining admitted writes without replaying them", async () => {
+  const call = vi.fn(async () => {
+    await new Promise(resolve => setTimeout(resolve, 10));
+    return { ok: true };
+  });
+  const result = await runToolScript(`export default async api => {
+    api.call('write', {});
+    return 'x'.repeat(9000);
+  }`, call);
+  expect(result).toMatchObject({ outcome: "error", code: "output_too_large", outputChars: 9002,
+    effectsSettled: true, calls: 1, error: expect.stringContaining("not rolled back") });
+  expect(call).toHaveBeenCalledTimes(1);
+});
+
+it("counts serialized JSON including escaping at the exact output boundary", async () => {
+  expect(await runToolScript(`export default () => 'x'.repeat(7998)`, vi.fn()))
+    .toMatchObject({ outcome: "completed" });
+  expect(await runToolScript(`export default () => '\\n'.repeat(4000)`, vi.fn()))
+    .toMatchObject({ outcome: "error", code: "output_too_large", outputChars: 8002 });
+});
+
 it("does not charge trusted human-control waits against code wall time", async () => {
   const result = await runToolScript(`export default async function(tools) {
     return await tools.call('observe', {});
@@ -199,4 +220,18 @@ it("reports unresolved effects explicitly instead of allowing a blind retry", as
   const result = await runToolScript(`export default async tools => await tools.call('write', {})`, async () => new Promise(() => {}),
     { wallClockMs: 60, settleMs: 20 });
   expect(result).toMatchObject({ outcome: "killed", effectsSettled: false });
+});
+
+it("does not confuse a cancelled guest with a settled host wait", async () => {
+  const abort=new AbortController();
+  let release!: () => void;
+  const pending=new Promise<void>(resolve=>{release=resolve;});
+  try {
+    const result=await runToolScript("export default async api => api.call('write',{})",async()=>{
+      setTimeout(()=>abort.abort(),10);
+      await pending;
+      return {ok:true};
+    },{signal:abort.signal,hostWaits:true,settleMs:20});
+    expect(result).toMatchObject({outcome:"killed",effectsSettled:false});
+  } finally {release();}
 });

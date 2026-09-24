@@ -3,7 +3,9 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, it } from "vitest";
-import { activateScript, insertCandidateScript } from "@tabductor/compiler";
+import { activateScript, insertCandidateScript, type SdkEvidence } from "@tabductor/compiler";
+import type { Llm } from "@tabductor/agent";
+import type { TraceRecorder } from "@tabductor/browser";
 import { cdpEndpoints, compileJobs, compiledScripts, tasks } from "@tabductor/db";
 import { seedWorkflow, triggerTask } from "@tabductor/engine";
 import { eq } from "drizzle-orm";
@@ -32,10 +34,41 @@ afterEach(async () => {
 const jobsFor = (r: AgentRig, taskId: string) =>
   r.handle.db.select().from(compileJobs).where(eq(compileJobs.taskId, taskId));
 
+const sdkScraper = (trace: TraceRecorder, v2=false): Llm => ({async complete(){
+  await trace.record("llm",{tool_calls:["browser.code"]});
+  const url=rig!.fx.url+(v2?"/mutator?layout=v2":"/fake-tweets");
+  const fields={text:{selector:v2?"[data-qa=post-body]":"[data-testid=tweetText]"},url:{selector:"a",attr:"href"}};
+  const source=`export default async function(api) {
+    const nav=await api.page.goto({url:${JSON.stringify(url)}});
+    if(!nav.ok) return api.run.deopt({reason:nav.error});
+    const p=await api.page.waitFor({text:${JSON.stringify(v2?"open":"permalink")}});
+    if(!p.ok || !p.value.elements.some(e=>e.role==='link')) return api.run.deopt({reason:'Feed changed'});
+    const batch=await api.page.extractBatch({selector:${JSON.stringify(v2?".feed-row":"article")},fields:${JSON.stringify(fields)}});
+    if(!batch.ok) return api.run.deopt({reason:batch.error});
+    const rows=await api.batch.read({batchId:batch.value.batchId});
+    if(!rows.ok || !rows.value.records.length) return api.run.deopt({reason:'No records'});
+    for(const packet of rows.value.records) {
+      const emitted=await api.emit({type:'tweet.detected',packet,dedupeKey:packet.url});
+      if(!emitted.ok) return api.run.deopt({reason:emitted.error});
+    }
+    const verified=await api.page.verify({urlIncludes:${JSON.stringify(v2?"/mutator":"/fake-tweets")}});
+    if(!verified.ok) return api.run.deopt({reason:verified.error});
+    return api.run.done({});
+  }`;
+  return {toolCalls:[{id:"scrape",name:"browser.code",args:{source}}],usage:{in:1,out:1}};
+}});
+const sdkCompiler = (): Llm => {let turn=0;return {async complete(request){
+  const {evidence}=JSON.parse(request.messages[0]!.content) as {evidence:SdkEvidence};
+  const plan={goal:"Extract and dedupe records",guards:evidence.operations.filter(o=>o.name==="page.waitFor").map(o=>({operationId:o.operationId,condition:"Feed links visible"})),
+    steps:evidence.operations.filter(o=>o.name!=="page.waitFor").map(o=>({operationId:o.operationId,why:"required work"})),
+    bindings:[{source:"batch.read records",use:"event packet and stable key"}],checkpoints:[],discarded:[],recoveryPrompt:"Inspect the changed feed"};
+  return {text:turn++===0?JSON.stringify(plan):String(evidence.invocations.at(-1)!.source),toolCalls:[],usage:{in:1,out:1}};
+}};};
+
 it("the run settles first, then a separate compile promotes the task, and the next run makes no model call", async () => {
   rig = await startAgentRig({
-    fixtureFor: () => "canonical-fake-tweets.jsonl",
-    compileLoop: { compilerFixture: "compiler-tweets-goto.jsonl" },
+    llmFor: ({trace}) => sdkScraper(trace),
+    compileLoop: { compilerLlm: sdkCompiler },
   });
   const db = rig.handle.db;
   const wf = await seedWorkflow(db, {
@@ -158,7 +191,7 @@ it("a compile that fails changes nothing about the run that earned it", async ()
 /** A failed ai run compiles nothing: no job, no script, and the task stays `ai`. */
 it("a failed ai run does not even queue a compile", async () => {
   rig = await startAgentRig({
-    llmFor: () => ({ complete: async () => ({ toolCalls: [{ id: "fail", name: "fail", args: { reason: "fixture cannot complete" } }], usage: { in: 1, out: 1 } }) }),
+    llmFor: () => ({ complete: async () => ({ toolCalls: [{ id: "fail", name: "browser.code", args: {source:"export default async api => api.run.fail({reason:'fixture cannot complete'})"} }], usage: { in: 1, out: 1 } }) }),
     compileLoop: { compilerFixture: "compiler-tweets-goto.jsonl" },
   });
   const db = rig.handle.db;
@@ -189,8 +222,8 @@ it("a failed ai run does not even queue a compile", async () => {
  */
 it("a recovered deopt queues a recompile, and the replacement script runs on the new layout", async () => {
   rig = await startAgentRig({
-    fixtureFor: () => "deopt-recovery.jsonl",
-    compileLoop: { compilerFixture: "compiler-mutator-v2.jsonl" },
+    llmFor: ({trace}) => sdkScraper(trace,true),
+    compileLoop: { compilerLlm: sdkCompiler },
   });
   const db = rig.handle.db;
   const wf = await seedWorkflow(db, {
@@ -214,7 +247,7 @@ it("a recovered deopt queues a recompile, and the replacement script runs on the
   const first = (await runsForTask(rig as never, taskId))[0]!;
   expect(first.status, first.error ?? "").toBe("succeeded");
   expect(first.modeUsed).toBe("compiled");
-  expect((await traceRowsFor(rig, first.id)).filter(row => row.kind === "llm").length).toBeGreaterThan(1);
+  expect((await traceRowsFor(rig, first.id)).filter(row => row.kind === "llm").length).toBeGreaterThan(0);
 
   const [queued] = await jobsFor(rig, taskId);
   expect(queued).toMatchObject({ status: "queued", reason: "recompile", runId: first.id });

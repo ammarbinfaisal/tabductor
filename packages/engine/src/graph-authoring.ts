@@ -13,7 +13,7 @@ import { z } from "zod";
 import { bindIntent, type IntentContract } from "./intent-contract.js";
 import { parseGeneratedJson } from "./generated-json.js";
 import { eq } from "drizzle-orm";
-import { checkGraph, graphSchema, unauthorableModeReason, type Graph } from "./graph.js";
+import { checkGraph, graphSchema, unauthorableModeReason, withWorkflowResult, type Graph } from "./graph.js";
 import { GRAPH_AUTHORING_SYSTEM_PROMPT } from "./graph-authoring-prompts.js";
 import type { ChatTransport } from "./schema-generator-llm.js";
 
@@ -214,7 +214,7 @@ export async function gateGraphDraft(
 ): Promise<{ artifact: GraphDraftArtifact; checks: GraphGateEntry[] }> {
   const artifact = graphDraftArtifactSchema.parse(input);
   const checks: GraphGateEntry[] = [];
-  if (artifact.graph.contractVersion === 2) {
+  if (artifact.graph.contractVersion === 2 || artifact.graph.intent || artifact.graph.tasks.some(t => t.limits.harness)) {
     try { checkGraph(artifact.graph); }
     catch (error) { checks.push(entry("P1", "graph_shape", "fail", error instanceof Error ? error.message : "invalid graph contract")); }
   }
@@ -241,7 +241,7 @@ export async function gateGraphDraft(
             : { task: duplicateList!.name },
       }),
     );
-  } else {
+  } else if (!checks.some(check => check.check === "graph_shape" && check.status === "fail")) {
     checks.push(entry("P1", "graph_shape", "pass", "graph shape and identities are valid"));
   }
 
@@ -440,6 +440,7 @@ export function llmGraphCompiler(transport: ChatTransport, opts: { pool?: Pool; 
       let lastChecks: GraphGateEntry[] = [];
       let error = "compiler returned no artifact";
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        let repairFeedback = "";
         const answer = await transport.complete(turns);
         if (answer.refused) {
           const checks = [...lastChecks, entry("P5", "self_repair", "fail", "the model provider refused the request")];
@@ -453,7 +454,14 @@ export function llmGraphCompiler(transport: ChatTransport, opts: { pool?: Pool; 
             graph.intent = bindIntent(input.intent, graph.intent as Partial<IntentContract> | undefined);
           }
           const parsed = graphDraftArtifactSchema.parse(raw);
-          const gated = await gateGraphDraft(parsed, { ...(input.gateContext ?? {}), ...(opts.pool ? { pool: opts.pool } : {}) });
+          // Publish stores the result task too. Add it before the gate so the artifact that
+          // leaves this loop is exactly the artifact that will be published; otherwise a
+          // result-task failure is discovered after the model's repair budget is gone.
+          const artifact = {
+            ...parsed,
+            graph: withWorkflowResult(parsed.graph, input.intent, input.resultSchema),
+          };
+          const gated = await gateGraphDraft(artifact, { ...(input.gateContext ?? {}), ...(opts.pool ? { pool: opts.pool } : {}) });
           lastChecks = gated.checks;
           const failures = lastChecks.filter((check) => check.status === "fail");
           if (failures.length === 0) {
@@ -461,12 +469,30 @@ export function llmGraphCompiler(transport: ChatTransport, opts: { pool?: Pool; 
             return { ok: true, artifact: gated.artifact, report: { checks: [...lastChecks, repair], attempts: attempt } };
           }
           error = failures.map((failure) => `${failure.check}: ${failure.message}`).join("; ");
+          repairFeedback = `The deterministic gate rejected that draft. Fix every error in this JSON array:\n${JSON.stringify(
+            failures.map(({ pass, check, message, location, details }) => ({
+              pass,
+              check,
+              message,
+              ...(location ? { location } : {}),
+              ...(details ? { details } : {}),
+            })),
+            null,
+            2,
+          )}`;
         } catch (caught) {
           error = caught instanceof Error ? caught.message : String(caught);
           lastChecks = [entry("P1", "graph_shape", "fail", error)];
+          const diagnostics = caught instanceof z.ZodError
+            ? caught.issues.map((issue) => ({ path: issue.path, code: issue.code, message: issue.message }))
+            : [{ message: error }];
+          repairFeedback = `The deterministic gate rejected that draft because it could not be parsed or did not match the required artifact shape. Fix every error in this JSON array:\n${JSON.stringify(diagnostics, null, 2)}`;
         }
         turns.push({ role: "assistant", content: answer.text ?? "" });
-        turns.push({ role: "user", content: `The deterministic gate rejected that draft:\n${error}\nReturn a corrected full JSON artifact.` });
+        turns.push({
+          role: "user",
+          content: `${repairFeedback}\nUse your preceding draft as the starting point. Correct the invalid fields without dropping valid workflow requirements. Return the corrected full JSON artifact only, with no prose or markdown.`,
+        });
       }
       const repair = entry("P5", "self_repair", "fail", `repair budget exhausted after ${maxAttempts} attempts`);
       return { ok: false, error, report: { checks: [...lastChecks, repair], attempts: maxAttempts } };

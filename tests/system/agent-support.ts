@@ -8,9 +8,11 @@ import {
   createCompileLoop,
   createCompileWorker,
   createLlm,
+  validatePythonCandidate,
   type CompiledExecutorDeps,
   type CompileWorker,
   type Llm,
+  type PythonRunner,
 } from "@tabductor/agent";
 import {
   createEndpointPool,
@@ -18,6 +20,7 @@ import {
   type BlobStore,
   type EndpointPool,
   type TraceRecorder,
+  type Driver,
 } from "@tabductor/browser";
 import { createDispatcher, publish, type Dispatcher } from "@tabductor/bus";
 import { newId } from "@tabductor/core";
@@ -69,6 +72,8 @@ export type AgentRig = {
 
 export type StartAgentRigOptions = {
   chrome?: Chrome;
+  driver?: Driver;
+  pythonRunner?: PythonRunner;
   gate?: PolicyGate;
   /**
    * Which checked-in transcript (a file name under `fixtures/transcripts/`) a task's runs
@@ -133,6 +138,16 @@ function bindFixtureAnchors(inner: Llm): Llm {
     for (const message of request.messages) visit(message.toolResults ?? message.content);
     const response=await inner.complete(request);
     return {...response,toolCalls:response.toolCalls.map(call=>{
+      if (call.name === "browser.code" && typeof call.args.source === "string") {
+        const source = call.args.source.replace(/"__ELEMENT__:(?:[^"\\]|\\.)*"/g, literal => {
+          const anchor = JSON.parse(literal) as string;
+          const match = JSON.parse(anchor.slice("__ELEMENT__:".length)) as Record<string,string>;
+          const element = elements.find(e=>Object.entries(match).every(([key,value])=>key==="hrefEndsWith"?String(e.href).endsWith(value):e[key]===value));
+          if (!element) throw new Error(`fixture element unavailable: ${anchor}`);
+          return JSON.stringify(element.anchor);
+        });
+        return {...call,args:{...call.args,source}};
+      }
       const anchor=call.args.anchor;
       if(typeof anchor!=="string"||!anchor.startsWith("__ELEMENT__:"))return call;
       const match=JSON.parse(anchor.slice("__ELEMENT__:".length)) as Record<string,string>;
@@ -157,7 +172,7 @@ export async function startAgentRig(opts: StartAgentRigOptions): Promise<AgentRi
   const endpointId = newId("endpoint");
   await handle.db.insert(cdpEndpoints).values({ id: endpointId, wsUrl: chrome.wsUrl });
 
-  const pool = createEndpointPool({ db: handle.db, driver: playwrightDriver });
+  const pool = createEndpointPool({ db: handle.db, driver: opts.driver ?? playwrightDriver });
   const scratchDir = mkdtempSync(path.join(tmpdir(), "tabductor-agent-transcripts-"));
   const rendered = new Map<string, string>();
 
@@ -173,6 +188,8 @@ export async function startAgentRig(opts: StartAgentRigOptions): Promise<AgentRi
   const compiles = opts.compileLoop
     ? createCompileWorker({
         db: handle.db,
+        blobs,
+        ...(opts.pythonRunner?{validatePython:(source,evidence,plan)=>validatePythonCandidate(opts.pythonRunner!,source,evidence,plan)}:{}),
         compileLlmFor: () => {
           const spec = opts.compileLoop!;
           if (spec.compilerLlm) return spec.compilerLlm();
@@ -188,6 +205,7 @@ export async function startAgentRig(opts: StartAgentRigOptions): Promise<AgentRi
     : undefined;
 
   const executor = createAgentExecutor({
+    pythonRunner: opts.pythonRunner,
     pool,
     gate,
     blobs,
@@ -207,6 +225,7 @@ export async function startAgentRig(opts: StartAgentRigOptions): Promise<AgentRi
 
   const compiledExecutor = opts.compiled || compileLoop
     ? createCompiledExecutor({
+        pythonRunner: opts.pythonRunner,
         pool,
         gate,
         blobs,

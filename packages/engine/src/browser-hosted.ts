@@ -53,6 +53,7 @@ export async function settleBrowserUsage(db: Db, sessionId: string): Promise<voi
 
 /** The engine's hosted pool has the same executor interface as the development CDP pool. */
 export function createHostedBrowserPool(deps: { db: Db; tokenKey: string; workerUrl: (podName: string) => Promise<string>;
+  challengeRecovery?: "automatic" | "agent";
   solvers?: readonly SolverProvider[]; fetch?: typeof fetch; allocationTimeoutMs?: number }): EndpointPool {
   let closed = false;
   const active = new Map<string, () => Promise<void>>();
@@ -130,7 +131,7 @@ export function createHostedBrowserPool(deps: { db: Db; tokenKey: string; worker
                     }
                     await trx.update(browserCommands).set({ inputGeneration: owner.inputOwnerGeneration }).where(eq(browserCommands.id, commandId));
                     dispatched = true;
-                    const result = await request(target, { ...init, signal: AbortSignal.timeout(transportTimeout), body: JSON.stringify({ ...command, command_id: commandId, input_generation: owner.inputOwnerGeneration }) });
+                    const result = await request(target, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(transportTimeout)]) : AbortSignal.timeout(transportTimeout), body: JSON.stringify({ ...command, command_id: commandId, input_generation: owner.inputOwnerGeneration }) });
                     // Consume the body while the lease is locked; headers alone do not mean the action finished.
                     const bytes = await result.arrayBuffer();
                     return new Response(bytes, { status: result.status, headers: result.headers });
@@ -143,7 +144,7 @@ export function createHostedBrowserPool(deps: { db: Db; tokenKey: string; worker
                     offsetMs: Math.max(0, Date.now() - (session.readyAt ?? session.createdAt).getTime()),
                     pageId: typeof command.page_id === "string" ? command.page_id : null,
                     private: command.method === "page.insert_text", payloadJson: { commandId, outcome } });
-                  if (response.ok && command.method === "page.perceive") {
+                  if (deps.challengeRecovery !== "agent" && response.ok && command.method === "page.perceive") {
                     const body = await response.clone().json() as { value?: { challenge?: { kind: string; websiteUrl: string; siteKey: string } } };
                     const challenge = body.value?.challenge;
                     if (challenge) {

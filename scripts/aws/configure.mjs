@@ -21,6 +21,7 @@ const values = {
   AWS_REGION: region, BLOB_DRIVER: 's3', BLOB_BUCKET: deployment.blob_bucket,
   SECRETS_KMS_KEY_ARN: deployment.kms_key_arn,
   BROWSER_MODE: 'fleet', BROWSER_WEB_URL: 'http://staging-tabductor-web:3000',
+  PYTHON_RUNNER_TOKEN: previous.PYTHON_RUNNER_TOKEN || randomBytes(48).toString('base64url'),
   BROWSER_WORKER_TOKEN_KEY: previous.BROWSER_WORKER_TOKEN_KEY || randomBytes(48).toString('base64url'),
   BROWSER_RATE_VERSION: 'staging-v1', BROWSER_UNITS_PER_MINUTE: '1', BROWSER_MAX_SECONDS: '1800',
   PADDLE_ENVIRONMENT: 'sandbox',

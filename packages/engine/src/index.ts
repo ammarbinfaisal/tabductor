@@ -39,6 +39,7 @@ export {
   getCreditBalance,
   releaseCreditReservation,
   reserveCredits,
+  seedLoginCredits,
   settleCreditReservation,
   type CreditAdjustmentInput,
   type CreditBalance,
@@ -266,9 +267,8 @@ export {
   type ProposedGrant,
 } from "./graph-authoring.js";
 
-export * from "./workflow-chat.js";
-export { createModelResolver, saveModelCredential, setModelSelection, modelSelectionSchema, modelScopeForTask, parseModelRates, modelCreditUnits, settleModelOperation,
-  type ModelResolver, type ModelRate, type ModelUsage, type ModelScope, type ModelPurpose, type ModelCallConfig } from "./model-funding.js";
+export { createModelResolver, saveModelCredential, setModelSelection, modelSelectionSchema, modelCredentialInputSchema, modelProviderSchema, modelScopeForTask, parseModelRates, modelCreditUnits, settleModelOperation,
+  type ModelResolver, type ModelRate, type ModelUsage, type ModelScope, type ModelPurpose, type ModelCallConfig, type ModelProvider } from "./model-funding.js";
 export { createHostedBrowserPool, ensureWorkflowBrowserProfile, browserWorkerToken, browserCreditAdmission, settleBrowserUsage } from "./browser-hosted.js";
 export { mintBrowserViewToken, verifyBrowserViewToken, type BrowserViewClaims } from "./browser-view-token.js";
 export { readBrowserMedia, expireBrowserRecordings } from "./browser-media.js";
@@ -286,4 +286,6 @@ export type { RecordOutcome } from "./record-progress.js";
 export { checkWorkflowPrerequisites, persistPrerequisiteBlock, type PrerequisiteOptions } from "./prerequisites.js";
 export { destinationMappingSchema, destinationKey, type DestinationMapping, type DestinationEvidence, type StoredDestination } from "./destination-contracts.js";
 export { harnessTask, type HarnessTask } from "./intent-contract.js";
-export { AUTHENTICATION_EXECUTION_CONTRACT } from "./authentication-contract.js";
+
+export { createCaptchaProviders, captchaCreateSchema, type CaptchaProvider, type CaptchaProviderName, type CaptchaCreate, type CaptchaProviderResult } from "./captcha-providers.js";
+export { createCaptchaService, type CaptchaService, type CaptchaJob } from "./captcha-service.js";

@@ -22,6 +22,13 @@ fleet:
 migration:
   enabled: false
 
+pythonRunner:
+  enabled: true
+  brokerImage: tabductor-python-broker:local
+  nodeSelector: {}
+  executionNodeSelector: {}
+  image: tabductor-python-runner:local
+
 postgres:
   enabled: true
   image: postgres:16-alpine

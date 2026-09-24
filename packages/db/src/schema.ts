@@ -287,7 +287,7 @@ export const workflowExecutions = pgTable(
     admittedRuns: integer("admitted_runs").notNull().default(0),
     /** Non-secret model selection captured at trigger admission; null means no model was selected. */
     modelSelectionJson: jsonb("model_selection_json").$type<{
-      funding: "byo" | "platform"; provider: "openai" | "anthropic"; model: string; credentialId: string | null;
+      funding: "byo" | "platform"; provider: "openai" | "anthropic" | "openai-compatible"; model: string; credentialId: string | null;
     }>(),
     blockedReasonJson: jsonb("blocked_reason_json").$type<{ code: string; message: string }>(),
     resultJson: jsonb("result_json"),
@@ -871,6 +871,20 @@ export const traceEntries = pgTable(
   (t) => [primaryKey({ columns: [t.runId, t.seq] })],
 );
 
+/** Immutable, task-scoped SDK helper revisions. Never shared across accounts/workflows. */
+export const browserHelpers = pgTable("browser_helpers", {
+  language: text("language").notNull().default("javascript"),
+  workflowId: text("workflow_id").notNull().references(() => workflows.id, { onDelete: "cascade" }),
+  taskName: text("task_name").notNull(),
+  contentHash: text("content_hash").notNull(),
+  name: text("name").notNull(),
+  revision: text("revision").notNull(),
+  source: text("source").notNull(),
+  createdByRunId: text("created_by_run_id").references(() => runs.id, { onDelete: "set null" }),
+  createdAt: createdAt(),
+}, t => [primaryKey({ columns: [t.workflowId, t.taskName, t.contentHash, t.name, t.revision] }),
+  check("browser_helpers_language_check", sql`${t.language} IN ('javascript', 'python')`)]);
+
 /**
  * A blob a run produced, addressed by `blob_ref` in the blob store. Separate from
  * `trace_entries` because artifacts outlive the entry that referenced them and are listed
@@ -1352,8 +1366,10 @@ export type StoreWriteGrantRow = typeof storeWriteGrants.$inferSelect;
 export const modelCredentials = pgTable("model_credentials", {
   id: text("id").primaryKey(),
   accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }),
-  provider: text("provider").$type<"openai" | "anthropic">().notNull(),
+  provider: text("provider").$type<"openai" | "anthropic" | "openai-compatible">().notNull(),
   label: text("label").notNull(),
+  /** A non-secret API root, set only for OpenAI-compatible credentials. */
+  baseUrl: text("base_url"),
   envelope: jsonb("envelope").$type<{ ciphertext: string; nonce: string; wrapped: string; kekRef: string }>().notNull(),
   revokedAt: ts("revoked_at"),
   createdAt: createdAt(),
@@ -1364,7 +1380,7 @@ export const modelSelections = pgTable("model_selections", {
   accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }),
   scope: text("scope").notNull(),
   funding: text("funding").$type<"byo" | "platform">().notNull(),
-  provider: text("provider").$type<"openai" | "anthropic">().notNull(),
+  provider: text("provider").$type<"openai" | "anthropic" | "openai-compatible">().notNull(),
   model: text("model").notNull(),
   credentialId: text("credential_id").references(() => modelCredentials.id, { onDelete: "restrict" }),
   updatedAt: ts("updated_at").notNull().defaultNow(),
@@ -1459,6 +1475,26 @@ export const challengeAttempts = pgTable("challenge_attempts", {
   createdAt: createdAt(),
 }, (t) => [index("challenge_attempts_challenge_idx").on(t.challengeId)]);
 
+/** Durable native CAPTCHA jobs; request bodies and provider keys are never stored. */
+export const captchaJobs = pgTable("captcha_jobs", {
+  id: text("id").primaryKey(),
+  accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "restrict" }),
+  runId: text("run_id").notNull().references(() => runs.id, { onDelete: "restrict" }),
+  idempotencyKey: text("idempotency_key").notNull(),
+  requestDigest: text("request_digest").notNull(),
+  provider: text("provider").notNull(),
+  taskType: text("task_type").notNull(),
+  providerTaskId: text("provider_task_id"),
+  status: text("status").$type<"submitting" | "pending" | "ready" | "failed" | "uncertain">().notNull(),
+  solutionJson: jsonb("solution_json").$type<Record<string, unknown>>(),
+  errorCode: text("error_code"),
+  rateVersion: text("rate_version").notNull(),
+  creditUnits: integer("credit_units").notNull(),
+  reservationId: text("reservation_id").notNull().references(() => creditReservations.id, { onDelete: "restrict" }),
+  nextPollAt: ts("next_poll_at").notNull().defaultNow(),
+  createdAt: createdAt(),
+}, t => [uniqueIndex("captcha_jobs_run_key").on(t.runId, t.idempotencyKey)]);
+
 /** Verified business progress is separate from task and event counts. */
 export const RECORD_STATUSES = ["extracted", "prepared", "pending", "saved", "skipped", "rejected", "failed"] as const;
 export type RecordStatus = (typeof RECORD_STATUSES)[number];
@@ -1470,7 +1506,7 @@ export const workflowRecords = pgTable("workflow_records", {
   status: text("status").$type<RecordStatus>().notNull(),
   lastRunId: text("last_run_id").references(() => runs.id),
   reason: text("reason"),
-  verificationJson: jsonb("verification_json").$type<{ snapshotId: string; url: string; recordKey?: string; checkedAt: string }>(),
+  verificationJson: jsonb("verification_json").$type<{ snapshotId?: string; assessmentId?: string; method?: "readback" | "ai-assessment"; url: string; recordKey?: string; checkedAt: string }>(),
   createdAt: createdAt(),
   updatedAt: ts("updated_at").notNull().defaultNow(),
 }, t => [primaryKey({ columns: [t.executionId, t.collection, t.recordKey] }),
@@ -1480,7 +1516,7 @@ export const runRecordOutcomes = pgTable("run_record_outcomes", {
   runId: text("run_id").primaryKey().references(() => runs.id, { onDelete: "cascade" }),
   status: text("status").$type<RecordStatus>().notNull(),
   reason: text("reason").notNull(),
-  verificationJson: jsonb("verification_json").$type<{ snapshotId: string; url: string; recordKey?: string; checkedAt: string }>(),
+  verificationJson: jsonb("verification_json").$type<{ snapshotId?: string; assessmentId?: string; method?: "readback" | "ai-assessment"; url: string; recordKey?: string; checkedAt: string }>(),
   createdAt: createdAt(),
 });
 

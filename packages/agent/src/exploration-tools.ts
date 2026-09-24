@@ -85,17 +85,22 @@ export function explorationTools(session: RunSession, memory: CheckpointStore,
     defineTool({name:"file.release",description:"Release a downloaded file handle.",parameters:z.object({fileId:z.string()}),async execute({fileId}){return{ok:true,value:{released:files.delete(fileId)}};}}),
     defineTool({name:"tabs.list",description:"List this run's browser tab and its popups. Other task tabs remain isolated.",parameters:z.object({}),async execute(){return session.page.tabs?{ok:true,value:await session.page.tabs()}:{ok:false,error:"driver does not support tab listing"};}}),
     defineTool({name:"tabs.switch",description:"Switch to one of this run's tabs listed by tabs.list, and return fresh perception. Old anchors expire.",parameters:z.object({id:z.string()}),async execute({id},signal){
+      if(id===session.page.id)return observe();
       if(!session.page.switchTab)return{ok:false,error:"driver does not support tab switching"};
       session.page=await session.page.switchTab(id);return runtime ? runtime.afterAction(signal) : observe();
     }}),
     defineTool({name:"memory.get",description:"Read durable exploration memory: learned facts, pending work, recent attempts and acknowledged effects. Survives compaction and retries of this run.",parameters:z.object({}),async execute(){return{ok:true,value:{...readMemory(await memory.get()),actions:readActionHistory(await runtime?.actions.get())}};}}),
     defineTool({name:"memory.set",description:"Save concise observed facts and pending work. Preserve stable record identities, useful selectors and failed approaches; never store credentials or ephemeral anchors. Automatic attempt and effect records are retained.",parameters:z.object({facts:z.array(z.string().max(500)).max(12),pending:z.array(z.string().max(500)).max(8)}),async execute(args){await memory.set({...readMemory(await memory.get()),...args});return{ok:true,value:{saved:true}};}}),
-    defineTool({name:"page.verify",description:"Verify task-specific postconditions before done and after consequential actions. To count a destination save, supply recordKey (the exact stable input identity) and urlIncludes for the destination; the identity must be visible there. Supply at least one exact observed condition: URL substring, visible text, absent text, or an anchored element's value/checked/selected/expanded/disabled state. Failed assertions are recoverable; never claim success based only on a click.",
-      parameters:z.object({recordKey:z.string().min(1).max(2000).optional(),urlIncludes:z.string().min(1).optional(),textIncludes:z.string().min(1).max(2000).optional(),textAbsent:z.string().min(1).max(2000).optional(),
+    defineTool({name:"page.verify",description:"Optional assertion helper for machine-checked postconditions. AI exploration and completion do not require this call. For a machine-checked destination save, supply recordAnchor (a current container for the record; any DOM tag or role is supported), recordKey (the exact stable input identity) and urlIncludes for the destination; the identity must be visible there. Supply at least one exact observed condition: URL substring, visible text, absent text, or an anchored element's value/checked/selected/expanded/disabled state. Failed assertions are recoverable; never claim success based only on a click.",
+      parameters:z.object({recordKey:z.string().min(1).max(2000).optional(),recordAnchor:z.string().optional(),urlIncludes:z.string().min(1).optional(),textIncludes:z.string().min(1).max(2000).optional(),textAbsent:z.string().min(1).max(2000).optional(),
         anchor:z.string().optional(),value:z.string().max(1000).optional(),checked:z.boolean().optional(),selected:z.boolean().optional(),expanded:z.boolean().optional(),disabled:z.boolean().optional()})
         .refine(v=>Boolean(v.urlIncludes||v.textIncludes||v.textAbsent||v.anchor),"at least one observable condition is required"),
       async execute(args) {
-        const selector=args.anchor?target(session,args.anchor):undefined;
+        if (context && !args.recordKey) return {ok:false,error:"Destination verification requires this input record's exact identity and recordAnchor"};
+        const recordScope = args.recordAnchor ? session.anchorInfo?.(args.recordAnchor) : undefined;
+        if (context && args.recordKey && !recordScope)
+          return {ok:false,error:"This scoped readback needs a current record anchor. Custom containers are supported; alternatively use harness.verify for structured readback or assess the observed result in AI mode."};
+        const selector=args.recordAnchor?target(session,args.recordAnchor):args.anchor?target(session,args.anchor):undefined;
         const p=await session.page.perceive({selector,maxChars:20000,elementLimit:100});
         const failures:string[]=[];
         if(args.urlIncludes&&!p.url.includes(args.urlIncludes))failures.push("URL does not match");
@@ -110,6 +115,11 @@ export function explorationTools(session: RunSession, memory: CheckpointStore,
           const { mapping, packet } = context;
           const norm = (v: unknown) => String(v ?? "").replace(/\s+/g, " ").trim();
           const committed = norm(p.committedText);
+          const identity = norm(args.recordKey).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          if (!new RegExp(`(^|[^\\p{L}\\p{N}_])${identity}($|[^\\p{L}\\p{N}_])`, "u").test(committed))
+            failures.push("The exact stable identity must be present in committed record content");
+          if (p.elements.filter(e=>e.role === "row" || e.role === "article" || e.tag === "article").length > 1)
+            failures.push("Verification scope contains multiple records; inspect one saved record");
           if (String(packet[mapping.identityField]) !== args.recordKey) failures.push("Verification must use the exact input record identity");
           const belongs = (url: string) => { try { return destinationKey(url) === mapping.destinationKey; } catch { return false; } };
           if (!belongs(p.url) && !p.elements.some(e => e.href && belongs(e.href))) failures.push("Authorized database identity is not present in the observed page or breadcrumb");

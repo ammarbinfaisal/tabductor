@@ -58,6 +58,9 @@ describe("llmGraphCompiler", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.artifact.graph.tasks[0]?.mode).toBe("ai");
+    expect(result.artifact.graph.tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "result", mode: "ai", resultSchema: null }),
+    ]));
     expect(result.artifact.proposedGrants[0]).toMatchObject({ grantKey: "navigation", grantValue: "example.com" });
     expect(result.report.checks.some((check) => check.status === "fail")).toBe(false);
   });
@@ -75,7 +78,14 @@ describe("llmGraphCompiler", () => {
             }),
           };
         }
-        expect(turns.at(-1)?.content).toContain("outside the browser registry");
+        const repairPrompt = turns.at(-1)?.content ?? "";
+        expect(repairPrompt).toContain("The deterministic gate rejected that draft");
+        expect(repairPrompt).toContain("outside the browser registry");
+        expect(repairPrompt).toContain('"check": "kind_constraints"');
+        expect(repairPrompt).toContain('"check": "store_references"');
+        expect(repairPrompt).toContain('"grant": 0');
+        expect(repairPrompt).toContain("Fix every error");
+        expect(repairPrompt).toContain("Return the corrected full JSON artifact only");
         return { text: JSON.stringify(valid) };
       },
     });

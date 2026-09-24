@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { eventDefs, workflows, workflowVersions } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import { createWorkflow, graphSchema, publishVersion, type SchemaGenerator, type SchemaGenInput } from "@tabductor/engine";
+import { bindIntent } from "../../packages/engine/src/intent-contract.js";
 
 let handle: MigratedTestDb;
 beforeAll(async () => { handle = await createMigratedTestDb(); });
@@ -124,4 +125,24 @@ it("rejects a repair that hides the incompatible fields by dropping them", async
     ]) } },
   });
   expect(await handle.db.select().from(workflowVersions).where(eq(workflowVersions.workflowId, workflowId))).toHaveLength(0);
+});
+
+it("compiles ordinary event schemas without hidden destination envelopes or readiness overrides", async () => {
+  const workflowId = await createWorkflow(handle.db, { name: "General browser tasks", userId: "local" });
+  const request = "Read and update the website";
+  const draft = graphSchema.parse({automationPrompt:request, intent:bindIntent(request, {
+    requirements:[{id:"work",description:request,quote:request}],
+  }), tasks:[{name:"Browse",kind:"browser",entry:true,emits:["destination.ready"],limits:{harness:{version:1,
+    requirementIds:["work"],role:"write-record",destination:{readyEvent:"destination.ready",contractField:"contract_id",requiredFields:["unwanted"]}}}}],
+    events:[{type:"destination.ready",description:"The actual observed page title"}]});
+  const schema = {type:"object",properties:{title:{type:"string"}},required:["title"],additionalProperties:false};
+  const calls: SchemaGenInput[] = [];
+  const generator: SchemaGenerator = {async generate(input) {calls.push(input);return {ok:true,schema};}};
+  const published = await publishVersion(handle.db, {workflowId,graph:draft}, {schemaGenerator:generator});
+  expect(calls).toHaveLength(1);
+  expect(calls[0]!.description).not.toContain("Host destination envelope");
+  const [event] = await handle.db.select().from(eventDefs).where(eq(eventDefs.workflowVersionId,published.versionId));
+  expect(event!.packetSchemaJson).toEqual(schema);
+  await publishVersion(handle.db, {workflowId,graph:draft}, {schemaGenerator:generator});
+  expect(calls).toHaveLength(1);
 });

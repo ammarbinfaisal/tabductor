@@ -51,3 +51,6 @@ export {
 } from "./jobs.js";
 export { lintScript, LINT_RULES, type LintResult, type LintRule, type LintViolation } from "./lint.js";
 export { loadRunTraces, previousCleanAiRunIds } from "./traces.js";
+
+export { validateSdkCandidate, lintSdkScript } from "./sdk-validate.js";
+export { readSdkEvidence, checkSdkPlan, sdkPlanSchema, type SdkPlan, type SdkEvidence } from "./sdk-evidence.js";

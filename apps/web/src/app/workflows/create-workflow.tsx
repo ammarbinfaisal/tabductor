@@ -24,18 +24,18 @@ export function CreateWorkflow() {
   };
 
   return <form className="workflow-create stack" onSubmit={(event) => { event.preventDefault(); void create(); }}>
-    <label className="field"><span>Workflow prompt</span>
+    <label className="field"><span>What should your browser do?</span>
       <textarea value={state.prompt} maxLength={20000} disabled={state.busy}
         placeholder="Describe the whole workflow: what to do, where to do it, any constraints, and the result to return."
         onChange={(event) => store.setState({ prompt: event.target.value })} /></label>
-    <label className="field"><span>Result schema (optional, JSON Schema draft-07)</span>
+    <details className="advanced-options"><summary>Define a result schema <span className="muted">Optional</span></summary>
+    <label className="field"><span>Result schema (JSON Schema draft-07)</span>
       <textarea className="mono" rows={5} value={state.resultSchemaText} disabled={state.busy}
         placeholder={'{ "type": "object", "properties": { "summary": { "type": "string" } }, "required": ["summary"] }'}
-        onChange={(event) => store.setState({ resultSchemaText: event.target.value })} /></label>
-    <p className="muted">Your prompt directs every step and the final JSON result. Leave the schema empty for free-form JSON.</p>
+        onChange={(event) => store.setState({ resultSchemaText: event.target.value })} /></label></details>
     {state.error ? <p className="banner banner--error" role="alert">{state.error}</p> : null}
-    <div><button className="btn--primary" type="submit" disabled={state.busy || !state.prompt.trim()}>
-      {state.busy ? "Building workflow…" : "Create workflow"}
+    <div className="composer-footer"><p className="muted">Describe the outcome. Make it repeatable.</p><button className="btn--primary" type="submit" disabled={state.busy || !state.prompt.trim()}>
+      {state.busy ? "Building workflow…" : "Create workflow →"}
     </button></div>
   </form>;
 }

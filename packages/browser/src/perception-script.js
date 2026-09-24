@@ -122,7 +122,7 @@
       controlLabel: norm(el.getAttribute('aria-label') || (el.labels ? [...el.labels].map(label => label.textContent).join(' ') : '') || el.getAttribute('placeholder') || el.getAttribute('data-placeholder') || el.getAttribute('data-content-editable-placeholder')).slice(0, 120) || null,
       actionLocator: identify(el), parentAnchor: parent ? anchors.get(parent) : null,
       selectorHint: testId ? `[data-testid=${JSON.stringify(testId)}]` : el.id ? `#${CSS.escape(el.id)}` : tag + classes,
-      href: el.tagName === 'A' ? el.href : null, inputType: el.tagName === 'INPUT' ? el.type : null,
+      contentEditable: el.isContentEditable, href: el.tagName === 'A' ? el.href : null, inputType: el.tagName === 'INPUT' ? el.type : null,
       value: ['INPUT','TEXTAREA','SELECT','OPTION'].includes(el.tagName) && el.type !== 'password' ? String(el.value).slice(0, 200) : el.isContentEditable ? norm(el.innerText).slice(0, 200) : null,
       disabled: el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true',
       checked: ['checkbox','radio'].includes(el.type) ? el.checked : bool('aria-checked'),

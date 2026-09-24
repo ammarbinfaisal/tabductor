@@ -1,5 +1,5 @@
 import { checkRecordContracts, recordContractIssues } from "./record-contracts.js";
-import { intentSchema, intentErrors, harnessTask, destinationSchemaErrors, taskIntentDigest } from "./intent-contract.js";
+import { intentSchema, intentErrors, harnessTask, taskIntentDigest } from "./intent-contract.js";
 import { recordProcessingSchema } from "./record-processing.js";
 import { compileResultSchema } from "./result-schema.js";
 import { Ajv } from "ajv";
@@ -133,7 +133,33 @@ export const graphScheduleSchema = z.object({
   enabled: z.boolean().default(true),
 });
 
-export const graphTaskSchema = z.object({
+/** Older generated drafts sometimes nested task routing inside limits. Recover only
+ * missing structural fields, before defaults can erase that distinction. Explicit
+ * task-level values remain authoritative; discard stale nested copies on round trips. */
+function normalizeTaskShape(input: unknown): unknown {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+  const task = { ...input } as Record<string, unknown>;
+  if (!task.limits || typeof task.limits !== "object" || Array.isArray(task.limits)) return task;
+  const limits = { ...task.limits } as Record<string, unknown>;
+  for (const key of ["emits", "consumes", "entry", "schedule", "position"] as const) {
+    if (task[key] === undefined && limits[key] !== undefined) task[key] = limits[key];
+    delete limits[key];
+  }
+  if (limits.harness && typeof limits.harness === "object" && !Array.isArray(limits.harness)) {
+    const harness = { ...limits.harness } as Record<string, unknown>;
+    if (limits.recordProcessing === undefined && harness.recordProcessing !== undefined)
+      limits.recordProcessing = harness.recordProcessing;
+    delete harness.recordProcessing;
+    // Retired role metadata must not reintroduce topology rules on old drafts.
+    delete harness.role;
+    delete harness.destination;
+    limits.harness = harness;
+  }
+  task.limits = limits;
+  return task;
+}
+
+export const graphTaskSchema = z.preprocess(normalizeTaskShape, z.object({
   logicalId: z.string().min(1).max(160).optional(),
   /** Whether a workflow-level manual/scheduled start should create this task's root. */
   entry: z.boolean().optional(),
@@ -154,7 +180,7 @@ export const graphTaskSchema = z.object({
   schedule: graphScheduleSchema.nullable().default(null),
   /** Editor-only decoration, round-tripped through `graph_json` and ignored by the engine. */
   position: z.object({ x: z.number(), y: z.number() }).nullable().default(null),
-});
+}));
 
 export const graphSchema = z.object({
   intent: intentSchema.optional(),
@@ -247,11 +273,6 @@ export function checkGraph(graph: Graph): void {
         throw invalid("record_processing_invalid: declare a valid operation for an emitted record event with a separate identity field", { task: task.name });
       if (graph.events.find(e => e.type === processing.data.eventType)?.record?.key !== processing.data.identityField)
         throw invalid("record_processing_identity_missing: normalized events must declare their host-derived identity", { task: task.name });
-    }
-    const h = harnessTask(task.limits);
-    if (h?.role === "write-record" && h.destination) for (const type of task.consumes) {
-      const event = graph.events.find(e => e.type === type);
-      if (event?.record?.key !== h.destination.identityField) throw invalid("destination_record_identity_missing: writer events must declare the stable identity", { task: task.name, eventType: type });
     }
     if (task.kind === "result") {
       if (!task.prompt?.trim()) throw invalid("a result node requires a prompt", { task: task.name });
@@ -359,10 +380,7 @@ function genInputFor(graph: Graph, event: GraphEvent): SchemaGenInput {
   return {
     eventType: event.type,
     description: event.description + (event.record ? `\nRecord tracking: ${JSON.stringify(event.record)}. The record key must be a required string or integer.` : "") +
-      graph.tasks.filter(t => t.emits.includes(event.type) || t.consumes.includes(event.type)).flatMap(t => {
-        const d = harnessTask(t.limits)?.destination;
-        return d ? [`\nHost destination envelope: required string ${d.contractField}; ${event.type === d.readyEvent ? "readiness contains ONLY this reference" : `required content fields ${d.requiredFields.join(", ")} and identity string ${d.identityField}`}.`] : [];
-      }).join("") + graph.tasks.flatMap(t => {
+      graph.tasks.flatMap(t => {
         const config = recordProcessingSchema.safeParse(t.limits.recordProcessing);
         return config.success && config.data.eventType === event.type
           ? [`\nFixed normalization contract: ${JSON.stringify(config.data)}. Include these fields. identityField is a required string. nullableFields must accept null; sourceIdField remains optional/nullable when source data is missing.`] : [];
@@ -422,9 +440,7 @@ async function compileEventSchemas(
   const queue = [...pending];
   const worker = async (): Promise<void> => {
     for (let item = queue.shift(); item; item = queue.shift()) {
-      const ready = graph.tasks.map(t => harnessTask(t.limits)?.destination).find(d => d?.readyEvent === item.event.type);
-      const result = ready ? { ok: true as const, schema: { type: "object", properties: { [ready.contractField]: { type: "string" } }, required: [ready.contractField], additionalProperties: false } }
-        : await generator.generate(genInputFor(graph, item.event));
+      const result = await generator.generate(genInputFor(graph, item.event));
       if (!result.ok) {
         item.entry = { type: item.event.type, status: "failed", error: result.error };
         continue;
@@ -743,7 +759,7 @@ export async function publishVersion(
 ): Promise<PublishedVersion> {
   const graph = graphSchema.parse(input.graph);
   // Trusted policy/intent inputs participate in script hashes through the persisted limits.
-  if (graph.intent) for (const task of graph.tasks) task.limits = { ...task.limits, intentDigest: taskIntentDigest(graph.intent, harnessTask(task.limits)), harnessPolicyVersion: 1 };
+  if (graph.intent) for (const task of graph.tasks) task.limits = { ...task.limits, intentDigest: taskIntentDigest(graph.intent, harnessTask(task.limits)), harnessPolicyVersion: 2 };
   checkGraph(graph);
   const failedGateChecks = input.authoring?.report.checks.filter((check) => check.status === "fail") ?? [];
   if (failedGateChecks.length > 0) {
@@ -883,8 +899,6 @@ export async function publishVersion(
 
   const schemas = new Map(compiled.map((c) => [c.event.type, c.schema]));
   checkRecordContracts(graph, schemas);
-  const destinationErrors = destinationSchemaErrors(graph.tasks, schemas);
-  if (destinationErrors.length) throw invalid(destinationErrors.join("; "), { diagnostics: destinationErrors });
   const compiledTasks = await compileTaskPrompts(
     db,
     graph,

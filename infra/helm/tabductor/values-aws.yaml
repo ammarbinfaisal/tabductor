@@ -27,3 +27,9 @@ secrets:
   kms: true
 
 existingConfigSecret: tabductor-application
+
+pythonRunner:
+  nodeSelector:
+    tabductor.io/node-role: control
+  executionNodeSelector:
+    tabductor.io/node-role: control

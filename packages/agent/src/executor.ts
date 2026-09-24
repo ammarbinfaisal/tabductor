@@ -1,3 +1,5 @@
+import { createContextHistory } from "./context-history.js";
+import { createRunWorkspace } from "./workspace.js";
 import { withAutomationControl } from "@tabductor/browser";
 import {
   createTraceRecorder,
@@ -12,7 +14,7 @@ import {
 } from "@tabductor/browser";
 import { AppError } from "@tabductor/core";
 import type { Db, RunRow, TaskRow } from "@tabductor/db";
-import { harnessTask, type RunHandle, type RunResult, type TaskExecutor } from "@tabductor/engine";
+import { type RunHandle, type RunResult, type TaskExecutor } from "@tabductor/engine";
 import type { PolicyGate } from "@tabductor/core";
 import type { SecretsBroker, SecretsBrokerRunDeps } from "@tabductor/secrets";
 import type { Metrics } from "@tabductor/telemetry";
@@ -27,8 +29,11 @@ import {
 } from "./executor-shared.js";
 import type { Llm } from "./llm.js";
 import { runAgentLoop } from "./loop.js";
-import { buildToolRegistry, summarizePerception } from "./tools.js";
+import { buildBrowserCodeTools, summarizePerception } from "./tools.js";
+import { browserHelperStore } from "./browser-helpers.js";
 import { browserLoopControl } from "./browser-loop-control.js";
+import type { PythonRunner } from "./python-runner.js";
+import { acquireBrowserContinuity, type BrowserContinuity } from "./browser-continuity.js";
 
 /**
  * `AgentExecutor`: composes the tool registry + loop behind the engine's executor contract
@@ -42,6 +47,8 @@ import { browserLoopControl } from "./browser-loop-control.js";
  */
 
 export type AgentExecutorDeps = {
+  pythonRunner?: PythonRunner;
+  captchaFor?: (handle: RunHandle) => import("@tabductor/engine").CaptchaService;
   pool: EndpointPool;
   gate: PolicyGate;
   blobs: BlobStore;
@@ -107,7 +114,6 @@ async function connectionIsDead(lease: EndpointLease, timeoutMs = 2_000): Promis
 
 async function mapError(err: unknown, lease: EndpointLease | undefined): Promise<RunResult> {
   if (err instanceof AppError) {
-    if (err.code === "human_action_pending") return { ok: false, error: err.message, suspended: true };
     if (err.code === "browser.disconnected") return { ok: false, error: "browser.disconnected" };
     if (err.code === "resource_limit_exceeded") return { ok: false, error: "resource_limit_exceeded", permanent: true };
     if (err.code === "agent_no_progress") return { ok: false, error: err.message, permanent: true };
@@ -129,7 +135,10 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
       let session: RunSession | undefined;
       let unregisterSecretRun: (() => void) | undefined;
       let ok = false;
+      let pythonRunner: PythonRunner | undefined;
+      let continuity: BrowserContinuity | undefined;
       try {
+        continuity = await acquireBrowserContinuity(db, handle, "python");
         lease = await pool.acquire(await endpointFor(handle), handle.run.id);
         const trace = createTraceRecorder(db, blobs, handle.run.id, storageFlagsOf(handle.task));
         const limits = browserLimitsOf(handle.task);
@@ -147,28 +156,34 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
         const emit = makeEmitFn({ db, taskId: handle.task.id, handleEmit: handle.emit, trace });
         const llm = llmFor({ trace, task: handle.task, runId: handle.run.id });
         const control = browserLoopControl(db, handle, lease.conn, session);
-        const mapping = harnessTask(handle.task.limitsJson)?.role === "write-record" ? await handle.destination?.read() : undefined;
-        const tools = buildToolRegistry({
+        const workspace = createRunWorkspace(blobs, continuity?.workspace ?? control.workspace, trace);
+        const contextHistory = createContextHistory(blobs, continuity?.context ?? control.context);
+        const memory = continuity?.memory ?? control.memory;
+        pythonRunner = deps.pythonRunner?.open?.({runId:handle.run.id,leaseGeneration:handle.run.leaseGeneration}) ?? deps.pythonRunner;
+        const tools = buildBrowserCodeTools({
+          storageFlags: storageFlagsOf(handle.task),
+          evidenceScope: {taskId:handle.task.id,contentHash:handle.task.contentHash},
+          input: trigger?.packet, helpers: browserHelperStore(db, handle, "python"), pythonRunner, workspace,
           session,
           emit,
-          destination: handle.destination, requestHumanAction: handle.requestHumanAction,
-          ...(mapping ? { verificationContext: { mapping, packet: handle.trigger!.packet as Record<string, unknown> } } : {}),
-          checkpoint: control.checkpoint, progress: control.progress, memory: control.memory, actions: control.actions, recordOutcome: handle.recordOutcome, recordCompletionError: handle.recordCompletionError, beforeCall: control.beforeStep, signal: handle.signal, trace,
+          captcha: deps.captchaFor?.(handle), recordInput: handle.recordInput,
+          contextHistory, checkpoint: control.checkpoint, progress: control.progress, memory, actions: control.actions, recordOutcome: handle.recordOutcome, recordCompletionError: handle.recordCompletionError, beforeCall: control.beforeStep, signal: handle.signal, trace,
           ...(deps.secrets
             ? { fillSecret: (secretName, anchor) => deps.secrets!.fill(handle.run.id, secretName, anchor) }
             : {}),
         });
 
+        const storedPrompt = handle.task.compiledPrompt ?? handle.task.prompt;
         const result = await runAgentLoop({
           llm,
           tools,
-          // The publish-compiled prompt, with the bare one as fallback.
-          task: { prompt: handle.task.compiledPrompt ?? handle.task.prompt },
+          task: { prompt: storedPrompt },
           trigger,
           emits,
           trace,
           maxInputTokens: maxInputTokensOf(handle.task),
-          beforeStep: control.beforeStep, checkpoint: control.checkpoint, memory: control.memory, actions: control.actions,
+          browserContinuation: continuity?.handoff,
+          contextHistory, progress: control.progress, beforeStep: control.beforeStep, checkpoint: control.checkpoint, memory, actions: control.actions,
           initialPerception: async () => await control.beforeStep() ?? summarizePerception(await withAutomationControl(lease!.conn, () => session!.page.perceive({elementLimit:50}), handle.signal)),
           signal: handle.signal,
         });
@@ -179,9 +194,11 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
         return mapError(err, lease);
       } finally {
         unregisterSecretRun?.();
+        await pythonRunner?.close?.().catch(() => undefined);
         // Session first, so the trace is flushed before anyone reads it to compile from.
         await session?.close().catch(() => undefined);
         await lease?.release().catch(() => undefined);
+        await continuity?.release(ok).catch(() => undefined);
         await deps.onOutcome?.({ task: handle.task, run: handle.run, ok }).catch(() => undefined);
       }
     },

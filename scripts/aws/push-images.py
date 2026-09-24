@@ -9,14 +9,14 @@ d=json.loads(run('python3','scripts/aws/terraform.py','-chdir=infra/aws/foundati
 revision=run('git','rev-parse','HEAD').strip()
 tag=revision[:12]
 if run('git','status','--porcelain').strip(): raise SystemExit('Commit the validated deployment batch before publishing images')
-for local in ['tabductor-app:local', 'tabductor-browser-worker:local']:
+for local in ['tabductor-app:local', 'tabductor-browser-worker:local', 'tabductor-python-broker:local', 'tabductor-python-runner:local']:
     label=run('docker','image','inspect',local,'--format','{{index .Config.Labels "org.opencontainers.image.revision"}}').strip()
     if label != revision: raise SystemExit('Image revision mismatch; run python3 scripts/aws/build-images.py')
 registry=f"{d['account_id']}.dkr.ecr.{d['region']}.amazonaws.com"
 password=run('aws','ecr','get-login-password','--region',d['region'])
 run('docker','login','--username','AWS','--password-stdin',registry,input=password)
 images={}
-for name,local in [('app','tabductor-app:local'),('browser-worker','tabductor-browser-worker:local')]:
+for name,local in [('app','tabductor-app:local'),('browser-worker','tabductor-browser-worker:local'),('python-broker','tabductor-python-broker:local'),('python-runner','tabductor-python-runner:local')]:
     repository=d['image_repositories'][name]
     remote=f'{repository}:{tag}'
     subprocess.run(['docker','tag',local,remote],check=True)

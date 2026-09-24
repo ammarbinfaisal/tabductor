@@ -45,9 +45,9 @@ export function GraphEditor(props: {
   const promptChanged = state.automationPrompt.trim() !== (state.graph.automationPrompt ?? "");
 
   const schemaChanged = state.resultSchemaText !== resultSchemaTextOf(state.graph);
-  const publishReason = promptChanged || schemaChanged ? "Build the edited prompt and result schema before publishing." : empty
-    ? "Build the workflow from your prompt before publishing."
-    : !state.dirty && state.versionId
+  const publishReason = !state.automationPrompt.trim() && (empty || promptChanged || schemaChanged)
+    ? "Enter a workflow prompt before publishing."
+    : !empty && !state.dirty && !promptChanged && !schemaChanged && state.versionId
       ? "All changes published."
       : null;
   const operationReason = !state.versionId
@@ -66,7 +66,7 @@ export function GraphEditor(props: {
           <h1 style={{ display: "inline", marginLeft: "var(--space-2)" }}>{props.workflowName}</h1>
           <span className="section-label" style={{ marginLeft: "var(--space-3)" }}>
             {state.versionId
-              ? state.dirty
+              ? state.dirty || promptChanged || schemaChanged
                 ? "Unpublished changes"
                 : "Published"
               : "draft · never published"}
@@ -75,22 +75,27 @@ export function GraphEditor(props: {
         <span className="row" style={{ flexDirection: "column", alignItems: "flex-end", gap: "var(--space-1)" }}>
           <span className="row">
             <button
-              onClick={() => void s.triggerWorkflow()}
+              className="btn--primary"
+              onClick={() => void s.triggerWorkflow().then(result => {
+                if (!result) return;
+                const runId = result.runs.find(run => run.runId)?.runId;
+                window.location.assign(runId ? `/workflows/${state.workflowId}/runs/${runId}` : `/workflows/${state.workflowId}/runs`);
+              })}
               disabled={state.busy || operationReason !== null}
               title={operationReason ?? "Start the published workflow now"}
             >
-              Run workflow
+              Run workflow ↗︎
             </button>
             <button className="btn--quiet" onClick={() => void s.reload()} disabled={state.busy}>
               Reload
             </button>
             <button
-              className="btn--primary"
+              className={operationReason ? "btn--primary" : ""}
               disabled={state.busy || publishReason !== null}
-              aria-describedby="publish-reason"
+              aria-describedby={publishReason ? "publish-reason" : undefined}
               onClick={() => void s.save()}
             >
-              Publish
+              {state.publishing ? "Publishing…" : "Publish"}
             </button>
           </span>
           {publishReason ? (
@@ -121,15 +126,14 @@ export function GraphEditor(props: {
           <label className="field"><span>Workflow prompt</span><textarea value={state.automationPrompt} disabled={state.busy} maxLength={20000}
             placeholder="Open X, collect 100 unique tweets from my For You timeline, and add them to my Notion database at… Skip tweets already saved and verify each new entry."
             onChange={(event) => s.setAutomationPrompt(event.target.value)} /></label>
-          <label className="field"><span>Result schema (optional, JSON Schema draft-07)</span>
+          <details className="advanced-options"><summary>Result schema <span className="muted">Optional</span></summary>
+          <label className="field"><span>Result schema (JSON Schema draft-07)</span>
             <textarea className="mono" rows={7} disabled={state.busy} value={state.resultSchemaText}
               placeholder={'{ "type": "object", "properties": { "summary": { "type": "string" } }, "required": ["summary"] }'}
               onChange={(event) => s.setResultSchemaText(event.target.value)} /></label>
-          <p className="muted">Leave empty for free-form JSON. The final result follows your workflow prompt.</p>
-          <button className="btn--primary" disabled={state.busy || !state.automationPrompt.trim()} onClick={() => void s.buildAutomation()}>{state.busy ? "Building…" : "Build automation"}</button>
-          <p className="muted">No schedule specified? It runs on demand.</p>
+          <p className="muted">Leave empty for free-form JSON. The final result follows your workflow prompt.</p></details>
+          <p className="muted">Publish to make your automation ready to run. No schedule specified? It runs on demand.</p>
           {state.graph.tasks.length ? <div className="automation-outline"><h3>What it will do</h3><ol>{state.graph.tasks.map((task) => <li key={task.name}><strong>{task.label ?? task.name}</strong>{task.summary ? <p>{task.summary}</p> : null}</li>)}</ol></div> : null}
-          <Link href={`/profiles?workflow=${encodeURIComponent(state.workflowId)}`}>Set up browser profiles and sign in ↗</Link>
         </section>
       </div> : <WorkflowWorkspace
         key={`${state.workflowId}:${state.versionId ?? "draft"}`}
@@ -177,7 +181,7 @@ export function GraphEditor(props: {
               <button className="btn--quiet" autoFocus onClick={() => s.cancelVisibilityChange()}>
                 Cancel
               </button>
-              <button className="btn--primary" onClick={() => void s.save(true)}>
+              <button className="btn--primary" disabled={state.busy} onClick={() => void s.save(true)}>
                 Publish with these changes
               </button>
             </div>

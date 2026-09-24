@@ -8,12 +8,12 @@ import {
   type PromptCompiler,
   type SchemaGenerator,
 } from "@tabductor/engine";
-import { fundedAuthoringModels, aiWorkflowChatModel, aiGraphCompiler, aiPromptCompiler, aiSchemaGenerator, providerFromEnv } from "@tabductor/engine/ai";
+import { fundedAuthoringModels, aiGraphCompiler, aiPromptCompiler, aiSchemaGenerator, providerFromEnv } from "@tabductor/engine/ai";
 import type { Pool } from "pg";
 
 /**
  * The publish-time schema compiler, composed once per process like the db pool. The provider
- * is whichever key the environment holds — Anthropic first, then OpenAI.
+ * is whichever key the environment holds — AI Gateway first, then Anthropic and OpenAI.
  *
  * Without a key, publishing still works for every event whose hash matches the previous
  * version — carry-forward needs no model — and only *changed* events fail, with this message
@@ -22,8 +22,8 @@ import type { Pool } from "pg";
 const store = globalThis as { __tabductorSchemaGen?: SchemaGenerator; __tabductorPromptCompiler?: PromptCompiler };
 
 export function graphCompiler(pool: Pool): GraphCompiler | undefined {
-  const { ANTHROPIC_API_KEY, OPENAI_API_KEY, SCHEMA_MODEL } = loadConfig();
-  const chosen = providerFromEnv({ ANTHROPIC_API_KEY, OPENAI_API_KEY });
+  const { ANTHROPIC_API_KEY, OPENAI_API_KEY, AI_GATEWAY_API_KEY, SCHEMA_MODEL } = loadConfig();
+  const chosen = providerFromEnv({ ANTHROPIC_API_KEY, OPENAI_API_KEY, AI_GATEWAY_API_KEY });
   return chosen ? aiGraphCompiler({ ...chosen, model: SCHEMA_MODEL, pool }) : undefined;
 }
 
@@ -43,14 +43,14 @@ export function promptCompiler(): PromptCompiler {
 }
 
 function buildPromptCompiler(): PromptCompiler {
-  const { ANTHROPIC_API_KEY, OPENAI_API_KEY, SCHEMA_MODEL } = loadConfig();
-  const chosen = providerFromEnv({ ANTHROPIC_API_KEY, OPENAI_API_KEY });
+  const { ANTHROPIC_API_KEY, OPENAI_API_KEY, AI_GATEWAY_API_KEY, SCHEMA_MODEL } = loadConfig();
+  const chosen = providerFromEnv({ ANTHROPIC_API_KEY, OPENAI_API_KEY, AI_GATEWAY_API_KEY });
   return chosen ? aiPromptCompiler({ ...chosen, model: SCHEMA_MODEL }) : staticPromptCompiler();
 }
 
 function build(): SchemaGenerator {
-  const { ANTHROPIC_API_KEY, OPENAI_API_KEY, SCHEMA_MODEL } = loadConfig();
-  const chosen = providerFromEnv({ ANTHROPIC_API_KEY, OPENAI_API_KEY });
+  const { ANTHROPIC_API_KEY, OPENAI_API_KEY, AI_GATEWAY_API_KEY, SCHEMA_MODEL } = loadConfig();
+  const chosen = providerFromEnv({ ANTHROPIC_API_KEY, OPENAI_API_KEY, AI_GATEWAY_API_KEY });
   if (chosen) return aiSchemaGenerator({ ...chosen, model: SCHEMA_MODEL });
   return {
     generate: () =>
@@ -59,12 +59,6 @@ function build(): SchemaGenerator {
         error: "schema generation unavailable: neither ANTHROPIC_API_KEY nor OPENAI_API_KEY is set",
       }),
   };
-}
-
-export function workflowChatModel(): import("@tabductor/engine").WorkflowChatModel | undefined {
-  const { ANTHROPIC_API_KEY, OPENAI_API_KEY, SCHEMA_MODEL } = loadConfig();
-  const chosen = providerFromEnv({ ANTHROPIC_API_KEY, OPENAI_API_KEY });
-  return chosen ? aiWorkflowChatModel({ ...chosen, model: SCHEMA_MODEL }) : undefined;
 }
 
 /** Request-scoped factories prevent account identity leaking through a process-global model. */

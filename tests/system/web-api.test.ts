@@ -1,8 +1,8 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { newId } from "@tabductor/core";
-import { cdpEndpoints, runs, traceEntries } from "@tabductor/db";
+import { browserSessions, cdpEndpoints, runs, traceEntries } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import { finishRun, startRun, staticSchemaGenerator, triggerTask } from "@tabductor/engine";
+import { createBrowserProfile, createWorkflowExecution, finishRun, requestBrowserSession, startRun, staticSchemaGenerator, triggerTask } from "@tabductor/engine";
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { createCaller } from "../../apps/web/src/server/router.js";
@@ -325,6 +325,27 @@ describe("task", () => {
 });
 
 describe("run", () => {
+  it.each(["1", "0"])("serves recorded tool parameters only in dev mode (%s)", async (devMode) => {
+    vi.stubEnv("TABDUCTOR_DEV_MODE", devMode);
+    try {
+      const workflowId = await api.workflow.create({ name: "dev tool parameters" });
+      const { taskIds } = await api.workflow.publishVersion({ workflowId, graph: twoNodeGraph });
+      const { runId } = await seedManualRun({ taskId: taskIds.Watcher! });
+      const args = { code: "print(await page.title())", options: { timeout: 1500 } };
+      await handle.db.insert(traceEntries).values({ runId: runId!, seq: 0, kind: "action",
+        payloadJson: { action: "tool.call", tool: "browser.python", callId: "call-1", ok: true, args } });
+      for (const view of [undefined, "tools"] as const) {
+        const page = await api.run.trace({ runId: runId!, ...(view ? { view } : {}) });
+        expect(page.devMode).toBe(devMode === "1");
+        expect(page.items[0]?.payloadJson).toMatchObject({ action: "tool.call", tool: "browser.python" });
+        if (devMode === "1") expect(page.items[0]?.payloadJson).toHaveProperty("args", args);
+        else expect(page.items[0]?.payloadJson).not.toHaveProperty("args");
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("pages tool calls without network noise, preserves raw compiler evidence and identifies deopt", async () => {
     const workflowId = await api.workflow.create({ name: "tool trace" });
     const { taskIds } = await api.workflow.publishVersion({ workflowId, graph: twoNodeGraph });
@@ -409,7 +430,24 @@ describe("run", () => {
     expect(detail.task.name).toBe("Watcher");
     expect(detail.trigger?.eventId).toBe(eventId);
     expect(detail.trigger?.packet).toEqual({ hello: "world" });
+    expect(detail.browserSession).toBeNull();
     expect((await trpcError(() => api.run.get({ runId: "run_nope" }))).code).toBe("NOT_FOUND");
+  });
+
+  it("links a run to its execution's browser and retains the session's independent lifetime", async () => {
+    const workflowId = await api.workflow.create({ name: "Live run" });
+    const { taskIds, versionId } = await api.workflow.publishVersion({ workflowId, graph: twoNodeGraph });
+    const executionId = await createWorkflowExecution(handle.db, { workflowId, workflowVersionId: versionId });
+    const { runId } = await seedManualRun({ taskId: taskIds.Watcher!, executionId });
+    expect((await api.run.get({ runId: runId! })).browserSession).toBeNull();
+    const profileId = await createBrowserProfile(handle.db, { accountId: "acct_local", name: "Live run profile" });
+    const sessionId = await requestBrowserSession(handle.db, { accountId: "acct_local", profileId, executionId });
+    await handle.db.update(browserSessions).set({ status: "running" }).where(eq(browserSessions.id, sessionId));
+    const started = await startRun(handle.db, runId!, undefined);
+    await finishRun(handle.db, { runId: runId!, taskId: taskIds.Watcher!, status: "succeeded", leaseGeneration: started!.leaseGeneration });
+    expect(await api.run.get({ runId: runId! })).toMatchObject({ run: { status: "succeeded" }, browserSession: { id: sessionId, status: "running" } });
+    await handle.db.update(browserSessions).set({ status: "ended" }).where(eq(browserSessions.id, sessionId));
+    expect((await api.run.get({ runId: runId! })).browserSession).toEqual({ id: sessionId, status: "ended" });
   });
 });
 

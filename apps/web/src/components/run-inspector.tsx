@@ -5,6 +5,8 @@ import { createStore } from "zustand/vanilla";
 import { EventChip, Stamp } from "./primitives.js";
 import { api, asApiError, type RouterOutputs } from "../lib/api.js";
 import { usePolling, useStoreBridge, type Store } from "../lib/store.js";
+import { SessionInspector } from "./session-inspector.js";
+import { readableName } from "../lib/workflow-labels.js";
 
 /**
  * The run inspector (U1.5): a run's header (status, mode, timings, error, failure detail)
@@ -28,6 +30,7 @@ type InspectorState = {
   cursors: Array<string | null>;
   nextCursor: string | null;
   error: string | null;
+  devMode: boolean;
 };
 
 function createInspectorStore(runId: string): Store<InspectorState> & {
@@ -40,6 +43,7 @@ function createInspectorStore(runId: string): Store<InspectorState> & {
     cursors: [null],
     nextCursor: null,
     error: null,
+    devMode: false,
   }));
 
   const refresh = async (): Promise<void> => {
@@ -53,6 +57,7 @@ function createInspectorStore(runId: string): Store<InspectorState> & {
         ...state,
         detail,
         trace: pages.flatMap((p) => p.items),
+        devMode: pages[0]?.devMode ?? false,
         nextCursor: pages.at(-1)?.nextCursor ?? null,
         error: null,
       }));
@@ -146,16 +151,14 @@ export function RunInspector({ workflowId, runId }: { workflowId: string; runId:
 
   return (
     <>
-      <div className="row row--between" style={{ marginBottom: "var(--space-4)" }}>
-        <h1 style={{ fontSize: "var(--text-xl)" }}>
-          {task.name} <span className="mono muted">{run.id.slice(0, 12)}</span>
-        </h1>
-        <Link href={`/workflows/${workflowId}/runs`} className="mono">
-          Back to runs
-        </Link>
+      <div className="page-heading">
+        <div><Link href={`/workflows/${workflowId}/runs`} className="eyebrow">← Workflow runs</Link>
+          <h1>{readableName(task.name)}</h1><p className="mono muted">Run / {run.id.slice(0, 12)}</p>
+        </div>
+        {state.detail.browserSession ? <Link className="btn" href={`/sessions/${state.detail.browserSession.id}`}>Open session ↗︎</Link> : null}
       </div>
 
-      <div className="entity-card entity-card--node" style={{ marginBottom: "var(--space-5)" }}>
+      <div className="run-summary">
         <div className="row">
           <Stamp kind={run.status} />
           <span className="mono muted">attempt {run.attempt}</span>
@@ -197,22 +200,27 @@ export function RunInspector({ workflowId, runId }: { workflowId: string; runId:
 
       {state.error ? <div className="banner banner--error">Refresh failed. {state.error}</div> : null}
 
+      {state.detail.browserSession ? <SessionInspector key={state.detail.browserSession.id} sessionId={state.detail.browserSession.id} />
+        : task.kind === "browser" ? <div className="viewer-empty" role="status"><span className="eyebrow">Browser session</span><h2>{run.endedAt ? "No browser session recorded" : "Preparing your live browser"}</h2><p>{run.endedAt ? "This run has no browser session to view." : "The live view will appear here as soon as the browser is allocated."}</p></div> : null}
+
+      <section className="run-trace" aria-label="Run tool calls">
       <h2 style={{ marginBottom: "var(--space-3)" }}>Tool calls</h2>
       {state.trace.length === 0 ? (
         <p className="muted">No tool calls recorded yet.</p>
       ) : (
         <div className="stack trace-timeline">
           {state.trace.map((entry) => (
-            <TraceRow key={entry.seq} entry={entry} workflowId={workflowId} />
+            <TraceRow key={entry.seq} entry={entry} workflowId={workflowId} devMode={state.devMode} />
           ))}
         </div>
       )}
       {state.nextCursor ? <button onClick={() => store.more()}>Load more</button> : null}
+      </section>
     </>
   );
 }
 
-function TraceRow({ entry, workflowId }: { entry: TraceItem; workflowId: string }) {
+function TraceRow({ entry, workflowId, devMode }: { entry: TraceItem; workflowId: string; devMode: boolean }) {
   const payload = entry.payloadJson as Record<string, unknown>;
   const denied = entry.kind === "policy_denied";
   const isLlm = entry.kind === "llm";
@@ -228,6 +236,14 @@ function TraceRow({ entry, workflowId }: { entry: TraceItem; workflowId: string 
       </span>
       <div className="stack" style={{ gap: "var(--space-1)", flex: 1, minWidth: 0 }}>
         <TraceSummary kind={entry.kind} payload={payload} workflowId={workflowId} />
+        {devMode && payload.action === "tool.call" ? (
+          <div>
+            <span className="mono muted">Parameters</span>
+            {Object.hasOwn(payload, "args") ? (
+              <pre className="mono" style={{ maxHeight: 400, overflow: "auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{JSON.stringify(payload.args, null, 2)}</pre>
+            ) : <p className="muted">Parameters were not recorded for this call.</p>}
+          </div>
+        ) : null}
         {screenshotRef ? (
           <img
             src={`/api/blobs/${encodeURIComponent(screenshotRef)}`}

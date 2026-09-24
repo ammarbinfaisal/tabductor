@@ -6,10 +6,12 @@ const store = createStore<{ busy: boolean; error: string | null }>(() => ({ busy
 export function ProfileSetup({ workflowId }: { workflowId: string }) {
   const state = useStoreBridge(store);
   async function setup() {
+    if (store.getState().busy) return;
     store.setState({ busy: true, error: null });
     try { const session = await api.browserSession.setupProfile.mutate({ workflowId }); window.location.assign(`/sessions/${session.sessionId}`); }
     catch (error) { store.setState({ busy: false, error: asApiError(error).message }); }
   }
-  return <section><h2>Browser profile</h2><p>Open a managed browser to sign in. Stop the session when finished to save its profile for future runs.</p>
-    {state.error ? <p role="alert">{state.error}</p> : null}<button disabled={state.busy} onClick={() => void setup()}>Set up browser profile</button></section>;
+  return <div>
+    <p>Set up the selected profile, or create one automatically for this workflow.</p>
+    {state.error ? <p role="alert">{state.error}</p> : null}<button disabled={state.busy} onClick={() => void setup()}>{state.busy ? "Opening browser…" : "Set up browser profile"}</button></div>;
 }

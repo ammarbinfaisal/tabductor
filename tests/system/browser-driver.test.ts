@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
 import { playwrightDriver } from "@tabductor/browser";
-import { buildToolRegistry, runAgentLoop } from "@tabductor/agent";
+import { runAgentLoop } from "@tabductor/agent";
+import { buildToolRegistry } from "../../packages/agent/src/tools.js";
 import {
   openSession,
   payloadOf,

@@ -3,7 +3,7 @@ from fastapi import HTTPException
 from playwright.async_api import Error, TimeoutError
 
 
-def command_error(error):
+def command_error(error, *, page_closed=False, browser_connected=False):
     message = str(error).lower()
     code, status, detail, uncertain = "browser_command_failed", 500, "Browser command failed; inspect the current page.", True
     if isinstance(error, HTTPException):
@@ -13,6 +13,8 @@ def command_error(error):
         status = error.status_code
         if "ownership" in message or "input owner" in message:
             code, detail, uncertain = "browser_input_revoked", "Browser control changed; wait for acknowledgement and perceive again.", False
+        elif "invocation" in message:
+            code, detail, uncertain = "browser_invocation_conflict", "Browser invocation is already open or capacity is exhausted; finish the active cell before opening another.", False
         elif "already submitted" in message:
             code, detail = "browser_outcome_uncertain", "Command already submitted; reconcile its effect before retrying."
         elif "session" in message and status in (404, 409):
@@ -28,7 +30,10 @@ def command_error(error):
     elif isinstance(error, TimeoutError):
         code, status, detail = "browser_timeout", 408, "Browser command timed out; inspect the page and reconcile any effect before retrying."
     elif isinstance(error, Error) and any(part in message for part in ("has been closed", "disconnected", "connection closed", "browser closed")):
-        code, status, detail = "browser.disconnected", 503, "Browser connection ended; reconcile any effect before retrying."
+        if page_closed and browser_connected:
+            code, status, detail = "browser_page_closed", 409, "The selected page closed. Use tabs.list and tabs.switch to inspect the surviving destination tab and verify the outcome before repeating actions."
+        else:
+            code, status, detail = "browser.disconnected", 503, "Browser connection ended; reconcile any effect before retrying."
     elif isinstance(error, (ValueError, TypeError)):
         code, status, detail, uncertain = "browser_invalid_argument", 422, "Invalid browser arguments; inspect the target and tool schema.", False
     return HTTPException(status, {"code": code, "message": detail, "outcomeUncertain": uncertain})

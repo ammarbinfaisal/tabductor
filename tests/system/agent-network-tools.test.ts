@@ -73,7 +73,8 @@ it("network.list then network.read(response_body): the real body reaches the nex
   const listRow = rows.find((r) => (r.payloadJson as { action?: string }).action === "network.list")!;
   expect(listRow.payloadJson).toMatchObject({ ok: true });
 
-  // The tweet bodies never appear in the trace itself (§14: page/network content is opt-in,
-  // never a default) — only the read's shape (index, parts, size) does.
-  expect(JSON.stringify(rows)).not.toContain("first tweet");
+  // Native observation entries stay structural. The bounded SDK journal retains the
+  // actual result so the compiler can preserve extraction and emission dependencies.
+  expect(JSON.stringify([readRow,listRow])).not.toContain("first tweet");
+  expect(JSON.stringify(rows.filter(r=>(r.payloadJson as {action?:string}).action==="sdk.operation"))).toContain("first tweet");
 });

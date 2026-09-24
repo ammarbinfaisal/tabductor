@@ -6,6 +6,7 @@ const file = new URL('../../.env', import.meta.url);
 if (!existsSync(file)) writeFileSync(file, '', {mode:0o600});
 const values = parseEnv(readFileSync(file,'utf8'));
 if (!values.BROWSER_WORKER_TOKEN_KEY) appendFileSync(file, '\nBROWSER_WORKER_TOKEN_KEY='+randomBytes(48).toString('base64url')+'\n');
+if (!values.PYTHON_RUNNER_TOKEN) appendFileSync(file, '\nPYTHON_RUNNER_TOKEN='+randomBytes(48).toString('base64url')+'\n');
 const endpoint = process.env.DOCKER_HOST || spawnSync('docker',['context','inspect','--format','{{.Endpoints.docker.Host}}'],{encoding:'utf8'}).stdout?.trim();
 if (!endpoint?.startsWith('unix:///')) throw Error('Local managed browsers require a local Unix Docker socket.');
 const socketPath = endpoint.slice('unix://'.length);
@@ -14,7 +15,8 @@ if (values.DOCKER_SOCKET_PATH !== socketPath) {
   writeFileSync(file, text+'\nDOCKER_SOCKET_PATH='+socketPath+'\n',{mode:0o600});
 }
 const args=['compose','-f','docker-compose.yml','-f','docker-compose.browser.yml'];
-for (const command of [['build','web','browser-image'],
+args.push('-f','docker-compose.python.yml');
+for (const command of [['build','web','browser-image','python-runner','python-runner-image'],
   // Initialize the shared encryption key as the app user before the local operator
   // can wrap a browser snapshot. No key values leave the process.
   ['run','--rm','--no-deps','web','node','--import','tsx','--input-type=module','-e',

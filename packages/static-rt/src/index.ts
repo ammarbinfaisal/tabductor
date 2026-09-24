@@ -8,3 +8,5 @@ export {
 export type { CtxHost, EmitFn, EmitOutcome, GuardFailure, StateStore } from "./ctx.js";
 export { BOOTSTRAP } from "./bootstrap.js";
 export { runToolScript, type ToolScriptResult } from "./tool-script.js";
+
+export type { HelperRevision, SdkTerminal, SdkOperation } from "./sdk.js";

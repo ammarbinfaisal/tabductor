@@ -1,3 +1,7 @@
+import { createContextHistory } from "./context-history.js";
+import { acquireBrowserContinuity, type BrowserContinuity } from "./browser-continuity.js";
+import type { PythonRunner } from "./python-runner.js";
+import { createRunWorkspace } from "./workspace.js";
 import { withAutomationControl } from "@tabductor/browser";
 import { AppError, SCRIPT_RUNTIME_VERSION } from "@tabductor/core";
 import {
@@ -12,12 +16,13 @@ import {
   type TraceRecorder,
 } from "@tabductor/browser";
 import { getActiveScript, invalidateScript } from "@tabductor/compiler";
-import { taskState, tasks, type Db, type RunRow, type TaskRow } from "@tabductor/db";
+import { tasks, type Db, type RunRow, type TaskRow } from "@tabductor/db";
 import { assertRunLease, type RunHandle, type RunResult, type TaskExecutor } from "@tabductor/engine";
 import type { PolicyGate } from "@tabductor/core";
-import { runCompiledScript, type CtxHost, type StateStore } from "@tabductor/static-rt";
+import { type ScriptRunResult, type HelperRevision } from "@tabductor/static-rt";
 import type { Metrics } from "@tabductor/telemetry";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
+import type { AgentExecutorDeps } from "./executor.js";
 import type { Llm } from "./llm.js";
 import { runAgentLoop } from "./loop.js";
 import {
@@ -29,18 +34,19 @@ import {
   toRunResult,
   triggerInfoOf,
 } from "./executor-shared.js";
-import { buildToolRegistry, summarizePerception } from "./tools.js";
+import { buildBrowserCodeTools, summarizePerception } from "./tools.js";
+import { browserHelperStore } from "./browser-helpers.js";
 import { browserLoopControl } from "./browser-loop-control.js";
 
 /**
  * `(browser, compiled)` — the fast path, and the door back to the slow one.
  *
  * A clean compiled run makes **no model call at all**: the script drives the page through the
- * same `ctx` S6a built, every crossing lands on the same `PolicyGate` an agent run would hit,
+ * same SDK host as the agent; every crossing lands on the same policy and lease fences,
  * and the trace it leaves has zero `llm` entries. That absence is the product's core claim,
  * and the flagship test asserts it rather than trusting it.
  *
- * When the guards fail, `ctx.deopt` does **not** fail the run. The same run row continues under
+ * When the guards fail, `workflow.deopt` does **not** fail the run. The same run row continues under
  * the agent loop, on the same session, with the page exactly where the script left it — the
  * compiler-authored recovery prompt, the original task prompt and the guard evidence are what
  * the agent wakes up to. `runs.mode_used` stays `compiled`, because the run *was* a compiled
@@ -53,7 +59,8 @@ import { browserLoopControl } from "./browser-loop-control.js";
  * sandbox — imports neither, so this direction is the only one that exists.
  */
 
-export type CompiledExecutorDeps = {
+export type CompiledExecutorDeps = Pick<AgentExecutorDeps, "secrets" | "registerSecretRun" | "captchaFor"> & {
+  pythonRunner?: AgentExecutorDeps["pythonRunner"];
   pool: EndpointPool;
   gate: PolicyGate;
   blobs: BlobStore;
@@ -95,32 +102,6 @@ function browserLimitsOf(task: TaskRow): ResourceLimits | undefined {
   return Object.keys(limits).length > 0 ? limits : undefined;
 }
 
-/** `ctx.state`, on the same `task_state` table `emitIfNew`'s dedupe claim already rides. */
-function taskStateStore(db: Db, handle: RunHandle): StateStore {
-  const taskId = handle.task.id;
-  return {
-    async get(key) {
-      const [row] = await db
-        .select({ value: taskState.value })
-        .from(taskState)
-        .where(and(eq(taskState.taskId, taskId), eq(taskState.key, `state:${key}`)));
-      return row?.value ?? null;
-    },
-    async set(key, value) {
-      await db.transaction(async (trx) => {
-        await assertRunLease(trx, handle.run.id, handle.run.leaseGeneration);
-        await trx
-        .insert(taskState)
-        .values({ taskId, key: `state:${key}`, value: value as Record<string, unknown> })
-        .onConflictDoUpdate({
-          target: [taskState.taskId, taskState.key],
-          set: { value: value as Record<string, unknown> },
-        });
-      });
-    },
-  };
-}
-
 /** What the agent wakes up to. The compiler wrote the first paragraph for exactly this moment. */
 function handoffPrompt(task: TaskRow, prompt: string, evidence: unknown): string {
   return [
@@ -144,8 +125,11 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
     async execute(handle: RunHandle): Promise<RunResult> {
       let lease: EndpointLease | undefined;
       let session: RunSession | undefined;
+      let unregisterSecretRun: (() => void) | undefined;
       let deopted = false;
       let ok = false;
+      let pythonRunner: PythonRunner | undefined;
+      let continuity: BrowserContinuity | undefined;
       try {
         const script = await getActiveScript(db, handle.task.id);
         if (!script) {
@@ -154,6 +138,7 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
           return { ok: false, error: "no active compiled script for this task", permanent: true };
         }
 
+        continuity = await acquireBrowserContinuity(db, handle, "python");
         lease = await pool.acquire(await endpointFor(handle), handle.run.id);
         if (handle.signal.aborted) return { ok: false, error: "run_cancelled", permanent: true };
         const trace = createTraceRecorder(db, blobs, handle.run.id, storageFlagsOf(handle.task));
@@ -167,30 +152,11 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
           ...(limits ? { limits } : {}),
         });
 
+        unregisterSecretRun = deps.registerSecretRun?.(handle.run.id, { session, trace });
         const emit = makeEmitFn({ db, taskId: handle.task.id, handleEmit: handle.emit, trace });
-        const host: CtxHost = {
-          session,
-          // The same dedupe claim the agent path uses — adapted, not cast. The two `EmitFn`s
-          // are declared in packages that do not import each other (S6a's layering note) and
-          // they are *not* structurally identical: the agent's third argument is the dedupe
-          // key itself, `ctx`'s is an options object. Casting between them handed
-          // `makeEmitFn` an object where it expected a string, so every `emitIfNew` in a
-          // compiled run claimed the key `emit:<type>:[object Object]` — the first event
-          // published and every later one was silently deduped away. Translating the outcome
-          // back is the same fix from the other side: a script reads `ok`/`deduped`, which is
-          // what `ctx.ts` documents, not the agent loop's `outcome` string.
-          emit: async (type, packet, opts) => {
-            const result = await emit(type, packet, opts?.dedupeKey);
-            if (result.outcome === "published") return { ok: true, eventId: result.eventId };
-            if (result.outcome === "deduped") return { ok: true, deduped: true };
-            return { ok: false, error: result.error };
-          },
-          state: taskStateStore(db, handle),
-        };
-
         const compatibility = asRecord(asRecord(script.guardsMeta)?.compatibility);
         const browserVersion = await withAutomationControl(lease.conn, () => lease!.conn.version(), handle.signal);
-        const compatible = compatibility?.runtimeVersion === SCRIPT_RUNTIME_VERSION && compatibility?.browserVersion === browserVersion;
+        const compatible = compatibility?.runtimeVersion === SCRIPT_RUNTIME_VERSION && compatibility?.browserVersion === browserVersion && asRecord(script.guardsMeta)?.language === "python" && asRecord(script.guardsMeta)?.apiVersion === "playwright-python-v1";
         if (!compatible) {
           await db.transaction(async (trx) => {
             await assertRunLease(trx, handle.run.id, handle.run.leaseGeneration);
@@ -198,11 +164,38 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
             await trx.update(tasks).set({ mode: "ai", cleanAiRuns: 0 }).where(eq(tasks.id, handle.task.id));
           });
         }
-        const result = compatible ? await runCompiledScript(script.source, host, {
-          ...staticRtLimitsOf(handle.task),
-          signal: handle.signal,
-          ...(metrics ? { metrics } : {}),
-        }) : { outcome: "deopt" as const, prompt: "The browser or script runtime changed. Start from fresh perception; no compiled actions have run.",
+        const [emits, trigger] = await Promise.all([handle.declaredEmits(), triggerInfoOf(db, handle)]);
+        const control = browserLoopControl(db, handle, lease.conn, session);
+        const workspace = createRunWorkspace(blobs, continuity?.workspace ?? control.workspace, trace);
+        const contextHistory = createContextHistory(blobs, continuity?.context ?? control.context);
+        const memory = continuity?.memory ?? control.memory;
+        pythonRunner = deps.pythonRunner?.open?.({runId:handle.run.id,leaseGeneration:handle.run.leaseGeneration}) ?? deps.pythonRunner;
+        const sdkDeps = { session, emit, workspace, storageFlags: storageFlagsOf(handle.task), captcha: deps.captchaFor?.(handle), recordInput: handle.recordInput,
+          ...(deps.secrets ? { fillSecret: (name: string, anchor: string) => deps.secrets!.fill(handle.run.id, name, anchor) } : {}),
+          evidenceScope: {taskId:handle.task.id,contentHash:handle.task.contentHash},
+          input: trigger?.packet, helpers: browserHelperStore(db, handle, "python"),
+          contextHistory, checkpoint: control.checkpoint, progress: control.progress, memory, actions: control.actions,
+          recordOutcome: handle.recordOutcome, recordCompletionError: handle.recordCompletionError,
+          beforeCall: control.beforeStep, signal: handle.signal, trace };
+        const runSdk = async (): Promise<ScriptRunResult> => {
+          const code = buildBrowserCodeTools({ ...sdkDeps, pythonRunner, compiled: true, memoryMb: staticRtLimitsOf(handle.task).memoryMb,
+            pinnedHelpers: (asRecord(script.guardsMeta)?.helpers ?? []) as HelperRevision[] })[0]!;
+          for (let invocation=0;invocation<1000;invocation++) {
+            handle.signal.throwIfAborted();
+            const before = JSON.stringify(await control.checkpoint.get());
+            const result = await code.execute({source:script.source,timeoutMs:Math.min(180000,staticRtLimitsOf(handle.task).wallClockMs ?? 180000)},handle.signal);
+            if (result.terminal?.outcome === "done") return {outcome:"completed"};
+            if (result.terminal?.outcome === "fail") return {outcome:"error",error:result.terminal.reason};
+            if (result.terminal?.outcome === "deopt") return {outcome:"deopt",
+              prompt:[asRecord(asRecord(script.guardsMeta)?.plan)?.recoveryPrompt,result.terminal.reason].filter(Boolean).join("\n"),
+              evidence:{guard:result.terminal.evidence,checkpoint:await control.checkpoint.get(),progress:await control.progress.get()}};
+            if (result.ok && asRecord(result.value)?.outcome === "yielded" && JSON.stringify(await control.checkpoint.get()) !== before) continue;
+            return {outcome:"deopt",prompt:"Continue from current page and durable SDK journal. Reconcile uncertain effects before writing.",
+              evidence:{reason:result.ok?"Program returned without verified completion":result.error,checkpoint:await control.checkpoint.get(),progress:await control.progress.get()}};
+          }
+          return {outcome:"deopt",prompt:"Compiled progress budget reached",evidence:{checkpoint:await control.checkpoint.get()}};
+        };
+        const result = compatible ? await runSdk() : { outcome: "deopt" as const, prompt: "The browser or script runtime changed. Start from fresh perception; no compiled actions have run.",
           evidence: { reason: "runtime_incompatible", expected: compatibility ?? null, actual: { browserVersion, runtimeVersion: SCRIPT_RUNTIME_VERSION } } };
 
         if (result.outcome === "completed") {
@@ -226,17 +219,17 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
           ok: true,
         });
 
-        const [emits, trigger] = await Promise.all([handle.declaredEmits(), triggerInfoOf(db, handle)]);
-        const control = browserLoopControl(db, handle, lease.conn, session);
         const loop = await runAgentLoop({
           llm: llmFor({ trace, task: handle.task, runId: handle.run.id }),
-          tools: buildToolRegistry({ session, emit, destination: handle.destination, requestHumanAction: handle.requestHumanAction, checkpoint: control.checkpoint, progress: control.progress, memory: control.memory, actions: control.actions, recordOutcome: handle.recordOutcome, recordCompletionError: handle.recordCompletionError, beforeCall: control.beforeStep, signal: handle.signal, trace }),
+          tools: buildBrowserCodeTools({ ...sdkDeps, pythonRunner, workspace,
+            helpers: browserHelperStore(db, handle, "python") }),
           task: { prompt: handoffPrompt(handle.task, result.prompt, result.evidence) },
           trigger,
           emits,
           trace,
           maxInputTokens: maxInputTokensOf(handle.task),
-          beforeStep: control.beforeStep, checkpoint: control.checkpoint, memory: control.memory, actions: control.actions,
+          browserContinuation: continuity?.handoff,
+          contextHistory, progress: control.progress, beforeStep: control.beforeStep, checkpoint: control.checkpoint, memory, actions: control.actions,
           initialPerception: async () => await control.beforeStep() ?? summarizePerception(await withAutomationControl(lease!.conn, () => session!.page.perceive({elementLimit:50}), handle.signal)),
           signal: handle.signal,
         });
@@ -248,15 +241,17 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
         }
         return runResult;
       } catch (err) {
-        if (err instanceof AppError && err.code === "human_action_pending") return { ok: false, error: err.message, suspended: true };
         if (err instanceof AppError && err.code === "agent_no_progress") return { ok: false, error: err.message, permanent: true };
         if (err instanceof AppError && err.code === "no_endpoint_configured") {
           return { ok: false, error: "no_endpoint_configured", permanent: true };
         }
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
       } finally {
+        unregisterSecretRun?.();
+        await pythonRunner?.close?.().catch(() => undefined);
         await session?.close().catch(() => undefined);
         await lease?.release().catch(() => undefined);
+        await continuity?.release(ok).catch(() => undefined);
         await deps.onOutcome?.({ task: handle.task, run: handle.run, deopted, ok }).catch(() => undefined);
       }
     },

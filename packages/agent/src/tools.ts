@@ -1,15 +1,21 @@
+import { pythonTool } from "./python-tool.js";
+import { browserScreenshotTool } from "./browser-screenshot.js";
+import { destinationKey } from "@tabductor/engine";
+import { compareDataset } from "./dataset-verification.js";
 import { browserMutation, observeAfterAction, readActionHistory, withActionSummaries, type BrowserActionSummary, type ObservationMetadata, type BrowserRecovery } from "./browser-actions.js";
 import { recordOutcomeTool } from "./record-tools.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { AppError } from "@tabductor/core";
 import { interactionProgress } from "./interaction-progress.js";
-import { destinationTools } from "./destination-tools.js";
 import { explorationTools, observationOptions, emptyMemory, readMemory } from "./exploration-tools.js";
 import type { NetworkReadPart, NetworkReadResult, Perception, RunSession } from "@tabductor/browser";
 import { NETWORK_READ_PARTS } from "@tabductor/browser";
 import { z } from "zod";
 import { batchTools, type CheckpointStore } from "./batch-tools.js";
+import type { BrowserCodeOptions } from "./code-tool.js";
+import type { SdkTerminal } from "@tabductor/static-rt";
 import { codeTool } from "./code-tool.js";
+import { harnessTools } from "./harness-tools.js";
 import type { TraceRecorder } from "@tabductor/browser";
 
 /**
@@ -26,7 +32,7 @@ import type { TraceRecorder } from "@tabductor/browser";
  */
 
 export type ToolImage = { data: string; mime: "image/png" | "image/jpeg" };
-export type ToolResult = ({ ok: true; value: unknown } | { ok: false; error: string; value?: unknown }) & { images?: ToolImage[]; code?: string; outcomeUncertain?: boolean; action?: BrowserActionSummary; observation?: ObservationMetadata; recovery?: BrowserRecovery };
+export type ToolResult = ({ ok: true; value: unknown } | { ok: false; error: string; value?: unknown }) & { terminal?: SdkTerminal; images?: ToolImage[]; code?: string; outcomeUncertain?: boolean; action?: BrowserActionSummary; observation?: ObservationMetadata; recovery?: BrowserRecovery };
 
 export type AgentTool = {
   name: string;
@@ -50,7 +56,8 @@ export type EmitFn = (type: string, packet: unknown, dedupeKey?: string) => Prom
 
 export type FillSecretFn = (secretName: string, anchor: string) => Promise<{ ok: true }>;
 
-export type AgentToolDeps = {
+export type AgentToolDeps = BrowserCodeOptions & {
+  evidenceScope?: {taskId:string;contentHash:string|null;destinationContractId?:string};
   session: RunSession;
   emit: EmitFn;
   /** Host-side broker call; plaintext never crosses this function boundary. */
@@ -64,8 +71,8 @@ export type AgentToolDeps = {
   beforeCall?: () => Promise<unknown>;
   signal?: AbortSignal;
   trace?: TraceRecorder;
-  destination?: import("@tabductor/engine").RunHandle["destination"];
-  requestHumanAction?: import("@tabductor/engine").RunHandle["requestHumanAction"];
+  captcha?: import("@tabductor/engine").CaptchaService;
+  recordInput?: import("@tabductor/engine").RunHandle["recordInput"];
   verificationContext?: { mapping: import("@tabductor/engine").StoredDestination; packet: Record<string, unknown> };
 };
 
@@ -100,7 +107,6 @@ export function untrustedBlock(source: string, data: unknown): string {
  * hear it.
  */
 const TERMINAL_CODES = new Set([
-  "human_action_pending",
   "browser.disconnected",
   "resource_limit_exceeded",
   "endpoint_queue_full",
@@ -326,6 +332,10 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
   const memory = deps.memory ?? { get: async () => memoryValue, set: async (value: unknown) => { memoryValue = value; } };
   let verified = false;
   let verifiedSnapshot: string | undefined;
+  let harnessVerifiedSequence: number | undefined;
+  const verificationFresh = () => verified && (harnessVerifiedSequence !== undefined
+    ? harnessVerifiedSequence === session.dispatchState?.().sequence
+    : verifiedSnapshot === session.snapshotId?.());
   let lastOperation = "", lastObservation = "", unchanged = 0;
   const cycles = interactionProgress();
   let restoredCycles = false;
@@ -459,7 +469,7 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
         }
         const records = await session.page.queryAll(root, args.fields, { limit: 2 });
         if (records.length > 1) return { ok: false, error: "anchor is ambiguous; perceive again or use page.extractBatch for repeated items" };
-        return { ok: true, value: untrustedBlock("page.extract", { records }) };
+        return { ok: true, value: { records } };
       },
     }),
 
@@ -490,7 +500,7 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
       }),
       async execute(args) {
         const result = await session.network.list(args);
-        return { ok: true, value: untrustedBlock("network.list", result) };
+        return { ok: true, value: result };
       },
     }),
 
@@ -511,7 +521,7 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
       async execute({ timeoutMs, ...opts }) {
         const record = await session.network.waitForResponse({ ...opts, timeout: timeoutMs ?? AI_WAIT_TIMEOUT_MS });
         const perception = await session.page.perceive();
-        return { ok: true, value: untrustedBlock("network.waitForResponse", { record, perception: summarizePerception(perception) }) };
+        return { ok: true, value: { record, perception: summarizePerception(perception) } };
       },
     }),
 
@@ -526,32 +536,52 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
       }),
       async execute(args) {
         const result = await session.network.read(args.index, args.parts as NetworkReadPart[]);
-        return { ok: true, value: untrustedBlock("network.read", encodeNetworkRead(result)) };
+        return { ok: true, value: encodeNetworkRead(result) };
       },
     }),
 
     emitTool(emit),
-    ...destinationTools(session, deps.destination, deps.requestHumanAction),
     ...batchTools(session, emit, deps.checkpoint, deps.signal, deps.progress),
-    ...(deps.progress ? [defineTool({ name: "code.status", description: "Read the durable code journal: in-flight effects, accepted batch indexes/key hashes, and whether destination reconciliation is required. Check this and checkpoint.get before resuming interrupted collection.", parameters: z.object({}), execute: async () => ({ ok: true, value: await deps.progress!.get() }) })] : []),
-    ...explorationTools(session, memory, evidence => { verifiedIdentity = evidence; verified = true; verifiedSnapshot = session.snapshotId?.(); }, deps.verificationContext, { afterAction, actions }),
-    ...(deps.recordOutcome ? [recordOutcomeTool(deps.recordOutcome, () => verified && verifiedSnapshot === session.snapshotId?.()
-      ? { ...verifiedIdentity, snapshotId: verifiedSnapshot!, url: verifiedIdentity?.url ?? session.page.url(), recordKey: verifiedIdentity?.recordKey, checkedAt: new Date().toISOString() } : undefined)] : []),
+    ...(deps.progress ? [defineTool({ name: "code.status", description: "Read the durable code journal: in-flight effects, accepted batch indexes/key hashes, and unresolved effect uncertainty. Use this and checkpoint.get to guide recovery after interrupted collection. Uncertainty permits AI exploration; static execution requires reconciliation or deopt.", parameters: z.object({}), execute: async () => ({ ok: true, value: await deps.progress!.get() }) })] : []),
+    ...explorationTools(session, memory, evidence => { harnessVerifiedSequence = undefined; verifiedIdentity = evidence; verified = true; verifiedSnapshot = session.snapshotId?.(); }, deps.verificationContext, { afterAction, actions }),
+    ...(session.page?.harness ? harnessTools(session, (key, records) => {
+      const context = deps.verificationContext;
+      if (context) {
+        const { mapping, packet } = context;
+        if (key !== mapping.identityField || destinationKey(session.page.url()) !== mapping.destinationKey ||
+          !compareDataset([packet], records, key, mapping.verificationFields, true).verified) throw new Error("Readback must verify the authorized destination and every mapped field of this input record");
+      }
+      verified = true;
+      harnessVerifiedSequence = session.dispatchState?.().sequence;
+      verifiedSnapshot = `harness:${harnessVerifiedSequence ?? 0}`;
+      verifiedIdentity = {url:session.page.url(),...(context ? {recordKey:String(context.packet[key]),destinationContractId:context.mapping.id,committed:true} : {})};
+    }) : []),
+    ...(deps.recordOutcome ? [recordOutcomeTool(deps.recordOutcome, () => verificationFresh()
+      ? { ...verifiedIdentity, method:"readback", snapshotId: verifiedSnapshot!, url: verifiedIdentity?.url ?? session.page.url(), recordKey: verifiedIdentity?.recordKey, checkedAt: new Date().toISOString() } : undefined,
+      !deps.compiled && deps.verificationContext ? () => ({
+        method:"ai-assessment", assessmentId:randomUUID(), url:session.page.url(), checkedAt:new Date().toISOString(),
+        recordKey:String(deps.verificationContext!.packet[deps.verificationContext!.mapping.identityField]),
+        destinationContractId:deps.verificationContext!.mapping.id,
+      }) : undefined)] : []),
     doneTool(),
     failTool(),
   ].map((tool): AgentTool => ({
     ...tool,
     async execute(args, signal) {
       signal?.throwIfAborted();
-      if (tool.name === "done" && (!verified || verifiedSnapshot !== session.snapshotId?.())) return {ok:false,error:"Verify a task-specific observable postcondition with page.verify before done. A successful action alone does not prove completion."};
+      if (deps.compiled && tool.name === "done" && !verificationFresh()) return {ok:false,error:"Static completion requires an observed postcondition; verify with page.verify or harness.verify, or deopt to AI."};
       if (tool.name === "done") {
         const error = await deps.recordCompletionError?.();
         if (error) return { ok: false, error };
       }
+      // Selecting the current tab is an observation, not a repeated mutation.
+      const sameTab = tool.name === "tabs.switch" && typeof args === "object" && args !== null &&
+        "id" in args && args.id === session.page.id;
+      const mutates = mutation.test(tool.name) && !sameTab;
       const operation = tool.name + JSON.stringify(args, (key, value) =>
         (key === "anchor" || key === "targetAnchor") && typeof value === "string" ? session.describeAnchor?.(value) ?? session.resolveAnchor(value) ?? value : value).replace(/s[a-f0-9]+-[0-9]+:/g, "");
       if (!restoredCycles) { cycles.restore(readMemory(await memory.get()).interactions); restoredCycles = true; }
-      if (mutation.test(tool.name)) {
+      if (deps.compiled && mutates) {
         const cycle = cycles.check(operation);
         if (cycle) {
           const recent = readActionHistory(await actions.get()).filter(a => a.dispatch === "executed" && mutation.test(a.tool)).slice(-cycle.tools.length);
@@ -564,36 +594,36 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
             value: summarizePerception(await session.page.perceive()) };
         }
       }
-      if (mutation.test(tool.name) && (failedTargets.get(operation) ?? 0) >= 2) return rejectNoProgress("This target already failed twice. Choose a different target or inspect and resolve the obstruction before retrying.");
-      if (mutation.test(tool.name) && operation === lastOperation && unchanged >= 2) return rejectNoProgress("This action repeatedly produced no observable change. Inspect a different target or verify the expected outcome before acting again.");
-      if (mutation.test(tool.name)) verified = false;
+      if (deps.compiled && mutates && (failedTargets.get(operation) ?? 0) >= 2) return rejectNoProgress("This target already failed twice. Choose a different target or inspect and resolve the obstruction before retrying.");
+      if (deps.compiled && mutates && operation === lastOperation && unchanged >= 2) return rejectNoProgress("This action repeatedly produced no observable change. Inspect a different target or verify the expected outcome before acting again.");
+      if (mutates) verified = false;
       const wait = tool.name === "page.waitFor" ? waitKey(args) : null;
       const unavailable = tool.name === "emit" && typeof args === "object" && args !== null &&
         "type" in args && typeof args.type === "string" && /(?:^|\.)page_unavailable$/.test(args.type);
-      if (recoveryRequired && (unavailable || tool.name === "done" || (tool.name === "fail" && recoveryAttempts < 2))) {
+      if (deps.compiled && recoveryRequired && (unavailable || tool.name === "done" || (tool.name === "fail" && recoveryAttempts < 2))) {
         return { ok: false, error: "A page tool failed, which does not prove the page is unavailable. Inspect the fresh perception, then try a different readiness target, interaction, or extraction before concluding. Visible task data should be used even if one optional tab or anchor failed." };
       }
       if (recoveryRequired && tool.name.startsWith("page.")) recoveryAttempts++;
-      if (recoveryRequired && wait !== null && wait === failedWait) {
+      if (deps.compiled && recoveryRequired && wait !== null && wait === failedWait) {
         return { ok: false, error: "This same wait already failed. Choose a different target from the fresh perception, or extract the visible task data; repeating the same locator does not explore the page." };
       }
       const result = await tool.execute(args, signal);
       if (tool.name === "record.outcome") await deps.trace?.record("action", { action: "record.outcome", ok: result.ok });
-      if (!result.ok && mutation.test(tool.name)) failedTargets.set(operation, (failedTargets.get(operation) ?? 0) + 1);
+      if (!result.ok && mutates) failedTargets.set(operation, (failedTargets.get(operation) ?? 0) + 1);
       if (result.ok && tool.name === "page.verify" && deps.progress) {
         const progress = await deps.progress.get() as Record<string, unknown> | null;
         if (progress && !progress.inFlight) await deps.progress.set({ ...progress, requiresReconciliation: false });
       }
-      if (result.ok && (mutation.test(tool.name) || ["page.perceive","page.find","page.inspect","page.waitFor","page.verify"].includes(tool.name))) {
+      if (result.ok && (mutates || ["page.perceive","page.find","page.inspect","page.waitFor","page.verify"].includes(tool.name))) {
         const observed = tool.name === "page.verify" && result.value && typeof result.value === "object" && "perception" in result.value ? result.value.perception : result.value;
         const fingerprint = observationFingerprint(observed);
-        if (mutation.test(tool.name)) {
+        if (mutates) {
           unchanged = operation === lastOperation && fingerprint === lastObservation ? unchanged + 1 : 0;
           lastOperation = operation;
           cycles.record(operation, tool.name, observed);
         } else if (fingerprint !== lastObservation) unchanged = 0;
         // Paging/searching does not establish that a failed action's obstruction cleared.
-        if (mutation.test(tool.name)) failedTargets.delete(operation);
+        if (mutates) failedTargets.delete(operation);
         lastObservation = fingerprint;
       }
       if (result.ok && tool.name === "record.outcome") { cycles.acknowledge(); noProgressRejections = 0; }
@@ -618,6 +648,11 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
           return { ...result, error: `${result.error} Re-inspect the attached current page and try a different target or extraction; this is not evidence that the whole page is unavailable.`, value: summarizePerception(fresh) };
         } catch (err) {
           if (err instanceof Error && "code" in err && TERMINAL_CODES.has(String(err.code))) throw err;
+          if (err instanceof AppError && err.code === "browser_page_closed") return {
+            ...result, code: err.code,
+            error: `${result.error} The selected page closed. Use tabs.list and tabs.switch to inspect the surviving destination and verify the outcome before repeating actions.`,
+            recovery: { reason: "page_closed", suggestedTools: ["tabs.list", "tabs.switch", "page.verify"] },
+          };
           return result;
         }
       }
@@ -632,4 +667,9 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
   const summarized = registry.map(tool => withActionSummaries(tool, { session, actions, trace: deps.trace }));
   summarized.push(codeTool(summarized, deps));
   return summarized;
+}
+
+/** Browser models execute Python or request an image directly. */
+export function buildBrowserCodeTools(deps: AgentToolDeps): AgentTool[] {
+  return [pythonTool(deps), browserScreenshotTool(deps)];
 }

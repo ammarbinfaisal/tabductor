@@ -1,8 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { ASYNC_EVENT_EXECUTION_CONTRACT } from "./async-execution-contract.js";
-import { AUTHENTICATION_EXECUTION_CONTRACT } from "./authentication-contract.js";
 import { GRAPH_AUTHORING_SYSTEM_PROMPT } from "./graph-authoring-prompts.js";
 import { assemblePromptBrief, PROMPT_SYSTEM_PROMPT, type PromptCompileInput } from "./prompt-compiler.js";
+
+it("asks browser agents to use Playwright directly and advertises screenshots", () => {
+  const brief = assemblePromptBrief({ ...decisionInput, task: { ...decisionInput.task, kind: "browser" } });
+  expect(brief).toContain("Use Playwright directly");
+  expect(brief).toContain("playwright.sync_api");
+  expect(brief).toContain("browser.screenshot");
+  expect(brief).not.toContain("No other browser tools");
+  expect(GRAPH_AUTHORING_SYSTEM_PROMPT).toContain("Use Playwright directly");
+  expect(GRAPH_AUTHORING_SYSTEM_PROMPT).not.toContain("page.extract accepts");
+});
 
 const decisionInput: PromptCompileInput = {
   workflow: { name: "Stream records to a destination" },
@@ -23,10 +32,8 @@ it("keeps requested Google sign-in automated in generated and published browser 
     workflow: { name: "Archive", originalRequest: "Ensure Login with Google into notion." },
     task: { ...decisionInput.task, kind: "browser", prompt: "Prepare the destination." } });
   expect(brief).toContain("Ensure Login with Google into notion.");
-  expect(brief).toContain(AUTHENTICATION_EXECUTION_CONTRACT);
-  expect(GRAPH_AUTHORING_SYSTEM_PROMPT).toContain(AUTHENTICATION_EXECUTION_CONTRACT);
-  expect(GRAPH_AUTHORING_SYSTEM_PROMPT).not.toContain("If sign-in or MFA is needed, call human_action.request");
-  expect(assemblePromptBrief(decisionInput)).not.toContain(AUTHENTICATION_EXECUTION_CONTRACT);
+  expect(brief).not.toContain("Authentication:");
+  expect(GRAPH_AUTHORING_SYSTEM_PROMPT).not.toContain("Authentication:");
 });
 
 describe("asynchronous graph prompt contract", () => {
@@ -43,10 +50,16 @@ describe("asynchronous graph prompt contract", () => {
     expect(PROMPT_SYSTEM_PROMPT).toContain("Do not wait for a whole scan before emitting");
   });
 
-  it("authors any source-to-sink flow as generic asynchronously communicating stages", () => {
-    expect(GRAPH_AUTHORING_SYSTEM_PROMPT).toContain(ASYNC_EVENT_EXECUTION_CONTRACT);
-    expect(GRAPH_AUTHORING_SYSTEM_PROMPT).toContain("different sites or systems in separate tasks connected by events");
-    expect(GRAPH_AUTHORING_SYSTEM_PROMPT).toContain("Every consumer processes its triggering item independently");
-    expect(GRAPH_AUTHORING_SYSTEM_PROMPT).not.toContain("Notion");
-  });
+});
+
+it("authors general browser tasks without prescribing role topology or destination protocols", () => {
+  const brief = assemblePromptBrief({...decisionInput, task:{...decisionInput.task,kind:"browser"},
+    emits:[{type:"complete",description:"Observed result",schema:{type:"object"},consumers:[]}]});
+  for (const prompt of [GRAPH_AUTHORING_SYSTEM_PROMPT, brief, PROMPT_SYSTEM_PROMPT]) {
+    expect(prompt).not.toMatch(/prepare-destination|write-record|destination\.contract|setupTask|readyEvent|source tasks|writer|setup readiness/);
+    expect(prompt).not.toContain("Put work on different sites or systems in separate tasks");
+  }
+  expect(GRAPH_AUTHORING_SYSTEM_PROMPT).toContain("Use one browser task when that is sufficient");
+  expect(brief).toContain("## Declared output events");
+  expect(brief).toContain("complete — Observed result");
 });

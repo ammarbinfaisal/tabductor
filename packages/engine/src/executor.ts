@@ -24,14 +24,10 @@ export type RunHandle = {
   trigger: EventRow | null;
   /** Aborted when cancellation, timeout, or a newer engine generation revokes ownership. */
   signal: AbortSignal;
+  /** Present only when the trigger explicitly declares record tracking. */
+  recordInput?: { key: string; packet: Record<string, unknown> };
   recordOutcome?: (outcome: import("./record-progress.js").RecordOutcome) => Promise<void>;
   recordCompletionError?: () => Promise<string | null>;
-  destination?: {
-    role: import("./intent-contract.js").HarnessTask["role"];
-    read: (id?: string) => Promise<import("./destination-contracts.js").StoredDestination>;
-    publish: (mapping: import("./destination-contracts.js").DestinationMapping, evidence: import("./destination-contracts.js").DestinationEvidence) => Promise<import("./destination-contracts.js").StoredDestination>;
-  };
-  requestHumanAction?: (input: { reason: string; resumeWhen: string }) => Promise<void>;
   /**
    * Validates `packet` against the event's compiled schema for this task's workflow
    * version and, if it passes, publishes through the outbox in one transaction. Rejects on

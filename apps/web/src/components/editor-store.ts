@@ -1,7 +1,6 @@
 "use client";
 
 import type {
-  ChatToolActivity,
   CompileEntry,
   Graph,
   GraphCompileReport,
@@ -16,7 +15,6 @@ import type {
 import { parseResultSchemaText, resultSchemaTextOf } from "../lib/result-schema.js";
 import { createStore } from "zustand/vanilla";
 import { api, asApiError, type ApiError } from "../lib/api.js";
-import { sendWorkflowMessage } from "../lib/workflow-chat-client.js";
 import { randomUUID } from "../lib/uuid.js";
 
 /**
@@ -60,9 +58,6 @@ export type EditorState = {
   workspaceTab: "automation" | "activity" | "graph";
   automationPrompt: string;
   resultSchemaText: string;
-  sidebar: "inspect" | "chat";
-  chatMessages: Array<{ role: "user" | "assistant"; text: string; changes?: string[]; tools?: ChatToolActivity[] }>;
-  chatPending: boolean;
   workflowId: string;
   versionId: string | null;
   graph: Graph;
@@ -76,12 +71,11 @@ export type EditorState = {
   selected: Selection;
   dirty: boolean;
   busy: boolean;
+  publishing: boolean;
   error: ApiError | null;
   notice: string | null;
   /** The last publish's per-event compile result — `failed` entries mark event cards. */
   compileReport: CompileEntry[] | null;
-  /** S8's conversational source and the gated artifact it most recently produced. */
-  authoringIntent: string;
   authoringReport: GraphCompileReport | null;
   authoringStore: GraphDraftArtifact["store"];
   proposedGrants: ProposedGrant[];
@@ -147,9 +141,6 @@ export function createEditorStore(init: {
     workspaceTab: "automation",
     automationPrompt: init.graph.automationPrompt ?? "",
     resultSchemaText: resultSchemaTextOf(init.graph),
-    sidebar: "chat",
-    chatMessages: [],
-    chatPending: false,
     workflowId: init.workflowId,
     versionId: init.versionId,
     graph: draft.graph,
@@ -159,10 +150,10 @@ export function createEditorStore(init: {
     selected: null,
     dirty: draft.changed,
     busy: false,
+    publishing: false,
     error: null,
     notice: draft.changed ? EXECUTION_NOTICE : null,
     compileReport: null,
-    authoringIntent: "",
     authoringReport: init.authoring?.report?.authoring ?? null,
     authoringStore: null,
     proposedGrants: [],
@@ -180,8 +171,6 @@ export function createEditorStore(init: {
     .query()
     .then((status) => store.setState({ engineExecutors: status.executors }))
     .catch(() => undefined);
-
-  let chatAbort: AbortController | null = null;
 
   const edit = (fn: (graph: Graph) => Graph): void =>
     store.setState({
@@ -207,42 +196,21 @@ export function createEditorStore(init: {
     setAutomationPrompt: (automationPrompt: string) => store.setState({ automationPrompt }),
     setResultSchemaText: (resultSchemaText: string) => store.setState({ resultSchemaText }),
 
-    async buildAutomation() {
-      const state = store.getState();
-      const intent = state.automationPrompt.trim();
-      if (!intent || state.busy) return;
-      store.setState({ busy: true, error: null, notice: "Building your automation…" });
-      try {
-        const resultSchema = parseResultSchemaText(state.resultSchemaText);
-        const result = await api.workflow.compileIntent.mutate({ workflowId: state.workflowId, intent, resultSchema,
-          current: { graph: state.graph, store: state.authoringStore, proposedGrants: [] } });
-        if (!result.ok) throw new Error(result.error);
-        const graph = { ...result.artifact.graph, automationPrompt: intent };
-        store.setState({ graph, automationPrompt: intent, resultSchemaText: resultSchemaTextOf(graph), authoringStore: result.artifact.store,
-          authoringReport: result.report, proposedGrants: [], dirty: true, selected: null,
-          scheduleDraft: workflowScheduleOf(graph).draft, notice: "Automation ready to review. Publish it, then run it when you’re ready." });
-      } catch (error) { store.setState({ error: asApiError(error), notice: null }); }
-      finally { store.setState({ busy: false }); }
-    },
-    showSidebar: (sidebar: EditorState["sidebar"]) => store.setState({ sidebar }),
-
     setUi: (patch: Partial<EditorUi>) =>
       store.setState({ ui: { ...store.getState().ui, ...patch } }),
-
-    setAuthoringIntent: (authoringIntent: string) => store.setState({ authoringIntent }),
 
     setScheduleDraft: (patch: Partial<WorkflowScheduleDraft>) =>
       store.setState({ scheduleDraft: { ...store.getState().scheduleDraft, ...patch } }),
 
     /** Restore only after mount so server markup and hydration use the same graph. */
-    restoreConversation() {
+    restoreDraft() {
       if (typeof localStorage === "undefined") return;
-      const key = `tabductor:conversation:v1:${init.workflowId}`;
+      const key = `tabductor:draft:v1:${init.workflowId}`;
       try {
         const saved = JSON.parse(localStorage.getItem(key) ?? "null") as Partial<EditorState> | null;
-        if (saved && Array.isArray(saved.chatMessages)) {
+        if (saved) {
           const compatible = saved.versionId === store.getState().versionId;
-          store.setState({ chatMessages: saved.chatMessages.slice(-80).map((message) => ({ ...message, tools: message.tools?.map((tool) => tool.status === "running" ? { ...tool, status: "error" as const } : tool) })),
+          store.setState({
             ...(compatible && typeof saved.automationPrompt === "string" ? { automationPrompt: saved.automationPrompt } : {}),
             ...(compatible && saved.dirty && saved.graph && Array.isArray(saved.graph.tasks) && Array.isArray(saved.graph.events)
               ? { graph: saved.graph, dirty: true, authoringReport: { checks: [], attempts: 1 }, authoringStore: saved.authoringStore ?? null, proposedGrants: [], scheduleDraft: workflowScheduleOf(saved.graph).draft, notice: "Your unpublished draft has been restored." }
@@ -252,54 +220,12 @@ export function createEditorStore(init: {
       } catch { /* Storage may be unavailable or contain an older format. */ }
       let timer: ReturnType<typeof setTimeout> | undefined;
       const persist = (): void => {
-        const { versionId, graph, dirty, authoringStore, proposedGrants, chatMessages, automationPrompt } = store.getState();
-        try { localStorage.setItem(key, JSON.stringify({ versionId, graph, dirty, authoringStore, proposedGrants, chatMessages: chatMessages.slice(-80), automationPrompt })); } catch { /* A full/private browser does not block editing. */ }
+        const { versionId, graph, dirty, authoringStore, proposedGrants, automationPrompt } = store.getState();
+        try { localStorage.setItem(key, JSON.stringify({ versionId, graph, dirty, authoringStore, proposedGrants, automationPrompt })); } catch { /* A full/private browser does not block editing. */ }
       };
       const unsubscribe = store.subscribe(() => { clearTimeout(timer); timer = setTimeout(persist, 250); });
       return () => { clearTimeout(timer); persist(); unsubscribe(); };
     },
-
-    async sendMessage() {
-      const state = store.getState();
-      const text = state.authoringIntent.trim();
-      if (!text || state.busy) return;
-      const messages = [...state.chatMessages, { role: "user" as const, text }];
-      const assistantIndex = messages.length;
-      chatAbort = new AbortController();
-      let wasPublished = false;
-      store.setState({ busy: true, chatPending: true, error: null, notice: null, authoringIntent: "", chatMessages: [...messages, { role: "assistant", text: "", tools: [] }] });
-      const updateAssistant = (fn: (message: EditorState["chatMessages"][number]) => EditorState["chatMessages"][number]): void =>
-        store.setState((current) => ({ chatMessages: current.chatMessages.map((message, index) => index === assistantIndex ? fn(message) : message) }));
-      try {
-        await sendWorkflowMessage({ workflowId: state.workflowId, versionId: state.versionId,
-          current: { graph: state.graph, store: state.authoringStore, proposedGrants: [] },
-          messages: messages.slice(-80).map(({ role, text }) => ({ role, text })),
-        }, (event) => {
-          if (event.type === "text") updateAssistant((message) => ({ ...message, text: message.text + event.text }));
-          if (event.type === "tool") updateAssistant((message) => ({ ...message, tools: [...(message.tools ?? []).filter((tool) => tool.id !== event.activity.id), event.activity] }));
-          if (event.type === "draft") store.setState({ graph: event.artifact.graph, automationPrompt: event.artifact.graph.automationPrompt ?? store.getState().automationPrompt, authoringStore: event.artifact.store, proposedGrants: [], authoringReport: { checks: [], attempts: 1 }, dirty: true, selected: null, scheduleDraft: workflowScheduleOf(event.artifact.graph).draft });
-          if (event.type === "published") {
-            wasPublished = true;
-            store.setState({ versionId: event.versionId, dirty: false, publishedPublic: publicTypesOf(store.getState().graph), notice: "Workflow published. Future runs will use these changes." });
-          }
-          if (event.type === "error") updateAssistant((message) => ({ ...message, text: `${message.text.trim()}\n\n${event.message}`.trim() }));
-        }, chatAbort.signal);
-      } catch (err) {
-        const stopped = chatAbort.signal.aborted;
-        updateAssistant((message) => ({ ...message, text: `${message.text.trim()}\n\n${stopped ? "Stopped. Completed changes are retained." : asApiError(err).message}`.trim(), tools: message.tools?.map((tool) => tool.status === "running" ? { ...tool, status: "error" } : tool) }));
-      } finally {
-        chatAbort = null;
-        if (wasPublished) {
-          try {
-            const got = await api.workflow.get.query({ id: state.workflowId });
-            store.setState({ versionId: got.versionId, graph: got.graph, taskIds: Object.fromEntries(got.tasks.map((task) => [task.name, task.id])), publishedTasks: Object.fromEntries(got.tasks.map((task) => [task.name, task])), eventSchemas: got.eventSchemas, publishedProposals: [], proposedGrants: [] });
-          } catch { store.setState({ notice: "Published successfully. Reload to refresh run details." }); }
-        }
-        store.setState({ busy: false, chatPending: false });
-      }
-    },
-
-    stopMessage() { chatAbort?.abort(); },
 
     /** Banner deep link: select the event and arm the one-shot scroll-flash. */
     goToEvent(type: string) {
@@ -404,25 +330,44 @@ export function createEditorStore(init: {
     },
 
     /**
-     * Publish — which is also compile. A first call whose manifest differs from the live
+     * Compile prompt/schema edits and publish in one action. A manifest differing from the live
      * one does not publish; it parks the diff for confirmation, and a second call
      * (`confirmed`) goes through. Success refreshes the read-only schemas; failure keeps
      * the per-event report so every failed event card can say why.
      */
     async save(confirmed = false) {
-      if (store.getState().busy || store.getState().resultSchemaText !== resultSchemaTextOf(store.getState().graph) || store.getState().automationPrompt.trim() !== (store.getState().graph.automationPrompt ?? "")) return;
-      const { workflowId, versionId: baseVersionId, graph, publishedPublic, authoringReport, authoringStore } = store.getState();
-
-      const next = publicTypesOf(graph);
-      const adding = next.filter((t) => !publishedPublic.includes(t));
-      const removing = publishedPublic.filter((t) => !next.includes(t));
-      if (!confirmed && (adding.length > 0 || removing.length > 0)) {
-        store.setState({ confirmVisibility: { adding, removing }, error: null, notice: null });
-        return;
-      }
-
-      store.setState({ busy: true, error: null, notice: null, confirmVisibility: null });
+      const state = store.getState();
+      if (state.busy) return;
+      const intent = state.automationPrompt.trim();
+      const needsCompile = state.graph.tasks.length === 0
+        || intent !== (state.graph.automationPrompt ?? "")
+        || state.resultSchemaText !== resultSchemaTextOf(state.graph);
+      store.setState({ busy: true, publishing: true, error: null, notice: "Publishing your automation…", confirmVisibility: null });
       try {
+        if (needsCompile) {
+          if (!intent) throw new Error("Enter a workflow prompt before publishing.");
+          const resultSchema = parseResultSchemaText(state.resultSchemaText);
+          const result = await api.workflow.compileIntent.mutate({
+            workflowId: state.workflowId, intent, resultSchema,
+            current: { graph: state.graph, store: state.authoringStore, proposedGrants: [] },
+          });
+          if (!result.ok) throw new Error(result.error);
+          const graph = { ...result.artifact.graph, automationPrompt: intent };
+          store.setState({
+            graph, automationPrompt: intent, resultSchemaText: resultSchemaTextOf(graph),
+            authoringStore: result.artifact.store, authoringReport: result.report,
+            proposedGrants: [], dirty: true, selected: null,
+            scheduleDraft: workflowScheduleOf(graph).draft,
+          });
+        }
+        const { workflowId, versionId: baseVersionId, graph, publishedPublic, authoringReport, authoringStore } = store.getState();
+        const next = publicTypesOf(graph);
+        const adding = next.filter((t) => !publishedPublic.includes(t));
+        const removing = publishedPublic.filter((t) => !next.includes(t));
+        if ((!confirmed || needsCompile) && (adding.length > 0 || removing.length > 0)) {
+          store.setState({ confirmVisibility: { adding, removing }, notice: null });
+          return;
+        }
         const { versionId, taskIds, report } = await api.workflow.publishVersion.mutate({
           workflowId,
           expectedVersionId: baseVersionId,
@@ -444,7 +389,6 @@ export function createEditorStore(init: {
           publishedTasks: Object.fromEntries(got.tasks.map((t) => [t.name, t])),
           eventSchemas: got.eventSchemas,
           dirty: false,
-          busy: false,
           publishedPublic: next,
           scheduleDraft: workflowScheduleOf(got.graph).draft,
           compileReport: report.events,
@@ -455,7 +399,9 @@ export function createEditorStore(init: {
         });
       } catch (err) {
         const error = asApiError(err);
-        store.setState({ busy: false, error, compileReport: reportOf(error) });
+        store.setState({ error, notice: null, compileReport: reportOf(error) });
+      } finally {
+        store.setState({ busy: false, publishing: false });
       }
     },
 
@@ -476,6 +422,7 @@ export function createEditorStore(init: {
           busy: false,
           notice: `Queued ${result.accepted} run${result.accepted === 1 ? "" : "s"} from the published workflow.`,
         });
+        return result;
       } catch (err) {
         store.setState({ busy: false, error: asApiError(err) });
       }

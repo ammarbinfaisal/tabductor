@@ -24,11 +24,11 @@
     "ai": "^7.0.59",
     "drizzle-orm": "^0.44.0",
     "pg": "^8.13.0",
-    "zod": "^3.25.0"
+    "zod": "^3.25.0",
+    "typescript": "^5.7.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "@types/pg": "^8.11.0",
-    "typescript": "^5.7.0"
+    "@types/pg": "^8.11.0"
   }
 }

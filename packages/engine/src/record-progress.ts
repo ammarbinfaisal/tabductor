@@ -2,10 +2,10 @@ import { AppError } from "@tabductor/core";
 import { eventDefs, events, workflowExecutions, runRecordOutcomes, workflowRecords, type Db, type EventRow, type RunRow, type TaskRow, type RecordStatus } from "@tabductor/db";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { assertRunLease } from "./run-lease.js";
-import { destinationCompletionError, saveDestinationRecord } from "./destination-contracts.js";
 
 export type RecordOutcome = { status: "prepared" | "skipped" | "rejected" | "failed" | "saved"; reason: string;
-  verification?: { snapshotId: string; url: string; recordKey?: string; checkedAt: string; destinationContractId?: string; committed?: boolean } };
+  verification?: { snapshotId?: string; assessmentId?: string; method?: "readback" | "ai-assessment";
+    url: string; recordKey?: string; checkedAt: string; destinationContractId?: string; committed?: boolean } };
 
 async function definition(db: Db, task: TaskRow, type: string) {
   const [row] = await db.select().from(eventDefs).where(and(eq(eventDefs.workflowVersionId, task.workflowVersionId), eq(eventDefs.eventType, type)));
@@ -26,7 +26,7 @@ export async function recordEmitted(db: Db, run: RunRow, task: TaskRow, event: E
   if (!contract) return;
   const [outcome] = await db.select().from(runRecordOutcomes).where(eq(runRecordOutcomes.runId, run.id));
   if (contract.status === "saved" && (outcome?.status !== "saved" || !outcome.verificationJson)) {
-    throw new AppError("record_verification_required", "Record a verified destination outcome before emitting a saved event");
+    throw new AppError("record_verification_required", "Record a destination outcome with readback or AI assessment before emitting a saved event");
   }
   const recordKey = keyOf(event.packet, contract.key);
   if (contract.status === "saved") {
@@ -47,8 +47,9 @@ export async function recordEmitted(db: Db, run: RunRow, task: TaskRow, event: E
 
 export async function recordRunOutcome(db: Db, run: RunRow, task: TaskRow, trigger: EventRow | null, outcome: RecordOutcome): Promise<void> {
   if (!trigger || /^(?:manual\.|schedule\.|run\.|system\.)/.test(trigger.type)) throw new AppError("record_input_missing", "This run has no input record");
-  if (outcome.status === "saved" && (task.kind !== "browser" || !outcome.verification?.snapshotId)) {
-    throw new AppError("record_verification_required", "Saving a record requires fresh browser verification");
+  if (outcome.status === "saved" && (task.kind !== "browser" || !(outcome.verification?.snapshotId ||
+    outcome.verification?.method === "ai-assessment" && outcome.verification.assessmentId))) {
+    throw new AppError("record_verification_required", "Saving a record requires browser readback or an explicit AI assessment");
   }
   await db.transaction(async trx => {
     await assertRunLease(trx, run.id, run.leaseGeneration);
@@ -62,7 +63,6 @@ export async function recordRunOutcome(db: Db, run: RunRow, task: TaskRow, trigg
       throw new AppError("record_verification_mismatch", "Verify the exact input recordKey at the destination before counting a save");
     }
     const value = { status: outcome.status, reason: outcome.reason.slice(0, 1000), verificationJson: outcome.verification ?? null };
-    if (outcome.status === "saved") await saveDestinationRecord(trx, run, task, trigger, outcome.verification!);
     await trx.insert(runRecordOutcomes).values({ runId: run.id, ...value })
       .onConflictDoUpdate({ target: runRecordOutcomes.runId, set: value,
         setWhere: sql`${runRecordOutcomes.status} <> 'saved'` });
@@ -74,24 +74,21 @@ export async function recordRunOutcome(db: Db, run: RunRow, task: TaskRow, trigg
   });
 }
 
-/** Called while the run lease still belongs to its executor. Legacy packet decisions also
- * get the no-silent-success guard, even before they are republished with record metadata. */
+/** Optional record tracking is enforced only for explicitly declared record events. */
 export async function recordCompletionError(db: Db, run: RunRow, task: TaskRow): Promise<string | null> {
-  const destinationError = await destinationCompletionError(db, run, task);
-  if (destinationError) return destinationError;
   if (!run.triggerEventId || task.kind === "result" || task.mode === "stub") return null;
   const [trigger] = await db.select().from(events).where(eq(events.eventId, run.triggerEventId));
   if (!trigger || /^(?:manual\.|schedule\.|run\.|system\.)/.test(trigger.type)) return null;
   const contract = await definition(db, task, trigger.type);
-  if (task.kind !== "decision" && !contract) return null;
+  if (!contract) return null;
   const [explicit] = await db.select().from(runRecordOutcomes).where(eq(runRecordOutcomes.runId, run.id));
   if (explicit) return explicit.status === "failed" ? `record_failed: ${explicit.reason}` : null;
   const [emitted] = await db.select({ id: events.eventId }).from(events).where(eq(events.sourceRunId, run.id)).limit(1);
-  if (emitted && task.kind === "decision") {
+  if (emitted) {
     await recordRunOutcome(db, run, task, trigger, { status: "prepared", reason: "Prepared output acknowledged by the event bus" });
     return null;
   }
-  return "record_outcome_missing: emit an acknowledged prepared result or record an explicit skipped, rejected, failed, or verified saved outcome";
+  return "record_outcome_missing: emit an acknowledged prepared result or record an explicit skipped, rejected, failed, or saved outcome";
 }
 
 /** Watchdog failures also count; a later retry may recover failed records. */
@@ -108,12 +105,15 @@ export async function recordFailedRun(db: Db, run: RunRow): Promise<void> {
 }
 
 export async function recordProgress(db: Db, executionId: string) {
-  const rows = await db.select({ status: workflowRecords.status, count: sql<number>`count(*)::int` }).from(workflowRecords)
+  const rows = await db.select({ status: workflowRecords.status, count: sql<number>`count(*)::int`,
+    aiAssessed:sql<number>`count(*) filter (where ${workflowRecords.verificationJson}->>'method' = 'ai-assessment')::int` }).from(workflowRecords)
     .where(eq(workflowRecords.executionId, executionId)).groupBy(workflowRecords.status);
   const counts: Record<RecordStatus, number> = { extracted: 0, prepared: 0, pending: 0, saved: 0, skipped: 0, rejected: 0, failed: 0 };
   for (const row of rows) counts[row.status] = row.count;
   const [configured] = rows.length ? [{ configured: true }] : await db.select({ configured: eventDefs.id }).from(eventDefs)
     .innerJoin(workflowExecutions, eq(workflowExecutions.workflowVersionId, eventDefs.workflowVersionId))
     .where(and(eq(workflowExecutions.id, executionId), isNotNull(eventDefs.recordJson))).limit(1);
-  return { tracked: Boolean(configured), total: rows.reduce((n, row) => n + row.count, 0), ...counts };
+  const aiAssessedSaved = rows.find(row=>row.status === "saved")?.aiAssessed ?? 0;
+  return { tracked: Boolean(configured), total: rows.reduce((n, row) => n + row.count, 0), ...counts,
+    verifiedSaved:counts.saved-aiAssessedSaved,aiAssessedSaved };
 }

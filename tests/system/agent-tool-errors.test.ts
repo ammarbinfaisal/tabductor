@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { AppError } from "@tabductor/core";
-import { buildToolRegistry } from "@tabductor/agent";
+import { buildToolRegistry } from "../../packages/agent/src/tools.js";
 import type { RunSession } from "@tabductor/browser";
 
 /**

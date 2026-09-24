@@ -270,6 +270,9 @@ async def start_session(
             archive.extractall(profile, members=members, filter="data")
     options: dict[str, Any] = {
         "headless": False,
+        # Explicit harness JS can inspect application globals and browser fetch.
+        # Perception and locator scripts continue using the isolated world.
+        "main_world_eval": True,
         "user_data_dir": str(profile),
         # Animated cursor movement stalls pointer clicks under Xvfb. Use normal
         # Playwright pointer input; never replay a timed-out click via DOM activation.
@@ -289,7 +292,7 @@ async def start_session(
     if fingerprint_path.exists():
         # launch_options regenerates some random seeds even with config supplied. Restore
         # the complete original browser configuration after preparing OS launch settings.
-        encoded = fingerprint_path.read_text()
+        encoded = json.dumps({**json.loads(fingerprint_path.read_text()), "allowMainWorld": True})
         for key in list(prepared["env"]):
             if key.startswith("CAMOU_CONFIG_"):
                 del prepared["env"][key]
@@ -370,21 +373,26 @@ async def control(session_id: str, request: ControlRequest, authorization: str |
         current = require_session(request.generation)
         if current.session_id != session_id:
             raise HTTPException(404, "session not found")
-        await drain_commands(current)
         if current.context_closed:
             return {"closed": True}
-        await checkpoint_cookies(current)
         if request.input_generation < current.input_generation or request.owner not in {"ai", "human", "paused"}:
             raise HTTPException(409, "stale input owner")
         if request.input_generation == current.input_generation and request.owner != current.input_owner:
             raise HTTPException(409, "input generation already assigned")
-        if request.input_generation != current.input_generation or request.owner != current.input_owner:
-            await stop_control_vnc()
-            if request.owner == "human":
-                if recorder:
-                    await recorder.private()
-                await start_control_vnc()
-            current.dialog_policies.clear()
+        # Fleet reconciliation repeats the acknowledged generation. It must not
+        # cancel active cells or wait for their browser operations to finish.
+        if request.input_generation == current.input_generation:
+            # Retain the periodic cookie snapshot for a window closed by its user.
+            await checkpoint_cookies(current)
+            return {"acknowledged": True, "input_generation": current.input_generation}
+        await drain_commands(current)
+        await checkpoint_cookies(current)
+        await stop_control_vnc()
+        if request.owner == "human":
+            if recorder:
+                await recorder.private()
+            await start_control_vnc()
+        current.dialog_policies.clear()
         current.input_generation = request.input_generation
         current.input_owner = request.owner
         return {"acknowledged": True, "input_generation": current.input_generation}
@@ -463,13 +471,16 @@ async def paste(session_id: str, request: PasteRequest, authorization: str | Non
 
 async def drain_commands(current: Session):
     # Caller holds command_lock: no new command can enter while takeover/stop drains.
+    scopes = getattr(current, "proxy_scopes", {})
+    active, current.proxy_scopes = list(scopes.values()), {}
+    await asyncio.gather(*(scope.close() for scope in active), return_exceptions=True)
     if current.inflight:
         await asyncio.gather(*list(current.inflight), return_exceptions=True)
 
 
 @app.exception_handler(HTTPException)
 async def http_error_handler(request, error):
-    if request.url.path.endswith("/commands"):
+    if request.url.path.endswith(("/commands", "/automation")):
         error = command_error(error)
     return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
 
@@ -494,7 +505,8 @@ async def command_locked(session_id: str, request: CommandRequest, authorization
             if len(current.commands) >= 10000:
                 raise HTTPException(429, "session command budget exhausted")
             current.commands.add(request.command_id)
-            if request.method == "page.insert_text" and recorder:
+            private_harness = request.method == "page.harness" and request.params.get("method") in ("fill", "type_text", "js", "upload")
+            if recorder and (request.method == "page.insert_text" or private_harness):
                 await recorder.private()
             operation = asyncio.create_task(command(session_id, request, authorization, x_tabductor_rpc_version))
             current.inflight.add(operation)
@@ -506,7 +518,12 @@ async def command_locked(session_id: str, request: CommandRequest, authorization
                 result["event_cursor"] = len(current.observations.events) - 1
             return result
         except Exception as error:
-            raise command_error(error) from None
+            page = current.pages.get(request.page_id or "")
+            browser = getattr(current.context, "browser", None)
+            raise command_error(error,
+                page_closed=bool(page and getattr(page, "is_closed", lambda: False)()),
+                browser_connected=bool(browser and browser.is_connected() and not current.context_closed),
+            ) from None
         finally:
             try:
                 if not operation.done():
@@ -528,7 +545,8 @@ async def command(
     params = request.params
 
     if request.method == "browser.version":
-        return {"value": f"camoufox:{os.environ.get('CAMOUFOX_BROWSER', 'unknown')}/rpc:{RPC_VERSION}"}
+        from browser_harness.camoufox import VERSION as harness_version
+        return {"value": f"camoufox:{os.environ.get('CAMOUFOX_BROWSER', 'unknown')}/rpc:{RPC_VERSION}/harness:{harness_version}"}
     if request.method == "browser.events":
         return {"value": None}
     if request.method == "network.part":
@@ -587,6 +605,27 @@ async def command(
         return {"value": None}
     if request.method == "page.title":
         return {"value": await page.title()}
+    if request.method == "page.harness":
+        from browser_harness.camoufox import TargetNotReadyError, execute
+        if params["method"] == "paste":
+            # X clipboard and key dispatch stay inside the worker input lock.
+            text = params.get("args", {}).get("text", getattr(page, "_harness_clipboard", ""))
+            await page.bring_to_front()
+            await paste_text(text)
+            return {"value": {"url": page.url}}
+        if params["method"] == "new_tab":
+            if len(current.context.pages) >= 16:
+                raise HTTPException(429, "session tab budget exhausted")
+            async with page.expect_popup() as pending:
+                await page.evaluate("() => window.open('about:blank', '_blank')")
+            created = await pending.value
+            return {"value": {"id": current.add_page(created), "url": created.url}}
+        try:
+            return {"value": await execute(page, str(params["method"]), params.get("args", {}))}
+        except TargetNotReadyError:
+            raise HTTPException(409, {"code": "browser_target_not_ready",
+                "message": "No click was dispatched: the target was missing, ambiguous, or not actionable. Inspect the page and choose a current target.",
+                "outcomeUncertain": False}) from None
     if request.method == "page.url":
         return {"value": page.url}
     if request.method == "page.screenshot":
@@ -658,8 +697,8 @@ async def command(
         # Follow actual opener ownership; never expose another leased root tab.
         root = page
         assigned = set(current.tab_slots.values())
-        while current.add_page(root) not in assigned and await root.opener():
-            root = await root.opener()
+        while current.add_page(root) not in assigned and (getattr(root, "_tabductor_root", None) or await root.opener()):
+            root = getattr(root, "_tabductor_root", None) or await root.opener()
         owned = []
         for candidate in current.context.pages:
             ancestor = candidate
@@ -667,7 +706,7 @@ async def command(
                 if current.add_page(ancestor) in assigned:
                     ancestor = None
                     break
-                ancestor = await ancestor.opener()
+                ancestor = getattr(ancestor, "_tabductor_root", None) or await ancestor.opener()
             if ancestor is root:
                 owned.append(candidate)
         if request.method == "page.tabs":
@@ -720,6 +759,121 @@ async def command(
             value["challenge"] = challenge
         return {"value": value}
     raise HTTPException(400, f"unsupported method {request.method}")
+
+
+@app.post("/v1/sessions/{session_id}/automation")
+async def automation(session_id: str, request: CommandRequest, authorization: str | None = Header(default=None), x_tabductor_rpc_version: str | None = Header(default=None)):
+    """Invocation-scoped object RPC. Poll/reply never wait under the page lock."""
+    from browser_harness.playwright_worker import Scope
+    authorize(authorization, x_tabductor_rpc_version)
+    current = require_session(request.generation)
+    if current.session_id != session_id:
+        raise HTTPException(404, "session not found")
+    args = request.params
+    invocation = args.get("invocation")
+    if not isinstance(invocation, str) or len(invocation) > 100:
+        raise HTTPException(400, "invalid invocation")
+    scopes = getattr(current, "proxy_scopes", None)
+    if scopes is None:
+        scopes = current.proxy_scopes = {}
+    if request.method == "close":
+        scope = scopes.pop(invocation, None)
+        if scope:
+            await scope.close()
+        return {"value": None}
+    if current.input_owner != "ai" or current.input_generation != request.input_generation:
+        raise HTTPException(409, {
+            "code": "browser_input_revoked",
+            "message": "Browser control changed; wait for acknowledgement and inspect the page before repeating effects.",
+            # A denied submission did not execute. A denied poll cannot establish
+            # whether the already-submitted operation took effect.
+            "outcomeUncertain": request.method in {"poll", "callback"},
+        })
+    root = require_page(current, request.page_id)
+    if request.method == "open":
+        async with command_lock:
+            if session is not current or current.input_owner != "ai" or current.input_generation != request.input_generation:
+                raise HTTPException(409, "input ownership was revoked")
+            if invocation in scopes or len(scopes) >= 32:
+                raise HTTPException(409, "invocation already open or capacity exhausted")
+            # One cell owns this root at a time. Reclaim abandoned scopes before a
+            # replacement run can act on the same leased page.
+            for old_id, old_scope in list(scopes.items()):
+                if old_scope.root is root:
+                    await old_scope.close()
+                    scopes.pop(old_id, None)
+            async def owns(page):
+                candidate = page
+                while candidate:
+                    if candidate is root:
+                        return True
+                    if current.add_page(candidate) in current.tab_slots.values():
+                        return False
+                    candidate = getattr(candidate, "_tabductor_root", None) or await candidate.opener()
+                return False
+            def track(task):
+                current.inflight.add(task)
+                task.add_done_callback(current.inflight.discard)
+            scope = Scope(current.context, root, invocation, owns, track)
+            scopes[invocation] = scope
+            return {"value": {"page": scope.initial_page, "context": scope.initial_context}}
+    scope = scopes.get(invocation)
+    if scope is None or scope.root is not root:
+        raise HTTPException(409, {
+            "code": "browser_invocation_expired",
+            "message": "Browser invocation expired; start a fresh Python cell and inspect the page before repeating effects.",
+            "outcomeUncertain": request.method in {"poll", "callback"},
+        })
+    try:
+        if request.method == "start":
+            async with command_lock:
+                if session is not current or current.input_owner != "ai" or current.input_generation != request.input_generation or scope.closed:
+                    raise HTTPException(409, "input ownership was revoked")
+                if request.command_id in current.commands:
+                    raise HTTPException(409, "command already submitted")
+                if len(current.commands) >= 10000:
+                    raise HTTPException(429, "session command budget exhausted")
+                current.commands.add(request.command_id)
+                # Broad evaluation and user input may contain credentials.
+                if recorder and args.get("member") in ("evaluate", "evaluate_handle", "fill", "type", "press_sequentially", "insert_text", "set_input_files"):
+                    await recorder.private()
+                return {"value": {"ticket": scope.start(args, request.command_id)}}
+        if request.method == "expect":
+            target = scope.ref(args["target"])
+            from playwright.async_api import Expect
+            assertions = Expect()
+            if args.get("timeout") is not None:
+                assertions.set_options(timeout=args["timeout"])
+            return {"value": scope.encode(assertions(target, args.get("message"))) }
+        if request.method == "inspect":
+            target_ref = args.get("target") or args["call"]["target"]
+            target = scope.ref(target_ref)
+            page = scope.origins[target_ref["id"]]
+            call = args.get("call") or {}
+            if type(target).__name__ in ("Page", "Frame") and call.get("args"):
+                target = target.locator(call["args"][0])
+            if type(target).__name__ == "Locator":
+                if await target.count() != 1:
+                    return {"value": None}
+                value = await target.evaluate("el => ({type:el.type,tag:el.tagName.toLowerCase(),origin:el.ownerDocument.location.origin})")
+                value["selector"] = target._impl_obj._selector
+                if args.get("pin"):
+                    pin = str(args["pin"])
+                    if not re.fullmatch(r"[a-zA-Z0-9-]{1,80}", pin):
+                        raise ValueError("Invalid secret target pin")
+                    await target.evaluate("(el, pin) => el.setAttribute('data-tabductor-secret-target', pin)", pin)
+                    value["selector"] = f'[data-tabductor-secret-target="{pin}"]'
+            else:
+                value = await page.evaluate("() => ({type:document.activeElement?.type,tag:document.activeElement?.tagName.toLowerCase(),origin:location.origin})")
+            return {"value": {**value, "pageId": current.add_page(page), "pageOrigin": urlparse(page.url).scheme + "://" + urlparse(page.url).netloc}}
+        if request.method == "poll":
+            return {"value": await scope.poll(args["ticket"])}
+        if request.method == "callback":
+            scope.reply(args["ticket"], args["result"])
+            return {"value": None}
+        raise ValueError("Unknown automation command")
+    except (ValueError, TypeError, AttributeError) as error:
+        raise HTTPException(422, {"code": "browser_invalid_argument", "message": str(error)[:500], "outcomeUncertain": False}) from None
 
 
 @app.websocket("/v1/sessions/{session_id}/view")

@@ -42,6 +42,8 @@ class Observations:
                 self.dialog_seen.add(root_id)
                 self.event({"kind": "dialog", "page_id": root_id, "dialog": {"type": value.type, "message": "Browser dialog dismissed"}})
             page_id = self.current.add_page(page)
+            if getattr(page, "_proxy_dialog_listeners", 0):
+                return
             policy = self.current.dialog_policies.pop(page_id, None)
             if policy and policy.get("accept"):
                 await value.accept(policy.get("promptText"))

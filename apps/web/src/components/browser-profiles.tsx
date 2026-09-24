@@ -3,6 +3,7 @@ import Link from "next/link";
 import { createStore } from "zustand/vanilla";
 import { api, asApiError, type RouterOutputs } from "../lib/api.js";
 import { useStoreBridge } from "../lib/store.js";
+import { ProfileSetup } from "./profile-setup.js";
 
 const state = createStore<{ busy: boolean; error: string | null; code: string | null }>(() => ({ busy: false, error: null, code: null }));
 async function act(action: () => Promise<void>) {
@@ -11,10 +12,12 @@ async function act(action: () => Promise<void>) {
   try { await action(); } catch (error) { state.setState({ error: asApiError(error).message }); }
   finally { state.setState({ busy: false }); }
 }
-export function BrowserProfiles({ profiles, workflowId, selectedProfileId }: { profiles: RouterOutputs["browserSession"]["profiles"]; workflowId?: string; selectedProfileId?: string }) {
+export function BrowserProfiles({ profiles, workflowId, selectedProfileId, allowSetup = false }: { profiles: RouterOutputs["browserSession"]["profiles"]; workflowId?: string; selectedProfileId?: string; allowSetup?: boolean }) {
   const view = useStoreBridge(state);
-  return <section className="settings-section">
+  return <section className="settings-section" id="browser-profiles" aria-label="Browser profiles">
+    {workflowId ? <h2>Browser profiles</h2> : null}
     <p>Create a persistent browser profile, then open it to visit websites and sign in. Stop the session when finished to save cookies and browser storage for future runs.</p>
+    {workflowId && allowSetup ? <ProfileSetup key={workflowId} workflowId={workflowId} /> : null}
     <p><a href="/profile-extension.zip" download>Download the Chrome extension</a>. Unzip it, open chrome://extensions, enable Developer mode, and choose Load unpacked.</p>
     {view.error ? <p role="alert">{view.error}</p> : null}
     <form onSubmit={event => { event.preventDefault(); const data = new FormData(event.currentTarget); void act(async () => { await api.browserSession.createProfile.mutate({ name: String(data.get("name")) }); location.reload(); }); }}>
@@ -26,7 +29,7 @@ export function BrowserProfiles({ profiles, workflowId, selectedProfileId }: { p
       <button disabled={view.busy || !profiles.length}>Use profile for future browser sessions</button>
     </form> : null}
     <div className="ruled">{profiles.map(profile => <section key={profile.id}>
-      <h2>{profile.name}</h2><p className="muted">{profile.saved ? "Saved browser state available" : "Ready for setup"}</p>
+      <h3>{profile.name}{profile.id === selectedProfileId ? " · Used by this workflow" : ""}</h3><p className="muted">{profile.saved ? "Saved browser state available" : "Ready for setup"}</p>
       <button disabled={view.busy} onClick={() => void act(async () => { const result = await api.browserSession.openProfile.mutate({ profileId: profile.id }); location.assign(`/sessions/${result.sessionId}`); })}>Open browser & sign in</button>
       <details><summary>Import login from browser extension</summary>
         <p>Open the signed-in website in Chrome, then use the Tabductor extension to import that site’s cookies and complete local storage. Each code is for this profile and one website, expires after five minutes, and works once.</p>

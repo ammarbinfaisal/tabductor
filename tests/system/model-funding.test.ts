@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { modelCredentials, modelOperations } from "@tabductor/db";
+import { modelCredentials, modelOperations, modelSelections } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import { fileKeyWrapper } from "@tabductor/secrets";
 import { appendCreditAdjustment, createModelResolver, expireCreditReservations, getCreditBalance, modelCreditUnits,
@@ -45,6 +45,27 @@ it("surfaces BYO failure without platform fallback, credential text, or platform
   await expect(resolver().execute({ accountId: a, purpose: "authoring" }, { operationId: "byo-failed", inputTokenBound: 10 }, invoke)).rejects.toMatchObject({ code: "model_operation_uncertain" });
   expect(invoke).toHaveBeenCalledTimes(1);
   expect((await getCreditBalance(db.db, a)).totalUnits).toBe(0);
+});
+
+it("passes an OpenAI-compatible credential's API root to every BYO invocation", async () => {
+  const a = await account("model-compatible");
+  const key = await saveModelCredential(db.db, wrapper(), {
+    accountId: a, provider: "openai-compatible", label: "Gateway", apiKey: "compatible-key", baseUrl: "https://gateway.example/v1",
+  });
+  await setModelSelection(db.db, a, { funding: "byo", provider: "openai-compatible", model: "gateway-model", credentialId: key.id });
+  const invoke = vi.fn(async (config) => ({ value: config, usage: { input: 100, output: 30 } }));
+  await expect(resolver().execute({ accountId: a, purpose: "runtime" }, { inputTokenBound: 100 }, invoke))
+    .resolves.toMatchObject({ provider: "openai-compatible", model: "gateway-model", apiKey: "compatible-key", baseUrl: "https://gateway.example/v1" });
+  await expect(setModelSelection(db.db, a, { funding: "platform", provider: "openai-compatible", model: "gateway-model" }))
+    .rejects.toMatchObject({ name: "ZodError" });
+});
+
+it("replaces the model selection at the same scope", async () => {
+  const a = await account("model-reselection");
+  await setModelSelection(db.db, a, { funding: "platform", provider: "openai", model: "first-model" });
+  await setModelSelection(db.db, a, { funding: "platform", provider: "openai", model: "second-model" });
+  expect(await db.db.select().from(modelSelections).where(eq(modelSelections.accountId, a)))
+    .toEqual([expect.objectContaining({ scope: "account", model: "second-model" })]);
 });
 
 it("reserves before calling, pins rates, settles exactly once, and excludes reasoning from double billing", async () => {

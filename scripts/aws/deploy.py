@@ -10,6 +10,9 @@ images=json.loads((root/'images.json').read_text())
 chart='infra/helm/tabductor'
 values={'image':images['app'],'fleet':{'workerImage':images['browser-worker']['repository']+'@'+images['browser-worker']['digest']},
         'environment':{'BROWSER_CPU_REQUEST':'1','BROWSER_MEMORY_REQUEST':'2Gi'}}
+values['pythonRunner'] = {'enabled': True,
+    'brokerImage': images['python-broker']['repository']+'@'+images['python-broker']['digest'],
+    'image': images['python-runner']['repository']+'@'+images['python-runner']['digest']}
 # No secrets in this file or in Helm history.
 (root/'images-values.json').write_text(json.dumps(values))
 base=['helm','upgrade','--install','staging',chart,'--namespace','tabductor-staging','-f',chart+'/values-aws.yaml','-f',str(root/'images-values.json')]

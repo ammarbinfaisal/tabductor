@@ -1,13 +1,11 @@
 import {
   createWorkflow,
   compileResultSchema,
-  withWorkflowResult,
   getWorkflow,
   graphSchema,
   graphDraftArtifactSchema,
   graphStoreArtifactSchema,
   graphCompileReportSchema,
-  gateGraphDraft,
   proposedGrantSchema,
   listVersionTasks,
   listWorkflows,
@@ -98,7 +96,7 @@ async function compileWorkflowPrompt(ctx: Context, input: {
     gateContext: await loadGateContext(ctx, input.workflowId),
   });
   return compiled.ok
-    ? { ...compiled, artifact: { ...compiled.artifact, graph: withWorkflowResult(compiled.artifact.graph, input.intent, input.resultSchema), proposedGrants: [] } }
+    ? { ...compiled, artifact: { ...compiled.artifact, proposedGrants: [] } }
     : compiled;
 }
 
@@ -238,33 +236,7 @@ export const workflowRouter = router({
     .mutation(async ({ ctx, input }) => {
       await requireWorkflowOwner(ctx, input.workflowId);
       if (ctx.modelsForWorkflow) ctx = { ...ctx, ...ctx.modelsForWorkflow(input.workflowId) };
-      let checked = input;
-      if (input.authoring) {
-        const gated = await gateGraphDraft(
-          {
-            graph: input.graph,
-            store: input.authoring.store ?? null,
-            proposedGrants: input.authoring.proposedGrants,
-          },
-          await loadGateContext(ctx, input.workflowId),
-        );
-        checked = {
-          ...input,
-          graph: gated.artifact.graph,
-          authoring: {
-            report: {
-              checks: [
-                ...gated.checks,
-                ...input.authoring.report.checks.filter((check) => check.check === "self_repair"),
-              ],
-              attempts: input.authoring.report.attempts,
-            },
-            proposedGrants: gated.artifact.proposedGrants,
-            ...(gated.artifact.store ? { store: gated.artifact.store } : {}),
-          },
-        };
-      }
-      return publishVersion(ctx.db, checked, {
+      return publishVersion(ctx.db, input, {
         schemaGenerator: ctx.schemaGenerator,
         ...(ctx.promptCompiler ? { promptCompiler: ctx.promptCompiler } : {}),
         // With a pool, publish also prepares the workflow's store (`PublishDeps.pool`).

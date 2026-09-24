@@ -3,42 +3,44 @@ import Link from "next/link";
 import { ClerkProvider, UserButton } from "@clerk/nextjs";
 import "./globals.css";
 import { clerkConfigured, clerkPublishableKey } from "../server/clerk-config.js";
+import { ThemeSwitcher } from "../components/theme-switcher.js";
 export const dynamic = "force-dynamic";
 
-export const metadata = { title: "tabductor", description: "Agentic browsing control plane" };
+export const metadata = { title: { default: "Tabductor · Browser automation", template: "%s · Tabductor" }, description: "Build workflows, watch your browser automation live, and review every run." };
 
-/**
- * Ruled Ink's three type roles (DESIGN.md) arrive as <link> stylesheets rather than
- * next/font: a build with no network still builds, and the CSS stacks degrade to
- * Georgia/system mono until the fonts land.
- */
+/** Stylesheet fonts retain system fallbacks and keep offline builds possible. */
 const FONTS =
-  "https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,500;0,6..72,600;1,6..72,500&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap";
+  "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap";
+
+const THEME_INIT = `(function(){var t='system';try{t=localStorage.getItem('tabductor.theme')||t}catch(e){}document.documentElement.dataset.theme=t==='light'||t==='dark'?t:matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'})()`;
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   const body = (
     <>
+      <a className="skip-link" href="#main-content">Skip to content</a>
       <header className="topbar">
         <Link href="/" className="brand">
+          <svg className="brand-mark" viewBox="0 0 28 28" width="28" height="28" fill="none" aria-hidden="true"><path d="M4 6h20M14 6v17M6 12h5M17 17h5" stroke="currentColor" strokeWidth="2.5" /><circle cx="6" cy="20" r="2" fill="currentColor" /></svg>
           tabductor
         </Link>
-        <nav>
-          <Link href="/workflows">workflows</Link>
-          {process.env.TABDUCTOR_DEPLOYMENT_MODE !== "hosted" && <Link href="/endpoints">endpoints</Link>}
-          <Link href="/status">status</Link>
-          <Link href="/settings/models">models</Link>
-          <Link href="/billing">billing</Link>
-          <Link href="/sessions">sessions</Link>
-          <Link href="/profiles">profiles</Link>
-          {clerkConfigured() && <UserButton />}
+        <nav aria-label="Main navigation">
+          <Link href="/workflows">Workflows</Link>
+          <Link href="/sessions">Sessions</Link>
+          <Link href="/profiles">Profiles</Link>
+          {process.env.TABDUCTOR_DEPLOYMENT_MODE !== "hosted" && <Link href="/endpoints">Endpoints</Link>}
+          <Link href="/status">Status</Link>
+          <Link href="/settings/models">Models</Link>
+          <Link href="/billing">Billing</Link>
         </nav>
+        <div className="topbar-tools"><ThemeSwitcher />{clerkConfigured() && <UserButton />}</div>
       </header>
-      <main>{children}</main>
+      <main id="main-content">{children}</main>
     </>
   );
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT }} />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link rel="stylesheet" href={FONTS} />

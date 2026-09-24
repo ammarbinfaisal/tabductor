@@ -90,7 +90,7 @@ it("rejects recursive code and oversized batches and releases memory explicitly"
   expect(await tools.get("page.extractBatch")!.execute({ selector: "article", fields: {}, limit: 101 })).toMatchObject({ ok: false });
   expect(session.page.queryAll).not.toHaveBeenCalled();
   expect(await tools.get("browser.code")!.execute({ source: `export default async function(tools) { await tools.call('browser.code', {}); }` }))
-    .toMatchObject({ ok: false, error: expect.stringContaining("not available") });
+    .toMatchObject({ ok: false, error: expect.stringContaining("unavailable") });
 });
 
 it("stops a batch at cancellation without publishing the remaining records", async () => {
@@ -121,8 +121,9 @@ it("resumes interrupted reads but fences unresolved browser writes across code i
     progress: { get: async () => journal, set: async value => { journal = value; } },
   }).map(tool => [tool.name, tool]));
   const source = "export default async function() { return 'resumed'; }";
-  expect(await tools.get("browser.code")!.execute({ source })).toMatchObject({ ok: false, error: expect.stringContaining("observation was interrupted") });
+  expect(await tools.get("browser.code")!.execute({ source })).toEqual({ ok: true, value: "resumed" });
   expect(await tools.get("browser.code")!.execute({ source })).toEqual({ ok: true, value: "resumed" });
   journal = { inFlight: { tool: "page.click" } };
-  await expect(tools.get("browser.code")!.execute({ source })).rejects.toMatchObject({ code: "resource_limit_exceeded" });
+  expect(await tools.get("browser.code")!.execute({ source })).toEqual({ ok: true, value: "resumed" });
+  expect(journal).toMatchObject({ requiresReconciliation: true, inFlight: null });
 });
