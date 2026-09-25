@@ -25,7 +25,7 @@ const secret = "pdl_ntfset_purchase_secret";
 const now = new Date("2026-09-18T06:00:00.000Z");
 const timestamp = Math.floor(now.getTime() / 1_000);
 
-async function completedDelivery(input: { eventId: string; notificationId: string; purchaseId: string; transactionId: string; priceId?: string }) {
+async function completedDelivery(input: { eventId: string; notificationId: string; purchaseId: string; transactionId: string; priceId?: string; total?: string; discountId?: string }) {
   const rawBody = JSON.stringify({
     event_id: input.eventId,
     event_type: "transaction.completed",
@@ -36,7 +36,8 @@ async function completedDelivery(input: { eventId: string; notificationId: strin
       status: "completed",
       custom_data: { tabductor_purchase_id: input.purchaseId, credit_units: 999_999 },
       currency_code: "USD",
-      details: { totals: { total: "500" } },
+      discount_id: input.discountId,
+      details: { totals: { total: input.total??"500",tax:"0",fee:"0" } },
       items: [{ price_id: input.priceId ?? "pri_100", quantity: 1 }],
     },
   });
@@ -374,4 +375,14 @@ it("retries adjustments that arrive before completion and rejects inconsistent m
   });
   expect(await processPaddleWebhookEvent(handle.db, unsupportedReversal.event.notificationId, packs)).toBe("failed");
   expect((await getCreditBalance(handle.db, accountId)).availableUnits).toBe(80);
+});
+
+it("preserves the promised USD grant after pack edits and a fully discounted checkout",async()=>{
+ const accountId=await resolveAccountIdentity(handle.db,{provider:"fixture",subject:"paddle-free"});
+ const original=new Map([["pri_free",{priceId:"pri_free",creditUnits:10000000}]]);
+ const purchase=await createPaddleCreditPurchase(handle.db,{accountId,operationId:"free",priceId:"pri_free",discountId:"dsc_free"},{packs:original,client:{createTransaction:async()=>({transactionId:"txn_free"})}});
+ const delivery=await completedDelivery({eventId:"evt_free",notificationId:"ntf_free",purchaseId:purchase.id,transactionId:"txn_free",priceId:"pri_free",total:"0",discountId:"dsc_free"});
+ expect(await processPaddleWebhookEvent(handle.db,delivery.event.notificationId,new Map())).toBe("processed");
+ expect((await getCreditBalance(handle.db,accountId)).availableUnits).toBe(10000000);
+ expect((await handle.db.select().from(paymentPurchases).where(eq(paymentPurchases.id,purchase.id)))[0]).toMatchObject({creditUnits:10000000,totalMinor:0,discountId:"dsc_free",financialJson:{totals:{total:"0",fee:"0",tax:"0"}}});
 });

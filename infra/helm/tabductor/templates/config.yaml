@@ -26,7 +26,7 @@ stringData:
   PYTHON_RUNNER_TOKEN: {{ if and $existing $existing.data (index $existing.data "PYTHON_RUNNER_TOKEN") }}{{ index $existing.data "PYTHON_RUNNER_TOKEN" | b64dec | quote }}{{ else }}{{ randAlphaNum 48 | quote }}{{ end }}
   {{- end }}
   BROWSER_RATE_VERSION: {{ .Values.fleet.rateVersion | quote }}
-  BROWSER_UNITS_PER_MINUTE: {{ .Values.fleet.unitsPerMinute | quote }}
+  BROWSER_USD_PER_MINUTE: {{ .Values.fleet.usdPerMinute | quote }}
   BROWSER_MAX_SECONDS: {{ .Values.fleet.maxSeconds | quote }}
   SECRETS_KEK_FILE_PATH: /app/data/secrets-kek.json
 {{- range $key, $value := .Values.environment }}

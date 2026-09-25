@@ -662,7 +662,7 @@ table.ledger td {
   display: grid;
   grid-template-columns: minmax(14rem, 1fr) minmax(28rem, 2fr);
   gap: var(--space-6);
-  align-items: end;
+  align-items: flex-end;
   margin: var(--space-4) 0;
   padding: var(--space-4) 0;
   border-bottom: 1px solid var(--border-subtle);
@@ -682,7 +682,7 @@ table.ledger td {
   display: grid;
   grid-template-columns: minmax(10rem, 1fr) minmax(9rem, 1fr) auto auto;
   gap: var(--space-3);
-  align-items: end;
+  align-items: flex-end;
 }
 
 .workflow-schedule-toggle {
@@ -1435,3 +1435,19 @@ main, main:has(.automation-workspace), main:has(.workflow-workspace) { max-width
 .table-scroll > .ledger { min-width: 760px; }
 .table-scroll > .ledger :is(th, td):first-child { padding-left: 20px; }
 .table-scroll > .ledger :is(th, td):last-child { padding-right: 20px; }
+
+/* Administration shares the application's editorial type and ledger system. */
+.admin-tabs{display:flex;gap:1.5rem;flex-wrap:wrap;border-bottom:1px solid var(--border,#ddd);margin-bottom:2rem}
+.admin-tabs a{padding:1rem .25rem;min-height:44px;text-decoration:none}
+.admin-tabs a[aria-current=page]{border-bottom:3px solid currentColor;font-weight:700}
+.admin-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:2rem;margin:2rem 0 3rem}
+.admin-metrics>div{display:flex;flex-direction:column;gap:.5rem}.admin-metrics strong{font-size:clamp(1.5rem,3vw,2.5rem)}
+.admin-form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:2rem}
+.admin-form{margin:2rem 0;max-width:650px}.admin-form fieldset{border:0;padding:0;display:grid;gap:1rem;min-width:0}
+.admin-form legend{font-weight:700;font-size:1.25rem;margin-bottom:1rem}.admin-form label,.admin-filters label{display:flex;flex-direction:column;gap:.4rem}
+.admin-form input,.admin-form select,.admin-filters input,.admin-filters select{min-height:44px;max-width:100%}
+.admin-filters{display:flex;flex-wrap:wrap;gap:1rem;align-items:flex-end}.admin-page h2{margin-top:2.5rem}.admin-page caption{text-align:left;padding:1rem 0;font-weight:600}
+.admin-chart{display:flex;height:180px;align-items:flex-end;gap:4px;padding-bottom:1.5rem;overflow-x:auto;margin:2rem 0}
+.admin-chart>div{flex:1;min-width:24px;height:100%;display:flex;flex-direction:column;justify-content:flex-end;position:relative}
+.admin-chart span{display:block;background:currentColor;opacity:.65}.admin-chart small{position:absolute;bottom:-1.5rem;font-size:.6rem;white-space:nowrap}
+.admin-audit{margin-top:3rem}.workflow-delete{color:var(--danger,#ab3027)}

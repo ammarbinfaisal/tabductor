@@ -1,6 +1,6 @@
 import { AppsV1Api, CoreV1Api, KubeConfig, type V1Pod, type V1OwnerReference } from "@kubernetes/client-node";
 import { dockerFleet } from "./docker-fleet.js";
-import { loadConfig, newId } from "@tabductor/core";
+import { loadConfig, newId, usdMicros } from "@tabductor/core";
 import { createDb, browserFleetStatus, browserRecordingSegments, browserAllocationRequests, browserBilling, browserProfiles, browserProfileLeases, browserSessions, browserWorkers } from "@tabductor/db";
 import { configuredBlobStore } from "@tabductor/browser";
 import { encryptEnvelope, configuredKeyWrapper, withEnvelope, type EncryptedEnvelope } from "@tabductor/secrets";
@@ -18,7 +18,7 @@ if (!tokenKey || tokenKey.length < 32) throw new Error("BROWSER_WORKER_TOKEN_KEY
 const localDocker = process.env.BROWSER_FLEET_DRIVER === "docker";
 if (localDocker && config.TABDUCTOR_DEPLOYMENT_MODE !== "local") throw new Error("Docker fleet is local-only");
 const admission = config.TABDUCTOR_FIXTURE_MODE || localDocker ? undefined : browserCreditAdmission({
-  version: process.env.BROWSER_RATE_VERSION ?? "", unitsPerMinute: Number(process.env.BROWSER_UNITS_PER_MINUTE), maxSeconds: Number(process.env.BROWSER_MAX_SECONDS ?? 1800),
+  version: process.env.BROWSER_RATE_VERSION ?? "usd-v1", unitsPerMinute: usdMicros(process.env.BROWSER_USD_PER_MINUTE ?? "0"), maxSeconds: Number(process.env.BROWSER_MAX_SECONDS ?? 1800),
 });
 const handle = createDb(config.DATABASE_URL, { max: 8 });
 const blobs = configuredBlobStore(config);

@@ -17,3 +17,5 @@ export { AllowAllGate, RuntimeSafetyGate, DEFAULT_TOKEN_PATTERNS, maskText, type
 /** Increment whenever the compiled host-call contract changes incompatibly. */
 export const SCRIPT_RUNTIME_VERSION = "tabductor-python-playwright-v3";
 export { renderLearnedPrompt, browserArtifactKey, browserLearningDefinition, type BrowserLesson, type BrowserProcedure } from "./browser-learning.js";
+
+export { usdMicros, usdDecimal, formatUsd, scaledAmount, USD_SCALE } from "./money.js";

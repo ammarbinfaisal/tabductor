@@ -19,8 +19,8 @@ export function ModelSettings({ settings, workflowId }: { settings: RouterOutput
   const current = settings.selections.find((selection) => selection.scope === scope);
   return <section className="settings-section">
     <h2>{workflowId ? "Workflow model" : "Model source"}</h2>
-    <p>{workflowId ? "Override the account model for this workflow." : "Choose the model used for authoring, execution, recovery, and compilation."} Your own key is billed by its provider. Tabductor models use prepaid credits.</p>
-    <p>Current selection: <strong>{current ? `${current.model} · ${current.funding === "byo" ? "your key" : "Tabductor credits"}` : workflowId ? "Account default" : "Not configured"}</strong></p>
+    <p>{workflowId ? "Override the account model for this workflow." : "Choose the model used for authoring, execution, recovery, and compilation."} Your own key is billed by its provider. Tabductor models use your prepaid USD balance.</p>
+    <p>Current selection: <strong>{current ? `${current.model} · ${current.funding === "byo" ? "your key" : "Tabductor balance"}` : workflowId ? "Account default" : "Not configured"}</strong></p>
     {error ? <p role="alert">{error}</p> : null}
     <form className="stack" onSubmit={(event) => { event.preventDefault(); const data = new FormData(event.currentTarget);
       const credential = settings.credentials.find((entry) => entry.id === data.get("credential"));
@@ -38,9 +38,9 @@ export function ModelSettings({ settings, workflowId }: { settings: RouterOutput
       const selected = settings.platformModels.find((candidate) => platformModelKey(candidate) === data.get("model")); if (!selected) return;
       void act(() => api.account.setModel.mutate({ scope, funding: "platform", provider: selected.provider, model: selected.model }));
     }}>
-      <h3>Use Tabductor credits</h3>
+      <h3>Use Tabductor balance</h3>
       <label>Model <select name="model" defaultValue={current?.funding === "platform" ? platformModelKey(current) : undefined}>{settings.platformModels.map((model) => <option key={`${model.provider}:${model.model}`} value={platformModelKey(model)}>
-        {model.model} · {model.input.toLocaleString()} input / {model.output.toLocaleString()} output credits per million tokens
+        {model.model} · ${model.inputUsd} input / ${model.outputUsd} output USD per million tokens
       </option>)}</select></label>
       <button disabled={busy}>Use Tabductor model</button>
     </form> : <p className="muted">Tabductor models are not configured on this installation.</p>}

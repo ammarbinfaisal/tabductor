@@ -1,3 +1,4 @@
+import { DeleteWorkflow } from "../../../../components/delete-workflow.js";
 import { BrowserProfiles } from "../../../../components/browser-profiles.js";
 import { ModelSettings } from "../../../../components/model-settings.js";
 import { createServerCaller } from "../../../../server/router.js";
@@ -22,6 +23,7 @@ export default async function SettingsPage({ params }: { params: Promise<{ id: s
       <BrowserProfiles profiles={profiles} workflowId={id} allowSetup={managedBrowser}
         {...(binding ? { selectedProfileId: binding.profileId } : {})} />
       <ModelSettings settings={models} workflowId={id} />
+      <section className="settings-section"><h2>Delete workflow</h2><p>Permanently erase this workflow and its history after active work stops and billing settles.</p><DeleteWorkflow workflowId={id}/></section>
       {!managedBrowser ? <EndpointSettings workflowId={id} /> : null}
     </>
   );

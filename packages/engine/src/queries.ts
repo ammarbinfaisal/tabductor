@@ -1,6 +1,7 @@
 import { AppError, newId } from "@tabductor/core";
 import { chainOf } from "@tabductor/bus";
 import {
+  actionSummaries,
   cdpEndpoints,
   engineStatus,
   events,
@@ -352,6 +353,11 @@ export async function listTraceEntries(db: Db, input: TraceListInput): Promise<P
 
   const items = rows.slice(0, limit);
   const nextCursor = rows.length > limit ? String(items.at(-1)!.seq) : null;
+  const callIds=items.flatMap(row=>{const payload=row.payloadJson as Record<string,unknown>|null;return typeof payload?.callId==="string"?[payload.callId]:[];});
+  const summaries=callIds.length?await db.select({callId:actionSummaries.callId,summary:actionSummaries.summary,status:actionSummaries.status}).from(actionSummaries).where(and(eq(actionSummaries.runId,input.runId),inArray(actionSummaries.callId,callIds))):[];
+  const byCall=new Map(summaries.map(s=>[s.callId,s]));
+  for(const row of rows){const payload=row.payloadJson as Record<string,unknown>;const summary=byCall.get(String(payload.callId));
+    if(summary)row.payloadJson={...payload,summary:summary.summary,summaryStatus:summary.status};}
   return { items, nextCursor };
 }
 

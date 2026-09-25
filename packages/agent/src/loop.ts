@@ -1,6 +1,6 @@
 import { toModelMessages } from "./llm-live.js";
 import { readActionHistory } from "./browser-actions.js";
-import { estimateModelInput, isDevMode } from "@tabductor/core";
+import { estimateModelInput, isDevMode, maskText, DEFAULT_TOKEN_PATTERNS } from "@tabductor/core";
 import { asSchema } from "ai";
 import type { TraceRecorder } from "@tabductor/browser";
 import type { Llm, LlmMessage, ToolDef as WireToolDef } from "./llm.js";
@@ -218,6 +218,8 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<AgentLoop
       await opts.trace.record("action", {
         action: "tool.call", tool: call.name, callId: call.id, ok: result.ok,
         ...debugArgs,
+        ...(call.name==="browser.python"?{code:maskText(String(call.args.code??call.args.source??"").slice(0,16000),DEFAULT_TOKEN_PATTERNS)
+          .replace(/((?:password|api_key|token|secret)\s*=\s*)["'][^"']*["']/gi,'$1"[REDACTED]"')}:{}),
         duration_ms: Date.now() - started,
         ...(!result.ok ? { error: result.error } : {}),
         ...(typeof value.eventId === "string" ? { eventId: value.eventId } : {}),

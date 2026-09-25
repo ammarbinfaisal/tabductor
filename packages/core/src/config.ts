@@ -57,6 +57,9 @@ const envSchema = z.object({
   AI_GATEWAY_API_KEY: optionalSetting,
   SCHEMA_MODEL: optionalSetting,
   MODEL_RATES_JSON: optionalSetting,
+  MODEL_USD_RATES_JSON: optionalSetting,
+  PADDLE_USD_PACKS_JSON: optionalSetting,
+  SOLVER_USD_RATES_JSON: optionalSetting,
   // Provider credentials are deliberately named after the providers' own terminology.
   // Paddle's API key remains server-only; the client token is the only Paddle credential
   // that may cross into browser code. Solver keys never leave control-plane processes.

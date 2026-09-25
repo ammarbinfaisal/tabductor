@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
 import { AppError, newId } from "@tabductor/core";
 import {
+  accounts, billingSettings, operatingCosts,
   challengeAttempts,
   captchaJobs,
   browserBilling,
@@ -15,6 +15,9 @@ import {
 } from "@tabductor/db";
 import { and, asc, eq, lt, sql } from "drizzle-orm";
 
+import { assertUsdAccount } from "./billing-prices.js";
+import { usdMicros, scaledAmount } from "@tabductor/core";
+
 const MAX_CREDIT_UNITS = Number.MAX_SAFE_INTEGER;
 const DEFAULT_RESERVATION_TTL_MS = 5 * 60 * 1_000;
 
@@ -27,8 +30,8 @@ export type CreditBalance = {
 function assertUnits(units: number, options: { positive?: boolean } = {}): void {
   if (!Number.isSafeInteger(units) || Math.abs(units) > MAX_CREDIT_UNITS || (options.positive ? units <= 0 : units === 0)) {
     throw new AppError("credit_units_invalid", options.positive
-      ? "credit units must be a positive safe integer"
-      : "credit units must be a non-zero safe integer");
+      ? "USD millionths must be a positive safe integer"
+      : "USD millionths must be a non-zero safe integer");
   }
 }
 
@@ -42,17 +45,18 @@ export async function lockCreditAccount(db: Db, accountId: string): Promise<void
   await db.execute(sql`select pg_advisory_xact_lock(hashtextextended(${accountId}, 0))`);
 }
 
-async function availableUnits(db: Db, accountId: string): Promise<number> {
+async function availableUnits(db: Db, accountId: string, moneyUnit = "usd_micro"): Promise<number> {
   const result = await db.select({
     units: sql<number>`coalesce(sum(${creditLedgerEntries.units}), 0)::double precision`,
-  }).from(creditLedgerEntries).where(eq(creditLedgerEntries.accountId, accountId));
+  }).from(creditLedgerEntries).where(and(eq(creditLedgerEntries.accountId, accountId),eq(creditLedgerEntries.moneyUnit,moneyUnit)));
   return result[0]?.units ?? 0;
 }
 
 export async function getCreditBalance(db: Db, accountId: string): Promise<CreditBalance> {
+  await assertUsdAccount(db, accountId);
   // Both totals must observe the same PostgreSQL statement snapshot during settlement.
   const result = await db.execute<{ available: number; reserved: number }>(sql`select
-    (select coalesce(sum(units), 0)::double precision from ${creditLedgerEntries} where account_id = ${accountId}) as available,
+    (select coalesce(sum(units), 0)::double precision from ${creditLedgerEntries} where account_id = ${accountId} and money_unit = 'usd_micro') as available,
     (select coalesce(sum(reserved_units), 0)::double precision from ${creditReservations} where account_id = ${accountId} and status = 'active') as reserved`);
   const available = result.rows[0]!.available;
   const reservedUnits = result.rows[0]!.reserved;
@@ -71,15 +75,18 @@ export async function appendCreditAdjustmentLocked(
   db: Db,
   input: CreditAdjustmentInput,
 ): Promise<CreditLedgerEntryRow> {
+  const [account]=await db.select().from(accounts).where(eq(accounts.id,input.accountId));
+  const moneyUnit=account?.moneyUnit??"usd_micro";
   const [prior] = await db.select().from(creditLedgerEntries)
     .where(eq(creditLedgerEntries.idempotencyKey, input.idempotencyKey));
   if (prior) {
-    if (prior.accountId !== input.accountId || prior.kind !== input.kind || prior.units !== input.units) {
+    const priorUnits=prior.moneyUnit==="legacy_credit"&&moneyUnit==="usd_micro"?BigInt(prior.units)*BigInt(account?.legacyCreditMicros??0):BigInt(prior.units);
+    if (prior.accountId !== input.accountId || prior.kind !== input.kind || priorUnits !== BigInt(input.units)) {
       throw new AppError("credit_idempotency_conflict", "idempotency key was already used for a different credit movement");
     }
     return prior;
   }
-  const nextBalance = await availableUnits(db, input.accountId) + input.units;
+  const nextBalance = await availableUnits(db, input.accountId,moneyUnit) + input.units;
   if (!Number.isSafeInteger(nextBalance)) {
     throw new AppError("credit_balance_overflow", "credit movement would exceed the supported integer range");
   }
@@ -87,6 +94,7 @@ export async function appendCreditAdjustmentLocked(
     id: newId("credit"),
     accountId: input.accountId,
     kind: input.kind,
+    moneyUnit,
     units: input.units,
     idempotencyKey: input.idempotencyKey,
     metadataJson: input.metadata ?? {},
@@ -103,12 +111,13 @@ export async function appendCreditAdjustmentLocked(
 
 /** Adds an externally-authorized movement exactly once. Callers derive units server-side. */
 export async function appendCreditAdjustment(db: Db, input: CreditAdjustmentInput): Promise<CreditLedgerEntryRow> {
+  await assertUsdAccount(db, input.accountId);
   assertUnits(input.units);
   if (input.kind === "purchase" && input.units < 0) {
-    throw new AppError("credit_purchase_invalid", "a purchase must add credits");
+    throw new AppError("credit_purchase_invalid", "a purchase must add USD balance");
   }
   if (input.kind === "refund" && input.units > 0) {
-    throw new AppError("credit_refund_invalid", "a refund must remove credits");
+    throw new AppError("credit_refund_invalid", "a refund must remove USD balance");
   }
   if (!input.idempotencyKey.trim()) throw new AppError("credit_idempotency_invalid", "idempotency key is required");
 
@@ -118,17 +127,17 @@ export async function appendCreditAdjustment(db: Db, input: CreditAdjustmentInpu
   });
 }
 
-/** Grant once per server-verified login (or local server startup), including concurrent requests. */
-export async function seedLoginCredits(db: Db, input: { accountId: string; loginId: string }): Promise<CreditLedgerEntryRow> {
-  if (!input.loginId.trim()) throw new AppError("credit_login_invalid", "A server-verified login identifier is required");
-  const loginDigest = createHash("sha256").update(input.loginId).digest("hex");
-  return appendCreditAdjustment(db, {
-    accountId: input.accountId,
-    kind: "adjustment",
-    units: 1000,
-    idempotencyKey: `login-seed:${input.accountId}:${loginDigest}`,
-    metadata: { reason: "login_startup_seed" },
-  });
+/** Grant a welcome balance once per account, never once per login or restart. */
+export async function seedLoginCredits(db: Db, input: { accountId: string; loginId: string }): Promise<CreditLedgerEntryRow | undefined> {
+  if (!input.loginId.trim()) throw new AppError("credit_login_invalid", "A verified account is required");
+  const [config] = await db.select().from(billingSettings).where(eq(billingSettings.key,"welcome"));
+  const units=usdMicros(String(config?.value.amountUsd ?? "0"));
+  if(!units)return undefined;
+  // Account creation timestamps prevent a later promotion from granting old accounts money.
+  const eligible=await db.execute(sql`select 1 from accounts where id=${input.accountId} and money_unit='usd_micro' and created_at >= ${config!.updatedAt}`);
+  if(!eligible.rows.length)return undefined;
+  return appendCreditAdjustment(db,{accountId:input.accountId,kind:"adjustment",units,
+    idempotencyKey:`welcome:${input.accountId}`,metadata:{reason:"welcome_balance",currency:"USD"}});
 }
 
 export type ReserveCreditsInput = {
@@ -137,10 +146,12 @@ export type ReserveCreditsInput = {
   category: CreditUsageCategory;
   units: number;
   ttlMs?: number;
+  cost?: {provider:string;rateId:string;unitCharge:number;unitCost:number|null};
 };
 
 /** Serializes spend admission per account so concurrent operations cannot overspend. */
 export async function reserveCredits(db: Db, input: ReserveCreditsInput): Promise<CreditReservationRow> {
+  await assertUsdAccount(db, input.accountId);
   assertUnits(input.units, { positive: true });
   if (!input.operationId.trim()) throw new AppError("credit_operation_invalid", "operation id is required");
   const ttlMs = input.ttlMs ?? DEFAULT_RESERVATION_TTL_MS;
@@ -163,7 +174,7 @@ export async function reserveCredits(db: Db, input: ReserveCreditsInput): Promis
 
     const available = await availableUnits(trx, input.accountId);
     if (available < input.units) {
-      throw new AppError("credit_insufficient", "insufficient available credits", {
+      throw new AppError("credit_insufficient", "Insufficient available USD balance", {
         details: { availableUnits: available, requestedUnits: input.units },
       });
     }
@@ -186,6 +197,9 @@ export async function reserveCredits(db: Db, input: ReserveCreditsInput): Promis
       idempotencyKey: `reservation:${id}:hold`,
       metadataJson: { operationId: input.operationId, category: input.category },
     });
+    if(input.cost) await trx.insert(operatingCosts).values({id:newId("cost"),accountId:input.accountId,category:input.category,
+      provider:input.cost.provider,sourceId:reservation!.id,rateId:input.cost.rateId,status:"pending",costMicros:null,
+      snapshot:{unitCharge:input.cost.unitCharge,unitCost:input.cost.unitCost}}).onConflictDoNothing();
     return reservation!;
   });
 }
@@ -218,6 +232,9 @@ export async function settleCreditReservation(
       throw new AppError("credit_reservation_closed", `reservation is already ${reservation.status}`);
     }
 
+    const [cost]=await trx.select().from(operatingCosts).where(and(eq(operatingCosts.sourceId,reservation.id),eq(operatingCosts.category,reservation.category)));
+    if(cost?.snapshot) await trx.update(operatingCosts).set({status:"settled",quantity:String(input.actualUnits/cost.snapshot.unitCharge),
+      costMicros:input.actualUnits===0?0:cost.snapshot.unitCost===null?null:scaledAmount(input.actualUnits,cost.snapshot.unitCost,cost.snapshot.unitCharge),occurredAt:new Date()}).where(eq(operatingCosts.id,cost.id));
     const unused = reservation.reservedUnits - input.actualUnits;
     if (unused > 0) {
       await trx.insert(creditLedgerEntries).values({
@@ -225,6 +242,7 @@ export async function settleCreditReservation(
         accountId: reservation.accountId,
         reservationId: reservation.id,
         kind: "reservation_settlement",
+        moneyUnit:(await trx.select({unit:accounts.moneyUnit}).from(accounts).where(eq(accounts.id,input.accountId)))[0]!.unit,
         units: unused,
         idempotencyKey: `reservation:${reservation.id}:settlement`,
         metadataJson: { actualUnits: input.actualUnits },
@@ -255,11 +273,13 @@ async function closeCreditReservation(
     if (reservation.status !== "active") {
       throw new AppError("credit_reservation_closed", `reservation is already ${reservation.status}`);
     }
+    await trx.update(operatingCosts).set({status:"settled",costMicros:0,quantity:"0",occurredAt:new Date()}).where(and(eq(operatingCosts.sourceId,reservation.id),eq(operatingCosts.category,reservation.category)));
     await trx.insert(creditLedgerEntries).values({
       id: newId("credit"),
       accountId: reservation.accountId,
       reservationId: reservation.id,
       kind: "reservation_release",
+      moneyUnit:(await trx.select({unit:accounts.moneyUnit}).from(accounts).where(eq(accounts.id,input.accountId)))[0]!.unit,
       units: reservation.reservedUnits,
       idempotencyKey: `reservation:${reservation.id}:release`,
       metadataJson: { reason: input.expired ? "expired" : "released" },

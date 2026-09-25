@@ -1,5 +1,5 @@
 import { newId } from "@tabductor/core";
-import { artifacts, traceEntries, type Db, type TraceKind } from "@tabductor/db";
+import { artifacts, traceEntries, actionSummaries, type Db, type TraceKind } from "@tabductor/db";
 import { eq, sql } from "drizzle-orm";
 import type { BlobStore } from "./blob-store.js";
 
@@ -102,6 +102,12 @@ export function createTraceRecorder(
           // A lost commit response may retry an already-persisted batch. Both keys are
           // stable, so retrying trace persistence cannot duplicate entries or artifacts.
           if (batch.length > 0) await trx.insert(traceEntries).values(batch).onConflictDoNothing();
+          const python=batch.filter(entry=>entry.payloadJson.tool==="browser.python"&&typeof entry.payloadJson.code==="string"&&typeof entry.payloadJson.callId==="string");
+          if(python.length){
+            const owner=await trx.execute<{account_id:string}>(sql`select w.account_id from runs r join workflow_versions v on v.id=r.workflow_version_id join workflows w on w.id=v.workflow_id where r.id=${runId}`);
+            if(owner.rows[0])await trx.insert(actionSummaries).values(python.map(entry=>({runId,callId:String(entry.payloadJson.callId),accountId:owner.rows[0]!.account_id,
+              source:JSON.stringify({code:entry.payloadJson.code,ok:entry.payloadJson.ok,error:entry.payloadJson.error})}))).onConflictDoNothing();
+          }
           if (batchArtifacts.length > 0) await trx.insert(artifacts).values(batchArtifacts).onConflictDoNothing();
         });
       } catch (error) {

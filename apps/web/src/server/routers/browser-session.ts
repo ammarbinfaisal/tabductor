@@ -1,5 +1,5 @@
 import { browserSessions, browserProfiles, browserWorkers, browserTabLeases, tasks, workflowBrowserProfiles } from "@tabductor/db";
-import { and, eq, desc } from "drizzle-orm";
+import { and, eq, desc, asc, sql } from "drizzle-orm";
 import { AppError } from "@tabductor/core";
 import {
   getBrowserSessionPlayback,
@@ -90,8 +90,29 @@ export const browserSessionRouter = router({
     if (!response.ok) throw new AppError("navigation_failed", "The browser could not open this address. Check the live view before trying again.");
     return { navigated: true };
   }),
-  list: procedure.query(({ ctx }) => ctx.db.select({ id: browserSessions.id, status: browserSessions.status, profileId: browserSessions.profileId, createdAt: browserSessions.createdAt, inputOwner: browserSessions.inputOwner })
-    .from(browserSessions).where(eq(browserSessions.accountId, ctx.accountId ?? LOCAL_ACCOUNT)).orderBy(desc(browserSessions.createdAt)).limit(100)),
+  list: procedure.input(z.object({cursor:z.string().max(250).optional(),direction:z.enum(["next","previous"]).default("next"),limit:z.number().int().min(1).max(100).default(25)}).optional())
+    .query(async ({ctx,input})=>{
+      const limit=input?.limit??25, reverse=input?.direction==="previous";
+      const owner=eq(browserSessions.accountId,ctx.accountId??LOCAL_ACCOUNT);
+      let boundary;
+      if(input?.cursor){
+        const [at,id]=input.cursor.split("|");
+        if(!at||!id||!Number.isFinite(Date.parse(at)))throw new AppError("cursor_invalid","Invalid session cursor");
+        boundary=reverse?sql`(${browserSessions.createdAt},${browserSessions.id}) > (${at}::timestamptz,${id})`
+          :sql`(${browserSessions.createdAt},${browserSessions.id}) < (${at}::timestamptz,${id})`;
+      }
+      const [rows,counts]=await Promise.all([
+        ctx.db.select({id:browserSessions.id,status:browserSessions.status,profileId:browserSessions.profileId,createdAt:browserSessions.createdAt,
+          cursorAt:sql<string>`to_char(${browserSessions.createdAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,inputOwner:browserSessions.inputOwner})
+          .from(browserSessions).where(and(owner,boundary)).orderBy(reverse?asc(browserSessions.createdAt):desc(browserSessions.createdAt),reverse?asc(browserSessions.id):desc(browserSessions.id)).limit(limit+1),
+        ctx.db.select({total:sql<number>`count(*)::int`,active:sql<number>`count(*) filter (where status not in ('ended','failed'))::int`}).from(browserSessions).where(owner),
+      ]);
+      const items=rows.slice(0,limit);if(reverse)items.reverse();
+      const key=(row:typeof items[number])=>`${row.cursorAt}|${row.id}`;
+      return {items,total:counts[0]!.total,active:counts[0]!.active,
+        previousCursor:items.length&&(reverse?rows.length>limit:Boolean(input?.cursor))?key(items[0]!):null,
+        nextCursor:items.length&&(reverse?Boolean(input?.cursor):rows.length>limit)?key(items.at(-1)!):null};
+    }),
   setupProfile: procedure.input(z.object({ workflowId: z.string().min(1) })).mutation(async ({ ctx, input }) => {
     await requireWorkflowOwner(ctx, input.workflowId);
     const accountId = ctx.accountId ?? LOCAL_ACCOUNT;

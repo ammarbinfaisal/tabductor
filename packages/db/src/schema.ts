@@ -70,6 +70,8 @@ export const TASK_KINDS = ["browser", "decision", "result"] as const;
 export type TaskKind = (typeof TASK_KINDS)[number];
 
 export const accounts = pgTable("accounts", {
+  moneyUnit: text("money_unit").notNull().default("usd_micro"),
+  legacyCreditMicros: bigint("legacy_credit_micros", {mode:"number"}),
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   createdAt: createdAt(),
@@ -156,6 +158,7 @@ export const creditReservations = pgTable(
 export const creditLedgerEntries = pgTable(
   "credit_ledger_entries",
   {
+    moneyUnit: text("money_unit").notNull().default("usd_micro"),
     id: text("id").primaryKey(),
     accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "restrict" }),
     reservationId: text("reservation_id").references(() => creditReservations.id, { onDelete: "restrict" }),
@@ -202,6 +205,8 @@ export const paymentWebhookEvents = pgTable(
 export const paymentPurchases = pgTable(
   "payment_purchases",
   {
+    discountId: text("discount_id"),
+    financialJson: jsonb("financial_json").$type<Record<string,unknown>>(),
     id: text("id").primaryKey(),
     accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "restrict" }),
     operationId: text("operation_id").notNull(),
@@ -225,7 +230,7 @@ export const paymentPurchases = pgTable(
     check("payment_purchases_status_check", sql`${t.status} in ('creating','pending','completed','failed','partially_refunded','refunded')`),
     check("payment_purchases_credit_units_check", sql`${t.creditUnits} > 0`),
     check("payment_purchases_refunded_units_check", sql`${t.refundedUnits} >= 0 and ${t.refundedUnits} <= ${t.creditUnits}`),
-    check("payment_purchases_total_check", sql`${t.totalMinor} is null or ${t.totalMinor} > 0`),
+    check("payment_purchases_total_check", sql`${t.totalMinor} is null or ${t.totalMinor} >= 0`),
   ],
 );
 
@@ -257,6 +262,7 @@ export const paymentAdjustments = pgTable(
 );
 
 export const workflows = pgTable("workflows", {
+  deletingAt: ts("deleting_at"),
   id: text("id").primaryKey(),
   accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }),
   userId: text("user_id").notNull(),
@@ -1487,7 +1493,7 @@ export const browserBilling = pgTable("browser_billing", {
   sessionId: text("session_id").primaryKey().references(() => browserSessions.id, { onDelete: "restrict" }),
   reservationId: text("reservation_id").notNull().references(() => creditReservations.id, { onDelete: "restrict" }),
   rateVersion: text("rate_version").notNull(),
-  unitsPerMinute: integer("units_per_minute").notNull(),
+  unitsPerMinute: bigint("units_per_minute", { mode: "number" }).notNull(),
   maxSeconds: integer("max_seconds").notNull(),
   startedAt: ts("started_at").notNull().defaultNow(),
   endedAt: ts("ended_at"),
@@ -1522,7 +1528,7 @@ export const challengeAttempts = pgTable("challenge_attempts", {
   provider: text("provider").notNull(),
   providerTaskId: text("provider_task_id"),
   rateVersion: text("rate_version").notNull(),
-  creditUnits: integer("credit_units").notNull(),
+  creditUnits: bigint("credit_units", { mode: "number" }).notNull(),
   reservationId: text("reservation_id").notNull().references(() => creditReservations.id, { onDelete: "restrict" }),
   status: text("status").$type<"submitting" | "submitted" | "rejected" | "applying" | "solved" | "invalid" | "uncertain">().notNull(),
   createdAt: createdAt(),
@@ -1542,7 +1548,7 @@ export const captchaJobs = pgTable("captcha_jobs", {
   solutionJson: jsonb("solution_json").$type<Record<string, unknown>>(),
   errorCode: text("error_code"),
   rateVersion: text("rate_version").notNull(),
-  creditUnits: integer("credit_units").notNull(),
+  creditUnits: bigint("credit_units", { mode: "number" }).notNull(),
   reservationId: text("reservation_id").notNull().references(() => creditReservations.id, { onDelete: "restrict" }),
   nextPollAt: ts("next_poll_at").notNull().defaultNow(),
   createdAt: createdAt(),
@@ -1618,4 +1624,54 @@ export const humanActionRequests = pgTable("human_action_requests", {
   reason: text("reason").notNull(), resumeWhen: text("resume_when").notNull(),
   status: text("status").$type<"pending" | "resumed">().notNull().default("pending"),
   createdAt: createdAt(), resumedAt: ts("resumed_at"),
+});
+
+// USD amounts use integer millionths; customer charges and provider costs are separate.
+export const billingSettings = pgTable("billing_settings", {
+  key: text("key").primaryKey(), value: jsonb("value").$type<Record<string, unknown>>().notNull(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
+export const billingRates = pgTable("billing_rates", {
+  id: text("id").primaryKey(), category: text("category").notNull(), provider: text("provider").notNull().default(""),
+  item: text("item").notNull(), chargeMicros: bigint("charge_micros", {mode:"number"}).notNull(),
+  costMicros: bigint("cost_micros", {mode:"number"}), createdAt: createdAt(),
+}, t => [index("billing_rates_lookup_idx").on(t.category,t.provider,t.item,t.createdAt),
+  check("billing_rates_amount_check", sql`${t.chargeMicros} >= 0 and (${t.costMicros} is null or ${t.costMicros} >= 0)`)]);
+export const billingAudit = pgTable("billing_audit", {
+  id: text("id").primaryKey(), actorId: text("actor_id").notNull(), action: text("action").notNull(),
+  details: jsonb("details").$type<Record<string, unknown>>().notNull(), createdAt: createdAt(),
+});
+export const operatingCosts = pgTable("operating_costs", {
+  id: text("id").primaryKey(), accountId: text("account_id"), category: text("category").notNull(),
+  provider: text("provider").notNull().default(""), sourceId: text("source_id").notNull(),
+  status: text("status").notNull().default("settled"),
+  snapshot: jsonb("snapshot").$type<{unitCharge:number;unitCost:number|null}>(),
+  costMicros: bigint("cost_micros", {mode:"number"}), quantity: text("quantity").notNull().default("1"),
+  rateId: text("rate_id"), occurredAt: ts("occurred_at").notNull().defaultNow(),
+}, t=>[uniqueIndex("operating_costs_source_key").on(t.category,t.sourceId),index("operating_costs_date_idx").on(t.occurredAt)]);
+export const billingCoupons = pgTable("billing_coupons", {
+  code: text("code").primaryKey(), kind: text("kind").$type<"balance"|"percent"|"flat">().notNull(),
+  amount: text("amount").notNull(), maxRedemptions: integer("max_redemptions"),
+  expiresAt: ts("expires_at"), disabled: boolean("disabled").notNull().default(false),
+  paddleId: text("paddle_id"), syncError: text("sync_error"), createdAt: createdAt(),
+});
+export const couponRedemptions = pgTable("coupon_redemptions", {
+  code: text("code").notNull().references(()=>billingCoupons.code), accountId: text("account_id").notNull(),
+  createdAt: createdAt(),
+}, t=>[primaryKey({columns:[t.code,t.accountId]})]);
+export const actionSummaries = pgTable("action_summaries", {
+  runId: text("run_id").notNull().references(()=>runs.id,{onDelete:"cascade"}), callId: text("call_id").notNull(),
+  accountId: text("account_id").notNull(), source: text("source").notNull(), summary: text("summary"),
+  status: text("status").notNull().default("pending"), attempts: integer("attempts").notNull().default(0),
+  claimedAt: ts("claimed_at"), createdAt: createdAt(),
+}, t=>[primaryKey({columns:[t.runId,t.callId]})]);
+export const workflowDeletions = pgTable("workflow_deletions", {
+  workflowId: text("workflow_id").primaryKey(), accountId: text("account_id").notNull(),
+  status: text("status").notNull().default("stopping"), error: text("error"),
+  blobRefs: jsonb("blob_refs").$type<string[]>().notNull().default([]),
+  createdAt: createdAt(), updatedAt: ts("updated_at").notNull().defaultNow(),
+});
+export const proxyAccounts = pgTable("proxy_accounts", {
+  hash: text("hash").primaryKey(), label: text("label").notNull(), accountId: text("account_id"),
+  createdAt: createdAt(),
 });

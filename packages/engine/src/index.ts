@@ -290,3 +290,15 @@ export { harnessTask, type HarnessTask } from "./intent-contract.js";
 export { createCaptchaProviders, captchaCreateSchema, type CaptchaProvider, type CaptchaProviderName, type CaptchaCreate, type CaptchaProviderResult } from "./captcha-providers.js";
 export { createCaptchaService, type CaptchaService, type CaptchaJob } from "./captcha-service.js";
 export { browserOperatingPrompt, latestBrowserPrompt, carryBrowserLearning } from "./browser-learning.js";
+
+export { assertUsdAccount, prepareUsdWallet, convertLegacyWallets, legacyCreditUsd, findBillingRate, audit, recordCost, setting, convertLegacyWallet } from "./billing-prices.js";
+
+export { redeemBalanceCoupon, purchaseDiscount, saveCoupon, syncDiscount, couponCode } from "./billing-coupons.js";
+
+export { processActionSummary } from "./action-summaries.js";
+
+export { syncProxyCosts, parseProxyReport } from "./proxy-costs.js";
+
+export { requestWorkflowDeletion, processWorkflowDeletion } from "./workflow-deletion.js";
+
+export { reconcileCaptchaJobs } from "./captcha-service.js";

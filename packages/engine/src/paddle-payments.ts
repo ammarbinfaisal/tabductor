@@ -1,3 +1,5 @@
+import { assertUsdAccount } from "./billing-prices.js";
+import { usdMicros } from "@tabductor/core";
 import { AppError, newId } from "@tabductor/core";
 import {
   paymentAdjustments,
@@ -24,9 +26,9 @@ export function parsePaddleCreditPacks(raw: string): Map<string, PaddleCreditPac
   try {
     json = JSON.parse(raw);
   } catch (cause) {
-    throw new AppError("paddle_credit_packs_invalid", "PADDLE_CREDIT_PACKS_JSON is not valid JSON", { cause });
+    throw new AppError("paddle_credit_packs_invalid", "PADDLE_USD_PACKS_JSON is not valid JSON", { cause });
   }
-  const parsed = creditPacksSchema.safeParse(json);
+  const parsed = creditPacksSchema.safeParse(Array.isArray(json)?json.map(({balanceUsd,...r})=>balanceUsd===undefined?r:{...r,creditUnits:usdMicros(String(balanceUsd))}):json);
   if (!parsed.success) throw new AppError("paddle_credit_packs_invalid", "Paddle credit packs are invalid");
   const packs = new Map<string, PaddleCreditPack>();
   for (const pack of parsed.data) {
@@ -37,7 +39,7 @@ export function parsePaddleCreditPacks(raw: string): Map<string, PaddleCreditPac
 }
 
 export type PaddleTransactionClient = {
-  createTransaction(input: { priceId: string; purchaseId: string; checkoutUrl?: string }): Promise<{
+  createTransaction(input: { priceId: string; purchaseId: string; checkoutUrl?: string; discountId?: string }): Promise<{
     transactionId: string;
     checkoutUrl?: string;
   }>;
@@ -65,6 +67,8 @@ export function createPaddleTransactionClient(input: {
         body: JSON.stringify({
           items: [{ price_id: request.priceId, quantity: 1 }],
           collection_mode: "automatic",
+          ...(request.discountId ? {discount_id:request.discountId} : {}),
+          currency_code: "USD",
           custom_data: { tabductor_purchase_id: request.purchaseId },
           ...(request.checkoutUrl ? { checkout: { url: request.checkoutUrl } } : {}),
         }),
@@ -82,9 +86,10 @@ export function createPaddleTransactionClient(input: {
 
 export async function createPaddleCreditPurchase(
   db: Db,
-  input: { accountId: string; operationId: string; priceId: string; checkoutUrl?: string },
+  input: { accountId: string; operationId: string; priceId: string; checkoutUrl?: string; discountId?: string },
   deps: { packs: Map<string, PaddleCreditPack>; client: PaddleTransactionClient },
 ): Promise<PaymentPurchaseRow> {
+  await assertUsdAccount(db,input.accountId);
   const pack = deps.packs.get(input.priceId);
   if (!pack) throw new AppError("paddle_price_not_configured", "credit pack price is not configured");
   if (!input.operationId.trim()) throw new AppError("paddle_operation_invalid", "purchase operation id is required");
@@ -97,6 +102,7 @@ export async function createPaddleCreditPurchase(
       operationId: input.operationId,
       priceId: pack.priceId,
       creditUnits: pack.creditUnits,
+      discountId: input.discountId??null,
     }).onConflictDoNothing({
       target: [paymentPurchases.accountId, paymentPurchases.operationId],
     }).returning();
@@ -106,7 +112,7 @@ export async function createPaddleCreditPurchase(
       eq(paymentPurchases.operationId, input.operationId),
     ));
     if (!existing) throw new AppError("paddle_purchase_conflict", "purchase operation could not be resolved");
-    if (existing.priceId !== input.priceId) {
+    if (existing.priceId !== input.priceId || existing.discountId !== (input.discountId??null)) {
       throw new AppError("paddle_purchase_conflict", "purchase operation was already used for another price");
     }
     return { purchase: existing, create: false };
@@ -118,6 +124,7 @@ export async function createPaddleCreditPurchase(
     transaction = await deps.client.createTransaction({
       priceId: pack.priceId,
       purchaseId: prepared.purchase.id,
+      ...(input.discountId?{discountId:input.discountId}:{}),
       ...(input.checkoutUrl ? { checkoutUrl: input.checkoutUrl } : {}),
     });
   } catch (error) {
@@ -148,7 +155,8 @@ const completedTransactionSchema = z.object({
   status: z.literal("completed"),
   custom_data: z.object({ tabductor_purchase_id: z.string().min(1) }),
   currency_code: z.string().min(3).max(3),
-  details: z.object({ totals: z.object({ total: z.string().regex(/^\d+$/) }) }),
+  discount_id: z.string().nullable().optional(),
+  details: z.object({ totals: z.object({ total: z.string().regex(/^\d+$/) }).passthrough() }).passthrough(),
   items: z.array(z.object({ price_id: z.string().min(1), quantity: z.number().int().positive() })).length(1),
 });
 
@@ -218,7 +226,7 @@ export async function processPaddleWebhookEvent(
     }
     const transaction = parsed.data;
     const totalMinor = Number(transaction.details.totals.total);
-    if (!Number.isSafeInteger(totalMinor) || totalMinor <= 0) {
+    if (!Number.isSafeInteger(totalMinor) || totalMinor < 0) {
       await setEventStatus(trx, notificationId, "failed", "completed transaction total is outside the supported range");
       return "failed";
     }
@@ -230,8 +238,7 @@ export async function processPaddleWebhookEvent(
     }
 
     const item = transaction.items[0]!;
-    const pack = packs.get(item.price_id);
-    if (!pack || item.quantity !== 1 || purchase.priceId !== item.price_id || purchase.creditUnits !== pack.creditUnits) {
+    if (item.quantity !== 1 || purchase.priceId !== item.price_id) {
       await setEventStatus(trx, notificationId, "failed", "completed transaction does not match its configured credit pack");
       return "failed";
     }
@@ -244,7 +251,7 @@ export async function processPaddleWebhookEvent(
     await appendCreditAdjustmentLocked(trx, {
       accountId: purchase.accountId,
       kind: "purchase",
-      units: pack.creditUnits,
+      units: purchase.creditUnits,
       idempotencyKey: `paddle:transaction:${transaction.id}:completed`,
       metadata: { transactionId: transaction.id, priceId: item.price_id, purchaseId: purchase.id },
     });
@@ -253,6 +260,8 @@ export async function processPaddleWebhookEvent(
       status: "completed",
       totalMinor,
       currencyCode: transaction.currency_code,
+      financialJson: transaction.details,
+      discountId: transaction.discount_id??purchase.discountId,
       creditedAt: sql`coalesce(${paymentPurchases.creditedAt}, now())`,
       lastError: null,
       updatedAt: sql`now()`,

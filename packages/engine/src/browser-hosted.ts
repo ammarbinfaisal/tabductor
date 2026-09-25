@@ -1,3 +1,4 @@
+import { findBillingRate } from "./billing-prices.js";
 import { requestChallengeRecovery, advanceChallengeRecovery, type SolverProvider } from "./challenge-recovery.js";
 import { createHmac } from "node:crypto";
 import { AppError, newId } from "@tabductor/core";
@@ -30,12 +31,16 @@ export async function ensureWorkflowBrowserProfile(db: Db, accountId: string, wo
 }
 
 export function browserCreditAdmission(rate: { version: string; unitsPerMinute: number; maxSeconds: number }): BrowserAdmission {
-  if (!rate.version || !Number.isSafeInteger(rate.unitsPerMinute) || rate.unitsPerMinute <= 0 || !Number.isSafeInteger(rate.maxSeconds) || rate.maxSeconds < 60 || rate.maxSeconds > 86400) {
+  if (!rate.version || !Number.isSafeInteger(rate.unitsPerMinute) || rate.unitsPerMinute < 0 || !Number.isSafeInteger(rate.maxSeconds) || rate.maxSeconds < 60 || rate.maxSeconds > 86400) {
     throw new AppError("browser_rate_invalid", "browser allocation requires a versioned rate and a bounded session duration");
   }
   return { async reserve(input, trx) {
-    const reservation = await reserveCredits(trx, { accountId: input.accountId, operationId: `browser:${input.sessionId}`, category: "browser", units: Math.ceil(rate.maxSeconds / 60) * rate.unitsPerMinute, ttlMs: 86400_000 });
-    await trx.insert(browserBilling).values({ sessionId: input.sessionId, reservationId: reservation.id, rateVersion: rate.version, unitsPerMinute: rate.unitsPerMinute, maxSeconds: rate.maxSeconds });
+    const configured=await findBillingRate(trx,"browser","","minute");
+    const unitsPerMinute=configured?.chargeMicros??rate.unitsPerMinute;
+    if(unitsPerMinute<=0)throw new AppError("browser_rate_missing","Set a browser USD/minute rate in Admin before allocating a paid browser.");
+    const reservation = await reserveCredits(trx, { accountId: input.accountId, operationId: `browser:${input.sessionId}`, category: "browser", units: Math.ceil(rate.maxSeconds / 60) * unitsPerMinute, ttlMs: 86400_000,
+      cost:{provider:"browser",rateId:configured?.id??rate.version,unitCharge:unitsPerMinute,unitCost:configured?.costMicros??null} });
+    await trx.insert(browserBilling).values({ sessionId: input.sessionId, reservationId: reservation.id, rateVersion: configured?.id??rate.version, unitsPerMinute, maxSeconds: rate.maxSeconds });
   } };
 }
 

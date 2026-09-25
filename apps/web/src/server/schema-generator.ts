@@ -64,7 +64,7 @@ function build(): SchemaGenerator {
 /** Request-scoped factories prevent account identity leaking through a process-global model. */
 export function accountModelServices(accountId: string, workflowId?: string) {
   const config = loadConfig();
-  const resolver = createModelResolver({ db: db(), wrapper: configuredKeyWrapper(config), rates: parseModelRates(config.MODEL_RATES_JSON),
+  const resolver = createModelResolver({ db: db(), wrapper: configuredKeyWrapper(config), rates: parseModelRates(config.MODEL_USD_RATES_JSON),
     platformKeys: { ...(config.OPENAI_API_KEY ? { openai: config.OPENAI_API_KEY } : {}), ...(config.ANTHROPIC_API_KEY ? { anthropic: config.ANTHROPIC_API_KEY } : {}) } });
   return fundedAuthoringModels(resolver, { accountId, ...(workflowId ? { workflowId } : {}) }, databasePool());
 }

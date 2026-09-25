@@ -5,7 +5,7 @@ import { db } from "../../../../server/db.js";
 
 export async function POST(request: Request) {
   const config = loadConfig(process.env);
-  if (!config.PADDLE_WEBHOOK_SECRET || !config.PADDLE_CREDIT_PACKS_JSON) {
+  if (!config.PADDLE_WEBHOOK_SECRET || !config.PADDLE_USD_PACKS_JSON) {
     return NextResponse.json({ error: "billing webhook is not configured" }, { status: 503 });
   }
   const signatureHeader = request.headers.get("paddle-signature");
@@ -22,7 +22,7 @@ export async function POST(request: Request) {
     const status = await processPaddleWebhookEvent(
       db(),
       result.event.notificationId,
-      parsePaddleCreditPacks(config.PADDLE_CREDIT_PACKS_JSON),
+      parsePaddleCreditPacks(config.PADDLE_USD_PACKS_JSON),
     );
     return NextResponse.json({ accepted: true, duplicate: result.duplicate, status });
   } catch (error) {

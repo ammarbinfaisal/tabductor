@@ -916,7 +916,8 @@ export async function publishVersion(
   const report: CompileReport = { events: compiled.map((c) => c.entry), tasks: compiledTasks.map((t) => t.entry) };
 
   return db.transaction(async (trx) => {
-    const [latest] = await trx.select({ currentVersionId: workflows.currentVersionId }).from(workflows).where(eq(workflows.id, workflow.id)).for("update");
+    const [latest] = await trx.select({ currentVersionId: workflows.currentVersionId, deletingAt: workflows.deletingAt }).from(workflows).where(eq(workflows.id, workflow.id)).for("update");
+    if(latest?.deletingAt)throw new AppError("workflow_deleting","Workflow is being deleted");
     if (latest?.currentVersionId !== (input.expectedVersionId === undefined ? workflow.currentVersionId : input.expectedVersionId)) {
       throw invalid("The workflow was published elsewhere. Reload it before publishing this draft.", {});
     }

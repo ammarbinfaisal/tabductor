@@ -1,3 +1,5 @@
+import { findBillingRate } from "./billing-prices.js";
+import { usdMicros } from "@tabductor/core";
 import { createHash } from "node:crypto";
 import { AppError, newId } from "@tabductor/core";
 import { browserChallenges, challengeAttempts, browserSessions, browserSessionActivity, type Db } from "@tabductor/db";
@@ -21,14 +23,14 @@ const endpoints = { capsolver: "https://api.capsolver.com", "2captcha": "https:/
 
 export function parseSolverRates(json?: string) {
   const rates = z.array(z.object({ name: z.enum(["capsolver", "2captcha", "anti-captcha"]),
-    rateVersion: z.string().min(1), creditUnits: z.number().int().positive().safe() }).strict()).max(3).parse(JSON.parse(json || "[]"));
+    rateVersion: z.string().min(1), creditUnits: z.number().int().positive().safe() }).strict()).max(3).parse((JSON.parse(json || "[]") as Record<string,unknown>[]).map(({priceUsd,...r})=>priceUsd===undefined?r:{...r,creditUnits:usdMicros(String(priceUsd))}));
   if (new Set(rates.map((rate) => rate.name)).size !== rates.length) throw new AppError("solver_config_invalid", "solver providers must be unique");
   return rates;
 }
 
 /** Fixed provider endpoints; secrets and raw provider errors never reach traces or clients. */
 export function createSolverProvider(input: { name: keyof typeof capabilities; apiKey: string; rateVersion: string; creditUnits: number; fetch?: typeof fetch }): SolverProvider {
-  if (!input.apiKey || !input.rateVersion || !Number.isSafeInteger(input.creditUnits) || input.creditUnits <= 0) throw new AppError("solver_config_invalid", "solver credentials and explicit rates are required");
+  if (!input.apiKey || !input.rateVersion || !Number.isSafeInteger(input.creditUnits) || input.creditUnits < 0) throw new AppError("solver_config_invalid", "solver credentials and explicit rates are required");
   const request = async (method: string, fields: Record<string, unknown>) => {
     const response = await (input.fetch ?? fetch)(`${endpoints[input.name]}/${method}`, { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ clientKey: input.apiKey, ...fields }), signal: AbortSignal.timeout(15_000) });
@@ -87,7 +89,13 @@ export async function advanceChallengeRecovery(db: Db, id: string, providers: re
     }
     if (challenge.nextPollAt.getTime() > now) return { challenge, waiting: true as const };
     const [previous] = await trx.select().from(challengeAttempts).where(eq(challengeAttempts.challengeId, id)).orderBy(desc(challengeAttempts.createdAt)).limit(1);
-    const available = providers.filter((provider) => provider.supports.includes(challenge.kind));
+    const available = [] as SolverProvider[];
+    for(const provider of providers){
+      if(!provider.supports.includes(challenge.kind))continue;
+      const item=capabilities[provider.name as keyof typeof capabilities]?.[challenge.kind as ChallengeKind]??challenge.kind;
+      const configured=await findBillingRate(trx,"solver",provider.name,item);
+      if((configured?.chargeMicros??provider.creditUnits)>0)available.push(provider);
+    }
     if (challenge.deadline.getTime() <= now || !available.length || previous && ["submitting", "uncertain", "applying"].includes(previous.status) || challenge.attempts >= 3 && previous?.status !== "submitted") {
       await trx.update(browserChallenges).set({ status: "human_required" }).where(eq(browserChallenges.id, id));
       await trx.insert(browserSessionActivity).values({ sessionId: challenge.sessionId, kind: "challenge_human_required", private: true, payloadJson: { challengeId: id } });
@@ -98,11 +106,15 @@ export async function advanceChallengeRecovery(db: Db, id: string, providers: re
     if (previous?.status === "submitted") return { challenge, attempt: previous, provider: available.find((provider) => provider.name === previous.provider), poll: true as const };
     const provider = available[challenge.attempts % available.length]!;
     const attemptId = newId("solver");
-    const reservation = await reserveCredits(trx, { accountId: challenge.accountId, category: "solver", operationId: attemptId, units: provider.creditUnits });
-    const [attempt] = await trx.insert(challengeAttempts).values({ id: attemptId, challengeId: id, provider: provider.name, rateVersion: provider.rateVersion,
-      creditUnits: provider.creditUnits, reservationId: reservation.id, status: "submitting" }).returning();
+    const item=capabilities[provider.name as keyof typeof capabilities]?.[challenge.kind as ChallengeKind]??challenge.kind;
+    const configured=await findBillingRate(trx,"solver",provider.name,item);
+    const amount=configured?.chargeMicros??provider.creditUnits, version=configured?.id??provider.rateVersion;
+    const reservation = await reserveCredits(trx, { accountId: challenge.accountId, category: "solver", operationId: attemptId, units: amount,
+      cost:{provider:provider.name,rateId:version,unitCharge:amount,unitCost:configured?.costMicros??null} });
+    const [attempt] = await trx.insert(challengeAttempts).values({ id: attemptId, challengeId: id, provider: provider.name, rateVersion: version,
+      creditUnits: amount, reservationId: reservation.id, status: "submitting" }).returning();
     await trx.update(browserChallenges).set({ attempts: challenge.attempts + 1 }).where(eq(browserChallenges.id, id));
-    await trx.insert(browserSessionActivity).values({ sessionId: challenge.sessionId, kind: "challenge_submitted", payloadJson: { challengeId: id, provider: provider.name, reservedUnits: provider.creditUnits } });
+    await trx.insert(browserSessionActivity).values({ sessionId: challenge.sessionId, kind: "challenge_submitted", payloadJson: { challengeId: id, provider: provider.name, reservedUsdMicros: amount } });
     return { challenge, attempt: attempt!, provider, poll: false as const };
   });
   if ("terminal" in claimed) return claimed.challenge.status;

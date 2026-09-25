@@ -182,3 +182,5 @@ export { workflowRecords, runRecordOutcomes, RECORD_STATUSES, type RecordStatus 
 export { destinationPreparations, destinationContracts, destinationRecords, humanActionRequests } from "./schema.js";
 
 export { browserFleetStatus } from "./schema.js";
+
+export { billingSettings, billingRates, billingAudit, operatingCosts, billingCoupons, couponRedemptions, actionSummaries, workflowDeletions, proxyAccounts } from "./schema.js";

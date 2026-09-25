@@ -225,6 +225,7 @@ function TraceRow({ entry, workflowId, devMode }: { entry: TraceItem; workflowId
   const denied = entry.kind === "policy_denied";
   const isLlm = entry.kind === "llm";
   const screenshotRef = entry.kind === "action" && payload.action === "screenshot" ? entry.blobRef : null;
+  const concisePythonFailure = payload.action === "tool.call" && payload.tool === "browser.python" && payload.ok === false;
 
   return (
     <div className={`trace-row${denied ? " trace-row--denied" : ""}${isLlm ? " trace-row--llm" : ""}`}>
@@ -236,7 +237,7 @@ function TraceRow({ entry, workflowId, devMode }: { entry: TraceItem; workflowId
       </span>
       <div className="stack" style={{ gap: "var(--space-1)", flex: 1, minWidth: 0 }}>
         <TraceSummary kind={entry.kind} payload={payload} workflowId={workflowId} />
-        {devMode && payload.action === "tool.call" ? (
+        {devMode && payload.action === "tool.call" && payload.tool !== "browser.python" && !concisePythonFailure ? (
           <div>
             <span className="mono muted">Parameters</span>
             {Object.hasOwn(payload, "args") ? (
@@ -252,7 +253,7 @@ function TraceRow({ entry, workflowId, devMode }: { entry: TraceItem; workflowId
           />
         ) : null}
         <details>
-          <summary className="mono muted trace-row-raw-summary">raw</summary>
+          <summary className="mono muted trace-row-raw-summary">Code and technical details</summary>
           <pre className="mono">{JSON.stringify(payload, null, 2)}</pre>
         </details>
       </div>
@@ -279,6 +280,10 @@ function TraceSummary({
       );
     case "action":
       if (payload.action === "tool.call") {
+        if (payload.tool === "browser.python") {
+          return <span>{typeof payload.summary === "string" ? payload.summary : payload.ok === false ? "Browser action failed" : "Ran a browser action"}<span className="muted"> · {payload.ok === false ? "failed" : "completed"}{typeof payload.duration_ms === "number" ? ` · ${payload.duration_ms}ms` : ""}</span>{payload.ok === false ? <small className="muted"> · {String(payload.error ?? "")}</small> : null}</span>;
+        }
+
         return <span className="mono">{String(payload.tool)} <span className="muted">{payload.ok === false ? `· failed: ${String(payload.error ?? "")}` : "· ok"}{typeof payload.duration_ms === "number" ? ` · ${payload.duration_ms}ms` : ""}</span>{typeof payload.eventId === "string" ? <> · <Link href={`/workflows/${workflowId}?event=${payload.eventId}`}>View packet →</Link></> : null}</span>;
       }
       if (payload.action === "emit") {

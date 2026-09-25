@@ -1,3 +1,4 @@
+import { DeleteWorkflow } from "../../components/delete-workflow.js";
 import Link from "next/link";
 import { Stamp } from "../../components/primitives.js";
 import { createServerCaller } from "../../server/router.js";
@@ -56,7 +57,7 @@ export default async function WorkflowsPage() {
                 )}
               </td>
               <td><span className="publication-state">{w.currentVersionId ? "Published" : "Draft"}</span></td>
-              <td><Link className="btn btn--quiet" href={`/workflows/${w.id}/runs`}>View runs ↗︎</Link></td>
+              <td><div className="row"><Link className="btn btn--quiet" href={`/workflows/${w.id}/runs`}>View runs ↗︎</Link><DeleteWorkflow workflowId={w.id} deleting={Boolean(w.deletingAt)}/></div></td>
             </tr>
           ))}
         </tbody>

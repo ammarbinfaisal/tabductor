@@ -62,7 +62,7 @@ const automationGraph: Graph = {
 function mockPublication(graph: Graph) {
   vi.mocked(api.workflow.publishVersion.mutate).mockResolvedValue({ versionId: "v2", taskIds: {}, taskModes: {}, report: { events: [], tasks: [] } });
   vi.mocked(api.workflow.get.query).mockResolvedValue({
-    workflow: { id: "wf", accountId: "acct_local", name: "Workflow", maxHops: 20, userId: "user", currentVersionId: "v2", blockedReasonJson: null, createdAt: new Date() },
+    workflow: { id: "wf", accountId: "acct_local", name: "Workflow", maxHops: 20, userId: "user", currentVersionId: "v2", blockedReasonJson: null, deletingAt: null, createdAt: new Date() },
     versionId: "v2", graph, tasks: [], eventSchemas: {}, authoring: { report: null, proposedGrants: [] },
   });
   vi.mocked(api.workflow.compileIntent.mutate).mockResolvedValue({ ok: true, artifact: { graph, store: null, proposedGrants: [] }, report: { checks: [], attempts: 1 } });
@@ -162,7 +162,7 @@ it("keeps legacy sample nodes as unpublished edits until real execution is publi
   expect(store.getState().publishedTasks.Browser?.mode).toBe("stub");
   expect(api.workflow.publishVersion.mutate).not.toHaveBeenCalled();
 
-  const workflow = { id: "wf", accountId: "acct_local", name: "Workflow", maxHops: 20, userId: "user", currentVersionId: "v1", blockedReasonJson: null, createdAt: new Date() };
+  const workflow = { id: "wf", accountId: "acct_local", name: "Workflow", maxHops: 20, userId: "user", currentVersionId: "v1", blockedReasonJson: null, deletingAt: null, createdAt: new Date() };
   vi.mocked(api.workflow.get.query).mockResolvedValue({ ...init, workflow });
   await store.reload();
   expect(store.getState().graph.tasks[0]?.mode).toBe("ai");
@@ -204,7 +204,7 @@ it("runs and schedules the published workflow through workflow-level controls", 
     maxHops: 20,
     userId: "user",
     currentVersionId: "v1",
-    blockedReasonJson: null,
+    blockedReasonJson: null, deletingAt: null,
     createdAt: new Date(),
   };
   const init = {

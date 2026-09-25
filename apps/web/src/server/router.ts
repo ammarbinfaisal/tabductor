@@ -1,3 +1,4 @@
+import { adminRouter } from "./routers/admin.js";
 import { endpointRouter } from "./routers/endpoint.js";
 import { engineRouter } from "./routers/engine.js";
 import { eventRouter } from "./routers/event.js";
@@ -13,6 +14,7 @@ import { createCallerFactory, createContext, router, type Context } from "./trpc
 import { accountIdForWebRequest } from "./auth-context.js";
 
 export const appRouter = router({
+  admin: adminRouter,
   account: accountRouter,
   browserSession: browserSessionRouter,
   workflow: workflowRouter,

@@ -1,0 +1,158 @@
+import { afterAll,beforeAll,expect,it,vi } from "vitest";
+import { eq,sql } from "drizzle-orm";
+import { accounts,billingRates,billingSettings,creditLedgerEntries,couponRedemptions,browserSessions,workflowDeletions,workflows,runs,actionSummaries,operatingCosts,billingAudit,creditReservations,workflowExecutions,captchaJobs,browserCommands,proxyAccounts } from "@tabductor/db";
+import { createMigratedTestDb,type MigratedTestDb } from "@tabductor/db/test-db";
+import { usdMicros } from "@tabductor/core";
+import { appendCreditAdjustment,getCreditBalance,resolveAccountIdentity,staticSchemaGenerator,createBrowserProfile,createWorkflow,seedWorkflow,
+ requestWorkflowDeletion,processWorkflowDeletion,processActionSummary,reserveCredits,settleCreditReservation,convertLegacyWallet,convertLegacyWallets,browserCreditAdmission,claimBrowserAllocation,fulfillBrowserAllocation,requestBrowserSession,endBrowserSession,settleBrowserUsage,reconcileCaptchaJobs,syncProxyCosts,saveCoupon,syncDiscount } from "@tabductor/engine";
+import { createCaller } from "../../apps/web/src/server/router.js";
+let db:MigratedTestDb,admin:string,user:string;
+const caller=(accountId:string)=>createCaller({db:db.db,pool:db.pool,accountId,schemaGenerator:staticSchemaGenerator({})});
+beforeAll(async()=>{db=await createMigratedTestDb();admin=await resolveAccountIdentity(db.db,{provider:"fixture",subject:"usd-admin"});user=await resolveAccountIdentity(db.db,{provider:"fixture",subject:"usd-user"});vi.stubEnv("ADMIN_ACCOUNT_IDS",admin);});
+afterAll(async()=>{await db?.close();vi.unstubAllEnvs();});
+it("protects every administration procedure and accepts exact USD prices",async()=>{
+ await expect(caller(user).admin.settings()).rejects.toMatchObject({code:"FORBIDDEN"});
+ await expect(caller(user).admin.saveRate({category:"solver",provider:"2captcha",item:"TurnstileTaskProxyless",chargeUsd:"0.10",costUsd:"0.002"})).rejects.toMatchObject({code:"FORBIDDEN"});
+ await caller(admin).admin.saveRate({category:"solver",provider:"2captcha",item:"TurnstileTaskProxyless",chargeUsd:"0.10",costUsd:"0.002"});
+ const [rate]=await db.db.select().from(billingRates);expect(rate).toMatchObject({chargeMicros:100000,costMicros:2000});
+ expect((await caller(admin).admin.settings()).rates[0]).toMatchObject({chargeUsd:"0.10",costUsd:"0.002"});
+});
+it("redeems a USD coupon once under concurrent requests and enforces the total limit",async()=>{
+ await caller(admin).admin.createCoupon({code:"DOLLAR",kind:"balance",amount:"1.00",maxRedemptions:1,expiresAt:null});
+ await Promise.all(Array.from({length:8},()=>caller(user).account.redeemCoupon({code:"dollar"})));
+ expect((await caller(user).account.walletBalance()).availableUsd).toBe("1.00");
+ expect(await db.db.select().from(couponRedemptions)).toHaveLength(1);
+ await expect(caller(admin).account.redeemCoupon({code:"DOLLAR"})).rejects.toThrow("redemption limit");
+ const hold=await reserveCredits(db.db,{accountId:user,operationId:"ten-cents",category:"solver",units:usdMicros("0.10"),cost:{provider:"2captcha",rateId:"v1",unitCharge:100000,unitCost:2000}});
+ await Promise.all([settleCreditReservation(db.db,{accountId:user,reservationId:hold.id,actualUnits:100000}),settleCreditReservation(db.db,{accountId:user,reservationId:hold.id,actualUnits:100000})]);
+ expect((await caller(user).account.walletBalance()).availableUsd).toBe("0.90");
+ expect((await db.db.select().from(operatingCosts).where(eq(operatingCosts.sourceId,hold.id)))[0]).toMatchObject({costMicros:2000,status:"settled"});
+});
+it("pages sessions with identical timestamps without leaking accounts",async()=>{
+ const profileId=await createBrowserProfile(db.db,{accountId:user,name:"Paged"});
+ await db.db.insert(browserSessions).values(Array.from({length:61},(_,i)=>({id:`session-${String(i).padStart(3,"0")}`,accountId:user,profileId,status:"ended" as const,createdAt:new Date("2026-09-25T00:00:00Z")})));
+ const first=await caller(user).browserSession.list();expect(first.items).toHaveLength(25);expect(first.total).toBe(61);expect(first.active).toBe(0);
+ const second=await caller(user).browserSession.list({cursor:first.nextCursor!});
+ expect(second.items).toHaveLength(25);expect(new Set([...first.items,...second.items].map(s=>s.id)).size).toBe(50);
+ const previous=await caller(user).browserSession.list({cursor:second.previousCursor!,direction:"previous"});expect(previous.items.map(s=>s.id)).toEqual(first.items.map(s=>s.id));
+ const third=await caller(user).browserSession.list({cursor:second.nextCursor!});expect(third.items).toHaveLength(11);expect(third.nextCursor).toBeNull();
+ expect((await caller(admin).browserSession.list()).items).toHaveLength(0);
+});
+it("automatically converts at one USD per old credit after active usage settles, exactly once",async()=>{
+ const old=await resolveAccountIdentity(db.db,{provider:"fixture",subject:"legacy"});
+ await db.db.insert(creditLedgerEntries).values({id:"legacy-entry",accountId:old,kind:"purchase",units:1000,moneyUnit:"legacy_credit",idempotencyKey:"legacy-topup"});
+ await db.db.update(accounts).set({moneyUnit:"legacy_credit"}).where(eq(accounts.id,old));
+ await db.db.insert(creditReservations).values({id:"legacy-hold",accountId:old,operationId:"legacy-op",category:"browser",reservedUnits:100,expiresAt:new Date(Date.now()+60000)});
+ await db.db.insert(creditLedgerEntries).values({id:"legacy-hold-entry",accountId:old,kind:"reservation_hold",units:-100,moneyUnit:"legacy_credit",reservationId:"legacy-hold",idempotencyKey:"legacy-hold"});
+ vi.stubEnv("LEGACY_CREDIT_USD","");
+ expect((await caller(old).account.billing()).conversionRequired).toBe(true);
+ await convertLegacyWallets(db.db);
+ expect((await db.db.select().from(accounts).where(eq(accounts.id,old)))[0]?.moneyUnit).toBe("legacy_credit");
+ await settleCreditReservation(db.db,{accountId:old,reservationId:"legacy-hold",actualUnits:20});
+ expect((await db.db.select().from(creditLedgerEntries).where(eq(creditLedgerEntries.idempotencyKey,"reservation:legacy-hold:settlement")))[0]?.moneyUnit).toBe("legacy_credit");
+ await Promise.all([convertLegacyWallets(db.db),caller(old).account.billing(),...Array.from({length:5},()=>getCreditBalance(db.db,old))]);
+ expect((await caller(old).account.billing()).balance?.availableUsd).toBe("980.00");
+ expect((await db.db.select().from(creditReservations).where(eq(creditReservations.id,"legacy-hold")))[0]).toMatchObject({reservedUnits:100000000,settledUnits:20000000});
+ expect((await db.db.select().from(creditLedgerEntries).where(eq(creditLedgerEntries.id,"legacy-entry")))[0]).toMatchObject({units:1000,moneyUnit:"legacy_credit"});
+ expect(await db.db.select().from(creditLedgerEntries).where(eq(creditLedgerEntries.idempotencyKey,`usd-conversion:${old}`))).toHaveLength(1);
+ const audits=await db.db.select().from(billingAudit).where(eq(billingAudit.action,"wallet.convert"));
+ expect(audits.filter(a=>a.details.accountId===old)).toHaveLength(1);
+});
+it("background conversion handles idle accounts and still supports an explicit override",async()=>{
+ const old=await resolveAccountIdentity(db.db,{provider:"fixture",subject:"idle-legacy"});
+ await db.db.insert(creditLedgerEntries).values({id:"idle-legacy-entry",accountId:old,kind:"purchase",units:7,moneyUnit:"legacy_credit",idempotencyKey:"idle-legacy-topup"});
+ await db.db.update(accounts).set({moneyUnit:"legacy_credit"}).where(eq(accounts.id,old));
+ vi.stubEnv("LEGACY_CREDIT_USD",undefined);
+ await convertLegacyWallets(db.db);await convertLegacyWallets(db.db);
+ expect((await getCreditBalance(db.db,old)).availableUnits).toBe(7000000);
+ const override=await resolveAccountIdentity(db.db,{provider:"fixture",subject:"override-legacy"});
+ await db.db.insert(creditLedgerEntries).values({id:"override-legacy-entry",accountId:override,kind:"purchase",units:1000,moneyUnit:"legacy_credit",idempotencyKey:"override-legacy-topup"});
+ await db.db.update(accounts).set({moneyUnit:"legacy_credit"}).where(eq(accounts.id,override));
+ vi.stubEnv("LEGACY_CREDIT_USD","0.001");await convertLegacyWallet(db.db,override,admin);
+ expect((await getCreditBalance(db.db,override)).availableUnits).toBe(1000000);
+ vi.stubEnv("LEGACY_CREDIT_USD",undefined);
+});
+it("permanently deletes workflow data while retaining ledger history and rejecting new work",async()=>{
+ const workflowId=await createWorkflow(db.db,{accountId:user,userId:"test",name:"Delete me"});
+ const seeded=await seedWorkflow(db.db,{workflowId,tasks:{Browse:{kind:"browser",mode:"ai"}}});
+ const before=await db.db.select().from(creditLedgerEntries).where(eq(creditLedgerEntries.accountId,user));
+ await expect(requestWorkflowDeletion(db.db,admin,workflowId)).rejects.toMatchObject({code:"workflow_not_found"});
+ await requestWorkflowDeletion(db.db,user,workflowId);
+ await expect(db.db.insert(runs).values({id:"after-delete",taskId:seeded.taskIds.Browse!,workflowVersionId:seeded.versionId,status:"queued",modeUsed:"ai"})).rejects.toThrow();
+ await processWorkflowDeletion(db.db,db.pool,{put:async()=>"",get:async()=>Buffer.from("{}"),remove:async()=>{}});
+ const [job]=await db.db.select().from(workflowDeletions).where(eq(workflowDeletions.workflowId,workflowId));expect(job?.error).toBeNull();expect(job?.status).toBe("deleted");
+ expect(await db.db.select().from(workflows).where(eq(workflows.id,workflowId))).toHaveLength(0);
+ expect(await db.db.select().from(creditLedgerEntries).where(eq(creditLedgerEntries.accountId,user))).toEqual(before);
+});
+it("generates a persisted action description without charging the customer wallet",async()=>{
+ const workflowId=await createWorkflow(db.db,{accountId:user,userId:"test",name:"Summaries"});
+ const seeded=await seedWorkflow(db.db,{workflowId,tasks:{Browse:{kind:"browser",mode:"ai"}}});
+ await db.db.insert(runs).values({id:"summary-run",taskId:seeded.taskIds.Browse!,workflowVersionId:seeded.versionId,status:"succeeded",modeUsed:"ai"});
+ await db.db.insert(actionSummaries).values({runId:"summary-run",callId:"call-1",accountId:user,source:JSON.stringify({code:'page.goto("https://example.com")',ok:true})});
+ vi.stubEnv("OPENAI_API_KEY","fixture-key");const before=await getCreditBalance(db.db,user);
+ const request=vi.fn<typeof fetch>(async()=>new Response(JSON.stringify({output:[{content:[{type:"output_text",text:"Opened the example website."}]}],usage:{input_tokens:100,output_tokens:10}})));
+ await processActionSummary(db.db,request);await processActionSummary(db.db,request);
+ expect(request).toHaveBeenCalledTimes(1);expect((await db.db.select().from(actionSummaries))[0]).toMatchObject({status:"ready",summary:"Opened the example website."});
+ expect(await getCreditBalance(db.db,user)).toEqual(before);
+ expect((await db.db.select().from(operatingCosts).where(eq(operatingCosts.category,"summary")))[0]?.costMicros).toBeGreaterThan(0);
+});
+it("returns analytics, account pagination and safely separate amounts",async()=>{
+ const data=await caller(admin).admin.overview({from:new Date(Date.now()-86400000),to:new Date(Date.now()+86400000)});
+ expect(data.usage.find(r=>r.category==="solver")?.amountUsd).toBe("0.10");
+ expect(data.costs.find(r=>r.category==="solver")?.amountUsd).toBe("0.002");
+ expect((await caller(admin).admin.users({page:0,query:user})).items[0]?.availableUsd).toBe("0.90");
+});
+
+it("stops a billed workflow, reconciles its purchased CAPTCHA, and deletes operational references",async()=>{
+ const accountId=await resolveAccountIdentity(db.db,{provider:"fixture",subject:"paid-delete"});
+ await appendCreditAdjustment(db.db,{accountId,kind:"purchase",units:10000000,idempotencyKey:"paid-delete-funding"});
+ const workflowId=await createWorkflow(db.db,{accountId,userId:"test",name:"Paid deletion"});
+ const seeded=await seedWorkflow(db.db,{workflowId,tasks:{Browse:{kind:"browser",mode:"ai"}}});
+ await db.db.insert(workflowExecutions).values({id:"paid-execution",workflowId,workflowVersionId:seeded.versionId,maxHops:10});
+ await db.db.insert(runs).values({id:"paid-run",taskId:seeded.taskIds.Browse!,workflowVersionId:seeded.versionId,executionId:"paid-execution",status:"running",modeUsed:"ai"});
+ const profileId=await createBrowserProfile(db.db,{accountId,name:"Paid browser"});
+ const sessionId=await requestBrowserSession(db.db,{accountId,profileId,executionId:"paid-execution"});
+ await caller(admin).admin.saveRate({category:"browser",provider:"",item:"minute",chargeUsd:"0.20",costUsd:"0.03"});
+ const allocation=await claimBrowserAllocation(db.db,{admission:browserCreditAdmission({version:"fallback",unitsPerMinute:1,maxSeconds:300})});
+ await fulfillBrowserAllocation(db.db,{...allocation!,workerId:"delete-worker",podName:"delete-worker"});
+ await db.db.update(browserSessions).set({readyAt:sql`now()-interval '65 seconds'`}).where(eq(browserSessions.id,sessionId));
+ await caller(admin).admin.saveRate({category:"browser",provider:"",item:"minute",chargeUsd:"0.50",costUsd:"0.09"});
+ const hold=await reserveCredits(db.db,{accountId,operationId:"paid-captcha",category:"solver",units:100000,cost:{provider:"2captcha",rateId:"fixed",unitCharge:100000,unitCost:2000}});
+ await db.db.insert(captchaJobs).values({id:"paid-captcha",accountId,runId:"paid-run",idempotencyKey:"first",requestDigest:"digest",provider:"2captcha",taskType:"TurnstileTaskProxyless",providerTaskId:"123",status:"pending",rateVersion:"fixed",creditUnits:100000,reservationId:hold.id});
+ await db.db.insert(browserCommands).values({id:"paid-command",sessionId,runId:"paid-run",generation:1,inputGeneration:1,method:"python",status:"succeeded"});
+ await requestWorkflowDeletion(db.db,accountId,workflowId);
+ const blobs={put:async()=>"",get:async()=>Buffer.from("{}"),remove:async()=>{}};
+ await processWorkflowDeletion(db.db,db.pool,blobs);
+ expect((await db.db.select().from(workflowDeletions).where(eq(workflowDeletions.workflowId,workflowId)))[0]?.status).toBe("settling");
+ await reconcileCaptchaJobs(db.db,[{name:"2captcha",configured:true,documentation:"",rate:undefined,submit:async()=>{throw new Error("must not resubmit");},poll:async()=>({status:"ready",solution:{token:"fixture"}}),pushVariable:async()=>{}}]);
+ await endBrowserSession(db.db,sessionId);await settleBrowserUsage(db.db,sessionId);
+ await processWorkflowDeletion(db.db,db.pool,blobs);
+ expect((await db.db.select().from(workflowDeletions).where(eq(workflowDeletions.workflowId,workflowId)))[0]).toMatchObject({status:"deleted",error:null});
+ expect(await db.db.select().from(browserCommands).where(eq(browserCommands.id,"paid-command"))).toHaveLength(0);
+ expect((await getCreditBalance(db.db,accountId)).availableUnits).toBe(9500000);
+ expect((await db.db.select().from(operatingCosts).where(eq(operatingCosts.accountId,accountId))).reduce((sum,c)=>sum+(c.costMicros??0),0)).toBe(62000);
+});
+it("imports proxy bytes idempotently and pins the original cost rate",async()=>{
+ vi.stubEnv("IPROYAL_API_TOKEN","fixture-proxy-key");
+ await db.db.insert(proxyAccounts).values({hash:"fixture-proxy",label:"Fixture",accountId:user});
+ await caller(admin).admin.saveRate({category:"proxy",provider:"iproyal",item:"GB",chargeUsd:"0",costUsd:"2.00"});
+ const day=new Date().toISOString().slice(0,10),request=vi.fn<typeof fetch>(async()=>new Response(`Date,Bytes\n${day},1000000000\n`));
+ await syncProxyCosts(db.db,true,request);
+ await caller(admin).admin.saveRate({category:"proxy",provider:"iproyal",item:"GB",chargeUsd:"0",costUsd:"5.00"});
+ await db.db.update(billingSettings).set({value:{at:0}}).where(eq(billingSettings.key,"iproyal_sync"));
+ await syncProxyCosts(db.db,true,request);
+ const entries=await db.db.select().from(operatingCosts).where(eq(operatingCosts.category,"proxy"));
+ expect(entries).toHaveLength(1);expect(entries[0]?.costMicros).toBe(2000000);
+ expect(request).toHaveBeenCalledTimes(2);
+});
+
+it("syncs Paddle discounts using integer USD cents and reconciles an existing code",async()=>{
+ vi.stubEnv("PADDLE_API_KEY","pdl_sdbx_fixture");vi.stubEnv("PADDLE_ENVIRONMENT","sandbox");
+ await saveCoupon(db.db,admin,{code:"SAVE50",kind:"flat",amount:"0.50",maxRedemptions:2,expiresAt:null});
+ const request=vi.fn<typeof fetch>(async (_url,options)=>new Response(JSON.stringify({data:options?.method?{id:"dsc_fixture"}:[]})));
+ await syncDiscount(db.db,"SAVE50",["pri_fixture"],request);
+ const body=JSON.parse(String(request.mock.calls[1]?.[1]?.body));expect(body).toMatchObject({amount:"50",currency_code:"USD",type:"flat",restrict_to:["pri_fixture"]});expect(body).not.toHaveProperty("status");
+ await syncDiscount(db.db,"SAVE50",["pri_fixture"],request);
+ expect(request.mock.calls[2]?.[1]?.method).toBe("PATCH");
+ await expect(saveCoupon(db.db,admin,{code:"INVALID-DISCOUNT",kind:"percent",amount:"20",maxRedemptions:null,expiresAt:null})).rejects.toMatchObject({code:"coupon_code_invalid"});
+});

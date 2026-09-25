@@ -39,15 +39,11 @@ it("applies external credit movements exactly once and keeps account balances is
   const first = await appendCreditAdjustment(handle.db, input);
   const duplicate = await appendCreditAdjustment(handle.db, input);
   expect(duplicate.id).toBe(first.id);
-  expect(await callerFor(a).account.creditBalance()).toEqual({
-    availableUnits: 1_000,
-    reservedUnits: 0,
-    totalUnits: 1_000,
+  expect(await callerFor(a).account.walletBalance()).toEqual({
+    currency: "USD", availableUsd: "0.001", reservedUsd: "0.00",
   });
-  expect(await callerFor(b).account.creditBalance()).toEqual({
-    availableUnits: 0,
-    reservedUnits: 0,
-    totalUnits: 0,
+  expect(await callerFor(b).account.walletBalance()).toEqual({
+    currency: "USD", availableUsd: "0.00", reservedUsd: "0.00",
   });
   expect(await handle.db.select().from(creditLedgerEntries)
     .where(eq(creditLedgerEntries.idempotencyKey, input.idempotencyKey))).toHaveLength(1);

@@ -1,3 +1,5 @@
+import { findBillingRate, recordCost } from "./billing-prices.js";
+import { usdMicros } from "@tabductor/core";
 import { AppError, newId } from "@tabductor/core";
 import { modelCredentials, modelSelections, modelOperations, workflowExecutions, workflows, workflowVersions, runs, tasks, type Db } from "@tabductor/db";
 import { encryptEnvelope, withEnvelope, zero, type KeyWrapper } from "@tabductor/secrets";
@@ -44,7 +46,7 @@ export const modelSelectionSchema = z.object({
 
 const rateSchema = z.object({
   provider: z.enum(["openai", "anthropic"]), model: z.string().min(1), version: z.string().min(1),
-  // Integer credit units per million tokens. Currency conversion and margin are operator configuration.
+  // Integer USD micro-units per million tokens; parseModelRates converts decimal USD inputs.
   input: z.number().int().positive().safe(), cachedInput: z.number().int().nonnegative().safe(), output: z.number().int().positive().safe(),
   maxInputTokens: z.number().int().min(1024).max(2_000_000), maxOutputTokens: z.number().int().min(1).max(200_000),
 }).strict();
@@ -57,7 +59,8 @@ export type ModelCallConfig = { provider: ModelProvider; model: string; apiKey: 
 export function parseModelRates(value: string | undefined): ModelRate[] {
   if (!value) return [];
   try {
-    const rates = z.array(rateSchema).max(100).parse(JSON.parse(value));
+    const json=JSON.parse(value) as Record<string,unknown>[];
+    const rates = z.array(rateSchema).max(100).parse(json.map(({inputUsd,cachedInputUsd,outputUsd,...r})=>inputUsd===undefined?r:{...r,input:usdMicros(String(inputUsd)),cachedInput:usdMicros(String(cachedInputUsd??"0")),output:usdMicros(String(outputUsd))}));
     if (new Set(rates.map((r) => `${r.provider}:${r.model}`)).size !== rates.length) throw new Error("duplicate");
     return rates;
   } catch { throw new AppError("model_rates_invalid", "model rates must contain unique, explicitly versioned provider/model rates and limits"); }
@@ -147,7 +150,10 @@ export function createModelResolver(deps: { db: Db; wrapper: KeyWrapper; rates: 
       const selections = await deps.db.select().from(modelSelections).where(eq(modelSelections.accountId, scope.accountId));
       const selection = pinned !== undefined ? pinned : selections.find((s) => s.scope === scope.workflowId) ?? selections.find((s) => s.scope === "account");
       if (!selection) throw new AppError("model_selection_missing", "Choose a model source in account settings before using AI");
-      const rate = deps.rates.find((r) => r.provider === selection.provider && r.model === selection.model);
+      let rate = deps.rates.find((r) => r.provider === selection.provider && r.model === selection.model);
+      const [inputRate,cachedRate,outputRate]=await Promise.all(["input","cached","output"].map(part=>findBillingRate(deps.db,"model",selection.provider,`${selection.model}:${part}`)));
+      if(inputRate&&outputRate)rate={provider:selection.provider as "openai"|"anthropic",model:selection.model,version:inputRate.id,input:inputRate.chargeMicros,
+        cachedInput:cachedRate?.chargeMicros??inputRate.chargeMicros,output:outputRate.chargeMicros,maxInputTokens:rate?.maxInputTokens??128000,maxOutputTokens:rate?.maxOutputTokens??8192};
       if (selection.funding === "platform" && !rate) throw new AppError("model_rate_unknown", "this platform model has no configured rate");
       const maxInput = rate?.maxInputTokens ?? 128_000;
       const maxOutputTokens = rate?.maxOutputTokens ?? 8192;
@@ -178,6 +184,9 @@ export function createModelResolver(deps: { db: Db; wrapper: KeyWrapper; rates: 
         const invoke = (apiKey: string) => call({ provider: selection.provider, model: selection.model, apiKey,
           ...(credential?.baseUrl ? { baseUrl: credential.baseUrl } : {}), maxOutputTokens });
         const result = credential ? await withEnvelope(deps.wrapper, credential.envelope, (value) => invoke(value.toString("utf8"))) : await invoke(platformKey!);
+        if(selection.funding==="platform") await recordCost(deps.db,{category:"model",provider:selection.provider,accountId:scope.accountId,sourceId:id,
+          ...(inputRate?{rateId:inputRate.id}:{}),costMicros:inputRate?.costMicros!=null&&outputRate?.costMicros!=null?
+            modelCreditUnits({input:inputRate.costMicros,cachedInput:cachedRate?.costMicros??inputRate.costMicros,output:outputRate.costMicros},result.usage):null});
         validateUsage(result.usage);
         // Persist observed usage before settlement, so an unexpected provider overrun remains reconcilable.
         await deps.db.update(modelOperations).set({ inputTokens: result.usage.input, outputTokens: result.usage.output,
@@ -186,6 +195,7 @@ export function createModelResolver(deps: { db: Db; wrapper: KeyWrapper; rates: 
         await settleModelOperation(deps.db, scope.accountId, id);
         return result.value;
       } catch {
+        if(selection.funding==="platform")await recordCost(deps.db,{category:"model",provider:selection.provider,accountId:scope.accountId,sourceId:id,costMicros:null});
         await deps.db.update(modelOperations).set({ status: "uncertain" }).where(and(eq(modelOperations.id, id), eq(modelOperations.status, "pending")));
         // Provider errors may embed request headers. Never return their text, cause, or body.
         throw new AppError("model_operation_uncertain", "Model call failed; its usage is retained for reconciliation. The selected funding source was not changed.", { details: { operationId: id } });

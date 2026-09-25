@@ -1,3 +1,4 @@
+import { AdminNavigation } from "../components/admin-navigation.js";
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { ClerkProvider, UserButton } from "@clerk/nextjs";
@@ -31,6 +32,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <Link href="/status">Status</Link>
           <Link href="/settings/models">Models</Link>
           <Link href="/billing">Billing</Link>
+          <AdminNavigation />
         </nav>
         <div className="topbar-tools"><ThemeSwitcher />{clerkConfigured() && <UserButton />}</div>
       </header>

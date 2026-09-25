@@ -46,6 +46,17 @@ x-app: &app
     OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     AI_GATEWAY_API_KEY: ${AI_GATEWAY_API_KEY:-}
     SCHEMA_MODEL: ${SCHEMA_MODEL:-}
+    ADMIN_ACCOUNT_IDS: ${ADMIN_ACCOUNT_IDS:-}
+    LEGACY_CREDIT_USD: ${LEGACY_CREDIT_USD:-}
+    ACTION_SUMMARY_MODEL: ${ACTION_SUMMARY_MODEL:-}
+    MODEL_USD_RATES_JSON: ${MODEL_USD_RATES_JSON:-}
+    PADDLE_ENVIRONMENT: ${PADDLE_ENVIRONMENT:-}
+    PADDLE_API_KEY: ${PADDLE_API_KEY:-}
+    PADDLE_CLIENT_TOKEN: ${PADDLE_CLIENT_TOKEN:-}
+    PADDLE_WEBHOOK_SECRET: ${PADDLE_WEBHOOK_SECRET:-}
+    PADDLE_CHECKOUT_URL: ${PADDLE_CHECKOUT_URL:-}
+    PADDLE_USD_PACKS_JSON: ${PADDLE_USD_PACKS_JSON:-}
+    IPROYAL_API_TOKEN: ${IPROYAL_API_TOKEN:-}
     # Next starts from /app/apps/web while the engine starts from /app. Use the
     # same absolute path so every process wraps credentials with the persisted key.
     SECRETS_KEK_FILE_PATH: /app/data/secrets-kek.json
@@ -105,7 +116,7 @@ services:
       CAPSOLVER_API_KEY: ${CAPSOLVER_API_KEY:-}
       TWO_CAPTCHA_API_KEY: ${TWO_CAPTCHA_API_KEY:-}
       ANTI_CAPTCHA_API_KEY: ${ANTI_CAPTCHA_API_KEY:-}
-      SOLVER_RATES_JSON: ${SOLVER_RATES_JSON:-}
+      SOLVER_USD_RATES_JSON: ${SOLVER_USD_RATES_JSON:-}
       # The navigation guard's domain allowlist (impl-phases §0.1). Suffix match includes
       # subdomains, so `x.com` covers `api.x.com` but never `notx.com`.
       #

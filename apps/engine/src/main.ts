@@ -1,3 +1,4 @@
+import { convertLegacyWallets, reconcileCaptchaJobs, processActionSummary, processWorkflowDeletion, syncProxyCosts } from "@tabductor/engine";
 import { validatePythonCandidate } from "@tabductor/agent";
 import { eq } from "drizzle-orm";
 import {
@@ -65,6 +66,7 @@ const pythonRunner = remotePythonRunner(process.env.PYTHON_RUNNER_URL ?? "", pro
 const telemetry = await initTelemetry({ service: "tabductor-engine" });
 const log = telemetry.logger;
 const handle = createDb(config.DATABASE_URL);
+await convertLegacyWallets(handle.db);
 
 /**
  * U3a: which browser a run drives. Resolved per run from the run's workflow — the rotation
@@ -77,13 +79,12 @@ const endpointFor = (_db: Db) => async (handle: RunHandle) => handle.run.id;
 /** One pool, one blob store, one gate for every browser-facing piece below — the compile
  * loop's dry run borrows an endpoint through the same pool the runs do, so the two never
  * hold one endpoint twice. */
-const solverRates = parseSolverRates(config.SOLVER_RATES_JSON);
+const solverRates = parseSolverRates(config.SOLVER_USD_RATES_JSON);
 const solverKeys = { capsolver: config.CAPSOLVER_API_KEY, "2captcha": config.TWO_CAPTCHA_API_KEY, "anti-captcha": config.ANTI_CAPTCHA_API_KEY };
-const unratedSolvers = Object.entries(solverKeys)
-  .filter(([name, key]) => key && !solverRates.some(rate => rate.name === name))
-  .map(([name]) => name);
-if (unratedSolvers.length) log.warn("CAPTCHA provider keys are configured but these providers are disabled: add their rates to SOLVER_RATES_JSON", { providers: unratedSolvers });
-const solvers = solverRates.map((rate) => createSolverProvider({ ...rate, apiKey: solverKeys[rate.name] ?? "" }));
+const solvers = (Object.keys(solverKeys) as Array<keyof typeof solverKeys>).flatMap(name => {
+  const apiKey=solverKeys[name];
+  return apiKey?[createSolverProvider({...solverRates.find(rate=>rate.name===name),name,apiKey,rateVersion:solverRates.find(rate=>rate.name===name)?.rateVersion??"admin",creditUnits:solverRates.find(rate=>rate.name===name)?.creditUnits??0})]:[];
+});
 const captchaProviders = createCaptchaProviders({ keys: solverKeys, rates: solverRates });
 const browserPool = createHostedBrowserPool({ db: handle.db, solvers, challengeRecovery: "agent", tokenKey: process.env.BROWSER_WORKER_TOKEN_KEY ?? "", workerUrl: async (podName) => {
       const [worker] = await handle.db.select().from(browserWorkers).where(eq(browserWorkers.podName, podName));
@@ -107,7 +108,7 @@ const gate = new RuntimeSafetyGate({ navAllowlist: config.HARNESS_NAV_ALLOWLIST 
  * key does — with none configured, jobs simply queue up and wait for an engine that has one.
  */
 const modelResolver = createModelResolver({ db: handle.db, wrapper: configuredKeyWrapper(config),
-  rates: parseModelRates(config.MODEL_RATES_JSON),
+  rates: parseModelRates(config.MODEL_USD_RATES_JSON),
   platformKeys: { ...(config.OPENAI_API_KEY ? { openai: config.OPENAI_API_KEY } : {}), ...(config.ANTHROPIC_API_KEY ? { anthropic: config.ANTHROPIC_API_KEY } : {}) },
 });
 const compileLoop = createCompileLoop({
@@ -233,7 +234,7 @@ const dispatcher = createDispatcher(handle, {
 const engine = createEngine({
   prerequisites: { browserMode: "fleet",
     platformProviders: [...(config.OPENAI_API_KEY ? ["openai"] : []), ...(config.ANTHROPIC_API_KEY ? ["anthropic"] : [])],
-    platformModels: parseModelRates(config.MODEL_RATES_JSON) },
+    platformModels: parseModelRates(config.MODEL_USD_RATES_JSON) },
   db: handle.db,
   dispatcher,
   executors,
@@ -259,14 +260,22 @@ const heartbeat = setInterval(() => {
   void touchEngineHeartbeat(handle.db).catch((err) => log.warn("engine heartbeat failed", { error: String(err) }));
 }, 5_000);
 heartbeat.unref();
-const paddlePacks = config.PADDLE_CREDIT_PACKS_JSON
-  ? parsePaddleCreditPacks(config.PADDLE_CREDIT_PACKS_JSON)
+const paddlePacks = config.PADDLE_USD_PACKS_JSON
+  ? parsePaddleCreditPacks(config.PADDLE_USD_PACKS_JSON)
   : undefined;
 const paymentReconciler = paddlePacks ? setInterval(() => {
   void processPendingPaddleWebhookEvents(handle.db, paddlePacks)
     .catch((err) => log.warn("payment webhook reconciliation failed", { error: String(err) }));
 }, 2_000) : undefined;
 paymentReconciler?.unref();
+let maintenanceWork:Promise<void>|undefined;
+const maintenance=setInterval(()=>{
+  if(maintenanceWork)return;
+  maintenanceWork=Promise.allSettled([convertLegacyWallets(handle.db),reconcileCaptchaJobs(handle.db,captchaProviders),processActionSummary(handle.db),processWorkflowDeletion(handle.db,handle.pool,blobs),syncProxyCosts(handle.db)])
+    .then(results=>{for(const result of results)if(result.status==="rejected")log.warn("billing maintenance failed",{error:String(result.reason)});})
+    .finally(()=>{maintenanceWork=undefined;});
+},2000);
+maintenance.unref();
 log.info("engine started", {
   database: config.DATABASE_URL.replace(/\/\/[^@]*@/, "//"),
   telemetry: telemetry.enabled ? "exporting" : "disabled",
@@ -291,6 +300,8 @@ const shutdown = async (signal: string): Promise<void> => {
   log.info("shutting down", { signal });
   try {
     clearInterval(heartbeat);
+    clearInterval(maintenance);
+    await maintenanceWork;
     if (paymentReconciler) clearInterval(paymentReconciler);
     await compileWorker?.stop();
     await learningWorker.stop();

@@ -11,7 +11,7 @@ controlPlane:
 fleet:
   enabled: true
   rateVersion: local-fixture-v1
-  unitsPerMinute: 1
+  usdPerMinute: "0" # Configure an explicit hosted USD price, or set one in Admin.
   maxSeconds: 1800
   maxAllocated: 3
   warmSlots: 1

@@ -1,5 +1,5 @@
 import {
-  createWorkflow,
+  createWorkflow, requestWorkflowDeletion,
   compileResultSchema,
   getWorkflow,
   graphSchema,
@@ -16,7 +16,7 @@ import {
   readGraph,
   type GraphGateContext,
 } from "@tabductor/engine";
-import { accountBaselineRules, secrets, storeSchemas, workflows, workflowExecutions } from "@tabductor/db";
+import { accountBaselineRules, workflowDeletions, secrets, storeSchemas, workflows, workflowExecutions } from "@tabductor/db";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
@@ -101,6 +101,8 @@ async function compileWorkflowPrompt(ctx: Context, input: {
 }
 
 export const workflowRouter = router({
+  delete: procedure.input(z.object({workflowId:z.string().min(1)})).mutation(({ctx,input})=>requestWorkflowDeletion(ctx.db,ctx.accountId??LOCAL_ACCOUNT,input.workflowId)),
+  deletionStatus: procedure.input(z.object({workflowId:z.string().min(1)})).query(async ({ctx,input})=>(await ctx.db.select().from(workflowDeletions).where(and(eq(workflowDeletions.workflowId,input.workflowId),eq(workflowDeletions.accountId,ctx.accountId??LOCAL_ACCOUNT))))[0]??null),
   createFromPrompt: procedure.input(z.object({ prompt: z.string().trim().min(1).max(20_000), resultSchema: resultSchemaInput }).strict())
     .mutation(async ({ ctx, input }) => {
       if (input.resultSchema !== undefined && input.resultSchema !== null) compileResultSchema(input.resultSchema);

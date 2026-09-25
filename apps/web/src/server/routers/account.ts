@@ -1,7 +1,8 @@
 import { configuredKeyWrapper } from "@tabductor/secrets";
-import { modelCredentials, modelSelections, modelOperations, creditReservations, paymentPurchases, accountMcpTokens } from "@tabductor/db";
-import { AppError, loadConfig } from "@tabductor/core";
+import { modelCredentials, modelSelections, modelOperations, creditReservations, paymentPurchases, accountMcpTokens, accounts, billingRates } from "@tabductor/db";
+import { AppError, loadConfig, usdDecimal } from "@tabductor/core";
 import {
+  prepareUsdWallet, redeemBalanceCoupon, purchaseDiscount,
   saveModelCredential, setModelSelection, modelSelectionSchema, modelCredentialInputSchema, parseModelRates,
   createAccountMcpToken,
   createPaddleCreditPurchase,
@@ -24,7 +25,15 @@ export const accountRouter = router({
         .from(modelCredentials).where(and(eq(modelCredentials.accountId, accountId), isNull(modelCredentials.revokedAt))),
       ctx.db.select().from(modelSelections).where(eq(modelSelections.accountId, accountId)),
     ]);
-    return { credentials, selections, platformModels: parseModelRates(loadConfig().MODEL_RATES_JSON) };
+    const configured=parseModelRates(loadConfig().MODEL_USD_RATES_JSON);
+    const prices=await ctx.db.select().from(billingRates).where(eq(billingRates.category,"model")).orderBy(desc(billingRates.createdAt),desc(billingRates.id));
+    for(const p of prices.filter(p=>p.item.endsWith(":input"))){const model=p.item.slice(0,-6);if(prices.find(r=>r.provider===p.provider&&r.item===p.item)?.id!==p.id)continue;
+      const output=prices.find(r=>r.provider===p.provider&&r.item===`${model}:output`),cached=prices.find(r=>r.provider===p.provider&&r.item===`${model}:cached`);
+      if(!output)continue;const index=configured.findIndex(r=>r.provider===p.provider&&r.model===model);
+      const entry={provider:p.provider as "openai"|"anthropic",model,version:p.id,input:p.chargeMicros,cachedInput:cached?.chargeMicros??p.chargeMicros,output:output.chargeMicros,maxInputTokens:128000,maxOutputTokens:8192};
+      if(index<0)configured.push(entry);else configured[index]=entry;
+    }
+    return { credentials, selections, platformModels: configured.map(({input,output,cachedInput,...r})=>({...r,inputUsd:usdDecimal(input),outputUsd:usdDecimal(output),cachedInputUsd:usdDecimal(cachedInput)})) };
   }),
   saveModelCredential: procedure.input(modelCredentialInputSchema)
     .mutation(({ ctx, input }) => saveModelCredential(ctx.db, configuredKeyWrapper(loadConfig()), { ...input, accountId: accountIdOf(ctx.accountId) })),
@@ -36,6 +45,9 @@ export const accountRouter = router({
   billing: procedure.query(async ({ ctx }) => {
     const accountId = accountIdOf(ctx.accountId);
     const config = loadConfig();
+    await prepareUsdWallet(ctx.db,accountId);
+    const [account]=await ctx.db.select().from(accounts).where(eq(accounts.id,accountId));
+    if(account?.moneyUnit!=="usd_micro")return {accountId,conversionRequired:true as const,balance:null,purchases:[],usage:[],models:[],packs:[]};
     const [balance, purchases, usage, models] = await Promise.all([
       getCreditBalance(ctx.db, accountId),
       ctx.db.select({ id: paymentPurchases.id, creditUnits: paymentPurchases.creditUnits, refundedUnits: paymentPurchases.refundedUnits, status: paymentPurchases.status, createdAt: paymentPurchases.createdAt })
@@ -46,33 +58,39 @@ export const accountRouter = router({
         inputTokens: modelOperations.inputTokens, outputTokens: modelOperations.outputTokens, chargedUnits: modelOperations.chargedUnits, createdAt: modelOperations.createdAt })
         .from(modelOperations).where(eq(modelOperations.accountId, accountId)).orderBy(desc(modelOperations.createdAt)).limit(50),
     ]);
-    return { balance, purchases, usage, models, packs: config.PADDLE_API_KEY && config.PADDLE_CREDIT_PACKS_JSON ? [...parsePaddleCreditPacks(config.PADDLE_CREDIT_PACKS_JSON).values()] : [] };
+    return {accountId,conversionRequired:false as const,balance:{availableUsd:usdDecimal(balance.availableUnits),reservedUsd:usdDecimal(balance.reservedUnits)},
+      purchases:purchases.map(({creditUnits,refundedUnits,...r})=>({...r,balanceUsd:usdDecimal(creditUnits),refundedUsd:usdDecimal(refundedUnits)})),
+      usage:usage.map(r=>({category:r.category,amountUsd:usdDecimal(r.units)})),models:models.map(({chargedUnits,...r})=>({...r,chargedUsd:chargedUnits===null?null:usdDecimal(chargedUnits)})),
+      packs:config.PADDLE_API_KEY&&config.PADDLE_USD_PACKS_JSON?[...parsePaddleCreditPacks(config.PADDLE_USD_PACKS_JSON).values()].map(r=>({priceId:r.priceId,balanceUsd:usdDecimal(r.creditUnits)})):[]};
   }),
-  creditBalance: procedure.query(({ ctx }) => getCreditBalance(ctx.db, accountIdOf(ctx.accountId))),
+  walletBalance: procedure.query(async ({ctx})=>{const b=await getCreditBalance(ctx.db,accountIdOf(ctx.accountId));return {currency:"USD" as const,availableUsd:usdDecimal(b.availableUnits),reservedUsd:usdDecimal(b.reservedUnits)};}),
+  redeemCoupon: procedure.input(z.object({code:z.string().min(3).max(40)})).mutation(({ctx,input})=>redeemBalanceCoupon(ctx.db,accountIdOf(ctx.accountId),input.code)),
 
-  createCreditPurchase: procedure.input(z.object({
+  createWalletPurchase: procedure.input(z.object({
     operationId: z.string().trim().min(1).max(200),
     priceId: z.string().trim().min(1).max(100),
+    couponCode:z.string().trim().min(3).max(40).optional(),
   })).mutation(async ({ ctx, input }) => {
     const config = loadConfig(process.env);
-    if (!config.PADDLE_API_KEY || !config.PADDLE_CREDIT_PACKS_JSON) {
+    if (!config.PADDLE_API_KEY || !config.PADDLE_USD_PACKS_JSON) {
       throw new AppError("paddle_unconfigured", "Paddle billing is not configured");
     }
     const environment = config.PADDLE_ENVIRONMENT
       ?? (config.PADDLE_API_KEY.startsWith("pdl_sdbx_") ? "sandbox" : "live");
     const purchase = await createPaddleCreditPurchase(ctx.db, {
       accountId: accountIdOf(ctx.accountId),
-      ...input,
+      operationId:input.operationId,priceId:input.priceId,
+      ...(input.couponCode?{discountId:await purchaseDiscount(ctx.db,input.couponCode)}:{}),
       ...(config.PADDLE_CHECKOUT_URL ? { checkoutUrl: config.PADDLE_CHECKOUT_URL } : {}),
     }, {
-      packs: parsePaddleCreditPacks(config.PADDLE_CREDIT_PACKS_JSON),
+      packs: parsePaddleCreditPacks(config.PADDLE_USD_PACKS_JSON),
       client: createPaddleTransactionClient({ apiKey: config.PADDLE_API_KEY, environment }),
     });
     return {
       id: purchase.id,
       status: purchase.status,
       checkoutUrl: purchase.checkoutUrl,
-      creditUnits: purchase.creditUnits,
+      balanceUsd: usdDecimal(purchase.creditUnits),
     };
   }),
 

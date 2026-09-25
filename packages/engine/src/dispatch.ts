@@ -48,6 +48,7 @@ export async function createWorkflowExecution(
   return db.transaction(async (db) => {
     const [workflow] = await db.select().from(workflows).where(eq(workflows.id, input.workflowId)).for("update");
     if (!workflow) throw new Error(`no workflow "${input.workflowId}"`);
+    if(workflow.deletingAt)throw new AppError("workflow_deleting","Workflow is being deleted");
     if (workflow.blockedReasonJson) throw new AppError("workflow_blocked", workflow.blockedReasonJson.message, { details: workflow.blockedReasonJson });
     const versionId = input.workflowVersionId ?? await latestVersionId(db, workflow);
     if (!versionId) throw new Error(`workflow "${input.workflowId}" has no published version`);
@@ -200,7 +201,7 @@ async function resolveTask(
     .innerJoin(workflowVersions, eq(workflowVersions.id, tasks.workflowVersionId))
     .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId))
     .where(eq(tasks.id, taskId));
-  if (!origin) return undefined;
+  if (!origin || origin.workflow.deletingAt) return undefined;
 
   let versionId: string;
   if (executionId) {
