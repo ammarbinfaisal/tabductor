@@ -1,5 +1,12 @@
 # Browser-node learning
 
+The agent-facing API does not expose checkpoints, operation-progress/status tools,
+or dedicated verification helpers. Normal Playwright assertions remain available,
+but completion does not require one. Internal effect tracking and compiler replay
+validation remain in place. Apply migration `0054_remove_save_verification_gate`
+before running this version; reported saves no longer require a stored proof.
+Runtime `tabductor-python-playwright-v2` sends older artifacts to AI fallback.
+
 Browser learning has three independent outputs: an improved node operating prompt,
 artifact-scoped deopt instructions, and a recommendation to compile a successful trace.
 The human's workflow request and generated task contract remain authoritative.
@@ -14,7 +21,7 @@ under the `browser_learning` purpose, separate from runtime and trace compilatio
 The learner receives the baseline, previous accepted lessons, current outcome,
 bounded trace evidence with references, and any artifact/handoff scope. Its output
 consolidates ordered successful steps, preconditions, current-input bindings,
-verification, and cautions. Failed runs can update cautions but cannot replace a
+and cautions. Failed runs can update cautions but cannot replace a
 proven procedure. Missing or oversized evidence is not reconstructed from private
 workspace state. Every lesson must cite supplied or previously accepted evidence.
 
@@ -26,7 +33,7 @@ Learning does not modify the node's task definition or its content hash.
 
 Deopt revisions use the artifact's source/metadata fingerprint plus `recovery` or
 `planned:<handoff-id>`. Recovery loads the current matching revision, task prompt,
-and current handoff/checkpoint/progress evidence. Static source and planned handoff
+and current handoff evidence and prior tool results. Static source and planned handoff
 boundaries remain unchanged. A replacement artifact starts with its own validated
 prompts; the compiler also receives the source run's learning as non-authoritative
 guidance. An artifact without a learned deopt revision uses its embedded prompt.

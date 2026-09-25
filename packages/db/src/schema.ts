@@ -1548,7 +1548,7 @@ export const captchaJobs = pgTable("captcha_jobs", {
   createdAt: createdAt(),
 }, t => [uniqueIndex("captcha_jobs_run_key").on(t.runId, t.idempotencyKey)]);
 
-/** Verified business progress is separate from task and event counts. */
+/** Reported business progress is separate from task and event counts. */
 export const RECORD_STATUSES = ["extracted", "prepared", "pending", "saved", "skipped", "rejected", "failed"] as const;
 export type RecordStatus = (typeof RECORD_STATUSES)[number];
 export const workflowRecords = pgTable("workflow_records", {
@@ -1563,8 +1563,7 @@ export const workflowRecords = pgTable("workflow_records", {
   createdAt: createdAt(),
   updatedAt: ts("updated_at").notNull().defaultNow(),
 }, t => [primaryKey({ columns: [t.executionId, t.collection, t.recordKey] }),
-  check("workflow_records_status_check", sql`${t.status} in ('extracted','prepared','pending','saved','skipped','rejected','failed')`),
-  check("workflow_records_saved_check", sql`${t.status} <> 'saved' or ${t.verificationJson} is not null`)]);
+  check("workflow_records_status_check", sql`${t.status} in ('extracted','prepared','pending','saved','skipped','rejected','failed')`)]);
 export const runRecordOutcomes = pgTable("run_record_outcomes", {
   runId: text("run_id").primaryKey().references(() => runs.id, { onDelete: "cascade" }),
   status: text("status").$type<RecordStatus>().notNull(),

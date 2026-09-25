@@ -54,7 +54,7 @@ Current browser agents expose only `browser.code`. Successful invocations record
 input, used helper revisions and SDK operations with their actual arguments and results.
 The compiler first requests an operation-grounded work plan, then a JavaScript module
 exporting `default async function(api)`. Exploration can be discarded only with an
-explanation. Verification, record disposition, destination readiness, completion and
+explanation. Required observations, record disposition, destination readiness, completion and
 emissions cannot be dropped. Decision tasks retain their existing tool surface.
 
 Before inserting a candidate, an isolated host replays only the retained operations.
@@ -68,9 +68,10 @@ Sources use the same SDK operations in AI, compiled and recovery execution. Loca
 loops/functions and pinned helpers are allowed; arbitrary page evaluation, imports and
 ambient capabilities remain unavailable. Missing, redacted or oversized evidence refuses
 compilation. A trace using different revisions of one helper also requires a new stable run.
-A fresh isolate is created each invocation; compiled yields resume only after a checkpoint
-changes. Uncertain effects remain journaled and require inspection and exact record
-verification before further writes. A deopt continues the same run and browser state.
+A fresh isolate is created each invocation; an unfinished compiled invocation hands
+control to AI without replaying its prefix. Internal effect tracking remains, but
+checkpoint, operation-status and dedicated verification APIs are not exposed to agents.
+A deopt continues the same run and browser state.
 
 Artifacts carry runtime/browser compatibility and bundled helper source. Runtime version
 `tabductor-sdk-v4` invalidates older artifacts before actions. Existing promotion and

@@ -7,7 +7,7 @@ export type BrowserProcedure = { steps: BrowserLesson[]; cautions: BrowserLesson
 export function renderLearnedPrompt(baseline: string, procedure: BrowserProcedure): string {
   return [
     "## Learned procedure from previous runs",
-    "Use these observations when their preconditions still hold. Inspect the current page and bind all values to current workflow.input. Historical success does not complete this run. Reacquire browser objects; execution-local files and prior record values are not reusable state. These learned procedures update earlier generated navigation suggestions. The original goal, permissions, required outputs and verification constraints below remain authoritative.",
+    "Use these observations when their preconditions still hold. Inspect the current page and bind all values to current workflow.input. Historical success does not complete this run. Reacquire browser objects; execution-local files and prior record values are not reusable state. These learned procedures update earlier generated navigation suggestions. The original goal, permissions, required outputs below remain authoritative.",
     ...procedure.steps.map((step, i) => `${i + 1}. ${step.instruction}`),
     ...(procedure.cautions.length ? ["Avoid / check:", ...procedure.cautions.map(item => `- ${item.instruction}`)] : []),
     "\n## Improved operating instructions", procedure.instructions,

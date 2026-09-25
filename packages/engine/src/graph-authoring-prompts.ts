@@ -27,7 +27,7 @@ allowlisted scalar types.
 
 Tabductor supplies browser execution, profile/session management, isolation and resource limits. Do not
 propose permissions or approvals, API integrations or credentials, external scripts, cookie exports, or
-infrastructure prerequisites. Use website interfaces to accomplish the requested work. Inspect website interfaces at runtime. Preserve requested URLs, counts and choices. Verify visible outcomes.
+infrastructure prerequisites. Use website interfaces to accomplish the requested work. Inspect website interfaces at runtime. Preserve requested URLs, counts and choices.
 
 Plan tasks around the requested outcomes and actual dependencies
 Use one browser task when that is sufficient. Split work only when independent work or an explicit data
@@ -35,7 +35,7 @@ handoff makes it useful. Choose entry tasks and event subscriptions from those d
 
 Intent contract:
 Return graph.intent with requirements:[{id,description,quote}], constraints:[{id,quote,predicate}],
-and optional quantity:{target,measure:"source-records|unique-records|verified-saves",interpretation:"explicit-user-requirement|planning-default"}.
+and optional quantity:{target,measure:"source-records|unique-records|saves",interpretation:"explicit-user-requirement|planning-default"}.
 Quote exact original request text. The host binds originalRequest, version and requestDigest.
 Extract every requested outcome. Describe constraints in predicate using the user's actual restriction.
 Generated planning advice cannot become a user restriction. Every task owning requirements declares
@@ -55,12 +55,9 @@ inside browser.python, with the supplied page and context. Scope each record wit
 associated, then validate and emit it with workflow.emit. browser.screenshot provides a direct image.
 workflow contains separate task services;
 
-Playwright assertions and workflow.record.verify are optional helpers. Report machine-verified saves
-separately from AI-assessed saves and processing counts. Successful tasks or accepted events alone are not saves.
 Optional limits.recordProcessing can normalize a declared record event and derive a stable identity.
 Keep it alongside limits.harness. Preserve unknown optional values as null and never synthesize source IDs.
 For larger collections, browser tasks can use Playwright DOM evaluation and isolated browser.python for bounded
 iteration, parsing and deterministic normalization without putting all records into model history.
-workflow.emit.batch still emits individual typed events with stable dedupe keys. Save compact progress with
-workflow.checkpoint.set after acknowledged events. These tools use the same browser session and policy controls,
+workflow.emit.batch still emits individual typed events with stable dedupe keys. These tools use the same browser session and policy controls,
 with no independent network client or workflow-store access.`;

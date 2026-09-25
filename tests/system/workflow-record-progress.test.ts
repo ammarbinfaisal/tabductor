@@ -55,7 +55,7 @@ it("keeps unknown counts, rejects silent drops, and counts only verified saves",
     const [execution] = await db.db.select().from(workflowExecutions).where(eq(workflowExecutions.id, f.executionId));
     expect(execution?.status).toBe("failed");
   }, { timeout: 5000 });
-  expect(await recordProgress(db.db, f.executionId)).toEqual({ tracked: true, total: 4, extracted: 0, prepared: 0, pending: 0, saved: 1, skipped: 1, rejected: 1, failed: 1,verifiedSaved:1,aiAssessedSaved:0 });
+  expect(await recordProgress(db.db, f.executionId)).toEqual({ tracked: true, total: 4, extracted: 0, prepared: 0, pending: 0, saved: 1, skipped: 1, rejected: 1, failed: 1,verifiedSaved:1,aiAssessedSaved:0,reportedSaved:0 });
   const failed = await db.db.select().from(runs).where(eq(runs.executionId, f.executionId));
   expect(failed.some(run => run.error?.startsWith("record_outcome_missing"))).toBe(true);
   const [saved] = await db.db.select().from(events).where(eq(events.type, "item.saved"));
@@ -64,7 +64,7 @@ it("keeps unknown counts, rejects silent drops, and counts only verified saves",
   expect(await createCaller({ db: db.db, schemaGenerator: staticSchemaGenerator() }).workflow.status(f)).toMatchObject({ status: "failed", records: { saved: 1, total: 4 } });
 });
 
-it("refuses a saved event without destination proof even when browser tasks report success", async () => {
+it("refuses a saved event without an explicit record outcome even when browser tasks report success", async () => {
   const f = await fixture({
     "browser:ai": { async execute(handle) {
       if (handle.task.name === "collect") await handle.emit("item.extracted", { id: "unverified", count: null });
@@ -85,4 +85,22 @@ it("rejects narrowing nullable records before publishing any version", async () 
     events: [{ type: "in", description: "nullable count" }, { type: "out", description: "count" }],
   }) }, { schemaGenerator: staticSchemaGenerator({ in: packetSchema, out: { ...packetSchema, properties: { ...packetSchema.properties, count: { type: "integer" } } } }) }))
     .rejects.toMatchObject({ code: "record_schema_narrowing" });
+});
+
+it("accepts reported saves without a verification tool and keeps them separate from historical proofs", async () => {
+  const f = await fixture({
+    "browser:ai": { async execute(handle) {
+      if (handle.task.name === "collect") await handle.emit("item.extracted", { id: "reported", count: null });
+      else {
+        await handle.recordOutcome!({ status: "saved", reason: "Saved the requested record" });
+        await handle.emit("item.saved", handle.trigger!.packet);
+      }
+      return { ok: true };
+    } },
+    "decision:ai": { async execute(handle) { await handle.emit("item.pending", handle.trigger!.packet); return { ok: true }; } },
+  });
+  await vi.waitFor(async () => expect(await recordProgress(db.db, f.executionId)).toMatchObject({ saved: 1 }), { timeout: 5000 });
+  expect(await recordProgress(db.db, f.executionId)).toMatchObject({ saved: 1, verifiedSaved: 0, aiAssessedSaved: 0, reportedSaved: 1 });
+  const [outcome] = await db.db.select().from(runRecordOutcomes).where(eq(runRecordOutcomes.status, "saved"));
+  expect(outcome?.verificationJson).toBeNull();
 });

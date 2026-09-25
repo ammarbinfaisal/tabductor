@@ -70,8 +70,8 @@ export const TOOL_SURFACE: Record<NodeKind, ReadonlyArray<{ name: string; hint: 
     { name: "store.insert", hint: "stage a row insert, committed with the next emit" },
     { name: "store.upsert", hint: "stage a row upsert, committed with the next emit" },
     { name: "emit", hint: "durably hand off one event packet for asynchronous consumers, validated against its schema" },
-    { name: "record.outcome", hint: "explicit input-record disposition: prepared, skipped, rejected, failed, or a saved record verified by workflow.record.verify against bound identity and fields" },
-    { name: "done", hint: "finish after assessing the requested outcome and recording any required record disposition; verification helpers are optional in AI mode" },
+    { name: "record.outcome", hint: "explicit input-record disposition: prepared, skipped, rejected, failed, or saved at the destination" },
+    { name: "done", hint: "finish after assessing the requested outcome and recording any required record disposition" },
     { name: "fail", hint: "finish the run as failed, with a reason" },
   ],
 };
@@ -219,7 +219,7 @@ at most twice before choosing another approach. Drop only optional fields; never
 errors as proof that a visible page is unavailable.
 - Say what to do when the trigger packet is missing or empty, when nothing is found, and when \
 a step fails. When record tracking is declared, record an appropriate outcome with a reason; otherwise assess completion against the requested task outcome. Preserve unknown optional fields as null instead of inventing counts or flags.
-- For browser.python, process batches of at most 25, checkpoint acknowledged items, inspect workflow.status() and yield before deadlines. Inspect uncertain effects before deciding the next action; AI mode remains available for exploration and recovery.
+- For browser.python, process batches of at most 25 and yield before deadlines. Inspect uncertain effects before deciding the next action; AI mode remains available for exploration and recovery.
 - Never invent tools, fields, tables or events that the brief does not list.
 - Keep it under 600 words. The brief itself is appended after your text, so do not restate \
 schemas or tool lists.`;

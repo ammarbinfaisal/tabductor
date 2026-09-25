@@ -190,26 +190,21 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
         const runSdk = async (): Promise<ScriptRunResult & { plannedDeopt?: boolean }> => {
           const code = buildBrowserCodeTools({ ...sdkDeps, pythonRunner, compiled: true, memoryMb: staticRtLimitsOf(handle.task).memoryMb,
             pinnedHelpers: (asRecord(script.guardsMeta)?.helpers ?? []) as HelperRevision[] })[0]!;
-          for (let invocation=0;invocation<1000;invocation++) {
-            handle.signal.throwIfAborted();
-            const before = JSON.stringify(await control.checkpoint.get());
-            const result = await code.execute({source:script.source,timeoutMs:Math.min(180000,staticRtLimitsOf(handle.task).wallClockMs ?? 180000)},handle.signal);
-            if (result.terminal?.outcome === "done") return {outcome:"completed"};
-            if (result.terminal?.outcome === "fail") return {outcome:"error",error:result.terminal.reason};
-            if (result.terminal?.outcome === "deopt") {
-              const plan = asRecord(asRecord(script.guardsMeta)?.plan);
-              const plannedDeopt = isPlannedDeopt(plan, result.terminal.evidence);
-              deoptKey = plannedDeopt ? `planned:${String(asRecord(result.terminal.evidence)?.plannedDeopt)}` : "recovery";
-              return {outcome:"deopt",
-                prompt:plannedDeopt ? result.terminal.reason : [plan?.recoveryPrompt,result.terminal.reason].filter(Boolean).join("\n"),
-                evidence:{guard:result.terminal.evidence,checkpoint:await control.checkpoint.get(),progress:await control.progress.get()},
-                plannedDeopt};
-            }
-            if (result.ok && asRecord(result.value)?.outcome === "yielded" && JSON.stringify(await control.checkpoint.get()) !== before) continue;
-            return {outcome:"deopt",prompt:"Continue from current page and durable SDK journal. Reconcile uncertain effects before writing.",
-              evidence:{reason:result.ok?"Program returned without verified completion":result.error,checkpoint:await control.checkpoint.get(),progress:await control.progress.get()}};
+          handle.signal.throwIfAborted();
+          const result = await code.execute({source:script.source,timeoutMs:Math.min(180000,staticRtLimitsOf(handle.task).wallClockMs ?? 180000)},handle.signal);
+          if (result.terminal?.outcome === "done") return {outcome:"completed"};
+          if (result.terminal?.outcome === "fail") return {outcome:"error",error:result.terminal.reason};
+          if (result.terminal?.outcome === "deopt") {
+            const plan = asRecord(asRecord(script.guardsMeta)?.plan);
+            const plannedDeopt = isPlannedDeopt(plan, result.terminal.evidence);
+            deoptKey = plannedDeopt ? `planned:${String(asRecord(result.terminal.evidence)?.plannedDeopt)}` : "recovery";
+            return {outcome:"deopt",
+              prompt:plannedDeopt ? result.terminal.reason : [plan?.recoveryPrompt,result.terminal.reason].filter(Boolean).join("\n"),
+              evidence:{guard:result.terminal.evidence},
+              plannedDeopt};
           }
-          return {outcome:"deopt",prompt:"Compiled progress budget reached",evidence:{checkpoint:await control.checkpoint.get()}};
+          return {outcome:"deopt",prompt:"Continue from the current page and prior tool results. Do not repeat completed actions.",
+            evidence:{reason:result.ok?"Program returned without completing the task":result.error}};
         };
         const result = compatible ? await runSdk() : { outcome: "deopt" as const, prompt: "The browser or script runtime changed. Start from fresh perception; no compiled actions have run.",
           evidence: { reason: "runtime_incompatible", expected: compatibility ?? null, actual: { browserVersion, runtimeVersion: SCRIPT_RUNTIME_VERSION } } };

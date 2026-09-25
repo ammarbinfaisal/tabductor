@@ -95,17 +95,12 @@ it("blocks repeated failing targets across fresh snapshot names without disconne
   expect(clicks).toBe(2);
 });
 
-it("requires visible record identity at the destination before recording a saved outcome", async () => {
-  let snapshot = "1";
+it("records reported saves without a dedicated verification tool", async () => {
   let saved = 0;
-  const session = { page: { perceive: async () => { snapshot = String(Number(snapshot) + 1); return { url: "https://destination.test", title: "Saved", text: "record-42", elements: [] }; }, url: () => "https://destination.test" },
-    resolveAnchor: () => undefined, snapshotId: () => snapshot } as unknown as RunSession;
-  const tools = new Map(buildToolRegistry({ session, emit: async () => ({ outcome: "deduped" }), recordOutcome: async outcome => {
-    expect(outcome.verification?.recordKey).toBe("record-42"); saved++;
+  const tools = new Map(buildToolRegistry({ session: {} as RunSession, emit: async () => ({ outcome: "deduped" }), recordOutcome: async outcome => {
+    expect(outcome).toEqual({ status: "saved", reason: "Saved" }); saved++;
   } }).map(t => [t.name, t]));
-  expect(await tools.get("record.outcome")!.execute({ status: "saved", reason: "Saved" })).toMatchObject({ ok: false });
-  expect(await tools.get("page.verify")!.execute({ recordKey: "missing", urlIncludes: "destination.test" })).toMatchObject({ ok: false });
-  expect(await tools.get("page.verify")!.execute({ recordKey: "record-42", urlIncludes: "destination.test" })).toMatchObject({ ok: true });
+  expect(tools.has("page.verify")).toBe(false);
   expect(await tools.get("record.outcome")!.execute({ status: "saved", reason: "Saved" })).toMatchObject({ ok: true });
   expect(saved).toBe(1);
 });

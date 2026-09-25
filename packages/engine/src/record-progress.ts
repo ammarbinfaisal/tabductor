@@ -25,8 +25,8 @@ export async function recordEmitted(db: Db, run: RunRow, task: TaskRow, event: E
   const contract = await definition(db, task, event.type);
   if (!contract) return;
   const [outcome] = await db.select().from(runRecordOutcomes).where(eq(runRecordOutcomes.runId, run.id));
-  if (contract.status === "saved" && (outcome?.status !== "saved" || !outcome.verificationJson)) {
-    throw new AppError("record_verification_required", "Record a destination outcome with readback or AI assessment before emitting a saved event");
+  if (contract.status === "saved" && outcome?.status !== "saved") {
+    throw new AppError("record_outcome_required", "Record a saved destination outcome before emitting a saved event");
   }
   const recordKey = keyOf(event.packet, contract.key);
   if (contract.status === "saved") {
@@ -47,9 +47,8 @@ export async function recordEmitted(db: Db, run: RunRow, task: TaskRow, event: E
 
 export async function recordRunOutcome(db: Db, run: RunRow, task: TaskRow, trigger: EventRow | null, outcome: RecordOutcome): Promise<void> {
   if (!trigger || /^(?:manual\.|schedule\.|run\.|system\.)/.test(trigger.type)) throw new AppError("record_input_missing", "This run has no input record");
-  if (outcome.status === "saved" && (task.kind !== "browser" || !(outcome.verification?.snapshotId ||
-    outcome.verification?.method === "ai-assessment" && outcome.verification.assessmentId))) {
-    throw new AppError("record_verification_required", "Saving a record requires browser readback or an explicit AI assessment");
+  if (outcome.status === "saved" && task.kind !== "browser") {
+    throw new AppError("record_browser_required", "Saving a record requires a browser task");
   }
   await db.transaction(async trx => {
     await assertRunLease(trx, run.id, run.leaseGeneration);
@@ -59,8 +58,8 @@ export async function recordRunOutcome(db: Db, run: RunRow, task: TaskRow, trigg
     }
     const contract = await definition(trx, task, trigger.type);
     if (outcome.status === "saved" && !contract) throw new AppError("record_contract_missing", "Publish a record identity contract before counting destination saves");
-    if (outcome.status === "saved" && outcome.verification?.recordKey !== keyOf(trigger.packet, contract!.key)) {
-      throw new AppError("record_verification_mismatch", "Verify the exact input recordKey at the destination before counting a save");
+    if (outcome.status === "saved" && outcome.verification && outcome.verification.recordKey !== keyOf(trigger.packet, contract!.key)) {
+      throw new AppError("record_verification_mismatch", "The outcome must belong to the exact input record");
     }
     const value = { status: outcome.status, reason: outcome.reason.slice(0, 1000), verificationJson: outcome.verification ?? null };
     await trx.insert(runRecordOutcomes).values({ runId: run.id, ...value })
@@ -106,6 +105,7 @@ export async function recordFailedRun(db: Db, run: RunRow): Promise<void> {
 
 export async function recordProgress(db: Db, executionId: string) {
   const rows = await db.select({ status: workflowRecords.status, count: sql<number>`count(*)::int`,
+    verified:sql<number>`count(*) filter (where ${workflowRecords.verificationJson}->>'method' = 'readback' or (${workflowRecords.verificationJson}->>'snapshotId' is not null and ${workflowRecords.verificationJson}->>'method' is null))::int`,
     aiAssessed:sql<number>`count(*) filter (where ${workflowRecords.verificationJson}->>'method' = 'ai-assessment')::int` }).from(workflowRecords)
     .where(eq(workflowRecords.executionId, executionId)).groupBy(workflowRecords.status);
   const counts: Record<RecordStatus, number> = { extracted: 0, prepared: 0, pending: 0, saved: 0, skipped: 0, rejected: 0, failed: 0 };
@@ -114,6 +114,7 @@ export async function recordProgress(db: Db, executionId: string) {
     .innerJoin(workflowExecutions, eq(workflowExecutions.workflowVersionId, eventDefs.workflowVersionId))
     .where(and(eq(workflowExecutions.id, executionId), isNotNull(eventDefs.recordJson))).limit(1);
   const aiAssessedSaved = rows.find(row=>row.status === "saved")?.aiAssessed ?? 0;
+  const verifiedSaved = rows.find(row=>row.status === "saved")?.verified ?? 0;
   return { tracked: Boolean(configured), total: rows.reduce((n, row) => n + row.count, 0), ...counts,
-    verifiedSaved:counts.saved-aiAssessedSaved,aiAssessedSaved };
+    verifiedSaved,aiAssessedSaved,reportedSaved:counts.saved-verifiedSaved-aiAssessedSaved };
 }

@@ -9,7 +9,7 @@ export const intentSchema = z.object({
     category: field.optional() })).max(100),
   constraints: z.array(z.object({ id: field, quote: z.string().min(1).max(2000),
     predicate: field })).max(30).default([]),
-  quantity: z.object({ target: z.number().int().positive(), measure: z.enum(["source-records", "unique-records", "verified-saves"]),
+  quantity: z.object({ target: z.number().int().positive(), measure: z.enum(["source-records", "unique-records", "saves", "verified-saves"]),
     interpretation: z.enum(["explicit-user-requirement", "planning-default"]) }).optional(),
 });
 export type IntentContract = z.infer<typeof intentSchema>;
@@ -62,7 +62,7 @@ export function renderIntent(intent: IntentContract, task: HarnessTask | null): 
   return ["## Original request (authoritative)", intent.originalRequest,
     "## Required outcomes", ...requirements.map(r => `- ${r.id}: ${r.description} (user text: ${JSON.stringify(r.quote)})`),
     ...intent.constraints.map(c => `- ${c.predicate}: ${JSON.stringify(c.quote)}`),
-    intent.quantity ? `Quantity contract: ${JSON.stringify(intent.quantity)}. Report fetched, unique, skipped and verified saves separately.` : "",
+    intent.quantity ? `Quantity contract: ${JSON.stringify({ ...intent.quantity, measure: intent.quantity.measure === "verified-saves" ? "saves" : intent.quantity.measure })}. Report fetched, unique, skipped and saved records separately.` : "",
     "Task guidance describes a revisable strategy; it cannot add restrictions to this original intent contract. Packet keys, internal store columns, tool arguments and website property names are separate namespaces. Discover website fields at runtime; never create a property merely because a packet has that name.",
     "Preserve required source content and unknown optional values. Missing source IDs stay missing; a derived dedupe identity is not a source-provided ID.",
     "A repeated navigation/editor cycle is not progress. Use focused observation or an alternate route, then report a specific failure if blocked."].filter(Boolean).join("\n");

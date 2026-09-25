@@ -16,7 +16,7 @@ const perception = (extra: Partial<Perception> = {}): Perception => ({
   url: "https://fixture.test/?private=query", title: "Page", text: "", elements: [],
   activeScope: "page", uiFingerprint: "initial", focusIdentity: "", ...extra,
 });
-const summary = (id = "one"): BrowserActionSummary => ({ id, tool: "page.click", target: { role: "button", name: "Add property" }, dispatch: "executed", changes: ["dialog_opened"], verification: "not_checked" });
+const summary = (id = "one"): BrowserActionSummary => ({ id, tool: "page.click", target: { role: "button", name: "Add property" }, dispatch: "executed", changes: ["dialog_opened"] });
 
 it("waits for delayed dialog controls and returns only final snapshot anchors", async () => {
   const start = Date.now();
@@ -45,7 +45,7 @@ it("does not turn an executed click into failure when readback fails", async () 
   const session = { resolveAnchor: () => "button", page: { click, perceive: async () => { throw new Error("readback failed"); } } } as unknown as RunSession;
   const tools = new Map(buildToolRegistry({ session, actions, emit: async () => ({ outcome: "deduped" }) }).map(t => [t.name, t]));
   const result = await tools.get("page.click")!.execute({ anchor: "e1" });
-  expect(result).toMatchObject({ ok: true, value: null, action: { dispatch: "executed", changes: ["change_unknown"], verification: "not_checked" }, observation: { stability: "unavailable" } });
+  expect(result).toMatchObject({ ok: true, value: null, action: { dispatch: "executed", changes: ["change_unknown"] }, observation: { stability: "unavailable" } });
   expect(click).toHaveBeenCalledTimes(1);
 });
 
@@ -67,7 +67,7 @@ it("preserves an executed login click and directs recovery to surviving tabs whe
   const tools = new Map(buildToolRegistry({session,emit:async()=>({outcome:"deduped"})}).map(t=>[t.name,t]));
   expect(await tools.get("page.click")!.execute({anchor:"e1"})).toMatchObject({
     ok:true,action:{dispatch:"executed"},observation:{stability:"unavailable"},
-    recovery:{reason:"page_closed",suggestedTools:["tabs.list","tabs.switch","page.verify"]},
+    recovery:{reason:"page_closed",suggestedTools:["tabs.list","tabs.switch"]},
   });
   expect(click).toHaveBeenCalledTimes(1);
 });
@@ -92,7 +92,7 @@ it("captures labels before dispatch without retaining entered values, anchors or
     return { ok: true, value: current };
   } }, { session, actions, trace });
   const result = await wrapped.execute({ anchor: "expired", text: "typed-secret" });
-  expect(result.action).toMatchObject({ target: { name: "Property name" }, changes: ["dialog_opened", "focus_changed", "ui_changed"], verification: "not_checked" });
+  expect(result.action).toMatchObject({ target: { name: "Property name" }, changes: ["dialog_opened", "focus_changed", "ui_changed"] });
   const persisted = JSON.stringify(await actions.get());
   for (const forbidden of ["typed-secret", "expired", "private=query"]) expect(persisted).not.toContain(forbidden);
   expect(actionTarget({ ...target, inputType: "password" })).toEqual({ role: "textbox" });

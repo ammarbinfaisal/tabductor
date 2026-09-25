@@ -23,7 +23,6 @@ it("collects and emits 100 unique records in bounded code without returning bulk
       const out = await tools.call('emit.batch', {type:'item.found', items:data.value.records.map(record => ({packet:record, dedupeKey:record.id}))});
       if (!out.ok) throw new Error(out.error);
       emitted += out.value.count;
-      await tools.call('checkpoint.set', {value: {emitted, nextOffset:offset+25}});
       await tools.call('batch.release', {batchId:batch.value.batchId});
     }
     return {emitted};
@@ -31,7 +30,7 @@ it("collects and emits 100 unique records in bounded code without returning bulk
   expect(result).toEqual({ ok: true, value: { emitted: 100 } });
   expect(emit).toHaveBeenCalledTimes(100);
   expect(new Set(emit.mock.calls.map((call) => call[2])).size).toBe(100);
-  expect(await tools.get("checkpoint.get")!.execute({})).toEqual({ ok: true, value: { emitted: 100, nextOffset: 100 } });
+  expect(tools.has("checkpoint.get")).toBe(false);
 });
 
 it("reads extracted rows and normalizes tweet URLs before emitting acknowledged records", async () => {
@@ -58,7 +57,6 @@ it("reads extracted rows and normalizes tweet URLs before emitting acknowledged 
     }
     const emitted = await tools.call('emit.batch', {type: 'tweet.extracted', items});
     if (!emitted.ok) throw new Error(emitted.error);
-    await tools.call('checkpoint.set', {value: {emitted: emitted.value.count}});
     return {emitted: emitted.value.count};
   }` });
   expect(result).toEqual({ ok: true, value: { emitted: 2 } });
@@ -66,7 +64,7 @@ it("reads extracted rows and normalizes tweet URLs before emitting acknowledged 
     ["tweet.extracted", { tweet_id: "123", tweet_url: "https://x.com/author/status/123", tweet_text: "First tweet" }, "123"],
     ["tweet.extracted", { tweet_id: "456", tweet_url: "https://x.com/author/status/456", tweet_text: "Second tweet" }, "456"],
   ]);
-  expect(await tools.get("checkpoint.get")!.execute({})).toEqual({ ok: true, value: { emitted: 2 } });
+  expect(tools.has("checkpoint.get")).toBe(false);
 });
 
 it("reports partial acceptance and can retry with stable dedupe keys", async () => {
@@ -110,7 +108,7 @@ it("journals each accepted item even when cancellation interrupts a batch", asyn
   }).map(tool => [tool.name, tool]));
   const result = await tools.get("emit.batch")!.execute({ type: "item", items: ["a", "b"].map(dedupeKey => ({ packet: {}, dedupeKey })) }, abort.signal);
   expect(result.ok).toBe(false);
-  expect((await tools.get("code.status")!.execute({})).value).toMatchObject({ lastBatch: {
+  expect(journal).toMatchObject({ lastBatch: {
     acceptedCount: 1, total: 2, accepted: [{ index: 0, outcome: "published", keyHash: expect.stringMatching(/^[a-f0-9]{64}$/) }],
   } });
 });

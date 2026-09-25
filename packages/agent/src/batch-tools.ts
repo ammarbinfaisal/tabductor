@@ -8,7 +8,7 @@ export type CheckpointStore = { get: () => Promise<unknown>; set: (value: unknow
 /** Batches live outside conversation history and are scoped to this executor invocation.
  * Never silently evict data: callers release batches explicitly once processed.
  */
-export function batchTools(session: RunSession, emit: EmitFn, checkpoint?: CheckpointStore,
+export function batchTools(session: RunSession, emit: EmitFn,
   signal?: AbortSignal, progress?: CheckpointStore): AgentTool[] {
   const batches = new Map<string, { records: ExtractedRecord[]; bytes: number }>();
   let bytes = 0;
@@ -68,14 +68,5 @@ export function batchTools(session: RunSession, emit: EmitFn, checkpoint?: Check
         }
         return { ok: true, value: { accepted, count: accepted.length } };
       } }),
-    ...(checkpoint ? [
-      defineTool({ name: "checkpoint.get", description: "Read this run's durable progress checkpoint; survives retries of the same run. Batch handles and page anchors are ephemeral and must be reacquired after restart.",
-        parameters: z.object({}), async execute() { return { ok: true, value: await checkpoint.get() }; } }),
-      defineTool({ name: "checkpoint.set", description: "Save a compact progress checkpoint (up to 16000 characters) after checking event acknowledgements. Record stable identities and stopping conditions, never credentials or ephemeral anchors. Checkpoints are not atomic with browser actions; reconcile before retrying side effects.",
-        parameters: z.object({ value: z.record(z.string(), z.unknown()) }), async execute(args) {
-          if (JSON.stringify(args.value).length > 16000) return { ok: false, error: "checkpoint exceeds 16000 characters" };
-          await checkpoint.set(args.value); return { ok: true, value: { saved: true } };
-        } }),
-    ] : []),
   ];
 }

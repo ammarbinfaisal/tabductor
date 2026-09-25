@@ -46,9 +46,9 @@ it("brings a recreated portal editor ahead of a dense sidebar and excludes its d
     const draft = await session.page.perceive({ elementLimit: 10 });
     expect(draft.elements[0]?.value).toBe("required body");
     expect(draft.committedText).not.toContain("required body");
-    expect(await tools.get("page.verify")!.execute({ recordKey: "record-42", urlIncludes: "/editor" })).toMatchObject({ ok: false });
+    expect(tools.has("page.verify")).toBe(false);
     expect(await tools.get("page.press")!.execute({ key: "Enter" })).toMatchObject({ ok: true });
-    expect(await tools.get("page.verify")!.execute({ recordKey: "record-42", urlIncludes: "/editor" })).toMatchObject({ ok: true });
+    expect((await session.page.perceive()).committedText).toContain("required body");
   } finally { await session.close(); }
 });
 
@@ -150,33 +150,33 @@ it("refuses a replacement node that copies an observed node's identity attribute
 
 it("verifies outcomes, delivers image bytes, selects options and accepts an armed dialog",async()=>{
   const {session,call}=await setup();try{
-    expect(await call("done")).toMatchObject({ok:false});
-    expect(await call("page.verify",{textIncludes:"Saved successfully"})).toMatchObject({ok:false});
+    expect(await call("done")).toMatchObject({ok:true});
+    expect((await session.page.perceive()).text).not.toContain("Saved successfully");
     await call("page.click",{anchor:await anchor(session,"Save")});
-    expect(await call("page.verify",{textIncludes:"Saved successfully"})).toMatchObject({ok:true});
+    expect((await session.page.perceive()).text).toContain("Saved successfully");
     expect(await call("done")).toMatchObject({ok:true});
     await call("page.select",{anchor:await anchor(session,"Choice"),values:["b"]});
-    expect(await call("done")).toMatchObject({ok:false});
+    expect(await call("done")).toMatchObject({ok:true});
     expect(await call("page.click",{anchor:"expired"})).toMatchObject({ok:false});
-    expect(await call("page.verify",{anchor:await anchor(session,"Choice"),value:"b"})).toMatchObject({ok:true});
+    expect((await session.page.perceive({query:"Choice"})).elements.find(e=>e.name==="Choice")?.value).toBe("b");
     expect(await call("done")).toMatchObject({ok:true});
     const shot=await call("page.screenshot",{anchor:await anchor(session,"Save")});
     expect(shot.images?.[0]?.mime).toBe("image/png");expect(shot.images?.[0]?.data.length).toBeGreaterThan(100);
     await call("page.dialog",{accept:true});await call("page.click",{anchor:await anchor(session,"Confirm")});
-    expect(await call("page.verify",{textIncludes:"Confirmed"})).toMatchObject({ok:true});
+    expect((await session.page.perceive()).text).toContain("Confirmed");
   }finally{await session.close();}
 });
 
 it("presses keys, hovers, drags and scrolls a selected container",async()=>{
   const {session,call}=await setup();try{
     await call("page.press",{anchor:await anchor(session,"Account name"),key:"Enter"});
-    expect(await call("page.verify",{textIncludes:"Pressed"})).toMatchObject({ok:true});
+    expect((await session.page.perceive()).text).toContain("Pressed");
     await call("page.hover",{anchor:await anchor(session,"Hover target")});
-    expect(await call("page.verify",{textIncludes:"Hovered"})).toMatchObject({ok:true});
+    expect((await session.page.perceive()).text).toContain("Hovered");
     const p=await session.page.perceive({elementLimit:100});
     const source=p.elements.find(e=>e.name==="Drag source")!,target=p.elements.find(e=>e.name==="Drop target")!;
     expect(await call("page.drag",{anchor:source.anchor,targetAnchor:target.anchor})).toMatchObject({ok:true});
-    expect(await call("page.verify",{textIncludes:"Dropped"})).toMatchObject({ok:true});
+    expect((await session.page.perceive()).text).toContain("Dropped");
     expect(await call("page.scroll",{anchor:await anchor(session,"Scroll region"),direction:"down"})).toMatchObject({ok:true});
     await session.page.waitFor('#scroll-box[data-scrolled="yes"]');
   }finally{await session.close();}
@@ -209,12 +209,12 @@ it("settles delayed property editors, keeps summaries across cycles, and verifie
     await session.page.goto(`${origin}/property-editor`);
     for (let i=0;i<3;i++) {
       const opened = await call("page.click",{anchor:await anchor(session,"Add property")});
-      expect(opened).toMatchObject({ok:true,action:{target:{name:"Add property"},changes:expect.arrayContaining(["dialog_opened"]),verification:"not_checked"},observation:{stability:"settled",activeScope:"dialog"}});
+      expect(opened).toMatchObject({ok:true,action:{target:{name:"Add property"},changes:expect.arrayContaining(["dialog_opened"])},observation:{stability:"settled",activeScope:"dialog"}});
       const p = session.lastPerception!()!;
       expect(p.elements[0]).toMatchObject({role:"textbox",focused:true,controlLabel:"Property name"});
       expect(opened.action?.controls).toEqual(expect.arrayContaining([expect.objectContaining({role:"textbox",name:"Property name"})]));
       const closed = await call("page.press",{anchor:p.elements[0]!.anchor,key:"Escape"});
-      expect(closed).toMatchObject({action:{operation:"Escape",target:{name:"Property name"},changes:expect.arrayContaining(["dialog_closed"]),verification:"not_checked"}});
+      expect(closed).toMatchObject({action:{operation:"Escape",target:{name:"Property name"},changes:expect.arrayContaining(["dialog_closed"])}});
     }
     const rejected = await call("page.click",{anchor:await anchor(session,"Add property")});
     expect(rejected).toMatchObject({ok:false,action:{dispatch:"rejected"},recovery:{reason:"cycle",repetitions:3,cycle:expect.arrayContaining([expect.objectContaining({operation:"Escape"})])}});
@@ -243,8 +243,8 @@ it("filters inspection wrappers while retaining structural detail and pagination
     const root=(structural.value as {scopeAnchor:string}).scopeAnchor;
     expect(await call("page.inspect",{anchor:root,structuralDetail:true,elementLimit:10,elementOffset:10})).toMatchObject({ok:true,value:{elementOffset:10}});
     const input=await anchor(session,"Property name");
-    expect(await call("page.type",{anchor:input,text:"username"})).toMatchObject({ok:true,action:{verification:"not_checked",changes:expect.arrayContaining(["field_state_changed"])}});
-    expect(await call("page.press",{key:"Enter"})).toMatchObject({ok:true,action:{verification:"not_checked"}});
-    expect(await call("page.verify",{textIncludes:"username"})).toMatchObject({ok:true,action:{verification:"passed"}});
+    expect(await call("page.type",{anchor:input,text:"username"})).toMatchObject({ok:true,action:{changes:expect.arrayContaining(["field_state_changed"])}});
+    expect(await call("page.press",{key:"Enter"})).toMatchObject({ok:true,action:{dispatch:"executed"}});
+    expect((await session.page.perceive()).text).toContain("username");
   } finally {await session.close();}
 });

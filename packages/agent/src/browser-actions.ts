@@ -14,7 +14,6 @@ export const actionSummarySchema = z.object({
   operation: z.string().max(80).optional(),
   dispatch: z.enum(["executed", "rejected", "failed", "uncertain"]),
   changes: z.array(z.string().max(80)).max(8),
-  verification: z.enum(["not_checked", "passed", "failed"]),
 });
 export type BrowserActionSummary = z.infer<typeof actionSummarySchema>;
 export const observationMetadataSchema = z.object({
@@ -133,7 +132,7 @@ export async function observeAfterAction(session: RunSession, opts: {
     if (opts.signal?.aborted || terminalBrowserError(error)) throw error;
     return { ok: true, value: null, observation: { stability: "unavailable", durationMs: Date.now() - started, activeScope: last ? activeScope(last) : "page" },
       recovery: error instanceof AppError && error.code === "browser_page_closed"
-        ? { reason: "page_closed", suggestedTools: ["tabs.list", "tabs.switch", "page.verify"] }
+        ? { reason: "page_closed", suggestedTools: ["tabs.list", "tabs.switch"] }
         : { reason: "observation_unavailable", suggestedTools: ["page.perceive"] } };
   }
 }
@@ -148,7 +147,7 @@ function dispatchOf(result: ToolResult): BrowserActionSummary["dispatch"] {
 export function withActionSummaries(tool: AgentTool, deps: {
   session: RunSession; actions: CheckpointStore; trace?: TraceRecorder;
 }): AgentTool {
-  if (!browserMutation.test(tool.name) && tool.name !== "page.verify") return tool;
+  if (!browserMutation.test(tool.name)) return tool;
   return { ...tool, async execute(args, signal) {
     const input = args && typeof args === "object" ? args as Record<string, unknown> : {};
     if (tool.name === "tabs.switch" && input.id === deps.session.page.id) return tool.execute(args, signal);
@@ -176,15 +175,12 @@ export function withActionSummaries(tool: AgentTool, deps: {
       .slice(0, 4).flatMap(e => { const target = actionTarget(e); return target ? [target] : []; });
     const summary: BrowserActionSummary = { id: randomUUID(), tool: tool.name, ...(target ? { target } : {}), ...(operation ? { operation } : {}),
       dispatch, changes: observedChanges(before, after),
-      ...(controls.length ? { controls } : {}),
-      verification: tool.name === "page.verify" && observation(result.value) ? (result.ok ? "passed" : "failed") : "not_checked" };
-    // A failed assertion is a completed observation, not a rejected browser action.
-    if (tool.name === "page.verify" && result.value !== undefined) summary.dispatch = "executed";
+      ...(controls.length ? { controls } : {}) };
     if (result.observation?.stability === "unavailable") summary.changes = ["change_unknown"];
     if (controlChange) summary.changes = ["change_unknown", "browser_control_changed"];
     await deps.actions.set(boundActionHistory([...readActionHistory(await deps.actions.get()), summary]));
     await deps.trace?.record("action", { action: "browser.action_summary", summaryId: summary.id, tool: summary.tool,
-      dispatch: summary.dispatch, changes: summary.changes, verification: summary.verification,
+      dispatch: summary.dispatch, changes: summary.changes,
       ...(result.observation ? { stability: result.observation.stability, settlingMs: result.observation.durationMs } : {}) });
     if (controlChange) throw new AppError(controlChange.code, controlChange.message, { details: { ...controlChange.details, actionSummary: summary } });
     return { ...result, action: summary };

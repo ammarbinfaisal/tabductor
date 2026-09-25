@@ -1,0 +1,1 @@
+ALTER TABLE "workflow_records" DROP CONSTRAINT "workflow_records_saved_check";

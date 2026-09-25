@@ -94,8 +94,7 @@ function buildSystemPrompt(opts: RunAgentLoopOptions, tools: AgentTool[]): strin
     "This browser task retains context across runs in one workflow execution. Reuse the learned procedure, " +
     "exploration memory, conversation, archived history and workspace files. The current trigger packet and workflow.input " +
     "are the authoritative input for THIS run; earlier packets, done calls and saved outcomes belong to earlier runs. " +
-    "A previous done call does not finish the current run. Current checkpoints, operation progress and verification " +
-    "are run-local. Inspect the current page and use current input values when reusing a helper. "
+    "A previous done call does not finish the current run. Inspect the current page and use current input values when reusing a helper. "
   );
   return sections.filter((s) => s.length > 0).join("\n\n");
 }

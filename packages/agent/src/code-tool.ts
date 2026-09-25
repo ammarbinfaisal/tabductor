@@ -29,7 +29,7 @@ export type BrowserCodeOptions = {
 };
 // Switching existing owned tabs changes focus, but must not clear or block reconciliation
 // of a destination write. The normal ownership and human-control fences still apply.
-const readOnly = /^(?:tools\.describe|history\.read|output\.read|workspace\..*|helpers\.define|harness\.(?:page_info|current_tab|accessibility_tree|verify)|harness\.(?:observe|find|extract|scroll|frames|screenshot|wait_for_element)|batch\.(?:read|release)|checkpoint\.get|code\.status|memory\.get|helpers\.(?:list|use)|destination\.(?:contract\.read|field\.observe)|page\.(?:perceive|inspect|find|screenshot|extract|extractBatch|verify|waitFor|waitForLoadState)|network\.(?:list|read|waitForResponse)|tabs\.(?:list|switch)|file\.(?:read|release)|fail|run\.deopt)$/;
+const readOnly = /^(?:tools\.describe|history\.read|output\.read|workspace\..*|helpers\.define|harness\.(?:page_info|current_tab|accessibility_tree)|harness\.(?:observe|find|extract|scroll|frames|screenshot|wait_for_element)|batch\.(?:read|release)|memory\.get|helpers\.(?:list|use)|destination\.(?:contract\.read|field\.observe)|page\.(?:perceive|inspect|find|screenshot|extract|extractBatch|waitFor|waitForLoadState)|network\.(?:list|read|waitForResponse)|tabs\.(?:list|switch)|file\.(?:read|release)|fail|run\.deopt)$/;
 const object = (v: unknown): Record<string, unknown> => v && typeof v === "object" ? v as Record<string, unknown> : {};
 
 /** Bounded evidence; omission is explicit and makes the compiler refuse dependent work. */
@@ -66,7 +66,7 @@ export function codeTool(tools: AgentTool[], opts: BrowserCodeOptions): AgentToo
   const docs = python ? sdkCatalog(allowed.values()) : [...allowed.values()].map(t => `${t.name === "done" || t.name === "fail" ? "run." : ""}${t.name}(${JSON.stringify(asSchema(t.parameters).jsonSchema)}): ${t.description}`).join("\n");
   return defineTool({
     name: python ? "browser.python" : "browser.code",
-    description: python ? `${PYTHON_BROWSER_GUIDANCE}\nAvailable gateway methods:\n${docs}` : `Execute export default async function(api) { ... }. This is the only browser tool. SDK methods take one object and return {ok,value,error}; check ok. api.input contains the current trigger packet (never copy example values into reusable programs). Use fresh observation anchors after actions. api.helpers.call(name,args) runs a pinned helper in this isolate. api.run.done({result}) and api.run.fail({reason}) finish the task; ordinary return only ends this invocation. api.run.deopt({reason,evidence}) returns control to the agent. Return a short observation/summary and checkpoint durable progress; JavaScript variables do not survive calls. Screenshots are attached automatically. api.budget()/api.yield() bound batches. 32 MB, 50 operations, 30 seconds of guest execution; host operations have separate bounded waits. No imports, filesystem, fetch, raw DOM evaluation, or recursive browser.code. The SDK retains the existing policy, verification, cancellation and takeover fences. Inspect uncertain effects before choosing the next action and avoid duplicate writes; AI exploration remains available. Verification helpers are optional in AI mode, while static execution requires machine-checked guards.\n${CODE_OUTPUT_GUIDANCE}\nAvailable SDK methods:\n${docs}`,
+    description: python ? `${PYTHON_BROWSER_GUIDANCE}\nAvailable gateway methods:\n${docs}` : `Execute export default async function(api) { ... }. This is the only browser tool. SDK methods take one object and return {ok,value,error}; check ok. api.input contains the current trigger packet (never copy example values into reusable programs). Use fresh observation anchors after actions. api.helpers.call(name,args) runs a pinned helper in this isolate. api.run.done({result}) and api.run.fail({reason}) finish the task; ordinary return only ends this invocation. api.run.deopt({reason,evidence}) returns control to the agent. Return a short observation/summary; JavaScript variables do not survive calls. Screenshots are attached automatically. api.budget()/api.yield() bound batches. 32 MB, 50 operations, 30 seconds of guest execution; host operations have separate bounded waits. No imports, filesystem, fetch, raw DOM evaluation, or recursive browser.code. The SDK retains the existing policy, cancellation and takeover fences. Inspect uncertain effects before choosing the next action and avoid duplicate writes; AI exploration remains available.\n${CODE_OUTPUT_GUIDANCE}\nAvailable SDK methods:\n${docs}`,
     parameters: z.object({ source: z.string().min(1).max(24000), timeoutMs: z.number().int().min(1).max(python ? 180000 : 30000).default(python ? 180000 : 30000) }),
     async execute(args, callSignal) {
       const signal = opts.signal && callSignal ? AbortSignal.any([opts.signal, callSignal]) : opts.signal ?? callSignal;
@@ -128,7 +128,7 @@ export function codeTool(tools: AgentTool[], opts: BrowserCodeOptions): AgentToo
           argsBytes.length > 64000 ? {kind:"actions",bytes:argsBytes,mime:"application/json"} : undefined);
         const rejected = !tool && !helper ? { ok: false, error: `SDK operation unavailable: ${name}` } :
           opts.compiled && effect && progress.requiresReconciliation ? { ok: false, code: "reconciliation_required", outcomeUncertain: false,
-            error: "An earlier browser action may have executed. Inspect its outcome before further actions: use page.verify for navigation or login postconditions, or verify the exact destination record for a write. Do not replay the uncertain action." } : undefined;
+            error: "An earlier browser action may have executed. Inspect its outcome before further actions: inspect the current page and destination record. Do not replay the uncertain action." } : undefined;
         if (rejected) {
           await remember(rejected);
           await opts.trace?.record("action", { action: "sdk.operation", ...entry, phase: "finished", result: rejected, durationMs: Date.now()-started });
@@ -176,7 +176,6 @@ export function codeTool(tools: AgentTool[], opts: BrowserCodeOptions): AgentToo
         if (effect) await opts.progress?.set({ ...current, inFlight: null, requiresReconciliation: uncertain || current.requiresReconciliation === true,
           lastAcknowledgedOperation: uncertain ? current.lastAcknowledgedOperation : operationId,
           uncertainOperation: uncertain ? { operationId, tool: name } : current.uncertainOperation ?? null });
-        if (value.ok && ["page.verify", "harness.verify"].includes(name)) await opts.progress?.set({ ...object(await opts.progress?.get()), requiresReconciliation: false, uncertainOperation: null });
         if (value.ok && name === "done") terminal = { outcome: "done", result: value.value };
         if (value.ok && name === "fail") terminal = { outcome: "fail", reason: String(value.value) };
         if (value.ok && name === "run.deopt") terminal = { outcome: "deopt", reason: String(object(value.value).reason), evidence: object(value.value).evidence };
@@ -220,7 +219,7 @@ export function codeTool(tools: AgentTool[], opts: BrowserCodeOptions): AgentToo
       if (python && terminal && result.outcome !== "completed") return {ok:false,error:result.error};
       if (terminal) return { ok: true, value: { outcome: terminal.outcome }, terminal, ...(images.length ? { images } : {}) };
       if (result.outcome === "killed") throw new AppError("resource_limit_exceeded", "Browser program exceeded its execution limit; inspect its journal before retrying");
-      if (result.outcome === "yielded") return { ok: true, value: { outcome: "yielded", next: "Continue from checkpoint and acknowledged effects" }, ...(images.length ? {images} : {}) };
+      if (result.outcome === "yielded") return { ok: true, value: { outcome: "yielded", next: "Continue from the current page and previous results" }, ...(images.length ? {images} : {}) };
       if (result.outcome === "error" && result.code === "output_too_large") return {
         ok: false, code: result.code, error: result.error,
         value: { outputChars: result.outputChars, limitChars: 8000, calls: result.calls,

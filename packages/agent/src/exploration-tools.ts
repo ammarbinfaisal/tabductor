@@ -2,7 +2,6 @@ import { z } from "zod";
 import type { RunSession, PageInteraction } from "@tabductor/browser";
 import { defineTool, summarizePerception, type AgentTool, type ToolResult } from "./tools.js";
 import type { CheckpointStore } from "./batch-tools.js";
-import { destinationKey, type StoredDestination } from "@tabductor/engine";
 import { readActionHistory } from "./browser-actions.js";
 
 export type ExplorationMemory = {
@@ -30,8 +29,6 @@ const target = (session: RunSession, anchor: string): string => {
   return locator;
 };
 export function explorationTools(session: RunSession, memory: CheckpointStore,
-  verified: (evidence: { url: string; recordKey?: string; destinationContractId?: string; committed?: boolean }) => void,
-  context?: { mapping: StoredDestination; packet: Record<string, unknown> },
   runtime?: { afterAction: (signal?: AbortSignal) => Promise<ToolResult>; actions: CheckpointStore }): AgentTool[] {
   const observe = async (): Promise<ToolResult> => ({ ok: true, value: summarizePerception(await session.page.perceive()) });
   const action = async (input: PageInteraction, signal?: AbortSignal): Promise<ToolResult> => {
@@ -91,47 +88,6 @@ export function explorationTools(session: RunSession, memory: CheckpointStore,
     }}),
     defineTool({name:"memory.get",description:"Read durable exploration memory: learned facts, pending work, recent attempts and acknowledged effects. Survives compaction and retries of this run.",parameters:z.object({}),async execute(){return{ok:true,value:{...readMemory(await memory.get()),actions:readActionHistory(await runtime?.actions.get())}};}}),
     defineTool({name:"memory.set",description:"Save concise observed facts and pending work. Preserve stable record identities, useful selectors and failed approaches; never store credentials or ephemeral anchors. Automatic attempt and effect records are retained.",parameters:z.object({facts:z.array(z.string().max(500)).max(12),pending:z.array(z.string().max(500)).max(8)}),async execute(args){await memory.set({...readMemory(await memory.get()),...args});return{ok:true,value:{saved:true}};}}),
-    defineTool({name:"page.verify",description:"Optional assertion helper for machine-checked postconditions. AI exploration and completion do not require this call. For a machine-checked destination save, supply recordAnchor (a current container for the record; any DOM tag or role is supported), recordKey (the exact stable input identity) and urlIncludes for the destination; the identity must be visible there. Supply at least one exact observed condition: URL substring, visible text, absent text, or an anchored element's value/checked/selected/expanded/disabled state. Failed assertions are recoverable; never claim success based only on a click.",
-      parameters:z.object({recordKey:z.string().min(1).max(2000).optional(),recordAnchor:z.string().optional(),urlIncludes:z.string().min(1).optional(),textIncludes:z.string().min(1).max(2000).optional(),textAbsent:z.string().min(1).max(2000).optional(),
-        anchor:z.string().optional(),value:z.string().max(1000).optional(),checked:z.boolean().optional(),selected:z.boolean().optional(),expanded:z.boolean().optional(),disabled:z.boolean().optional()})
-        .refine(v=>Boolean(v.urlIncludes||v.textIncludes||v.textAbsent||v.anchor),"at least one observable condition is required"),
-      async execute(args) {
-        if (context && !args.recordKey) return {ok:false,error:"Destination verification requires this input record's exact identity and recordAnchor"};
-        const recordScope = args.recordAnchor ? session.anchorInfo?.(args.recordAnchor) : undefined;
-        if (context && args.recordKey && !recordScope)
-          return {ok:false,error:"This scoped readback needs a current record anchor. Custom containers are supported; alternatively use harness.verify for structured readback or assess the observed result in AI mode."};
-        const selector=args.recordAnchor?target(session,args.recordAnchor):args.anchor?target(session,args.anchor):undefined;
-        const p=await session.page.perceive({selector,maxChars:20000,elementLimit:100});
-        const failures:string[]=[];
-        if(args.urlIncludes&&!p.url.includes(args.urlIncludes))failures.push("URL does not match");
-        if(args.textIncludes&&!p.text.includes(args.textIncludes))failures.push("required text was not observed");
-        if(args.textAbsent&&(p.text.includes(args.textAbsent)||p.coverage?.nextTextOffset!=null||p.coverage?.scanTruncated))failures.push("text is present or absence could not be established within observation coverage");
-        if(args.anchor){const e=p.elements.find(e=>(e.actionLocator??e.locator)===selector);
-          if(!e)failures.push("target not visible");
-          else for(const key of ["value","checked","selected","expanded","disabled"] as const)if(args[key]!==undefined&&e[key]!==args[key])failures.push(`${key} does not match`);
-        }
-        if(args.recordKey && (!args.urlIncludes || !(p.text.includes(args.recordKey) || p.url.includes(args.recordKey) || p.elements.some(e => e.value?.includes(args.recordKey!))))) failures.push("Record identity was not observed at the requested destination URL");
-        if (context && args.recordKey) {
-          const { mapping, packet } = context;
-          const norm = (v: unknown) => String(v ?? "").replace(/\s+/g, " ").trim();
-          const committed = norm(p.committedText);
-          const identity = norm(args.recordKey).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-          if (!new RegExp(`(^|[^\\p{L}\\p{N}_])${identity}($|[^\\p{L}\\p{N}_])`, "u").test(committed))
-            failures.push("The exact stable identity must be present in committed record content");
-          if (p.elements.filter(e=>e.role === "row" || e.role === "article" || e.tag === "article").length > 1)
-            failures.push("Verification scope contains multiple records; inspect one saved record");
-          if (String(packet[mapping.identityField]) !== args.recordKey) failures.push("Verification must use the exact input record identity");
-          const belongs = (url: string) => { try { return destinationKey(url) === mapping.destinationKey; } catch { return false; } };
-          if (!belongs(p.url) && !p.elements.some(e => e.href && belongs(e.href))) failures.push("Authorized database identity is not present in the observed page or breadcrumb");
-          for (const field of mapping.verificationFields) {
-            const expected = norm(packet[field]);
-            if (!expected || !committed.includes(expected)) failures.push(`Committed content missing for ${field}; close the editor, reopen the saved record and inspect its content`);
-          }
-          if (p.activeEditor) failures.push("An active editor cannot establish committed save evidence; commit and reopen the record");
-        }
-        if(failures.length)return{ok:false,error:failures.join("; "),value:summarizePerception(p)};
-        verified({url:p.url,...(args.recordKey?{recordKey:args.recordKey}:{}),...(context && args.recordKey ? {destinationContractId:context.mapping.id,committed:true}: {})});return{ok:true,value:{verified:true,perception:summarizePerception(p)}};
-      }}),
   ];
   const files = new Map<string,{name:string;mime:string;bytes:Buffer}>();let fileSequence=0;
   return tools;

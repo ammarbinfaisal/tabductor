@@ -1,10 +1,8 @@
 import { pythonTool } from "./python-tool.js";
 import { browserScreenshotTool } from "./browser-screenshot.js";
-import { destinationKey } from "@tabductor/engine";
-import { compareDataset } from "./dataset-verification.js";
 import { browserMutation, observeAfterAction, readActionHistory, withActionSummaries, type BrowserActionSummary, type ObservationMetadata, type BrowserRecovery } from "./browser-actions.js";
 import { recordOutcomeTool } from "./record-tools.js";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { AppError } from "@tabductor/core";
 import { interactionProgress } from "./interaction-progress.js";
 import { explorationTools, observationOptions, emptyMemory, readMemory } from "./exploration-tools.js";
@@ -316,7 +314,6 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
     summarize: summarizePerception, beforeCall: deps.beforeCall,
     signal: signal && deps.signal ? AbortSignal.any([signal, deps.signal]) : signal ?? deps.signal,
   });
-  let verifiedIdentity: { url: string; recordKey?: string; destinationContractId?: string; committed?: boolean } | undefined;
   let recoveryRequired = false;
   let recoveryAttempts = 0;
   const failedTargets = new Map<string, number>();
@@ -330,12 +327,6 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
   let failedWait: string | null = null;
   let memoryValue: unknown = emptyMemory();
   const memory = deps.memory ?? { get: async () => memoryValue, set: async (value: unknown) => { memoryValue = value; } };
-  let verified = false;
-  let verifiedSnapshot: string | undefined;
-  let harnessVerifiedSequence: number | undefined;
-  const verificationFresh = () => verified && (harnessVerifiedSequence !== undefined
-    ? harnessVerifiedSequence === session.dispatchState?.().sequence
-    : verifiedSnapshot === session.snapshotId?.());
   let lastOperation = "", lastObservation = "", unchanged = 0;
   const cycles = interactionProgress();
   let restoredCycles = false;
@@ -541,35 +532,16 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
     }),
 
     emitTool(emit),
-    ...batchTools(session, emit, deps.checkpoint, deps.signal, deps.progress),
-    ...(deps.progress ? [defineTool({ name: "code.status", description: "Read the durable code journal: in-flight effects, accepted batch indexes/key hashes, and unresolved effect uncertainty. Use this and checkpoint.get to guide recovery after interrupted collection. Uncertainty permits AI exploration; static execution requires reconciliation or deopt.", parameters: z.object({}), execute: async () => ({ ok: true, value: await deps.progress!.get() }) })] : []),
-    ...explorationTools(session, memory, evidence => { harnessVerifiedSequence = undefined; verifiedIdentity = evidence; verified = true; verifiedSnapshot = session.snapshotId?.(); }, deps.verificationContext, { afterAction, actions }),
-    ...(session.page?.harness ? harnessTools(session, (key, records) => {
-      const context = deps.verificationContext;
-      if (context) {
-        const { mapping, packet } = context;
-        if (key !== mapping.identityField || destinationKey(session.page.url()) !== mapping.destinationKey ||
-          !compareDataset([packet], records, key, mapping.verificationFields, true).verified) throw new Error("Readback must verify the authorized destination and every mapped field of this input record");
-      }
-      verified = true;
-      harnessVerifiedSequence = session.dispatchState?.().sequence;
-      verifiedSnapshot = `harness:${harnessVerifiedSequence ?? 0}`;
-      verifiedIdentity = {url:session.page.url(),...(context ? {recordKey:String(context.packet[key]),destinationContractId:context.mapping.id,committed:true} : {})};
-    }) : []),
-    ...(deps.recordOutcome ? [recordOutcomeTool(deps.recordOutcome, () => verificationFresh()
-      ? { ...verifiedIdentity, method:"readback", snapshotId: verifiedSnapshot!, url: verifiedIdentity?.url ?? session.page.url(), recordKey: verifiedIdentity?.recordKey, checkedAt: new Date().toISOString() } : undefined,
-      !deps.compiled && deps.verificationContext ? () => ({
-        method:"ai-assessment", assessmentId:randomUUID(), url:session.page.url(), checkedAt:new Date().toISOString(),
-        recordKey:String(deps.verificationContext!.packet[deps.verificationContext!.mapping.identityField]),
-        destinationContractId:deps.verificationContext!.mapping.id,
-      }) : undefined)] : []),
+    ...batchTools(session, emit, deps.signal, deps.progress),
+    ...explorationTools(session, memory, { afterAction, actions }),
+    ...(session.page?.harness ? harnessTools(session) : []),
+    ...(deps.recordOutcome ? [recordOutcomeTool(deps.recordOutcome)] : []),
     doneTool(),
     failTool(),
   ].map((tool): AgentTool => ({
     ...tool,
     async execute(args, signal) {
       signal?.throwIfAborted();
-      if (deps.compiled && tool.name === "done" && !verificationFresh()) return {ok:false,error:"Static completion requires an observed postcondition; verify with page.verify or harness.verify, or deopt to AI."};
       if (tool.name === "done") {
         const error = await deps.recordCompletionError?.();
         if (error) return { ok: false, error };
@@ -595,8 +567,7 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
         }
       }
       if (deps.compiled && mutates && (failedTargets.get(operation) ?? 0) >= 2) return rejectNoProgress("This target already failed twice. Choose a different target or inspect and resolve the obstruction before retrying.");
-      if (deps.compiled && mutates && operation === lastOperation && unchanged >= 2) return rejectNoProgress("This action repeatedly produced no observable change. Inspect a different target or verify the expected outcome before acting again.");
-      if (mutates) verified = false;
+      if (deps.compiled && mutates && operation === lastOperation && unchanged >= 2) return rejectNoProgress("This action repeatedly produced no observable change. Inspect the page or choose a different target before acting again.");
       const wait = tool.name === "page.waitFor" ? waitKey(args) : null;
       const unavailable = tool.name === "emit" && typeof args === "object" && args !== null &&
         "type" in args && typeof args.type === "string" && /(?:^|\.)page_unavailable$/.test(args.type);
@@ -610,12 +581,8 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
       const result = await tool.execute(args, signal);
       if (tool.name === "record.outcome") await deps.trace?.record("action", { action: "record.outcome", ok: result.ok });
       if (!result.ok && mutates) failedTargets.set(operation, (failedTargets.get(operation) ?? 0) + 1);
-      if (result.ok && tool.name === "page.verify" && deps.progress) {
-        const progress = await deps.progress.get() as Record<string, unknown> | null;
-        if (progress && !progress.inFlight) await deps.progress.set({ ...progress, requiresReconciliation: false });
-      }
-      if (result.ok && (mutates || ["page.perceive","page.find","page.inspect","page.waitFor","page.verify"].includes(tool.name))) {
-        const observed = tool.name === "page.verify" && result.value && typeof result.value === "object" && "perception" in result.value ? result.value.perception : result.value;
+      if (result.ok && (mutates || ["page.perceive","page.find","page.inspect","page.waitFor"].includes(tool.name))) {
+        const observed = result.value;
         const fingerprint = observationFingerprint(observed);
         if (mutates) {
           unchanged = operation === lastOperation && fingerprint === lastObservation ? unchanged + 1 : 0;
@@ -631,9 +598,9 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
         const saved = readMemory(await memory.get());
         saved.attempts = [...saved.attempts, {tool:tool.name,ok:result.ok,...(!result.ok?{error:result.error.slice(0,300)}:{})}].slice(-12);
         saved.interactions = cycles.snapshot();
-        if ((result.ok || result.value !== undefined) && ["emit","emit.batch","page.verify","page.download"].includes(tool.name)) {
+        if ((result.ok || result.value !== undefined) && ["emit","emit.batch","page.download"].includes(tool.name)) {
           // Keep acknowledgement identifiers, not extracted page contents or screenshots.
-          const value = tool.name === "page.verify" ? {verified:result.ok} : result.value;
+          const value = result.value;
           saved.acknowledgements = [...saved.acknowledgements,{tool:tool.name,value:{summary:JSON.stringify(value).slice(0,1000),dataOmitted:JSON.stringify(value).length>1000}}].slice(-6);
         }
         await memory.set(saved);
@@ -650,13 +617,13 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
           if (err instanceof Error && "code" in err && TERMINAL_CODES.has(String(err.code))) throw err;
           if (err instanceof AppError && err.code === "browser_page_closed") return {
             ...result, code: err.code,
-            error: `${result.error} The selected page closed. Use tabs.list and tabs.switch to inspect the surviving destination and verify the outcome before repeating actions.`,
-            recovery: { reason: "page_closed", suggestedTools: ["tabs.list", "tabs.switch", "page.verify"] },
+            error: `${result.error} The selected page closed. Use tabs.list and tabs.switch to inspect the surviving destination before repeating actions.`,
+            recovery: { reason: "page_closed", suggestedTools: ["tabs.list", "tabs.switch"] },
           };
           return result;
         }
       }
-      if (result.ok && (mutation.test(tool.name) || ["page.verify", "page.waitFor", "page.extract", "page.extractBatch", "network.read", "network.waitForResponse"].includes(tool.name))) {
+      if (result.ok && (mutation.test(tool.name) || ["page.waitFor", "page.extract", "page.extractBatch", "network.read", "network.waitForResponse"].includes(tool.name))) {
         recoveryRequired = false;
         recoveryAttempts = 0;
         failedWait = null;
