@@ -53,12 +53,8 @@ trigger separate runs; they do not form a join. Events carry the data needed for
 Use Playwright directly for browser automation: standard synchronous Python from playwright.sync_api
 inside browser.python, with the supplied page and context. Scope each record with a locator or evaluate_all so its fields stay
 associated, then validate and emit it with workflow.emit. browser.screenshot provides a direct image.
-workflow contains separate task services; do not invent browser wrappers or anchor APIs.
-Record tracking is optional. When the workflow benefits from per-record progress, declare event.record
-with collection, key and status, retaining collection/key across related steps. The key names a required
-stable string or integer identity field. Omit record metadata on ordinary task, control and summary events.
-For tracked input records, emit the processed result or call workflow.record.outcome with a reason.
-A saved outcome requires evidence of the actual saved result; AI mode can assess any suitable observation.
+workflow contains separate task services;
+
 Playwright assertions and workflow.record.verify are optional helpers. Report machine-verified saves
 separately from AI-assessed saves and processing counts. Successful tasks or accepted events alone are not saves.
 Optional limits.recordProcessing can normalize a declared record event and derive a stable identity.
