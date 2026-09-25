@@ -45,9 +45,8 @@ Internal packet/store schemas describe internal data; website fields are discove
 Carry all information needed by subsequent tasks in event packets. Do not invent observed values.
 Fetch N then dedupe differs from saving N new unique records; preserve the requested meaning of counts.
 
-One browser serves each workflow execution. Repeated packets reuse their task's tab; different tabs
-run in parallel, while runs sharing a tab take turns. Set limits.browser.tab_key to the same short name
-on browser tasks that should share a tab. A tab retains its page state between runs: inspect it before
+One browser serves each workflow execution. Repeated packets reuse their task's tab; 
+Set limits.browser.tab_key to the same short name on browser tasks that should share a tab. A tab retains its page state between runs: inspect it before
 acting and navigate when needed. Use explicit events for actual dependencies. Multiple subscriptions
 trigger separate runs; they do not form a join. Events carry the data needed for each handoff.
 
