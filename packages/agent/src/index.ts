@@ -65,3 +65,5 @@ export { createResultExecutor } from "./result-executor.js";
 export { remotePythonRunner, localPythonRunnerForTest, type PythonRunner, type RunnerScope } from "./python-runner.js";
 
 export { validatePythonCandidate } from "./python-validation.js";
+export { createBrowserLearningWorker, enqueueBrowserLearning, claimBrowserLearning, dispatchLearningCompile,
+  type BrowserLearningWorkerDeps } from "./learning-loop.js";

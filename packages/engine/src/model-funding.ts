@@ -50,7 +50,7 @@ const rateSchema = z.object({
 }).strict();
 export type ModelRate = z.infer<typeof rateSchema>;
 export type ModelUsage = { input: number; output: number; cachedInput?: number; reasoning?: number };
-export type ModelPurpose = "authoring" | "schema" | "graph" | "prompt" | "runtime" | "recovery" | "trace_compilation";
+export type ModelPurpose = "authoring" | "schema" | "graph" | "prompt" | "runtime" | "recovery" | "trace_compilation" | "browser_learning";
 export type ModelScope = { accountId: string; workflowId?: string; runId?: string; purpose: ModelPurpose };
 export type ModelCallConfig = { provider: ModelProvider; model: string; apiKey: string; baseUrl?: string; maxOutputTokens: number };
 

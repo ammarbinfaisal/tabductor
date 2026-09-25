@@ -1,4 +1,5 @@
 export * as schema from "./schema.js";
+export { browserLearningJobs, browserPromptRevisions, type BrowserLearningJobRow, type BrowserPromptRevisionRow } from "./schema.js";
 export {
   workflowTriggerRequests,
   workflowBrowserProfiles,

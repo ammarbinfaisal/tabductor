@@ -13,7 +13,7 @@ import {
 } from "@tabductor/browser";
 import { AppError } from "@tabductor/core";
 import type { Db, RunRow, TaskRow } from "@tabductor/db";
-import { type RunHandle, type RunResult, type TaskExecutor } from "@tabductor/engine";
+import { browserOperatingPrompt, type RunHandle, type RunResult, type TaskExecutor } from "@tabductor/engine";
 import type { PolicyGate } from "@tabductor/core";
 import type { SecretsBroker, SecretsBrokerRunDeps } from "@tabductor/secrets";
 import type { Metrics } from "@tabductor/telemetry";
@@ -172,11 +172,12 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
             : {}),
         });
 
-        const storedPrompt = handle.task.compiledPrompt ?? handle.task.prompt;
+        const operating = await browserOperatingPrompt(db, handle.task);
+        await trace.record("runtime", { action: "browser.prompt", lane: "ai", revision: operating.revision });
         const result = await runAgentLoop({
           llm,
           tools,
-          task: { prompt: storedPrompt },
+          task: { prompt: operating.prompt },
           trigger,
           emits,
           trace,

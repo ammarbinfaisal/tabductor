@@ -1,4 +1,5 @@
 import { checkRecordContracts, recordContractIssues } from "./record-contracts.js";
+import { carryBrowserLearning } from "./browser-learning.js";
 import { intentSchema, intentErrors, harnessTask, taskIntentDigest } from "./intent-contract.js";
 import { recordProcessingSchema } from "./record-processing.js";
 import { compileResultSchema } from "./result-schema.js";
@@ -10,6 +11,7 @@ import {
   newId,
   taskContentBasisHash,
   taskContentHash,
+  browserArtifactKey,
 } from "@tabductor/core";
 import type { Pool } from "pg";
 import {
@@ -533,6 +535,7 @@ type PreviousTask = {
   id: string;
   mode: string;
   compiledPrompt: string | null;
+  baselineCompiledPrompt: string | null;
   compiledPromptHash: string | null;
   contentHash: string | null;
   /** Carried with a carried script: a task whose content did not change keeps the deopt
@@ -676,7 +679,7 @@ async function compileTaskPrompts(
     let compiledPrompt: string;
     let entry: TaskCompileEntry;
     if (prev && prev.compiledPrompt !== null && prev.compiledPromptHash === compiledPromptHash) {
-      compiledPrompt = prev.compiledPrompt;
+      compiledPrompt = prev.baselineCompiledPrompt ?? prev.compiledPrompt;
       entry = { name: task.name, status: "reused", mode: task.mode };
     } else {
       const result = await compiler.compile(input);
@@ -798,6 +801,7 @@ export async function publishVersion(
         name: tasks.name,
         mode: tasks.mode,
         compiledPrompt: tasks.compiledPrompt,
+        baselineCompiledPrompt: tasks.baselineCompiledPrompt,
         compiledPromptHash: tasks.compiledPromptHash,
         contentHash: tasks.contentHash,
         cleanAiRuns: tasks.cleanAiRuns,
@@ -979,6 +983,7 @@ export async function publishVersion(
         mode,
         limitsJson: task.limits,
         compiledPrompt,
+        baselineCompiledPrompt: compiledPrompt,
         compiledPromptHash,
         contentHash,
         contentBasisHash,
@@ -1000,12 +1005,14 @@ export async function publishVersion(
         }
       }
 
+      let carriedArtifactKey: string | undefined;
       if (carryScriptFrom) {
         // The previous version's active script, re-shelved under the new row as its own
         // version 1 (`compiled_scripts` is per task row) — provenance kept verbatim, so the
         // runs it was compiled from are still the runs it was compiled from.
         const [script] = await trx.select().from(compiledScripts).where(eq(compiledScripts.id, carryScriptFrom));
         if (script) {
+          carriedArtifactKey = browserArtifactKey(script);
           await trx.insert(compiledScripts).values({
             id: newId("script"),
             taskId: id,
@@ -1016,6 +1023,13 @@ export async function publishVersion(
             status: "active",
           });
         }
+      }
+
+      const priorTask = previousTasks.get(task.name);
+      if (task.kind === "browser" && priorTask?.contentHash === contentHash) {
+        await carryBrowserLearning(trx, { previousTaskId: priorTask.id, taskId: id, contentHash,
+          baseline: compiledPrompt, samePromptContext: priorTask.compiledPromptHash === compiledPromptHash,
+          artifactKey: carriedArtifactKey });
       }
 
       for (const type of task.emits) {
@@ -1118,6 +1132,8 @@ export async function updateTask(
         ...(promptChanged
           ? {
               compiledPrompt: null,
+              baselineCompiledPrompt: null,
+              learningRuntimeVersion: null,
               compiledPromptHash: null,
               contentHash: null,
               cleanAiRuns: 0,

@@ -349,6 +349,10 @@ export const tasks = pgTable(
      * sees and edits; this is what the executors read. Never written by `updateTask`.
      */
     compiledPrompt: text("compiled_prompt"),
+    /** Publish-time baseline retained while post-run learning rewrites compiledPrompt. */
+    baselineCompiledPrompt: text("baseline_compiled_prompt"),
+    learningRevision: integer("learning_revision").notNull().default(0),
+    learningRuntimeVersion: text("learning_runtime_version"),
     /** Carry-forward key for `compiled_prompt` (the `prompt_hash` precedent on `event_defs`). */
     compiledPromptHash: text("compiled_prompt_hash"),
     /**
@@ -425,6 +429,53 @@ export const compiledScripts = pgTable(
 
 export type CompiledScriptRow = typeof compiledScripts.$inferSelect;
 
+export const browserLearningJobs = pgTable("browser_learning_jobs", {
+  id: text("id").primaryKey(),
+  taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
+  runId: text("run_id").notNull().references(() => runs.id, { onDelete: "cascade" }),
+  contentHash: text("content_hash"),
+  definitionHash: text("definition_hash").notNull(),
+  runtimeVersion: text("runtime_version").notNull(),
+  contextJson: jsonb("context_json").$type<{ scriptId?: string; scriptKey?: string; deoptKey?: string; planned?: boolean }>().notNull().default({}),
+  status: text("status").$type<"queued" | "running" | "succeeded" | "refused" | "failed">().notNull().default("queued"),
+  attempts: integer("attempts").notNull().default(0),
+  leaseToken: text("lease_token"),
+  heartbeatAt: ts("heartbeat_at"),
+  notBefore: ts("not_before").notNull().defaultNow(),
+  resultJson: jsonb("result_json").$type<Record<string, unknown>>(),
+  compileRequested: boolean("compile_requested").notNull().default(false),
+  compileJobId: text("compile_job_id"),
+  error: text("error"),
+  createdAt: createdAt(),
+  endedAt: ts("ended_at"),
+}, t => [
+  uniqueIndex("browser_learning_jobs_run_key").on(t.runId),
+  uniqueIndex("browser_learning_jobs_running_task_key").on(t.taskId).where(sql`${t.status} = 'running'`),
+  index("browser_learning_jobs_claim_idx").on(t.status, t.notBefore),
+  check("browser_learning_jobs_status_check", sql`${t.status} in ('queued','running','succeeded','refused','failed')`),
+]);
+export type BrowserLearningJobRow = typeof browserLearningJobs.$inferSelect;
+
+export const browserPromptRevisions = pgTable("browser_prompt_revisions", {
+  id: text("id").primaryKey(),
+  taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
+  revision: integer("revision").notNull(),
+  lane: text("lane").$type<"ai" | "deopt">().notNull(),
+  scopeKey: text("scope_key").notNull().default(""),
+  contentHash: text("content_hash"),
+  runtimeVersion: text("runtime_version").notNull(),
+  sourceRunId: text("source_run_id").references(() => runs.id, { onDelete: "set null" }),
+  previousRevisionId: text("previous_revision_id"),
+  baselinePrompt: text("baseline_prompt").notNull(),
+  prompt: text("prompt").notNull(),
+  dataJson: jsonb("data_json").$type<Record<string, unknown>>().notNull(),
+  createdAt: createdAt(),
+}, t => [
+  uniqueIndex("browser_prompt_revisions_version_key").on(t.taskId, t.lane, t.scopeKey, t.revision),
+  check("browser_prompt_revisions_lane_check", sql`${t.lane} in ('ai','deopt')`),
+]);
+export type BrowserPromptRevisionRow = typeof browserPromptRevisions.$inferSelect;
+
 /**
  * S6e — one row per **post-execution** compilation of a task's trace.
  *
@@ -473,6 +524,8 @@ export const compileJobs = pgTable(
     endedAt: ts("ended_at"),
     /** The candidate this job produced, once it has one. */
     scriptId: text("script_id"),
+    learningJobId: text("learning_job_id").references(() => browserLearningJobs.id, { onDelete: "set null" }),
+    expectedScriptId: text("expected_script_id"),
     /** The refusal, in the compiler's own words — what the author reads. */
     error: text("error"),
     createdAt: createdAt(),

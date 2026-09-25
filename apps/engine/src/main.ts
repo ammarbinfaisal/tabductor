@@ -5,6 +5,7 @@ import {
   createCompiledExecutor,
   createCompileLoop,
   createCompileWorker,
+  createBrowserLearningWorker,
   createDecisionExecutor,
   createResultExecutor,
   fundedLlm,
@@ -132,6 +133,9 @@ function compileWorkerEntry(db: Db): CompileWorker | undefined {
   });
 }
 const compileWorker = compileWorkerEntry(handle.db);
+const learningWorker = createBrowserLearningWorker({ db: handle.db, blobs, logger: log,
+  llmFor: ({ task, job }) => fundedLlm(modelResolver, () => modelScopeForTask(handle.db, task.id, "browser_learning", job.runId)),
+});
 
 
 /** Browser tasks resolve the account model at call time. */
@@ -150,8 +154,8 @@ function agentExecutorEntry(db: Db): ReturnType<typeof createAgentExecutor> | un
       liveSecretRuns.set(runId, run);
       return () => liveSecretRuns.delete(runId);
     },
-    // The first clean run makes the task eligible (K=1); the hook only queues the compile,
-    // so the run settles without waiting for a model.
+    // Post-run learning improves prompts and decides compilation eligibility independently.
+    // The hook only queues work, so the run settles without waiting for a model.
     onOutcome: async (input) => void (await compileLoop.afterAiRun(input)),
     llmFor: ({ trace, task, runId }) => fundedLlm(modelResolver, () => modelScopeForTask(db, task.id, "runtime", runId), trace),
   });
@@ -247,6 +251,7 @@ const engine = createEngine({
 await engine.start();
 await dispatcher.start();
 compileWorker?.start();
+learningWorker.start();
 // U3a: tell the control plane what this process can run, and keep saying so. The editor's
 // mode selector and `/status` read this row; a stale heartbeat reads as "engine down".
 await recordEngineBoot(handle.db, Object.keys(executors));
@@ -288,6 +293,7 @@ const shutdown = async (signal: string): Promise<void> => {
     clearInterval(heartbeat);
     if (paymentReconciler) clearInterval(paymentReconciler);
     await compileWorker?.stop();
+    await learningWorker.stop();
     await dispatcher.stop();
     await engine.stop();
     await browserPool.close();

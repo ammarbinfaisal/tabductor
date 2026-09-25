@@ -3,7 +3,7 @@ import { acquireBrowserContinuity, type BrowserContinuity } from "./browser-cont
 import type { PythonRunner } from "./python-runner.js";
 import { createRunWorkspace } from "./workspace.js";
 import { withAutomationControl } from "@tabductor/browser";
-import { AppError, SCRIPT_RUNTIME_VERSION } from "@tabductor/core";
+import { AppError, browserArtifactKey, SCRIPT_RUNTIME_VERSION } from "@tabductor/core";
 import {
   createTraceRecorder,
   openRunSession,
@@ -17,7 +17,7 @@ import {
 } from "@tabductor/browser";
 import { getActiveScript, invalidateScript, isPlannedDeopt } from "@tabductor/compiler";
 import { tasks, type Db, type RunRow, type TaskRow } from "@tabductor/db";
-import { assertRunLease, type RunHandle, type RunResult, type TaskExecutor } from "@tabductor/engine";
+import { assertRunLease, browserOperatingPrompt, latestBrowserPrompt, type RunHandle, type RunResult, type TaskExecutor } from "@tabductor/engine";
 import type { PolicyGate } from "@tabductor/core";
 import { type ScriptRunResult, type HelperRevision } from "@tabductor/static-rt";
 import type { Metrics } from "@tabductor/telemetry";
@@ -76,7 +76,8 @@ export type CompiledExecutorDeps = Pick<AgentExecutorDeps, "secrets" | "register
    * Called after the run settles, with whether it deopted. S6c's demotion policy lives here;
    * injected so the executor stays a code path and not a coordinator.
    */
-  onOutcome?: (input: { task: TaskRow; run: RunRow; deopted: boolean; plannedDeopted?: boolean; ok: boolean }) => Promise<void>;
+  onOutcome?: (input: { task: TaskRow; run: RunRow; deopted: boolean; plannedDeopted?: boolean; ok: boolean;
+    scriptId?: string; scriptKey?: string; deoptKey?: string }) => Promise<void>;
 };
 
 /** `limits_json.static_rt.{max_wall_ms,max_memory_mb}` — may only tighten S6a's defaults. */
@@ -105,10 +106,10 @@ function browserLimitsOf(task: TaskRow): ResourceLimits | undefined {
 /** What the agent wakes up to. The compiler wrote the first paragraph for exactly this moment. */
 function handoffPrompt(task: TaskRow, prompt: string, evidence: unknown, planned: boolean): string {
   return [
-    prompt,
-    "",
-    "Original task:",
     task.compiledPrompt ?? task.prompt ?? "(none recorded)",
+    "",
+    "## Current deopt handoff",
+    prompt,
     "",
     planned
       ? "The compiled script intentionally completed its deterministic prefix and delegated the remaining runtime judgment to you."
@@ -130,6 +131,7 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
       let unregisterSecretRun: (() => void) | undefined;
       let deopted = false;
       let plannedDeopted = false;
+      let scriptId: string | undefined, scriptKey: string | undefined, deoptKey: string | undefined;
       let ok = false;
       let pythonRunner: PythonRunner | undefined;
       let continuity: BrowserContinuity | undefined;
@@ -140,6 +142,8 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
           // retrying finds the same empty shelf.
           return { ok: false, error: "no active compiled script for this task", permanent: true };
         }
+        scriptId = script.id;
+        scriptKey = browserArtifactKey(script);
 
         continuity = await acquireBrowserContinuity(db, handle, "python");
         lease = await pool.acquire(await endpointFor(handle), handle.run.id);
@@ -163,8 +167,11 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
         if (!compatible) {
           await db.transaction(async (trx) => {
             await assertRunLease(trx, handle.run.id, handle.run.leaseGeneration);
-            await invalidateScript(trx, script.id);
-            await trx.update(tasks).set({ mode: "ai", cleanAiRuns: 0 }).where(eq(tasks.id, handle.task.id));
+            await trx.select({ id: tasks.id }).from(tasks).where(eq(tasks.id, handle.task.id)).for("update");
+            if ((await getActiveScript(trx, handle.task.id))?.id === script.id) {
+              await invalidateScript(trx, script.id);
+              await trx.update(tasks).set({ mode: "ai", cleanAiRuns: 0 }).where(eq(tasks.id, handle.task.id));
+            }
           });
         }
         const [emits, trigger] = await Promise.all([handle.declaredEmits(), triggerInfoOf(db, handle)]);
@@ -192,6 +199,7 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
             if (result.terminal?.outcome === "deopt") {
               const plan = asRecord(asRecord(script.guardsMeta)?.plan);
               const plannedDeopt = isPlannedDeopt(plan, result.terminal.evidence);
+              deoptKey = plannedDeopt ? `planned:${String(asRecord(result.terminal.evidence)?.plannedDeopt)}` : "recovery";
               return {outcome:"deopt",
                 prompt:plannedDeopt ? result.terminal.reason : [plan?.recoveryPrompt,result.terminal.reason].filter(Boolean).join("\n"),
                 evidence:{guard:result.terminal.evidence,checkpoint:await control.checkpoint.get(),progress:await control.progress.get()},
@@ -221,20 +229,27 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
         deopted = true;
         plannedDeopted = result.plannedDeopt === true;
         const deoptTrigger = plannedDeopted ? "planned_ai" : compatible ? "guard_failure" : "runtime_incompatible";
+        deoptKey ??= "recovery";
         metrics?.deopts.add({ trigger: deoptTrigger });
         await trace.record("action", {
           action: "deopt",
           trigger: deoptTrigger,
           planned: plannedDeopted,
+          scriptId, scriptKey, deoptKey,
           evidence: result.evidence,
           ok: true,
         });
 
+        const operating = await browserOperatingPrompt(db, handle.task);
+        const learnedDeopt = compatible ? await latestBrowserPrompt(db, handle.task.id, handle.task.contentHash, "deopt", `${scriptKey}:${deoptKey}`) : undefined;
+        await trace.record("runtime", { action: "browser.prompt", lane: "deopt", revision: operating.revision,
+          deoptRevision: learnedDeopt?.revision ?? null, scriptId, deoptKey });
+        const recoveryPrompt = learnedDeopt ? `${learnedDeopt.prompt}\n\nCurrent compiled handoff:\n${result.prompt}` : result.prompt;
         const loop = await runAgentLoop({
           llm: llmFor({ trace, task: handle.task, runId: handle.run.id }),
           tools: buildBrowserCodeTools({ ...sdkDeps, pythonRunner, workspace,
             helpers: browserHelperStore(db, handle, "python") }),
-          task: { prompt: handoffPrompt(handle.task, result.prompt, result.evidence, plannedDeopted) },
+          task: { prompt: handoffPrompt({ ...handle.task, compiledPrompt: operating.prompt }, recoveryPrompt, result.evidence, plannedDeopted) },
           trigger,
           emits,
           trace,
@@ -263,7 +278,7 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
         await session?.close().catch(() => undefined);
         await lease?.release().catch(() => undefined);
         await continuity?.release(ok).catch(() => undefined);
-        await deps.onOutcome?.({ task: handle.task, run: handle.run, deopted, plannedDeopted, ok }).catch(() => undefined);
+        await deps.onOutcome?.({ task: handle.task, run: handle.run, deopted, plannedDeopted, ok, scriptId, scriptKey, deoptKey }).catch(() => undefined);
       }
     },
   };

@@ -1,4 +1,5 @@
-import { compiledScripts, tasks, type Db, type TaskRow } from "@tabductor/db";
+import { compileJobs, compiledScripts, tasks, type Db, type TaskRow } from "@tabductor/db";
+import { browserLearningDefinition } from "@tabductor/core";
 import type { Metrics } from "@tabductor/telemetry";
 import { eq } from "drizzle-orm";
 import { activateScript, getActiveScript, invalidateScript } from "./registry.js";
@@ -68,13 +69,24 @@ export async function noteAiRun(
  */
 export async function promoteTask(
   deps: { db: Db; metrics?: Metrics },
-  input: { taskId: string; scriptId: string; expectContentHash: string | null },
+  input: { taskId: string; scriptId: string; expectContentHash: string | null;
+    expectScriptId?: string | null; expectDefinitionHash?: string; compileJob?: { id: string; attempts: number } },
 ): Promise<{ promoted: boolean; reason: string }> {
   return deps.db.transaction(async (trx) => {
     const [task] = await trx.select().from(tasks).where(eq(tasks.id, input.taskId)).for("update");
     if (!task) return { promoted: false, reason: `task ${input.taskId} is gone` };
     if (task.contentHash !== input.expectContentHash) {
       return { promoted: false, reason: "the task changed while its trace was being compiled" };
+    }
+    if (input.expectDefinitionHash && browserLearningDefinition(task) !== input.expectDefinitionHash) {
+      return { promoted: false, reason: "the task definition changed while compiling" };
+    }
+    if (input.compileJob) {
+      const [job] = await trx.select().from(compileJobs).where(eq(compileJobs.id, input.compileJob.id)).for("update");
+      if (!job || job.status !== "running" || job.attempts !== input.compileJob.attempts) return { promoted: false, reason: "compile claim lost" };
+    }
+    if (input.expectScriptId !== undefined && (await getActiveScript(trx, task.id))?.id !== (input.expectScriptId ?? undefined)) {
+      return { promoted: false, reason: "active artifact changed while compiling" };
     }
     if (!COMPILABLE_KINDS.has(task.kind)) return { promoted: false, reason: `kind ${task.kind} is never compiled` };
     const [script] = await trx.select().from(compiledScripts).where(eq(compiledScripts.id, input.scriptId)).for("update");
@@ -98,22 +110,25 @@ export type DemotionOutcome = { demoted: boolean; deoptsInWindow: number };
 export async function recordCompiledRun(
   deps: { db: Db; metrics?: Metrics },
   task: TaskRow,
-  input: { deopted: boolean },
+  input: { deopted: boolean; scriptId?: string },
 ): Promise<DemotionOutcome> {
-  const prior = Array.isArray(task.recentDeopts) ? (task.recentDeopts as boolean[]) : [];
-  const window = [...prior, input.deopted].slice(-DEOPT_WINDOW);
-  const deoptsInWindow = window.filter(Boolean).length;
-
-  if (deoptsInWindow < DEMOTE_DEOPTS) {
-    await deps.db.update(tasks).set({ recentDeopts: window }).where(eq(tasks.id, task.id));
-    return { demoted: false, deoptsInWindow };
-  }
-
-  const active = await getActiveScript(deps.db, task.id);
-  if (active) await invalidateScript(deps.db, active.id);
-  // The window is cleared with the demotion: the next compiled run, if this task is ever
-  // promoted again, starts its own ten.
-  await deps.db.update(tasks).set({ mode: "ai", recentDeopts: [] }).where(eq(tasks.id, task.id));
-  deps.metrics?.demotions.add();
-  return { demoted: true, deoptsInWindow };
+  return deps.db.transaction(async trx => {
+    const [current] = await trx.select().from(tasks).where(eq(tasks.id, task.id)).for("update");
+    if (!current) return { demoted: false, deoptsInWindow: 0 };
+    const active = await getActiveScript(trx, task.id);
+    const prior = Array.isArray(current.recentDeopts) ? current.recentDeopts as boolean[] : [];
+    if (input.scriptId && active?.id !== input.scriptId) {
+      return { demoted: false, deoptsInWindow: prior.filter(Boolean).length };
+    }
+    const window = [...prior, input.deopted].slice(-DEOPT_WINDOW);
+    const deoptsInWindow = window.filter(Boolean).length;
+    if (deoptsInWindow < DEMOTE_DEOPTS) {
+      await trx.update(tasks).set({ recentDeopts: window }).where(eq(tasks.id, task.id));
+      return { demoted: false, deoptsInWindow };
+    }
+    if (active) await invalidateScript(trx, active.id);
+    await trx.update(tasks).set({ mode: "ai", recentDeopts: [] }).where(eq(tasks.id, task.id));
+    deps.metrics?.demotions.add();
+    return { demoted: true, deoptsInWindow };
+  });
 }

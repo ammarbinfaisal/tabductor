@@ -1,32 +1,30 @@
 import {
   claimCompileJob,
   compileTask,
-  enqueueCompileJob,
   finishCompileJob,
   heartbeatCompileJob,
   loadRunTraces,
-  noteAiRun,
   previousCleanAiRunIds,
   promoteTask,
   recordCompiledRun,
   taskForJob,
-  activateScript,
   type CompileResult,
   type Llm as CompilerLlm,
 } from "@tabductor/compiler";
-import { createLogger, type Logger } from "@tabductor/core";
-import { browserSessions, browserSessionActivity, type CompileJobRow, type Db, type RunRow, type TaskRow } from "@tabductor/db";
-import { and, eq } from "drizzle-orm";
+import { browserLearningDefinition, createLogger, type Logger } from "@tabductor/core";
+import { browserLearningJobs, type CompileJobRow, type Db, type RunRow, type TaskRow } from "@tabductor/db";
+import { eq } from "drizzle-orm";
+import { enqueueBrowserLearning } from "./learning-loop.js";
 import type { Metrics } from "@tabductor/telemetry";
 
 /**
  * The compile loop, in two halves that no longer touch each other.
  *
  * **The hooks** (`afterAiRun`, `afterCompiledRun`) run inside the executor's `finally`, and do
- * only what is cheap and belongs to the run that just happened: advance the promotion counter,
- * feed the deopt window, demote a task that keeps deopting — and, when a trace became eligible,
- * write one queue row. No model call, no page, no validation. The run settles immediately
- * behind them.
+ * only cheap bookkeeping: feed the deopt window, demote a task that keeps deopting, and
+ * enqueue post-run learning. No model call, page or validation delays run settlement.
+ * The independent learning worker updates operating/deopt prompts and queues compilation
+ * only when it judges a successful run ready for the static path.
  *
  * **The worker** (`createCompileWorker`) claims those rows afterwards. `claimCompileJob` will
  * not hand out a job whose source run is still in flight, so by the time a compile begins the
@@ -61,7 +59,8 @@ export type CompileLoop = {
   /** Wire into `AgentExecutorDeps.onOutcome`. Resolves once the queue row is written. */
   afterAiRun: (input: { task: TaskRow; run: RunRow; ok: boolean }) => Promise<{ enqueued: boolean; reason: string }>;
   /** Wire into `CompiledExecutorDeps.onOutcome`. */
-  afterCompiledRun: (input: { task: TaskRow; run: RunRow; deopted: boolean; ok: boolean }) => Promise<void>;
+  afterCompiledRun: (input: { task: TaskRow; run: RunRow; deopted: boolean; plannedDeopted?: boolean; ok: boolean;
+    scriptId?: string; scriptKey?: string; deoptKey?: string }) => Promise<void>;
 };
 
 /**
@@ -72,37 +71,25 @@ export function createCompileLoop(deps: CompileHooksDeps): CompileLoop {
   const log = deps.logger ?? createLogger({ name: "compile-loop" });
   const { db } = deps;
 
-  const afterAiRun: CompileLoop["afterAiRun"] = async ({ task, run, ok }) => {
+  const afterAiRun: CompileLoop["afterAiRun"] = async ({ task, run }) => {
     if (task.kind !== "browser" || task.mode !== "ai") return { enqueued: false, reason: "not a browser ai task" };
     try {
-      if (run.executionId) {
-        const [assisted] = await db.select({ id: browserSessions.id }).from(browserSessions)
-          .innerJoin(browserSessionActivity, eq(browserSessionActivity.sessionId, browserSessions.id))
-          .where(and(eq(browserSessions.executionId, run.executionId), eq(browserSessionActivity.kind, "takeover_started"))).limit(1);
-        if (assisted) return { enqueued: false, reason: "human-assisted execution cannot be promoted" };
-      }
-      const eligibility = await noteAiRun({ db }, task, { ok });
-      if (!eligibility.eligible) return { enqueued: false, reason: eligibility.reason };
-
-      const job = await enqueueCompileJob(db, {
-        taskId: task.id,
-        runId: run.id,
-        reason: "promote",
-        contentHash: task.contentHash,
-      });
-      if (!job) return { enqueued: false, reason: "a compile for this task is already queued" };
-      log.info("queued a compile", { taskId: task.id, task: task.name, runId: run.id, jobId: job.id });
-      return { enqueued: true, reason: eligibility.reason };
+      const job = await enqueueBrowserLearning(db, { task, run });
+      return { enqueued: !!job, reason: job ? "queued post-run learning" : "run already queued for learning" };
     } catch (err) {
-      log.warn("could not queue a compile after an ai run", { taskId: task.id, runId: run.id, error: String(err) });
+      log.warn("could not queue learning after an ai run", { taskId: task.id, runId: run.id, error: String(err) });
       return { enqueued: false, reason: String(err) };
     }
   };
 
-  const afterCompiledRun: CompileLoop["afterCompiledRun"] = async ({ task, run, deopted, ok }) => {
+  const afterCompiledRun: CompileLoop["afterCompiledRun"] = async ({ task, run, deopted, plannedDeopted = false, ok, scriptId, scriptKey, deoptKey }) => {
     if (task.kind !== "browser") return;
     try {
-      const verdict = await recordCompiledRun({ db, ...(deps.metrics ? { metrics: deps.metrics } : {}) }, task, { deopted });
+      if (deopted || !ok) await enqueueBrowserLearning(db, { task, run,
+        context: { scriptId, scriptKey, deoptKey: scriptId ? deoptKey ?? "recovery" : undefined, planned: plannedDeopted } });
+      // Planned handoffs are part of a hybrid artifact, not evidence that its guards went stale.
+      const invalidatingDeopt = deopted && !plannedDeopted;
+      const verdict = await recordCompiledRun({ db, ...(deps.metrics ? { metrics: deps.metrics } : {}) }, task, { deopted: invalidatingDeopt, scriptId });
       if (verdict.demoted) {
         log.warn("task demoted to ai after repeated deopts", {
           taskId: task.id,
@@ -116,17 +103,6 @@ export function createCompileLoop(deps: CompileHooksDeps): CompileLoop {
           packet: { taskId: task.id, deoptsInWindow: verdict.deoptsInWindow },
         });
         return;
-      }
-      if (deopted && ok) {
-        // The recovery path is the new path: the runs the old script was compiled from
-        // describe a layout that has stopped existing. Queued, not compiled here — the
-        // recovered run has to settle first, like any other.
-        await enqueueCompileJob(db, {
-          taskId: task.id,
-          runId: run.id,
-          reason: "recompile",
-          contentHash: task.contentHash,
-        });
       }
     } catch (err) {
       log.warn("compile loop failed after compiled run", { taskId: task.id, runId: run.id, error: String(err) });
@@ -188,7 +164,7 @@ export function createCompileWorker(deps: CompileWorkerDeps): CompileWorker {
     const job = await claimCompileJob(db);
     if (!job) return null;
 
-    const beat = setInterval(() => void heartbeatCompileJob(db, job.id).catch(() => undefined), 30_000);
+    const beat = setInterval(() => void heartbeatCompileJob(db, job.id, job.attempts).catch(() => undefined), 30_000);
     beat.unref?.();
     try {
       const task = await taskForJob(db, job);
@@ -202,6 +178,12 @@ export function createCompileWorker(deps: CompileWorkerDeps): CompileWorker {
         // work that is no longer the task's definition.
         await finishCompileJob(db, job, { status: "refused", error: "the task changed after this run" });
         log.info("compile abandoned: task content changed", { taskId: task.id, jobId: job.id });
+        return null;
+      }
+      const [learning] = job.learningJobId ? await db.select().from(browserLearningJobs).where(eq(browserLearningJobs.id, job.learningJobId)) : [];
+      if (!learning || learning.status !== "succeeded" || !learning.compileRequested || learning.runId !== job.runId ||
+          learning.taskId !== task.id || browserLearningDefinition(task) !== learning.definitionHash) {
+        await finishCompileJob(db, job, { status: "refused", error: "Compilation requires a current learner-approved successful run" });
         return null;
       }
 
@@ -225,7 +207,7 @@ export function createCompileWorker(deps: CompileWorkerDeps): CompileWorker {
             llm: deps.compileLlmFor({ task, job }),
             ...(deps.metrics ? { metrics: deps.metrics } : {}),
           },
-          { taskId: task.id, sourceRunId: job.runId, traces },
+          { taskId: task.id, sourceRunId: job.runId, traces, learning: learning.resultJson ?? undefined },
         ),
         `compile of task ${task.id}`,
       );
@@ -236,24 +218,10 @@ export function createCompileWorker(deps: CompileWorkerDeps): CompileWorker {
         return { job, result };
       }
 
-      if (job.reason === "recompile") {
-        // The task is already `compiled`; this replaces the script that stopped matching the
-        // page. `activateScript` invalidates the previous active row in the same transaction.
-        await activateScript(db, result.script.id);
-        await finishCompileJob(db, job, { status: "succeeded", scriptId: result.script.id });
-        log.info("recompiled after deopt recovery", { taskId: task.id, scriptId: result.script.id, fromRun: job.runId });
-        await deps.publish?.({
-          type: COMPILE_PROMOTED,
-          sourceTaskId: task.id,
-          sourceRunId: job.runId,
-          packet: { taskId: task.id, scriptId: result.script.id, fromRuns: result.script.fromRuns, reason: "recompile" },
-        });
-        return { job, result };
-      }
-
       const promotion = await promoteTask(
         { db, ...(deps.metrics ? { metrics: deps.metrics } : {}) },
-        { taskId: task.id, scriptId: result.script.id, expectContentHash: job.contentHash },
+        { taskId: task.id, scriptId: result.script.id, expectContentHash: job.contentHash,
+          expectScriptId: job.expectedScriptId, expectDefinitionHash: learning.definitionHash, compileJob: { id: job.id, attempts: job.attempts } },
       );
       if (!promotion.promoted) {
         await finishCompileJob(db, job, { status: "refused", error: promotion.reason });
@@ -271,7 +239,7 @@ export function createCompileWorker(deps: CompileWorkerDeps): CompileWorker {
         type: COMPILE_PROMOTED,
         sourceTaskId: task.id,
         sourceRunId: job.runId,
-        packet: { taskId: task.id, scriptId: result.script.id, fromRuns: result.script.fromRuns, reason: "promote" },
+        packet: { taskId: task.id, scriptId: result.script.id, fromRuns: result.script.fromRuns, reason: job.reason },
       });
       return { job, result };
     } catch (err) {

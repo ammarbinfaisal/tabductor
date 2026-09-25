@@ -42,7 +42,8 @@ export const COMPILE_RETRY_DELAY_MS = 30_000;
  */
 export async function enqueueCompileJob(
   db: Db,
-  input: { taskId: string; runId: string; reason: CompileJobReason; contentHash: string | null; delayMs?: number },
+  input: { taskId: string; runId: string; reason: CompileJobReason; contentHash: string | null; delayMs?: number;
+    learningJobId?: string; expectedScriptId?: string | null },
 ): Promise<CompileJobRow | null> {
   const notBefore = new Date(Date.now() + (input.delayMs ?? 0));
   const [row] = await db
@@ -53,6 +54,8 @@ export async function enqueueCompileJob(
       runId: input.runId,
       reason: input.reason,
       contentHash: input.contentHash,
+      learningJobId: input.learningJobId,
+      expectedScriptId: input.expectedScriptId,
       notBefore,
     })
     // The partial unique index on (task_id) where status in (queued, running) is what makes
@@ -102,8 +105,9 @@ export async function claimCompileJob(db: Db, now: Date = new Date()): Promise<C
 }
 
 /** Keeps a long compile's claim alive. */
-export async function heartbeatCompileJob(db: Db, jobId: string): Promise<void> {
-  await db.update(compileJobs).set({ heartbeatAt: new Date() }).where(eq(compileJobs.id, jobId));
+export async function heartbeatCompileJob(db: Db, jobId: string, attempts?: number): Promise<void> {
+  await db.update(compileJobs).set({ heartbeatAt: new Date() }).where(and(eq(compileJobs.id, jobId),
+    eq(compileJobs.status, "running"), attempts === undefined ? undefined : eq(compileJobs.attempts, attempts)));
 }
 
 /**
@@ -133,7 +137,7 @@ export async function finishCompileJob(
         heartbeatAt: null,
         notBefore: new Date(Date.now() + COMPILE_RETRY_DELAY_MS),
       })
-      .where(eq(compileJobs.id, job.id));
+      .where(and(eq(compileJobs.id, job.id), eq(compileJobs.status, "running"), eq(compileJobs.attempts, job.attempts)));
     return;
   }
   await db
@@ -145,7 +149,7 @@ export async function finishCompileJob(
       error: outcome.status === "succeeded" ? null : outcome.error,
       ...(outcome.status === "succeeded" ? { scriptId: outcome.scriptId } : {}),
     })
-    .where(eq(compileJobs.id, job.id));
+    .where(and(eq(compileJobs.id, job.id), eq(compileJobs.status, "running"), eq(compileJobs.attempts, job.attempts)));
 }
 
 /** The task a job is for, re-read at claim time — compilation is long enough that the row it

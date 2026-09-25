@@ -3,7 +3,9 @@
 > Runtime update: browser execution and compilation now use Python with one Playwright proxy. See [harness-summary.md](harness-summary.md) for the current contract; earlier JavaScript/anchor SDK details below describe the superseded implementation.
 
 Compilation of a trace is a post-execution task. It never runs inline with successful browser
-work. A successful browser AI run contributes evidence to a compile job; an LLM separates DOM
+work. [Post-run learning](browser-node-learning.md) first improves operating and deopt prompts
+and judges whether a successful run is ready for static compilation. An approved run contributes
+evidence to a compile job; an LLM separates DOM
 exploration from the stable action/extraction/emit sequence and proposes a guarded static script.
 
 The deterministic compiler validates selectors against observed evidence, requires meaningful

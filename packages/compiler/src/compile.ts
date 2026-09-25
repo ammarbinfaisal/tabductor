@@ -36,6 +36,8 @@ export type CompileInput = {
   sourceRunId: string;
   /** The source run's trace first; anything else available is supporting evidence. */
   traces: RunTrace[];
+  /** Learner recommendations are hints; operation evidence and replay remain authoritative. */
+  learning?: Record<string, unknown>;
 };
 
 export type CompileStage = "kind" | "evidence" | "llm" | "plan" | "lint" | "validation";

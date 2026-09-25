@@ -289,3 +289,4 @@ export { harnessTask, type HarnessTask } from "./intent-contract.js";
 
 export { createCaptchaProviders, captchaCreateSchema, type CaptchaProvider, type CaptchaProviderName, type CaptchaCreate, type CaptchaProviderResult } from "./captcha-providers.js";
 export { createCaptchaService, type CaptchaService, type CaptchaJob } from "./captcha-service.js";
+export { browserOperatingPrompt, latestBrowserPrompt, carryBrowserLearning } from "./browser-learning.js";
