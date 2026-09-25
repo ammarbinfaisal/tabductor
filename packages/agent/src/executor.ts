@@ -167,6 +167,7 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
           emit,
           captcha: deps.captchaFor?.(handle), recordInput: handle.recordInput,
           contextHistory, checkpoint: control.checkpoint, progress: control.progress, memory, actions: control.actions, recordOutcome: handle.recordOutcome, recordCompletionError: handle.recordCompletionError, beforeCall: control.beforeStep, signal: handle.signal, trace,
+          llm,
           ...(deps.secrets
             ? { fillSecret: (secretName, anchor) => deps.secrets!.fill(handle.run.id, secretName, anchor) }
             : {}),

@@ -13,8 +13,9 @@ export async function validatePythonCandidate(runner:PythonRunner, source:string
   const selected=new Set([...plan.guards,...plan.steps].map(x=>x.operationId));
   const plannedDeopt=plan.deopts?.[0];
   const callbackIds=new Map<string,string>();
+  const callbackScopes=new Map(evidence.invocations.map(invocation=>[String(invocation.invocationId),String(invocation.replSessionId??invocation.invocationId)]));
   const callbackRef=(invocation:string,id:string)=>{
-    const key=invocation+":"+id;
+    const key=(callbackScopes.get(invocation)??invocation)+":"+id;
     if(!callbackIds.has(key))callbackIds.set(key,String(callbackIds.size+1));
     return callbackIds.get(key)!;
   };

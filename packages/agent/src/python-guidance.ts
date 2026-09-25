@@ -11,21 +11,24 @@ export function sdkCatalog(tools: Iterable<AgentTool>): string {
   }).join("\n");
 }
 
-export const PYTHON_BROWSER_GUIDANCE = `Use Playwright directly for browser automation. Write normal synchronous Python with playwright.sync_api.
+export const PYTHON_BROWSER_GUIDANCE = `browser.python is a persistent Python REPL for this browser task run. Variables, imports, functions, classes and browser objects persist across calls. Reuse names defined in earlier calls; use print(...) to show a result.
+Use Playwright directly for browser automation. Write normal synchronous Python with playwright.sync_api.
 Call methods directly: print(page.title()) and page.locator('body').inner_text(). Do not use await or async def for browser operations.
 For application globals use page.evaluate("mw:() => window.appData"); ordinary DOM evaluation, handles and exposed callbacks use native Playwright evaluation. Main-world evaluation returns JSON and cannot return handles.
 Tools: browser.python executes code; browser.screenshot returns an image directly without Python.
-Injected objects: page, context, expect, workflow. Browser imports use playwright.sync_api, for example from playwright.sync_api import Page, Locator, expect, TimeoutError.
+Injected objects: page, context, expect, workflow, and browser. Browser imports use playwright.sync_api, for example from playwright.sync_api import Page, Locator, expect, TimeoutError.
 Use the existing page and context; no sync_playwright() or browser launch is needed or available. workflow is an injected Tabductor service.
 Use page.get_by_role, page.locator, locator.fill/click, page.keyboard/mouse, page.evaluate(expression, arg=...),
 page.evaluate_handle, locator.evaluate_all, page.frames, page.screenshot and context.pages/new_page.
 Callbacks and with page.expect_popup/expect_response/expect_download are supported.
 Use the injected page as the stable root. Popups can close after sign-in; rediscover surviving context.pages instead of assuming context.pages[1] exists.
-Objects, callbacks and Python globals expire each cell. Reacquire objects next cell; browser state and files persist.
+Ordinary exceptions retain earlier assignments; syntax errors execute nothing. Locators and callbacks persist, but page navigation or closure can invalidate handles.
+A new task run or interpreter restart starts a fresh namespace. replReset in a result indicates a restart; recreate variables and reacquire browser objects. Workspace files persist across restarts.
 Use normal Python open/pathlib/json for data in /workspace. Save reusable functions in agent_helpers.py;
 its revisions persist automatically. Helper initialization cannot perform browser/workflow operations.
 workflow.input contains the current trigger. workflow.emit(type=...,packet=...,dedupeKey=...) and workflow.emit.batch publish events.
 Use workflow.memory.get/set for observed facts and pending work.
+Use browser.ai(prompt, schema_def) for a bounded semantic subtask that must return JSON matching the supplied JSON Schema. Keep the prompt tied to current task input, preserve the exact schema, and treat the recorded result as data that static compilation may retain; it does not perform browser actions.
 Use standard Playwright methods, locators, assertions, events, and argument names. workflow.describe(name='Page.evaluate') can inspect signatures if needed; workflow.describe() lists the separate workflow services.
 Imageless captchas might be solved directly using DOM apis.
 

@@ -186,7 +186,8 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
           input: trigger?.packet, helpers: browserHelperStore(db, handle, "python"),
           contextHistory, checkpoint: control.checkpoint, progress: control.progress, memory, actions: control.actions,
           recordOutcome: handle.recordOutcome, recordCompletionError: handle.recordCompletionError,
-          beforeCall: control.beforeStep, signal: handle.signal, trace };
+          beforeCall: control.beforeStep, signal: handle.signal, trace,
+          llm: llmFor({ trace, task: handle.task, runId: handle.run.id }) };
         const runSdk = async (): Promise<ScriptRunResult & { plannedDeopt?: boolean }> => {
           const code = buildBrowserCodeTools({ ...sdkDeps, pythonRunner, compiled: true, memoryMb: staticRtLimitsOf(handle.task).memoryMb,
             pinnedHelpers: (asRecord(script.guardsMeta)?.helpers ?? []) as HelperRevision[] })[0]!;

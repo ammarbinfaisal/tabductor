@@ -12,6 +12,7 @@ import { CODE_OUTPUT_GUIDANCE, compactCodeObservation, pythonOutputPreview } fro
 import type { PythonRunner } from "./python-runner.js";
 import type { RunWorkspace } from "./workspace.js";
 import type { ContextHistory } from "./context-history.js";
+import type { Llm } from "./llm.js";
 import { PYTHON_BROWSER_GUIDANCE, sdkCatalog } from "./python-guidance.js";
 
 export type BrowserCodeOptions = {
@@ -26,6 +27,8 @@ export type BrowserCodeOptions = {
   pythonRunner?: PythonRunner;
   workspace?: RunWorkspace;
   contextHistory?: ContextHistory;
+  /** Optional task-scoped model used by structured `browser.ai` calls from Python. */
+  llm?: Llm;
 };
 // Switching existing owned tabs changes focus, but must not clear or block reconciliation
 // of a destination write. The normal ownership and human-control fences still apply.

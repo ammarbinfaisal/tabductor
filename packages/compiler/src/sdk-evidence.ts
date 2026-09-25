@@ -36,7 +36,7 @@ export type SdkEvidence = {
   callbacks?: Record<string,unknown>[];
 };
 export const requiredWork = (op: RecordedOperation): boolean => op.result.ok === true &&
-  /^(?:(?:workflow\.)?(?:emit(?:\.batch)?|record\.(?:outcome|verify)|destination\.(?:contract\.publish|field\.observe)|done)|(?:page|harness)\.verify)$/.test(op.name);
+  /^(?:(?:workflow\.)?(?:emit(?:\.batch)?|record\.(?:outcome|verify)|destination\.(?:contract\.publish|field\.observe)|done)|browser\.ai|(?:page|harness)\.verify)$/.test(op.name);
 const obj = (v: unknown): Record<string, unknown> => v && typeof v === "object" ? v as Record<string, unknown> : {};
 const omitted = (v: unknown): boolean => !!v && typeof v === "object" &&
   (obj(v).evidenceOmitted === true || Object.values(v).some(omitted));
