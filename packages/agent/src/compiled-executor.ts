@@ -15,7 +15,7 @@ import {
   type StorageFlags,
   type TraceRecorder,
 } from "@tabductor/browser";
-import { getActiveScript, invalidateScript } from "@tabductor/compiler";
+import { getActiveScript, invalidateScript, isPlannedDeopt } from "@tabductor/compiler";
 import { tasks, type Db, type RunRow, type TaskRow } from "@tabductor/db";
 import { assertRunLease, type RunHandle, type RunResult, type TaskExecutor } from "@tabductor/engine";
 import type { PolicyGate } from "@tabductor/core";
@@ -34,7 +34,7 @@ import {
   toRunResult,
   triggerInfoOf,
 } from "./executor-shared.js";
-import { buildBrowserCodeTools, summarizePerception } from "./tools.js";
+import { buildBrowserCodeTools } from "./tools.js";
 import { browserHelperStore } from "./browser-helpers.js";
 import { browserLoopControl } from "./browser-loop-control.js";
 
@@ -76,7 +76,7 @@ export type CompiledExecutorDeps = Pick<AgentExecutorDeps, "secrets" | "register
    * Called after the run settles, with whether it deopted. S6c's demotion policy lives here;
    * injected so the executor stays a code path and not a coordinator.
    */
-  onOutcome?: (input: { task: TaskRow; run: RunRow; deopted: boolean; ok: boolean }) => Promise<void>;
+  onOutcome?: (input: { task: TaskRow; run: RunRow; deopted: boolean; plannedDeopted?: boolean; ok: boolean }) => Promise<void>;
 };
 
 /** `limits_json.static_rt.{max_wall_ms,max_memory_mb}` — may only tighten S6a's defaults. */
@@ -103,17 +103,19 @@ function browserLimitsOf(task: TaskRow): ResourceLimits | undefined {
 }
 
 /** What the agent wakes up to. The compiler wrote the first paragraph for exactly this moment. */
-function handoffPrompt(task: TaskRow, prompt: string, evidence: unknown): string {
+function handoffPrompt(task: TaskRow, prompt: string, evidence: unknown, planned: boolean): string {
   return [
     prompt,
     "",
     "Original task:",
     task.compiledPrompt ?? task.prompt ?? "(none recorded)",
     "",
-    "The compiled script stopped here because its guards did not hold. What failed:",
+    planned
+      ? "The compiled script intentionally completed its deterministic prefix and delegated the remaining runtime judgment to you."
+      : "The compiled script stopped here because its guards did not hold. What failed:",
     JSON.stringify(evidence),
     "",
-    "The page is exactly where the script left it. Finish the task from here.",
+    "The page is exactly where the script left it. Finish the task from here without replaying acknowledged work.",
   ].join("\n");
 }
 
@@ -127,6 +129,7 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
       let session: RunSession | undefined;
       let unregisterSecretRun: (() => void) | undefined;
       let deopted = false;
+      let plannedDeopted = false;
       let ok = false;
       let pythonRunner: PythonRunner | undefined;
       let continuity: BrowserContinuity | undefined;
@@ -177,7 +180,7 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
           contextHistory, checkpoint: control.checkpoint, progress: control.progress, memory, actions: control.actions,
           recordOutcome: handle.recordOutcome, recordCompletionError: handle.recordCompletionError,
           beforeCall: control.beforeStep, signal: handle.signal, trace };
-        const runSdk = async (): Promise<ScriptRunResult> => {
+        const runSdk = async (): Promise<ScriptRunResult & { plannedDeopt?: boolean }> => {
           const code = buildBrowserCodeTools({ ...sdkDeps, pythonRunner, compiled: true, memoryMb: staticRtLimitsOf(handle.task).memoryMb,
             pinnedHelpers: (asRecord(script.guardsMeta)?.helpers ?? []) as HelperRevision[] })[0]!;
           for (let invocation=0;invocation<1000;invocation++) {
@@ -186,9 +189,14 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
             const result = await code.execute({source:script.source,timeoutMs:Math.min(180000,staticRtLimitsOf(handle.task).wallClockMs ?? 180000)},handle.signal);
             if (result.terminal?.outcome === "done") return {outcome:"completed"};
             if (result.terminal?.outcome === "fail") return {outcome:"error",error:result.terminal.reason};
-            if (result.terminal?.outcome === "deopt") return {outcome:"deopt",
-              prompt:[asRecord(asRecord(script.guardsMeta)?.plan)?.recoveryPrompt,result.terminal.reason].filter(Boolean).join("\n"),
-              evidence:{guard:result.terminal.evidence,checkpoint:await control.checkpoint.get(),progress:await control.progress.get()}};
+            if (result.terminal?.outcome === "deopt") {
+              const plan = asRecord(asRecord(script.guardsMeta)?.plan);
+              const plannedDeopt = isPlannedDeopt(plan, result.terminal.evidence);
+              return {outcome:"deopt",
+                prompt:plannedDeopt ? result.terminal.reason : [plan?.recoveryPrompt,result.terminal.reason].filter(Boolean).join("\n"),
+                evidence:{guard:result.terminal.evidence,checkpoint:await control.checkpoint.get(),progress:await control.progress.get()},
+                plannedDeopt};
+            }
             if (result.ok && asRecord(result.value)?.outcome === "yielded" && JSON.stringify(await control.checkpoint.get()) !== before) continue;
             return {outcome:"deopt",prompt:"Continue from current page and durable SDK journal. Reconcile uncertain effects before writing.",
               evidence:{reason:result.ok?"Program returned without verified completion":result.error,checkpoint:await control.checkpoint.get(),progress:await control.progress.get()}};
@@ -211,10 +219,13 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
 
         // -- deopt: the same run, continued by the agent ---------------------------------
         deopted = true;
-        metrics?.deopts.add({ trigger: compatible ? "guard_failure" : "runtime_incompatible" });
+        plannedDeopted = result.plannedDeopt === true;
+        const deoptTrigger = plannedDeopted ? "planned_ai" : compatible ? "guard_failure" : "runtime_incompatible";
+        metrics?.deopts.add({ trigger: deoptTrigger });
         await trace.record("action", {
           action: "deopt",
-          trigger: compatible ? "guard_failure" : "runtime_incompatible",
+          trigger: deoptTrigger,
+          planned: plannedDeopted,
           evidence: result.evidence,
           ok: true,
         });
@@ -223,14 +234,14 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
           llm: llmFor({ trace, task: handle.task, runId: handle.run.id }),
           tools: buildBrowserCodeTools({ ...sdkDeps, pythonRunner, workspace,
             helpers: browserHelperStore(db, handle, "python") }),
-          task: { prompt: handoffPrompt(handle.task, result.prompt, result.evidence) },
+          task: { prompt: handoffPrompt(handle.task, result.prompt, result.evidence, plannedDeopted) },
           trigger,
           emits,
           trace,
           maxInputTokens: maxInputTokensOf(handle.task),
           browserContinuation: continuity?.handoff,
-          contextHistory, progress: control.progress, beforeStep: control.beforeStep, checkpoint: control.checkpoint, memory, actions: control.actions,
-          initialPerception: async () => await control.beforeStep() ?? summarizePerception(await withAutomationControl(lease!.conn, () => session!.page.perceive({elementLimit:50}), handle.signal)),
+          contextHistory,
+          beforeStep: control.beforeStep,
           signal: handle.signal,
         });
         const runResult = toRunResult(loop);
@@ -252,7 +263,7 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
         await session?.close().catch(() => undefined);
         await lease?.release().catch(() => undefined);
         await continuity?.release(ok).catch(() => undefined);
-        await deps.onOutcome?.({ task: handle.task, run: handle.run, deopted, ok }).catch(() => undefined);
+        await deps.onOutcome?.({ task: handle.task, run: handle.run, deopted, plannedDeopted, ok }).catch(() => undefined);
       }
     },
   };

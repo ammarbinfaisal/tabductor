@@ -29,7 +29,7 @@ it.skipIf(!process.env.OPENAI_API_KEY)("prepares a property in a delayed editor 
       llm: liveLlm({ provider: "openai", apiKey: process.env.OPENAI_API_KEY!, model: "gpt-5.6-luna" }),
       tools: buildToolRegistry({ session, actions, trace, signal: controller.signal, emit: async () => ({ outcome: "deduped" }) }),
       task: { prompt: "Add a property named username to this table. Preserve the existing Name property and avoid duplicates. Verify the new property is visible after closing its editor, then finish." },
-      actions, initialPerception: () => session.page.perceive(), trigger: null, emits: [], trace, signal: controller.signal,
+      trigger: null, emits: [], trace, signal: controller.signal,
     });
     expect(result.outcome).toBe("done");
     const page = await session.page.perceive();

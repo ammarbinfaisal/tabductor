@@ -61,17 +61,15 @@ export function aiGraphCompiler(opts: AiSchemaGeneratorOptions & { pool?: import
  * Anthropic needs a schema and a forced tool; its schema-free JSON mode is ignored.
  * Dynamic graph limits and packet properties are checked by our existing gates. */
 function jsonGenerationOptions(provider: SchemaProvider, output: "generic" | "graph" = "generic") {
-  // OpenAI-compatible structured-output endpoints (including AI Gateway's OpenAI
-  // route) receive the actual authoring contract when they support schemas. A generic
-  // Chat Completions endpoint still gets JSON mode: leaving it unconstrained permits
-  // prose such as "We are getting..." to escape the compiler's repair loop.
-  const format = output === "graph" && provider !== "openai-compatible"
-    ? Output.object({ schema: graphDraftArtifactSchema, name: "workflow_graph" })
-    : provider === "openai" || provider === "gateway"
-      ? Output.json()
-      : provider === "openai-compatible"
-        ? Output.json()
-        : Output.object({ schema: jsonSchema({ type: "object", additionalProperties: true }) });
+  // OpenAI and compatible endpoints use JSON mode for graph authoring because OpenAI's
+  // strict structured outputs reject optional properties in the graph contract. The compiler
+  // still parses with graphDraftArtifactSchema and runs the deterministic gate/repair loop.
+  // Anthropic needs a schema and a forced tool because its schema-free JSON mode is ignored.
+  const format = provider === "anthropic"
+    ? output === "graph"
+      ? Output.object({ schema: graphDraftArtifactSchema, name: "workflow_graph" })
+      : Output.object({ schema: jsonSchema({ type: "object", additionalProperties: true }) })
+    : Output.json();
   return {
     // Keep text parsing in our repair loop. `Output.object` supplies the provider schema;
     // `Output.text` deliberately avoids throwing before llmGraphCompiler can feed a bad

@@ -7,10 +7,10 @@ import type { RunSession } from "@tabductor/browser";
 
 const trace = { record: vi.fn(async () => undefined), flush: async () => undefined, close: async () => undefined };
 
-it("keeps Python guidance and terminal recovery with the screenshot tool present", async () => {
+it("keeps Python guidance in the system prompt without adding retry messages", async () => {
   const requests: LlmRequest[] = [];
   const result = await runAgentLoop({ llm: { complete: async request => {
-    requests.push(request);
+    requests.push({ ...request, messages: structuredClone(request.messages) });
     return { toolCalls: requests.length === 1 ? [] : [{ id: "finish", name: "browser.python", args: {} }], usage: { in: 1, out: 1 } };
   } }, tools: [
     { name: "browser.screenshot", description: "image", parameters: z.object({}), execute: async () => ({ ok: true, value: null }) },
@@ -18,7 +18,7 @@ it("keeps Python guidance and terminal recovery with the screenshot tool present
   ], task: { prompt: "finish" }, trigger: null, emits: [], trace });
   expect(result).toEqual({ outcome: "done", result: "ok" });
   expect(requests[0]!.system).toContain("synchronous playwright.sync_api");
-  expect(requests[1]!.messages.some(m => m.content.includes("finish through workflow.done/fail inside Python"))).toBe(true);
+  expect(requests[1]!.messages).toEqual([{ role: "user", content: "Begin." }]);
 });
 
 it.each(["1", "0"])("records actual parameters only in dev mode (%s)", async (devMode) => {
@@ -74,20 +74,30 @@ it("makes no model calls during takeover and discards actions planned before res
   expect(click).not.toHaveBeenCalled();
 });
 
-it("bounds model history and preserves the durable checkpoint across long collection loops", async () => {
+it("bounds model history without injecting durable state", async () => {
   const lengths: number[] = [];
-  const checkpoints: boolean[] = [];
   const result = await runAgentLoop({ llm: { complete: async (request) => {
     lengths.push(request.messages.reduce((n, message) => n + message.content.length, 0));
-    checkpoints.push(request.messages.some((message) => message.content.includes('"emitted":75')));
+    expect(request.messages.some((message) => message.content.includes('"emitted":75'))).toBe(false);
     return { toolCalls: [{ id: String(lengths.length), name: lengths.length === 100 ? "done" : "observe", args: {} }], usage: { in: 1, out: 1 } };
   } }, tools: [{ name: "observe", description: "read", parameters: z.object({}), execute: async () => ({ ok: true, value: "x".repeat(18000) }) },
     { name: "done", description: "finish", parameters: z.object({}), execute: async () => ({ ok: true, value: "collected" }) }],
-    task: { prompt: "collect" }, trigger: null, emits: [], trace, checkpoint: { get: async () => ({ emitted: 75 }) } });
+    task: { prompt: "collect" }, trigger: null, emits: [], trace });
   expect(result).toEqual({ outcome: "done", result: "collected" });
   expect(lengths).toHaveLength(100);
-  expect(Math.max(...lengths)).toBeLessThan(80_000);
-  expect(checkpoints.some(Boolean)).toBe(true);
+  expect(Math.max(...lengths)).toBeLessThan(160_000);
+});
+
+it("does not inject fresh takeover perception into model messages", async () => {
+  let checks = 0;
+  let request: LlmRequest | undefined;
+  await runAgentLoop({ llm: { complete: async input => {
+    request = { ...input, messages: structuredClone(input.messages) };
+    return { toolCalls: [{ id: "done", name: "done", args: {} }], usage: { in: 1, out: 1 } };
+  } }, tools: [{ name: "done", description: "finish", parameters: z.object({}), execute: async () => ({ ok: true, value: null }) }],
+    task: { prompt: "finish" }, trigger: null, emits: [], trace,
+    beforeStep: async () => ++checks === 1 ? { url: "https://changed.test", text: "fresh page" } : undefined });
+  expect(request!.messages).toEqual([{ role: "user", content: "Begin." }]);
 });
 
 it("honors cancellation after more than 30 turns even when the model never calls a tool", async () => {

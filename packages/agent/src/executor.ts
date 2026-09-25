@@ -1,6 +1,5 @@
 import { createContextHistory } from "./context-history.js";
 import { createRunWorkspace } from "./workspace.js";
-import { withAutomationControl } from "@tabductor/browser";
 import {
   createTraceRecorder,
   openRunSession,
@@ -29,7 +28,7 @@ import {
 } from "./executor-shared.js";
 import type { Llm } from "./llm.js";
 import { runAgentLoop } from "./loop.js";
-import { buildBrowserCodeTools, summarizePerception } from "./tools.js";
+import { buildBrowserCodeTools } from "./tools.js";
 import { browserHelperStore } from "./browser-helpers.js";
 import { browserLoopControl } from "./browser-loop-control.js";
 import type { PythonRunner } from "./python-runner.js";
@@ -183,8 +182,8 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
           trace,
           maxInputTokens: maxInputTokensOf(handle.task),
           browserContinuation: continuity?.handoff,
-          contextHistory, progress: control.progress, beforeStep: control.beforeStep, checkpoint: control.checkpoint, memory, actions: control.actions,
-          initialPerception: async () => await control.beforeStep() ?? summarizePerception(await withAutomationControl(lease!.conn, () => session!.page.perceive({elementLimit:50}), handle.signal)),
+          contextHistory,
+          beforeStep: control.beforeStep,
           signal: handle.signal,
         });
         const runResult = toRunResult(result);

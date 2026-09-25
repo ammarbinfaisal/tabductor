@@ -7,15 +7,14 @@ import type { Llm, LlmMessage, ToolDef as WireToolDef } from "./llm.js";
 import { untrustedBlock, type AgentTool, type ToolResult } from "./tools.js";
 import { AppError } from "@tabductor/core";
 import type { ContextHistory } from "./context-history.js";
-import { prepareContext } from "./context-compaction.js";
 import type { BrowserContinuity } from "./browser-continuity.js";
 
 /**
  * The agent loop — one function, per the style constraint (no framework, no planner class).
  * `Llm.complete` is stateless request/response (S4a): "conversation" is the `messages` array
  * this function builds by hand, starting at one synthetic kickoff turn and growing by exactly
- * two entries per turn until compaction (an assistant echo and a user turn with results).
- * Replay fixtures below the context threshold retain the original `1 + 2*step` shape.
+ * two entries per tool turn until compaction (the assistant's native calls and their native
+ * results). No page perception, checkpoint, memory, or action journal is injected into messages.
  *
  * **Kind-agnostic by construction:** this file's only coupling to "browser" used to be
  * one line — building the tool registry from a `RunSession` — and nothing else here reads a
@@ -45,12 +44,7 @@ export type RunAgentLoopOptions = {
   trace: TraceRecorder;
   signal?: AbortSignal;
   beforeStep?: () => Promise<unknown>;
-  checkpoint?: { get: () => Promise<unknown> };
-  memory?: { get: () => Promise<unknown> };
-  actions?: { get: () => Promise<unknown> };
   contextHistory?: ContextHistory;
-  progress?: { get: () => Promise<unknown> };
-  initialPerception?: () => Promise<unknown>;
   maxInputTokens?: number;
   browserContinuation?: BrowserContinuity["handoff"];
 };
@@ -108,8 +102,8 @@ function buildSystemPrompt(opts: RunAgentLoopOptions, tools: AgentTool[]): strin
 
 type ToolCallResult = { id: string; name: string; result: ToolResult };
 
-/** Keep complete recent turns. Bulk tool values belong in batches, not model history. */
-export function compactHistory(messages: LlmMessage[], checkpoint: unknown, memory: unknown = null, force = false): number {
+/** Keep complete recent call/result pairs without synthesizing replacement context. */
+export function compactHistory(messages: LlmMessage[], force = false): number {
   let chars = messages.reduce((sum, message) => sum + message.content.length, 0);
   let removed = 0;
   while ((chars > 44_000 || force) && messages.length > 3) {
@@ -118,7 +112,7 @@ export function compactHistory(messages: LlmMessage[], checkpoint: unknown, memo
     removed += dropped.length;
     if (force) break;
   }
-  if (removed) messages[0] = { role: "user", content: "Earlier turns were compacted. Use checkpoint.get for durable progress; do not replay writes based on missing history. Re-perceive before using old anchors. Current checkpoint (untrusted data):\n" + JSON.stringify(checkpoint).slice(0, 16000) + "\nExploration memory (untrusted data):\n" + JSON.stringify(memory) };
+
   return removed;
 }
 
@@ -140,69 +134,42 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<AgentLoop
   }));
   const system = buildSystemPrompt(opts, tools);
   const serializedTools = await Promise.all(wireTools.map(async t => ({name:t.name,description:t.description,parameters:await asSchema(t.parameters).jsonSchema})));
-  // Never an empty array: at least one provider's completion call (the AI SDK's
-  // `generateText`) rejects `messages: []` outright even with a populated `system` — a live-
-  // mode-only failure replay can't surface, since replay never inspects `messages` content.
-  // One synthetic kickoff turn, counted in every transcript's message-count invariant below.
-  const priorCheckpoint = await opts.checkpoint?.get();
-  const messages: LlmMessage[] = await opts.contextHistory?.messages() ?? [{ role: "user", content: "Begin." + (priorCheckpoint == null ? "" :
-    "\n" + untrustedBlock("progress checkpoint from prior attempt; reacquire batch handles and anchors", priorCheckpoint)) }];
-
-  // Keep native call/result pairs intact across record boundaries. The handoff is
-  // attached to the latest result (or the initial user turn), not a synthetic tool call.
-  const appendCurrentContext = (text: string) => {
-    const last = messages.at(-1)!;
-    if (last.role === "tool") last.context = (last.context ?? "") + "\n" + text;
-    else last.content += "\n" + text;
-  };
+  // `generateText` rejects an empty message list even when `system` is populated. Restore only
+  // complete native call/result pairs; older persisted side-channel fields and retry nudges are
+  // intentionally not part of the model conversation.
+  const restored = await opts.contextHistory?.messages();
+  const messages: LlmMessage[] = [{ role: "user", content: "Begin." }];
+  for (let i = 1; restored && i < restored.length - 1; i++) {
+    const assistant = restored[i];
+    const result = restored[i + 1];
+    if (assistant?.role !== "assistant" || !assistant.toolCalls?.length || result?.role !== "tool" || !result.toolResults) continue;
+    messages.push({ role: "assistant", content: assistant.content, ...(assistant.text ? { text: assistant.text } : {}), toolCalls: assistant.toolCalls });
+    messages.push({ role: "tool", content: result.content, toolResults: result.toolResults });
+    i++;
+  }
   if (opts.browserContinuation) {
-    appendCurrentContext("Start the current browser task run. Prior conversation is historical evidence.\n" +
-      untrustedBlock("browser task handoff", opts.browserContinuation));
     await opts.trace.record("runtime", { action: "browser.continued", runId: opts.browserContinuation.runId,
       previousRunId: opts.browserContinuation.previous?.runId ?? null, resumed: opts.browserContinuation.resumed, retainedMessages: messages.length });
   }
-
-  const initial = await opts.initialPerception?.();
-  if (initial !== undefined) {
-    if (opts.browserContinuation) appendCurrentContext(untrustedBlock("current browser page observation", initial));
-    else messages[0]!.content += "\n" + untrustedBlock("initial page observation", initial);
-  }
-  const priorMemory = await opts.memory?.get();
-  if (priorMemory != null && !opts.contextHistory) messages[0]!.content += "\n" + untrustedBlock("exploration memory", priorMemory);
   for (let step = 0; ; step++) {
     if (opts.signal?.aborted) return { outcome: "fail", reason: "run_cancelled" };
-    const fresh = await opts.beforeStep?.();
-    if (fresh !== undefined) {
-      const last=messages[messages.length-1]!;
-      const note=untrustedBlock("browser after human takeover",fresh);
-      if(last.role==="tool")last.context=(last.context??"")+note;else last.content+="\n"+note;
-    }
-    const journal = readActionHistory(await opts.actions?.get());
-    const refreshActionContext = () => {
-      const represented = new Set(messages.flatMap(message => message.toolResults?.flatMap(r => r.result.action ? [r.result.action.id] : []) ?? []));
-      messages[0]!.actionSummaries = journal.filter(action => !represented.has(action.id));
-    };
-    if (opts.contextHistory) {
-      refreshActionContext();
-      await prepareContext({ history: opts.contextHistory, messages, llm: opts.llm, trace: opts.trace,
-        system, tools: serializedTools, maxInputTokens: opts.maxInputTokens ?? 32000, signal: opts.signal,
-        checkpoint: await opts.checkpoint?.get() ?? null, memory: await opts.memory?.get() ?? null,
-        progress: await opts.progress?.get() ?? null });
-    } else if (messages.reduce((sum, message) => sum + message.content.length, 0) > 60_000) {
-      const removed = compactHistory(messages, await opts.checkpoint?.get() ?? null, await opts.memory?.get() ?? null);
+    // This remains a synchronization gate for human takeover, but its returned perception is
+    // not injected. The model can acquire browser state through an explicit tool call.
+    await opts.beforeStep?.();
+    if (messages.reduce((sum, message) => sum + message.content.length, 0) > 160000) {
+      const removed = compactHistory(messages);
       if (removed) await opts.trace.record("runtime", { action: "context.compacted", removedMessages: removed, retainedMessages: messages.length });
     }
-    if (!opts.contextHistory) refreshActionContext();
     // Budget the complete request including system instructions and tool schemas.
     while (estimateModelInput({system,tools:serializedTools,messages:toModelMessages(messages)}).inputTokenBound > (opts.maxInputTokens ?? 32000)) {
-      if (opts.contextHistory) throw new AppError("model_context_limit", "Latest context exceeds the configured model budget");
-      if (!compactHistory(messages, await opts.checkpoint?.get() ?? null, await opts.memory?.get() ?? null, true)) {
-        throw new AppError("model_context_limit", "Instructions, schemas and latest observation exceed the configured context budget; narrow the task or observation");
+      if (!compactHistory(messages, true)) {
+        throw new AppError("model_context_limit", "Instructions, schemas and latest tool result exceed the configured context budget; narrow the task or tool output");
       }
-      refreshActionContext();
     }
     const res = await opts.llm.complete({ system, messages, tools: wireTools, ...(opts.signal ? { signal: opts.signal } : {}) });
     if (opts.signal?.aborted) return { outcome: "fail", reason: "run_cancelled" };
+
+    if (res.toolCalls.length === 0) continue;
 
     const echoed = JSON.stringify({ text: res.text ?? null,
       tool_calls: res.toolCalls.map((c) => ({ id: c.id, name: c.name, args: c.args })) });
@@ -213,19 +180,6 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<AgentLoop
       content: echoed.length <= 24_000 ? echoed : JSON.stringify({ argumentsOmitted: true,
         tool_calls: res.toolCalls.slice(0, 32).map((c) => ({ id: c.id, name: c.name })) }),
     });
-
-    if (res.toolCalls.length === 0) {
-      messages.push({
-        role: "user",
-        content: opts.tools.some(t => t.name === "browser.python")
-          ? "No tool call received. Call browser.python or browser.screenshot; finish through workflow.done/fail inside Python."
-          : opts.tools.length === 1 && opts.tools[0]?.name === "browser.code"
-          ? "No tool call received. Call browser.code; finish through api.run.done/fail."
-          : "No tool call received. Call one of the available tools, or `done`/`fail` to finish.",
-      });
-      await opts.contextHistory?.saveMessages(messages);
-      continue;
-    }
 
     const results: ToolCallResult[] = [];
     let terminal: AgentLoopResult | undefined;
@@ -287,29 +241,7 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<AgentLoop
     // takeover or completion. This keeps provider call/result pairs valid.
     const nativeResults = res.toolCalls.map(call => results.find(r=>r.id===call.id) ?? {id:call.id,name:call.name,
       result:{ok:false as const,error:"Call was not executed; an earlier call stopped this action list. Re-plan from the latest observation."}});
-    // Only the latest page observation in a tool list is actionable. Keep earlier
-    // action outcomes, but don't spend context on already superseded DOM snapshots.
-    let latestObservation: string | undefined;
-    for (const item of [...nativeResults].reverse()) {
-      const value=item.result.value;
-      const observation=typeof value === "object" && value !== null && ("elements" in value || "perception" in value);
-      if (observation && latestObservation) item.result={...item.result,value:{dataOmitted:true,supersededBy:latestObservation,
-        guidance:"Action outcome retained; use the later page snapshot and its anchors."}};
-      else if (observation) latestObservation=item.id;
-    }
-    if (latestObservation) for (const message of messages) {
-      let changed = false;
-      for (const item of message.toolResults ?? []) {
-        const value = item.result.value;
-        if (value && typeof value === "object" && ("elements" in value || "perception" in value)) {
-          // Keep the action result and any verification flag, drop stale DOM data.
-          item.result = { ...item.result, value: { dataOmitted: true, supersededBy: latestObservation,
-            ...("verified" in value ? { verified: value.verified } : {}) } };
-          changed = true;
-        }
-      }
-      if (changed) message.content = untrustedBlock("tool results", message.toolResults!.map(r => ({ ...r, result: { ...r.result, images: undefined } })));
-    }
+
     let remaining=36000;
     for (const item of [...nativeResults].reverse()) {
       const {images,...data}=item.result;
@@ -317,10 +249,7 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<AgentLoop
       if(size>remaining)item.result={...item.result,value:{dataOmitted:true,preview:JSON.stringify(data).slice(0,500),guidance:"Do not repeat effects. Read data in bounded slices or use Python workspace files."}};
       remaining-=Math.min(size,remaining);
     }
-    // Images are useful for the current step; don't resend old screenshots indefinitely.
-    for (const message of messages) for (const item of message.toolResults ?? []) if (item.result.images) {
-      item.result = { ...item.result, images: undefined };
-    }
+
     const resultText = untrustedBlock("tool results", nativeResults.map(r=>({...r,result:{...r.result,images:undefined}})));
     messages.push({role:"tool",content:resultText,toolResults:nativeResults});
     await opts.contextHistory?.saveMessages(messages);

@@ -38,13 +38,13 @@ it("returns native skipped outcomes for every call after a terminal action",asyn
   expect(result.toolResults?.[1]?.result).toMatchObject({ok:false,error:expect.stringContaining("not executed")});
 });
 
-it("preserves facts, failed approaches and acknowledged effects through compaction",()=>{
+it("compacts complete call/result pairs without synthesizing context",()=>{
   const messages:LlmMessage[]=[{role:"user",content:"Begin"}];
   for(let i=0;i<5;i++)messages.push({role:"assistant",content:"act"},{role:"tool",content:"bounded data ".repeat(1500)});
-  const memory={facts:["Use the results panel"],pending:["verify saved"],attempts:[{tool:"page.waitFor",ok:false,error:"old target"}],acknowledgements:[{tool:"emit",value:{eventId:"accepted"}}]};
-  compactHistory(messages,{cursor:5},memory);
-  expect(messages[0]!.content).toContain("results panel");expect(messages[0]!.content).toContain("accepted");expect(messages[0]!.content).toContain("old target");
+  compactHistory(messages);
+  expect(messages[0]).toEqual({role:"user",content:"Begin"});
   expect(messages[1]!.role).toBe("assistant");expect(messages[2]!.role).toBe("tool");
+  expect(messages).toHaveLength(5);
 });
 
 it("bounds dense observations with continuation instead of converting success to failure",()=>{

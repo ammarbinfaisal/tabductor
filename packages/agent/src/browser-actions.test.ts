@@ -126,11 +126,10 @@ it("bounds history independently of model-written memory and accepts old empty s
   expect(await tools.get("memory.get")!.execute({})).toMatchObject({value:{actions:[summary()]}});
 });
 
-it.each([11000, 32000])("preserves summaries through pruning, compaction and retry at budget %s", async (budget) => {
+it.each([11000, 32000])("sends action summaries only through their tool results at budget %s", async (budget) => {
   const actions = store([summary("prior-run")]);
   let turn = 0;
   const observed: string[] = [];
-  let compactedSummary = false;
   const tool = { name: "page.click", description: "", parameters: z.object({}), execute: async (): Promise<ToolResult> => {
     const action = summary(`step-${turn}`);
     await actions.set([...readActionHistory(await actions.get()), action]);
@@ -138,18 +137,15 @@ it.each([11000, 32000])("preserves summaries through pruning, compaction and ret
   }};
   await runAgentLoop({llm:{complete:async req=>{
     observed.push(JSON.stringify(toModelMessages(req.messages)));
-    if (req.messages[0]?.actionSummaries?.some(action => action.id === "step-1")) compactedSummary = true;
+    expect(req.messages.every(message => !message.actionSummaries?.length)).toBe(true);
     turn++;
     return {toolCalls:[{id:String(turn),name:turn===6?"done":"page.click",args:budget===11000?{padding:"opaque ".repeat(1800)}:{}}],usage:{in:1,out:1}};
   }},tools:[tool,{name:"done",description:"",parameters:z.object({}),execute:async()=>({ok:true,value:null})}],
-  actions,task:{prompt:""},trigger:null,emits:[],trace,maxInputTokens:budget});
-  expect(observed[0]).toContain("prior-run");
-  expect(observed.at(-1)).toContain("step-1");
-  expect(observed.at(-1)).toContain("Add property");
-  if (budget === 11000) expect(compactedSummary).toBe(true);
-  else expect(observed.at(-1)).toContain("dataOmitted");
-  // Each historical summary occurs once, either in a tool result or in kickoff context.
-  expect(observed.at(-1)!.split('\\"id\\":\\"step-1\\"').length - 1).toBe(1);
+  task:{prompt:""},trigger:null,emits:[],trace,maxInputTokens:budget});
+  expect(observed[0]).not.toContain("prior-run");
+  expect(observed[1]).toContain("step-1");
+  expect(observed[1]).toContain("Add property");
+  expect(observed[1]!.split('\\"id\\":\\"step-1\\"').length - 1).toBe(1);
 });
 
 it("journals nested browser.code actions even if the script returns no action details", async () => {
@@ -175,7 +171,7 @@ it("retains fresh takeover evidence and skips the remaining queued actions", asy
     if(modelCalls++===0)return{toolCalls:[{id:"click1",name:"page.click",args:{anchor:"e1"}},{id:"click2",name:"page.click",args:{anchor:"e2"}}],usage:{in:1,out:1}};
     secondRequest=JSON.stringify(toModelMessages(req.messages));
     return{toolCalls:[{id:"end",name:"fail",args:{reason:"Test complete"}}],usage:{in:1,out:1}};
-  }},tools:registry,actions,beforeStep:beforeCall,task:{prompt:""},trigger:null,emits:[],trace});
+  }},tools:registry,beforeStep:beforeCall,task:{prompt:""},trigger:null,emits:[],trace});
   expect(clicks).toBe(1);
   expect(callbackReads).toBeGreaterThan(1);
   expect(secondRequest).toContain("Human changed the browser");
