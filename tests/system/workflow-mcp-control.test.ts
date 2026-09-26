@@ -32,7 +32,10 @@ it("publishes, updates, triggers, and schedules without exposing task ids", asyn
   const compile = vi.fn<GraphCompiler["compile"]>(async () => ({
     ok: true,
     artifact: { graph, store: null, proposedGrants: [] },
-    report: { checks: [], attempts: 1 },
+    report: {
+      checks: [{ pass: "P1", check: "graph_shape", status: "pass", message: "the graph is valid" }],
+      attempts: 1,
+    },
   }));
   const context = {
     db: handle.db,
