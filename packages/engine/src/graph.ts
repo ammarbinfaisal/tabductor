@@ -271,10 +271,41 @@ export function checkGraph(graph: Graph): void {
   for (const task of graph.tasks) {
     if (task.limits.recordProcessing) {
       const processing = recordProcessingSchema.safeParse(task.limits.recordProcessing);
-      if (!processing.success || !task.emits.includes(processing.data.eventType) || processing.data.sourceIdField === processing.data.identityField)
-        throw invalid("record_processing_invalid: declare a valid operation for an emitted record event with a separate identity field", { task: task.name });
+      if (!processing.success) {
+        throw invalid("record_processing_invalid: record processing does not match the supported version 1 contract", {
+          task: task.name,
+          diagnostics: processing.error.issues.map((issue) => ({
+            path: ["limits", "recordProcessing", ...issue.path],
+            code: issue.code,
+            message: issue.message,
+          })),
+        });
+      }
+      if (!task.emits.includes(processing.data.eventType)) {
+        throw invalid(`record_processing_event_not_emitted: task must emit "${processing.data.eventType}"`, {
+          task: task.name,
+          eventType: processing.data.eventType,
+          emittedEventTypes: task.emits,
+          repair: "Set recordProcessing.eventType to one of the task's emitted events, or add that event to task.emits and graph.events.",
+        });
+      }
+      if (processing.data.sourceIdField === processing.data.identityField) {
+        throw invalid("record_processing_identity_conflict: identityField must be a new host-derived field, separate from sourceIdField", {
+          task: task.name,
+          eventType: processing.data.eventType,
+          identityField: processing.data.identityField,
+          sourceIdField: processing.data.sourceIdField,
+          repair: "Keep sourceIdField as the source website's ID and choose a different identityField (for example, record_identity).",
+        });
+      }
       if (graph.events.find(e => e.type === processing.data.eventType)?.record?.key !== processing.data.identityField)
-        throw invalid("record_processing_identity_missing: normalized events must declare their host-derived identity", { task: task.name });
+        throw invalid("record_processing_identity_missing: the normalized event record key must equal recordProcessing.identityField", {
+          task: task.name,
+          eventType: processing.data.eventType,
+          identityField: processing.data.identityField,
+          declaredRecordKey: graph.events.find(e => e.type === processing.data.eventType)?.record?.key,
+          repair: `Set graph.events[${JSON.stringify(processing.data.eventType)}].record.key to ${JSON.stringify(processing.data.identityField)}.`,
+        });
     }
     if (task.kind === "result") {
       if (!task.prompt?.trim()) throw invalid("a result node requires a prompt", { task: task.name });

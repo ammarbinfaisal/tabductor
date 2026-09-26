@@ -1,4 +1,4 @@
-import { promptInputNames } from "@tabductor/core";
+import { AppError, promptInputNames } from "@tabductor/core";
 import type { Pool } from "pg";
 import { Ajv } from "ajv";
 import { compileReports, proposedGrants, type Db } from "@tabductor/db";
@@ -216,7 +216,21 @@ export async function gateGraphDraft(
   const checks: GraphGateEntry[] = [];
   if (artifact.graph.contractVersion === 2 || artifact.graph.intent || artifact.graph.tasks.some(t => t.limits.harness)) {
     try { checkGraph(artifact.graph); }
-    catch (error) { checks.push(entry("P1", "graph_shape", "fail", error instanceof Error ? error.message : "invalid graph contract")); }
+    catch (error) {
+      const details = error instanceof AppError ? error.details : undefined;
+      const task = typeof details?.task === "string" ? details.task : undefined;
+      const eventType = typeof details?.eventType === "string" ? details.eventType : undefined;
+      checks.push(entry(
+        "P1",
+        "graph_shape",
+        "fail",
+        error instanceof Error ? error.message : "invalid graph contract",
+        {
+          ...(task || eventType ? { location: { ...(task ? { task } : {}), ...(eventType ? { eventType } : {}) } } : {}),
+          ...(details ? { details } : {}),
+        },
+      ));
+    }
   }
   const taskNames = artifact.graph.tasks.map((task) => task.name);
   const eventTypes = artifact.graph.events.map((event) => event.type);

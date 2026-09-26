@@ -51,4 +51,10 @@ One browser serves each execution. Repeated packets reuse their task's tab and p
 Set limits.browser.tab_key to the same short name for tasks that should share a tab.
 
 Optional limits.recordProcessing can normalize a declared record event and derive a stable identity.
-Keep it alongside limits.harness.`;
+Keep it alongside limits.harness. Its exact shape is
+{"version":1,"eventType":"record.extracted","identityField":"record_identity","sourceNamespace":"x.com","sourceIdField":"tweet_id","sourceUrlField":"url","contentFields":["username","text","url"],"trimFields":[],"nullableFields":[],"canonicalUrlFields":["url"]}.
+The task must emit eventType and graph.events must declare it. identityField is a new engine-populated
+packet field: it must differ from sourceIdField, and that event's record.key must equal identityField.
+sourceIdField is optional when the website exposes no separate ID. These packet-only identity fields do
+not become destination columns unless the browser task explicitly maps them. Omit recordProcessing when
+normalization and record-level deduplication are unnecessary.`;

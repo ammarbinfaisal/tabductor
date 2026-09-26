@@ -153,6 +153,68 @@ Click on "$course" under "Amigo Courses" and complete all quizzes correctly.`;
     expect(result.report.attempts).toBe(2);
   });
 
+  it("feeds actionable record-processing diagnostics back before accepting a corrected draft", async () => {
+    const intent = `Open X.
+Fetch 100 tweets from my "For You" timeline.
+Go to https://app.notion.com/p/example
+Ensure Login with Google into notion.
+Ensure we only have the following columns in the database: username, text, url.
+Add the 100 tweets as new rows.`;
+    const draft = graphDraftArtifactSchema.parse(structuredClone(valid));
+    draft.graph.intent = bindIntent(intent, {
+      requirements: [{
+        id: "source",
+        description: "Fetch 100 tweets from the For You timeline and add them to Notion.",
+        quote: 'Fetch 100 tweets from my "For You" timeline.',
+        category: "source",
+      }],
+    });
+    draft.graph.tasks[0]!.emits = ["tweet.extracted"];
+    draft.graph.tasks[0]!.limits.recordProcessing = {
+      version: 1,
+      eventType: "tweet.extracted",
+      identityField: "tweet_id",
+      sourceIdField: "tweet_id",
+      sourceUrlField: "url",
+      contentFields: ["username", "text", "url"],
+      canonicalUrlFields: ["url"],
+    };
+    draft.graph.events = [{
+      type: "tweet.extracted",
+      description: "One tweet from the For You timeline.",
+      public: false,
+      record: { collection: "tweets", key: "tweet_id", status: "extracted" },
+    }];
+    let calls = 0;
+    const compiler = llmGraphCompiler({
+      async complete(turns) {
+        calls += 1;
+        if (calls === 1) return { text: JSON.stringify(draft) };
+        const diagnostics = turns.at(-1)?.content ?? "";
+        expect(diagnostics).toContain("record_processing_identity_conflict");
+        expect(diagnostics).toContain('"identityField": "tweet_id"');
+        expect(diagnostics).toContain('"sourceIdField": "tweet_id"');
+        expect(diagnostics).toContain("record_identity");
+        draft.graph.tasks[0]!.limits.recordProcessing = {
+          ...draft.graph.tasks[0]!.limits.recordProcessing as Record<string, unknown>,
+          identityField: "record_identity",
+        };
+        draft.graph.events[0]!.record!.key = "record_identity";
+        return { text: JSON.stringify(draft) };
+      },
+    });
+
+    const result = await compiler.compile({ intent });
+
+    expect(result).toMatchObject({ ok: true, report: { attempts: 2 } });
+    if (!result.ok) return;
+    expect(result.artifact.graph.tasks[0]!.limits.recordProcessing).toMatchObject({
+      identityField: "record_identity",
+      sourceIdField: "tweet_id",
+    });
+    expect(result.artifact.graph.events[0]!.record?.key).toBe("record_identity");
+  });
+
   it("does not retry a provider refusal", async () => {
     const compiler = llmGraphCompiler({ complete: async () => ({ refused: true }) });
     await expect(compiler.compile({ intent: "Do a thing" })).resolves.toMatchObject({
@@ -252,6 +314,33 @@ describe("gateGraphDraft", () => {
       draft.store = validStore("CREATE TABLE seen (id text primary key)", "seen");
       draft.graph.tasks[0]!.prompt = "Read from missing_table";
     }, "coherence_lints", "warn");
+  });
+
+  it("preserves structured graph diagnostics for the compiler repair turn", async () => {
+    const draft = parsed();
+    draft.graph.tasks[0]!.limits.recordProcessing = {
+      version: 1,
+      eventType: "page.read",
+      identityField: "page_id",
+      sourceIdField: "page_id",
+      contentFields: ["title"],
+    };
+    draft.graph.events[0]!.record = { collection: "pages", key: "page_id", status: "extracted" };
+
+    const result = await gateGraphDraft(draft);
+
+    expect(result.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        check: "graph_shape",
+        status: "fail",
+        location: { task: "watch", eventType: "page.read" },
+        details: expect.objectContaining({
+          identityField: "page_id",
+          sourceIdField: "page_id",
+          repair: expect.stringContaining("record_identity"),
+        }),
+      }),
+    ]));
   });
 
   it("strips baseline-denied proposals and raises baseline approval requirements", async () => {
