@@ -1443,7 +1443,9 @@ main, main:has(.automation-workspace), main:has(.workflow-workspace) { max-width
 .admin-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:2rem;margin:2rem 0 3rem}
 .admin-metrics>div{display:flex;flex-direction:column;gap:.5rem}.admin-metrics strong{font-size:clamp(1.5rem,3vw,2.5rem)}
 .admin-form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:2rem}
-.admin-form{margin:2rem 0;max-width:650px}.admin-form fieldset{border:0;padding:0;display:grid;gap:1rem;min-width:0}
+.admin-pricing-section{padding:1rem 0 2.5rem;border-bottom:1px solid var(--border,#ddd)}.admin-pricing-section:last-child{border-bottom:0}
+.admin-form{margin:2rem 0;max-width:650px}.admin-pricing-section--model .admin-form{max-width:960px}.admin-form fieldset{border:0;padding:0;display:grid;gap:1rem;min-width:0}
+.admin-rate-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:1rem}.admin-rate-fields h3{grid-column:1/-1;margin:.75rem 0 0;font-size:1rem}
 .admin-form legend{font-weight:700;font-size:1.25rem;margin-bottom:1rem}.admin-form label,.admin-filters label{display:flex;flex-direction:column;gap:.4rem}
 .admin-form input,.admin-form select,.admin-filters input,.admin-filters select{min-height:44px;max-width:100%}
 .admin-filters{display:flex;flex-wrap:wrap;gap:1rem;align-items:flex-end}.admin-page h2{margin-top:2.5rem}.admin-page caption{text-align:left;padding:1rem 0;font-weight:600}

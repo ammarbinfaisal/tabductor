@@ -4,7 +4,7 @@ All new customer charges and wallet balances are USD. Money is stored as integer
 
 ## Deployment
 
-1. Back up the database. Stop application processes during the migration and code rollout. Apply migrations with the normal migration job (`pnpm exec tsx packages/db/src/migrate.ts`), then deploy engine, fleet, and web together. Migrations 0055–0057 add the administration tables, deletion guard, USD markers, and immutable legacy ledger history.
+1. Back up the database. Stop application processes during the migration and code rollout. Apply migrations with the normal migration job (`pnpm exec tsx packages/db/src/migrate.ts`), then deploy engine, fleet, and web together. Migrations 0055–0058 add the administration tables, deletion guard, USD markers, immutable legacy ledger history, and model token limits.
 2. Set `ADMIN_ACCOUNT_IDS` to comma-separated **internal account IDs**, available on the signed-in Billing page. Local development uses `acct_local`. The allowlist is enforced on every admin RPC as well as navigation; `/admin` grants no privileges by itself.
 3. Set browser, CAPTCHA, and model prices in **Admin → Pricing & costs** before enabling paid work. A missing price refuses new paid usage. Set actual provider costs separately; an empty cost means unknown, not zero.
 4. Configure Paddle and optional summary/proxy credentials below. `.env.example`, Compose, and Helm expose the settings. Helm can use `environment` or the existing external configuration secret. `fleet.usdPerMinute` replaces `fleet.unitsPerMinute`.
@@ -27,7 +27,7 @@ The welcome balance defaults to `$0`. Changing it in Admin applies to subsequent
 | Cloudflare / Turnstile | `2captcha` | `TurnstileTaskProxyless` | USD per successful solve, e.g. `0.10` |
 | hCaptcha | `2captcha` | `HCaptchaTaskProxyless` | USD per successful solve, e.g. `0.50` |
 | Provider fallback | CAPTCHA provider | `*` | USD per solve for types without an exact rate |
-| Platform model | `openai` or `anthropic` | `model-id:input`, `model-id:cached`, `model-id:output` | USD per million tokens |
+| Platform model | `openai` or `anthropic` | `model-id:input`, `model-id:cached`, `model-id:output` | USD per million tokens; set the model input/output token limits on the `:input` rate |
 | IPRoyal | `iproyal` | `GB` | Cost per decimal GB; customer price `0` |
 
 Use the exact native task type for each CAPTCHA provider. Native type rates override that provider's `*` default. CAPTCHA keys remain server-side. Failed, confirmed solves release their holds; ambiguous submissions are never blindly resubmitted. The engine polls known purchased CAPTCHA tasks even after run cancellation.

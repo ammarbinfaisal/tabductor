@@ -17,6 +17,14 @@ it("protects every administration procedure and accepts exact USD prices",async(
  const [rate]=await db.db.select().from(billingRates);expect(rate).toMatchObject({chargeMicros:100000,costMicros:2000});
  expect((await caller(admin).admin.settings()).rates[0]).toMatchObject({chargeUsd:"0.10",costUsd:"0.002"});
 });
+it("stores one-million-token model limits from Admin and exposes them in model settings",async()=>{
+ const model="admin-million-model";
+ await caller(admin).admin.saveModelRates({provider:"openai",model,inputUsd:"1.00",cachedInputUsd:"0.10",outputUsd:"4.00",inputCostUsd:"0.50",cachedInputCostUsd:"0.05",outputCostUsd:"2.00",maxInputTokens:1_000_000,maxOutputTokens:1_000_000});
+ const rate=(await caller(admin).admin.settings()).rates.find(entry=>entry.item===`${model}:input`);
+ expect(rate).toMatchObject({maxInputTokens:1_000_000,maxOutputTokens:1_000_000});
+ const configured=(await caller(user).account.modelSettings()).platformModels.find(entry=>entry.model===model);
+ expect(configured).toMatchObject({maxInputTokens:1_000_000,maxOutputTokens:1_000_000});
+});
 it("redeems a USD coupon once under concurrent requests and enforces the total limit",async()=>{
  await caller(admin).admin.createCoupon({code:"DOLLAR",kind:"balance",amount:"1.00",maxRedemptions:1,expiresAt:null});
  await Promise.all(Array.from({length:8},()=>caller(user).account.redeemCoupon({code:"dollar"})));

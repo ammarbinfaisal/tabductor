@@ -30,7 +30,8 @@ export const accountRouter = router({
     for(const p of prices.filter(p=>p.item.endsWith(":input"))){const model=p.item.slice(0,-6);if(prices.find(r=>r.provider===p.provider&&r.item===p.item)?.id!==p.id)continue;
       const output=prices.find(r=>r.provider===p.provider&&r.item===`${model}:output`),cached=prices.find(r=>r.provider===p.provider&&r.item===`${model}:cached`);
       if(!output)continue;const index=configured.findIndex(r=>r.provider===p.provider&&r.model===model);
-      const entry={provider:p.provider as "openai"|"anthropic",model,version:p.id,input:p.chargeMicros,cachedInput:cached?.chargeMicros??p.chargeMicros,output:output.chargeMicros,maxInputTokens:128000,maxOutputTokens:8192};
+      const entry={provider:p.provider as "openai"|"anthropic",model,version:p.id,input:p.chargeMicros,cachedInput:cached?.chargeMicros??p.chargeMicros,output:output.chargeMicros,
+        maxInputTokens:p.maxInputTokens??128000,maxOutputTokens:p.maxOutputTokens??8192};
       if(index<0)configured.push(entry);else configured[index]=entry;
     }
     return { credentials, selections, platformModels: configured.map(({input,output,cachedInput,...r})=>({...r,inputUsd:usdDecimal(input),outputUsd:usdDecimal(output),cachedInputUsd:usdDecimal(cachedInput)})) };

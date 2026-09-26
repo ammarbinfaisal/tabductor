@@ -48,7 +48,7 @@ const rateSchema = z.object({
   provider: z.enum(["openai", "anthropic"]), model: z.string().min(1), version: z.string().min(1),
   // Integer USD micro-units per million tokens; parseModelRates converts decimal USD inputs.
   input: z.number().int().positive().safe(), cachedInput: z.number().int().nonnegative().safe(), output: z.number().int().positive().safe(),
-  maxInputTokens: z.number().int().min(1024).max(2_000_000), maxOutputTokens: z.number().int().min(1).max(200_000),
+  maxInputTokens: z.number().int().min(1024).max(2_000_000), maxOutputTokens: z.number().int().min(1).max(2_000_000),
 }).strict();
 export type ModelRate = z.infer<typeof rateSchema>;
 export type ModelUsage = { input: number; output: number; cachedInput?: number; reasoning?: number };
@@ -153,7 +153,8 @@ export function createModelResolver(deps: { db: Db; wrapper: KeyWrapper; rates: 
       let rate = deps.rates.find((r) => r.provider === selection.provider && r.model === selection.model);
       const [inputRate,cachedRate,outputRate]=await Promise.all(["input","cached","output"].map(part=>findBillingRate(deps.db,"model",selection.provider,`${selection.model}:${part}`)));
       if(inputRate&&outputRate)rate={provider:selection.provider as "openai"|"anthropic",model:selection.model,version:inputRate.id,input:inputRate.chargeMicros,
-        cachedInput:cachedRate?.chargeMicros??inputRate.chargeMicros,output:outputRate.chargeMicros,maxInputTokens:rate?.maxInputTokens??128000,maxOutputTokens:rate?.maxOutputTokens??8192};
+        cachedInput:cachedRate?.chargeMicros??inputRate.chargeMicros,output:outputRate.chargeMicros,
+        maxInputTokens:inputRate.maxInputTokens??rate?.maxInputTokens??128000,maxOutputTokens:inputRate.maxOutputTokens??rate?.maxOutputTokens??8192};
       if (selection.funding === "platform" && !rate) throw new AppError("model_rate_unknown", "this platform model has no configured rate");
       const maxInput = rate?.maxInputTokens ?? 128_000;
       const maxOutputTokens = rate?.maxOutputTokens ?? 8192;

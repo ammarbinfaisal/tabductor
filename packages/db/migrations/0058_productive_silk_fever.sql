@@ -1,0 +1,3 @@
+ALTER TABLE "billing_rates" ADD COLUMN "max_input_tokens" integer;--> statement-breakpoint
+ALTER TABLE "billing_rates" ADD COLUMN "max_output_tokens" integer;--> statement-breakpoint
+ALTER TABLE "billing_rates" ADD CONSTRAINT "billing_rates_model_limits_check" CHECK (("billing_rates"."max_input_tokens" is null and "billing_rates"."max_output_tokens" is null) or ("billing_rates"."max_input_tokens" between 1024 and 2000000 and "billing_rates"."max_output_tokens" between 1 and 2000000));

@@ -1634,9 +1634,12 @@ export const billingSettings = pgTable("billing_settings", {
 export const billingRates = pgTable("billing_rates", {
   id: text("id").primaryKey(), category: text("category").notNull(), provider: text("provider").notNull().default(""),
   item: text("item").notNull(), chargeMicros: bigint("charge_micros", {mode:"number"}).notNull(),
-  costMicros: bigint("cost_micros", {mode:"number"}), createdAt: createdAt(),
+  costMicros: bigint("cost_micros", {mode:"number"}), maxInputTokens: integer("max_input_tokens"),
+  maxOutputTokens: integer("max_output_tokens"), createdAt: createdAt(),
 }, t => [index("billing_rates_lookup_idx").on(t.category,t.provider,t.item,t.createdAt),
-  check("billing_rates_amount_check", sql`${t.chargeMicros} >= 0 and (${t.costMicros} is null or ${t.costMicros} >= 0)`)]);
+  check("billing_rates_amount_check", sql`${t.chargeMicros} >= 0 and (${t.costMicros} is null or ${t.costMicros} >= 0)`),
+  check("billing_rates_model_limits_check", sql`(${t.maxInputTokens} is null and ${t.maxOutputTokens} is null) or (${t.maxInputTokens} between 1024 and 2000000 and ${t.maxOutputTokens} between 1 and 2000000)`),
+]);
 export const billingAudit = pgTable("billing_audit", {
   id: text("id").primaryKey(), actorId: text("actor_id").notNull(), action: text("action").notNull(),
   details: jsonb("details").$type<Record<string, unknown>>().notNull(), createdAt: createdAt(),

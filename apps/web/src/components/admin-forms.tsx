@@ -11,18 +11,33 @@ async function act(work:()=>Promise<unknown>){if(state.getState().busy)return;st
 const text=(data:FormData,key:string)=>String(data.get(key)??"").trim();
 function Form({children,action}:{children:ReactNode;action:(data:FormData)=>Promise<unknown>}){const {busy}=useStoreBridge(state);return <form className="admin-form" onSubmit={(event:FormEvent<HTMLFormElement>)=>{event.preventDefault();const data=new FormData(event.currentTarget);void act(()=>action(data));}}><fieldset disabled={busy}>{children}</fieldset></form>;}
 export function AdminFeedback(){const {error,busy}=useStoreBridge(state);return <div aria-live="polite">{error?<p className="banner banner--error" role="alert">{error}</p>:busy?<p className="muted">Saving…</p>:null}</div>;}
-export function AdminRateForm(){return <Form action={data=>api.admin.saveRate.mutate({category:text(data,"category") as "browser"|"solver"|"model"|"proxy",provider:text(data,"provider"),item:text(data,"item"),chargeUsd:text(data,"charge"),costUsd:text(data,"cost")||null})}>
-  <legend>Set a price or provider cost</legend>
-  <label>Usage <select name="category"><option value="solver">CAPTCHA solve</option><option value="browser">Browser minute</option><option value="model">Model tokens</option><option value="proxy">IPRoyal GB</option></select></label>
-  <label>Provider <input name="provider" list="billing-providers" placeholder="2captcha" maxLength={100}/></label>
-  <datalist id="billing-providers"><option value="capsolver"/><option value="2captcha"/><option value="anti-captcha"/><option value="openai"/><option value="anthropic"/><option value="iproyal"/></datalist>
-  <label>Task type or billing unit <input name="item" required maxLength={240} list="billing-items" placeholder="TurnstileTaskProxyless"/></label>
-  <datalist id="billing-items"><option value="TurnstileTaskProxyless"/><option value="AntiTurnstileTaskProxyLess"/><option value="HCaptchaTaskProxyless"/><option value="*"/><option value="minute"/><option value="GB"/></datalist>
-  <p className="muted">Use the provider’s native CAPTCHA type, or * for its default. Browser: blank provider, minute. Model: model-id:input, :cached, or :output per million tokens. IPRoyal: GB.</p>
-  <label>Customer price (USD) <input name="charge" required inputMode="decimal" placeholder="0.10" defaultValue="0.10"/></label>
-  <label>Your provider cost (USD, optional) <input name="cost" inputMode="decimal" placeholder="Leave blank if unknown"/></label>
-  <p className="muted">For example, charge $0.10 for Turnstile or $0.50 for hCaptcha. New prices apply only to new work. Proxy entries track costs; enter 0 for customer price.</p><button>Save rate version</button>
-</Form>;}
+const optionalAmount=(data:FormData,key:string)=>text(data,key)||null;
+export function BrowserRateForm(){return <Form action={data=>api.admin.saveRate.mutate({category:"browser",provider:"",item:"minute",chargeUsd:text(data,"charge"),costUsd:optionalAmount(data,"cost")})}>
+  <legend>Update browser pricing</legend><label>Billing quantity <select name="unit" defaultValue="minute"><option value="minute">1 started browser minute</option></select></label>
+  <label>Customer price (USD per minute) <input name="charge" required inputMode="decimal" placeholder="0.05"/></label>
+  <label>Infrastructure cost (USD per minute, optional) <input name="cost" inputMode="decimal" placeholder="Unknown"/></label><button>Save browser rate</button>
+</Form>}
+export function ModelRateForm(){return <Form action={data=>api.admin.saveModelRates.mutate({provider:text(data,"provider") as "openai"|"anthropic",model:text(data,"model"),
+  inputUsd:text(data,"inputCharge"),cachedInputUsd:text(data,"cachedCharge"),outputUsd:text(data,"outputCharge"),inputCostUsd:optionalAmount(data,"inputCost"),cachedInputCostUsd:optionalAmount(data,"cachedCost"),outputCostUsd:optionalAmount(data,"outputCost"),
+  maxInputTokens:Number(text(data,"maxInputTokens")),maxOutputTokens:Number(text(data,"maxOutputTokens"))})}>
+  <legend>Add or update a model</legend><div className="admin-rate-fields"><label>Provider <select name="provider" defaultValue="openai"><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></label>
+  <label>Model ID <input name="model" required maxLength={220} placeholder="gpt-5.4"/></label><label>Billing quantity <select name="unit" defaultValue="million_tokens"><option value="million_tokens">1 million tokens</option></select></label>
+  <h3>Customer prices</h3><label>Input (USD) <input name="inputCharge" required inputMode="decimal" placeholder="1.00"/></label><label>Cached input (USD) <input name="cachedCharge" required inputMode="decimal" placeholder="0.10"/></label><label>Output (USD) <input name="outputCharge" required inputMode="decimal" placeholder="4.00"/></label>
+  <h3>Provider costs</h3><label>Input (USD, optional) <input name="inputCost" inputMode="decimal" placeholder="Unknown"/></label><label>Cached input (USD, optional) <input name="cachedCost" inputMode="decimal" placeholder="Unknown"/></label><label>Output (USD, optional) <input name="outputCost" inputMode="decimal" placeholder="Unknown"/></label>
+  <h3>Model limits</h3><label>Maximum input tokens <input name="maxInputTokens" type="number" min="1024" max="2000000" step="1" required defaultValue="1000000"/></label><label>Maximum output tokens <input name="maxOutputTokens" type="number" min="1" max="2000000" step="1" required defaultValue="1000000"/></label></div>
+  <p className="muted">Limits describe provider capabilities. Confirm the model’s output ceiling and combined context constraint before saving.</p><button>Save all model rates</button>
+</Form>}
+export function ProxyRateForm(){return <Form action={data=>api.admin.saveRate.mutate({category:"proxy",provider:"iproyal",item:"GB",chargeUsd:"0",costUsd:text(data,"cost")})}>
+  <legend>Update IPRoyal cost</legend><label>Provider <select name="provider" defaultValue="iproyal"><option value="iproyal">IPRoyal Residential</option></select></label>
+  <label>Usage unit <select name="unit" defaultValue="GB"><option value="GB">1 GB (decimal)</option></select></label><label>Provider cost (USD per GB) <input name="cost" required inputMode="decimal" placeholder="2.00"/></label>
+  <p className="muted">Proxy usage is tracked as an operating cost and is not charged directly to the customer.</p><button>Save IPRoyal cost</button>
+</Form>}
+export function CaptchaRateForm(){return <Form action={data=>api.admin.saveRate.mutate({category:"solver",provider:text(data,"provider"),item:text(data,"task"),chargeUsd:text(data,"charge"),costUsd:optionalAmount(data,"cost")})}>
+  <legend>Update CAPTCHA pricing</legend><label>Provider <select name="provider" defaultValue="2captcha"><option value="capsolver">Capsolver</option><option value="2captcha">2Captcha</option><option value="anti-captcha">Anti-Captcha</option></select></label>
+  <label>Native task type <select name="task" defaultValue="TurnstileTaskProxyless"><option value="*">Default for other task types (*)</option><option value="TurnstileTaskProxyless">TurnstileTaskProxyless</option><option value="AntiTurnstileTaskProxyLess">AntiTurnstileTaskProxyLess</option><option value="HCaptchaTaskProxyless">HCaptchaTaskProxyless</option><option value="RecaptchaV2TaskProxyless">RecaptchaV2TaskProxyless</option><option value="ReCaptchaV2TaskProxyLess">ReCaptchaV2TaskProxyLess</option><option value="AntiGateTask">AntiGateTask</option></select></label>
+  <label>Billing quantity <select name="unit" defaultValue="solve"><option value="solve">1 successful solve</option></select></label><label>Customer price (USD per solve) <input name="charge" required inputMode="decimal" placeholder="0.10"/></label>
+  <label>Provider cost (USD per solve, optional) <input name="cost" inputMode="decimal" placeholder="Unknown"/></label><button>Save CAPTCHA rate</button>
+</Form>}
 export function WelcomeForm({amount}:{amount:string}){return <Form action={data=>api.admin.welcome.mutate({amountUsd:text(data,"amount")})}><legend>New account welcome balance</legend><label>USD granted once <input name="amount" defaultValue={amount} required inputMode="decimal"/></label><p className="muted">Only accounts created after this setting is saved are eligible. Signing in again never repeats the grant.</p><button>Save welcome balance</button></Form>;}
 export function CouponForm(){return <Form action={data=>api.admin.createCoupon.mutate({code:text(data,"code"),kind:text(data,"kind") as "balance"|"percent"|"flat",amount:text(data,"amount"),maxRedemptions:text(data,"limit")?Number(text(data,"limit")):null,expiresAt:text(data,"expires")?new Date(text(data,"expires")+"T23:59:59Z"):null})}>
   <legend>Create a coupon</legend><label>Code <input name="code" required minLength={3} maxLength={40}/></label>

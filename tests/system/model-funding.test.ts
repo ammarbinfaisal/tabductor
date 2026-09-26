@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { modelCredentials, modelOperations, modelSelections } from "@tabductor/db";
+import { billingRates, modelCredentials, modelOperations, modelSelections } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import { fileKeyWrapper } from "@tabductor/secrets";
 import { appendCreditAdjustment, createModelResolver, expireCreditReservations, getCreditBalance, modelCreditUnits,
@@ -81,6 +81,19 @@ it("reserves before calling, pins rates, settles exactly once, and excludes reas
   expect(modelCreditUnits(rate, { input: 100, cachedInput: 50, output: 50, reasoning: 25 })).toBe(1);
   const [op] = await db.db.select().from(modelOperations).where(eq(modelOperations.id, "paid-call"));
   expect(op).toMatchObject({ rateVersion: "fixture-v1", cachedInputTokens: 50, reasoningTokens: 25 });
+});
+
+it("uses one-million-token model limits saved in database rates", async () => {
+  const a = await account("model-database-limits"), model = "database-million-model";
+  await appendCreditAdjustment(db.db, { accountId: a, kind: "purchase", units: 10, idempotencyKey: "model-database-limits-topup" });
+  await setModelSelection(db.db, a, { funding: "platform", provider: "openai", model });
+  await db.db.insert(billingRates).values([
+    { id: "rate_database_limits_input", category: "model", provider: "openai", item: `${model}:input`, chargeMicros: 1, maxInputTokens: 1_000_000, maxOutputTokens: 1_000_000 },
+    { id: "rate_database_limits_output", category: "model", provider: "openai", item: `${model}:output`, chargeMicros: 1 },
+  ]);
+  const invoke = vi.fn(async (config) => ({ value: config.maxOutputTokens, usage: { input: 10, output: 10 } }));
+  await expect(resolver([]).execute({ accountId: a, purpose: "runtime" }, { operationId: "database-limits-call", inputTokenBound: 900_000 }, invoke)).resolves.toBe(1_000_000);
+  expect(parseModelRates(JSON.stringify([{ ...rate, maxInputTokens: 1_000_000, maxOutputTokens: 1_000_000 }]))[0]).toMatchObject({ maxInputTokens: 1_000_000, maxOutputTokens: 1_000_000 });
 });
 
 it("blocks unknown rates and insufficient credits before any provider request", async () => {

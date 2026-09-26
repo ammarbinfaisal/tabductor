@@ -21,14 +21,29 @@ export const adminRouter=router({
       welcomeUsd:String(settings.find(s=>s.key==="welcome")?.value.amountUsd??"0"),sync:settings.find(s=>s.key==="iproyal_sync")?.value??{},proxies,deletions,audits,
       proxyConfigured:Boolean(process.env.IPROYAL_API_TOKEN),summaryConfigured:Boolean(process.env.OPENAI_API_KEY)};
   }),
-  saveRate:adminProcedure.input(z.object({category:z.enum(["browser","solver","model","proxy"]),provider:z.string().trim().max(100),item:z.string().trim().min(1).max(240),chargeUsd:amount,costUsd:amount.nullable()})).mutation(async ({ctx,input})=>{
-    const chargeMicros=usdMicros(input.chargeUsd),costMicros=input.costUsd===null?null:usdMicros(input.costUsd);
+  saveRate:adminProcedure.input(z.object({category:z.enum(["browser","solver","model","proxy"]),provider:z.string().trim().max(100),item:z.string().trim().min(1).max(240),chargeUsd:amount,costUsd:amount.nullable(),
+    maxInputTokens:z.number().int().min(1024).max(2_000_000).optional(),maxOutputTokens:z.number().int().min(1).max(2_000_000).optional()})).mutation(async ({ctx,input})=>{
+    const chargeMicros=usdMicros(input.chargeUsd),costMicros=input.costUsd===null?null:usdMicros(input.costUsd),modelInput=input.category==="model"&&input.item.endsWith(":input");
     if(input.category!=="proxy"&&chargeMicros<=0&&!(input.category==="model"&&input.item.endsWith(":cached")))throw new AppError("price_invalid","The customer price must be positive");
     if(input.category==="browser"&&(input.provider||input.item!=="minute"))throw new AppError("price_invalid","Browser rates use an empty provider and item minute");
     if(input.category==="solver"&&!["capsolver","2captcha","anti-captcha"].includes(input.provider))throw new AppError("price_invalid","Select a supported CAPTCHA provider");
     if(input.category==="model"&&(!["openai","anthropic"].includes(input.provider)||!/^.+:(input|cached|output)$/.test(input.item)))throw new AppError("price_invalid","Model items use model-id:input, model-id:cached or model-id:output");
+    if(modelInput&&(input.maxInputTokens===undefined||input.maxOutputTokens===undefined))throw new AppError("price_invalid","Model input rates require maximum input and output token limits");
+    if(!modelInput&&(input.maxInputTokens!==undefined||input.maxOutputTokens!==undefined))throw new AppError("price_invalid","Token limits belong on a model-id:input rate");
     if(input.category==="proxy"&&(input.provider!=="iproyal"||input.item!=="GB"))throw new AppError("price_invalid","Proxy costs use provider iproyal and item GB");
-    return ctx.db.transaction(async trx=>{const id=newId("rate");await trx.insert(billingRates).values({id,category:input.category,provider:input.provider,item:input.item,chargeMicros,costMicros});await audit(trx,ctx.accountId,"rate.create",{...input,id});return {id};});
+    return ctx.db.transaction(async trx=>{const id=newId("rate");await trx.insert(billingRates).values({id,category:input.category,provider:input.provider,item:input.item,chargeMicros,costMicros,
+      ...(modelInput?{maxInputTokens:input.maxInputTokens,maxOutputTokens:input.maxOutputTokens}:{})});await audit(trx,ctx.accountId,"rate.create",{...input,id});return {id};});
+  }),
+  saveModelRates:adminProcedure.input(z.object({provider:z.enum(["openai","anthropic"]),model:z.string().trim().min(1).max(220),
+    inputUsd:amount,cachedInputUsd:amount,outputUsd:amount,inputCostUsd:amount.nullable(),cachedInputCostUsd:amount.nullable(),outputCostUsd:amount.nullable(),
+    maxInputTokens:z.number().int().min(1024).max(2_000_000),maxOutputTokens:z.number().int().min(1).max(2_000_000)})).mutation(async ({ctx,input})=>{
+    const prices={input:usdMicros(input.inputUsd),cached:usdMicros(input.cachedInputUsd),output:usdMicros(input.outputUsd)};
+    if(prices.input<=0||prices.output<=0)throw new AppError("price_invalid","Model input and output prices must be positive");
+    const costs={input:input.inputCostUsd===null?null:usdMicros(input.inputCostUsd),cached:input.cachedInputCostUsd===null?null:usdMicros(input.cachedInputCostUsd),output:input.outputCostUsd===null?null:usdMicros(input.outputCostUsd)};
+    return ctx.db.transaction(async trx=>{const ids={input:newId("rate"),cached:newId("rate"),output:newId("rate")};
+      await trx.insert(billingRates).values((["input","cached","output"] as const).map(part=>({id:ids[part],category:"model",provider:input.provider,item:`${input.model}:${part}`,chargeMicros:prices[part],costMicros:costs[part],
+        ...(part==="input"?{maxInputTokens:input.maxInputTokens,maxOutputTokens:input.maxOutputTokens}:{})})));
+      await audit(trx,ctx.accountId,"model_rates.create",{...input,ids});return {ids};});
   }),
   welcome:adminProcedure.input(z.object({amountUsd:amount})).mutation(({ctx,input})=>ctx.db.transaction(async trx=>{
     await trx.insert(billingSettings).values({key:"welcome",value:input}).onConflictDoUpdate({target:billingSettings.key,set:{value:input,updatedAt:new Date()}});await audit(trx,ctx.accountId,"welcome.update",input);return {saved:true};
