@@ -53,7 +53,7 @@ it("publishes, updates, triggers, and schedules without exposing task ids", asyn
     versionId: string;
   };
   expect(updated.versionId).not.toBe(published.versionId);
-  expect(compile.mock.calls[1]?.[0].current?.graph.tasks).toHaveLength(2);
+  expect(compile.mock.calls[1]?.[0]).not.toHaveProperty("current");
 
   const triggered = await control.trigger({ workflowId: published.workflowId }) as {
     accepted: number;

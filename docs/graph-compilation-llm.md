@@ -39,6 +39,6 @@ the current published version untouched.
 ## Control-plane MCP
 
 The MCP endpoint wraps this compiler. Publish creates a workflow then compiles/publishes intent;
-update supplies the current graph, store artifact, and grant proposals as context; trigger and
+update compiles a fresh graph from the replacement prompt and result schema; trigger and
 schedule resolve root behaviors internally. The protocol surface never asks callers to construct
 or understand the internal graph.

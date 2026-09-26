@@ -118,7 +118,7 @@ it.each([null, "v1"])("compiles and publishes a prompt in one action (base versi
   expect(store.getState()).toMatchObject({ busy: true, publishing: true });
   await store.save(); // A second click cannot start another compile or publication.
   await publishing;
-  expect(api.workflow.compileIntent.mutate).toHaveBeenCalledExactlyOnceWith({ workflowId: "wf", intent: automationGraph.automationPrompt, resultSchema: null, current: { graph, store: null, proposedGrants: [] } });
+  expect(api.workflow.compileIntent.mutate).toHaveBeenCalledExactlyOnceWith({ workflowId: "wf", intent: automationGraph.automationPrompt, resultSchema: null });
   expect(api.workflow.publishVersion.mutate).toHaveBeenCalledExactlyOnceWith({ workflowId: "wf", expectedVersionId: versionId, graph: automationGraph, authoring: { report: { checks: [], attempts: 1 }, proposedGrants: [] } });
   expect(store.getState()).toMatchObject({ graph: automationGraph, versionId: "v2", dirty: false, busy: false, publishing: false });
 });
