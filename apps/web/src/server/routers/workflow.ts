@@ -4,7 +4,6 @@ import {
   compileResultSchema,
   getWorkflow,
   graphSchema,
-  graphDraftArtifactSchema,
   graphStoreArtifactSchema,
   graphCompileReportSchema,
   proposedGrantSchema,
@@ -73,7 +72,6 @@ const resultSchemaInput = z.union([z.record(z.unknown()), z.boolean()]).nullable
 
 async function compileWorkflowPrompt(ctx: Context, input: {
   workflowId: string; intent: string; resultSchema?: Record<string, unknown> | boolean | null;
-  current?: z.infer<typeof graphDraftArtifactSchema>;
 }) {
   await requireWorkflowOwner(ctx, input.workflowId);
   if (ctx.modelsForWorkflow) ctx = { ...ctx, ...ctx.modelsForWorkflow(input.workflowId) };
@@ -83,17 +81,10 @@ async function compileWorkflowPrompt(ctx: Context, input: {
       message: "graph compilation unavailable: configure ANTHROPIC_API_KEY or OPENAI_API_KEY",
     });
   }
-  let current = input.current;
-  if (current && !current.store) {
-    const [persisted] = await ctx.db.select().from(storeSchemas)
-      .where(eq(storeSchemas.workflowId, input.workflowId)).orderBy(desc(storeSchemas.version)).limit(1);
-    if (persisted) current = { ...current, store: graphStoreArtifactSchema.parse({ description: persisted.descriptionText, ddl: persisted.ddl, tablesSpec: persisted.tablesSpecJson }) };
-  }
   if (input.resultSchema !== undefined && input.resultSchema !== null) compileResultSchema(input.resultSchema);
   const compiled = await ctx.graphCompiler.compile({
     intent: input.intent,
     resultSchema: input.resultSchema ?? null,
-    ...(current ? { current } : {}),
     gateContext: await loadGateContext(ctx, input.workflowId),
   });
   return compiled.ok
@@ -192,7 +183,6 @@ export const workflowRouter = router({
       z.object({
         workflowId: z.string().min(1),
         intent: z.string().min(1).max(20_000),
-        current: graphDraftArtifactSchema.optional(),
         resultSchema: resultSchemaInput,
       }),
     )

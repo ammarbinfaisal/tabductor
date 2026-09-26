@@ -132,7 +132,6 @@ export interface GraphCompiler {
   compile(input: {
     intent: string;
     resultSchema?: Record<string, unknown> | boolean | null;
-    current?: GraphDraftArtifact;
     gateContext?: GraphGateContext;
   }): Promise<GraphCompileResult>;
 }
@@ -435,7 +434,7 @@ export function llmGraphCompiler(transport: ChatTransport, opts: { pool?: Pool; 
       const turns: Array<{ role: "user" | "assistant"; content: string }> = [
         {
           role: "user",
-          content: `${GRAPH_AUTHORING_SYSTEM_PROMPT}\n\nIntent:\n${input.intent}\n\nFinal result schema (null means any valid JSON):\n${JSON.stringify(input.resultSchema ?? null)}${input.current ? `\n\nCurrent draft:\n${JSON.stringify(input.current)}` : ""}`,
+          content: `${GRAPH_AUTHORING_SYSTEM_PROMPT}\n\nIntent:\n${input.intent}\n\nFinal result schema (null means any valid JSON):\n${JSON.stringify(input.resultSchema ?? null)}`,
         },
       ];
       let lastChecks: GraphGateEntry[] = [];

@@ -366,7 +366,6 @@ export function createEditorStore(init: {
           const resultSchema = parseResultSchemaText(state.resultSchemaText);
           const result = await api.workflow.compileIntent.mutate({
             workflowId: state.workflowId, intent, resultSchema,
-            current: { graph: state.graph, store: state.authoringStore, proposedGrants: [] },
           });
           if (!result.ok) throw new Error(result.error);
           const graph = { ...result.artifact.graph, automationPrompt: intent };

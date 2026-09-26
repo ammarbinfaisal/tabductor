@@ -5,9 +5,6 @@ import type {
   WorkflowTriggerInput,
   WorkflowUpdateInput,
 } from "@tabductor/mcp";
-import { graphStoreArtifactSchema, type GraphDraftArtifact } from "@tabductor/engine";
-import { storeSchemas } from "@tabductor/db";
-import { desc, eq } from "drizzle-orm";
 import { createCaller, type Context } from "./router.js";
 import { setWorkflowSchedule, triggerWorkflow, workflowStatus } from "./workflow-control.js";
 
@@ -15,9 +12,9 @@ function publicResult(workflowId: string, versionId: string, extra: Record<strin
   return { workflowId, versionId, ...extra };
 }
 
-async function compileAndPublish(ctx: Context, workflowId: string, prompt: string, current: GraphDraftArtifact, expectedVersionId: string | null, resultSchema?: Record<string, unknown> | boolean) {
+async function compileAndPublish(ctx: Context, workflowId: string, prompt: string, expectedVersionId: string | null, resultSchema?: Record<string, unknown> | boolean) {
   const caller = createCaller(ctx);
-  const compiled = await caller.workflow.compileIntent({ workflowId, intent: prompt, current, resultSchema: resultSchema ?? null });
+  const compiled = await caller.workflow.compileIntent({ workflowId, intent: prompt, resultSchema: resultSchema ?? null });
   if (!compiled.ok) throw new Error(`workflow compilation failed: ${compiled.error}`);
   const published = await caller.workflow.publishVersion({
     workflowId,
@@ -35,26 +32,10 @@ async function compileAndPublish(ctx: Context, workflowId: string, prompt: strin
   });
 }
 
-async function currentArtifact(ctx: Context, workflowId: string): Promise<{ artifact: GraphDraftArtifact; versionId: string | null }> {
+async function currentVersion(ctx: Context, workflowId: string): Promise<string | null> {
   const caller = createCaller(ctx);
   const current = await caller.workflow.get({ id: workflowId });
-  const [store] = await ctx.db
-    .select()
-    .from(storeSchemas)
-    .where(eq(storeSchemas.workflowId, workflowId))
-    .orderBy(desc(storeSchemas.version))
-    .limit(1);
-  return { versionId: current.versionId, artifact: {
-    graph: current.graph,
-    store: store
-      ? graphStoreArtifactSchema.parse({
-          description: store.descriptionText,
-          ddl: store.ddl,
-          tablesSpec: store.tablesSpecJson,
-        })
-      : null,
-    proposedGrants: [],
-  } };
+  return current.versionId;
 }
 
 /** Adapts the existing compiler/publication APIs to workflow-level MCP operations. */
@@ -67,8 +48,8 @@ export function createWorkflowControl(ctx: Context): WorkflowControl {
     },
 
     async update(input: WorkflowUpdateInput) {
-      const current = await currentArtifact(ctx, input.workflowId);
-      return compileAndPublish(ctx, input.workflowId, input.prompt, current.artifact, current.versionId, input.resultSchema);
+      const versionId = await currentVersion(ctx, input.workflowId);
+      return compileAndPublish(ctx, input.workflowId, input.prompt, versionId, input.resultSchema);
     },
 
     async trigger(input: WorkflowTriggerInput) {
