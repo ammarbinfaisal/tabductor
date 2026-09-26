@@ -1,5 +1,7 @@
 "use client";
 
+import { promptInputsSchema, workflowPromptInputNames } from "@tabductor/core/prompt-inputs";
+
 import type {
   CompileEntry,
   Graph,
@@ -57,6 +59,7 @@ export type WorkflowScheduleDraft = {
 export type EditorState = {
   workspaceTab: "automation" | "activity" | "graph";
   automationPrompt: string;
+  promptInputs: Record<string, string>;
   resultSchemaText: string;
   workflowId: string;
   versionId: string | null;
@@ -136,9 +139,15 @@ export function createEditorStore(init: {
   let triggerRequestId: string | undefined;
   const triggerStorageKey = `tabductor.trigger.${init.workflowId}`;
   try { triggerRequestId = sessionStorage.getItem(triggerStorageKey) ?? undefined; } catch { /* Server render or storage disabled. */ }
+  let pendingInputs: Record<string, string> | undefined;
+  try {
+    const parsed = promptInputsSchema.safeParse(JSON.parse(sessionStorage.getItem(triggerStorageKey + ".inputs") ?? "null"));
+    if (parsed.success) pendingInputs = parsed.data;
+  } catch { /* Storage is optional. */ }
   const draft = executionDraft(init.graph);
   const store = createStore<EditorState>(() => ({
     workspaceTab: "automation",
+    promptInputs: {},
     automationPrompt: init.graph.automationPrompt ?? "",
     resultSchemaText: resultSchemaTextOf(init.graph),
     workflowId: init.workflowId,
@@ -198,6 +207,14 @@ export function createEditorStore(init: {
 
     setUi: (patch: Partial<EditorUi>) =>
       store.setState({ ui: { ...store.getState().ui, ...patch } }),
+
+    restorePromptInputs: () => {
+      if (pendingInputs) store.setState({ promptInputs: pendingInputs });
+    },
+
+    setPromptInput: (name: string, value: string) => {
+      store.setState({ promptInputs: { ...store.getState().promptInputs, [name]: value } });
+    },
 
     setScheduleDraft: (patch: Partial<WorkflowScheduleDraft>) =>
       store.setState({ scheduleDraft: { ...store.getState().scheduleDraft, ...patch } }),
@@ -411,13 +428,22 @@ export function createEditorStore(init: {
     async triggerWorkflow() {
       const state = store.getState();
       if (!state.versionId || state.dirty || state.busy || state.automationPrompt.trim() !== (state.graph.automationPrompt ?? "") || state.resultSchemaText !== resultSchemaTextOf(state.graph)) return;
+      const names = workflowPromptInputNames(state.graph);
+      const inputs = Object.fromEntries(names.map(name => [name, state.promptInputs[name] ?? ""]));
+      const missing = names.filter(name => !inputs[name]!.trim());
+      if (missing.length) {
+        store.setState({ error: { message: `Enter a value for ${missing.map(name => "$" + name).join(", ")}.`, details: {} } });
+        return;
+      }
       store.setState({ busy: true, error: null, notice: null });
       try {
+        if (JSON.stringify(pendingInputs ?? {}) !== JSON.stringify(inputs)) triggerRequestId = undefined;
+        pendingInputs = inputs;
         triggerRequestId ??= randomUUID();
-        try { sessionStorage.setItem(triggerStorageKey, triggerRequestId); } catch { /* Keep the in-memory key. */ }
-        const result = await api.workflow.trigger.mutate({ workflowId: state.workflowId, requestId: triggerRequestId });
+        try { sessionStorage.setItem(triggerStorageKey, triggerRequestId); sessionStorage.setItem(triggerStorageKey + ".inputs", JSON.stringify(inputs)); } catch { /* Keep the in-memory key. */ }
+        const result = await api.workflow.trigger.mutate({ workflowId: state.workflowId, requestId: triggerRequestId, ...(names.length ? { inputs } : {}) });
         triggerRequestId = undefined;
-        try { sessionStorage.removeItem(triggerStorageKey); } catch { /* Storage is optional. */ }
+        try { sessionStorage.removeItem(triggerStorageKey); sessionStorage.removeItem(triggerStorageKey + ".inputs"); } catch { /* Storage is optional. */ }
         store.setState({
           busy: false,
           notice: `Queued ${result.accepted} run${result.accepted === 1 ? "" : "s"} from the published workflow.`,

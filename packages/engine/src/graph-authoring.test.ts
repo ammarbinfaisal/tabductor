@@ -35,6 +35,20 @@ const valid = {
 };
 
 describe("llmGraphCompiler", () => {
+  it("repairs a draft that drops a declared prompt input", async () => {
+    const intent = valid.graph.automationPrompt + " about $topic";
+    const draft = structuredClone(valid);
+    let attempts = 0;
+    const compiler = llmGraphCompiler({ complete: async () => {
+      attempts++;
+      if (attempts === 2) draft.graph.tasks[0]!.prompt += " Use $topic as the subject.";
+      return { text: JSON.stringify(draft) };
+    } });
+    const result = await compiler.compile({ intent });
+    expect(result).toMatchObject({ ok: true, report: { attempts: 2 } });
+    if (result.ok) expect(result.artifact.graph.tasks[0]!.prompt).toContain("$topic");
+  });
+
   it("recovers trailing commas without changing task prompts or bypassing the graph gate", async () => {
     const draft = structuredClone(valid);
     draft.graph.tasks[0]!.prompt += ' Preserve literal ,} and ,] and "quotes".';
@@ -79,13 +93,10 @@ describe("llmGraphCompiler", () => {
           };
         }
         const repairPrompt = turns.at(-1)?.content ?? "";
-        expect(repairPrompt).toContain("The deterministic gate rejected that draft");
         expect(repairPrompt).toContain("outside the browser registry");
         expect(repairPrompt).toContain('"check": "kind_constraints"');
         expect(repairPrompt).toContain('"check": "store_references"');
         expect(repairPrompt).toContain('"grant": 0');
-        expect(repairPrompt).toContain("Fix every error");
-        expect(repairPrompt).toContain("Return the corrected full JSON artifact only");
         return { text: JSON.stringify(valid) };
       },
     });

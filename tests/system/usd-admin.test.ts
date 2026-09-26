@@ -1,6 +1,6 @@
 import { afterAll,beforeAll,expect,it,vi } from "vitest";
 import { eq,sql } from "drizzle-orm";
-import { accounts,billingRates,billingSettings,creditLedgerEntries,couponRedemptions,browserSessions,workflowDeletions,workflows,runs,actionSummaries,operatingCosts,billingAudit,creditReservations,workflowExecutions,captchaJobs,browserCommands,proxyAccounts } from "@tabductor/db";
+import { accounts,artifacts,billingRates,billingSettings,creditLedgerEntries,couponRedemptions,browserSessions,workflowDeletions,workflows,runs,actionSummaries,operatingCosts,billingAudit,creditReservations,workflowExecutions,captchaJobs,browserCommands,proxyAccounts } from "@tabductor/db";
 import { createMigratedTestDb,type MigratedTestDb } from "@tabductor/db/test-db";
 import { usdMicros } from "@tabductor/core";
 import { appendCreditAdjustment,getCreditBalance,resolveAccountIdentity,staticSchemaGenerator,createBrowserProfile,createWorkflow,seedWorkflow,
@@ -24,6 +24,15 @@ it("stores one-million-token model limits from Admin and exposes them in model s
  expect(rate).toMatchObject({maxInputTokens:1_000_000,maxOutputTokens:1_000_000});
  const configured=(await caller(user).account.modelSettings()).platformModels.find(entry=>entry.model===model);
  expect(configured).toMatchObject({maxInputTokens:1_000_000,maxOutputTokens:1_000_000});
+});
+it("accepts the signed-in Clerk user ID in the administrator allowlist",async()=>{
+ const subject="user_admin_allowlist_fixture";
+ const accountId=await resolveAccountIdentity(db.db,{provider:"clerk",subject});
+ vi.stubEnv("ADMIN_ACCOUNT_IDS",subject);
+ try{
+  await expect(caller(accountId).admin.settings()).resolves.toBeDefined();
+  await expect(caller(user).admin.settings()).rejects.toMatchObject({code:"FORBIDDEN"});
+ }finally{vi.stubEnv("ADMIN_ACCOUNT_IDS",admin);}
 });
 it("redeems a USD coupon once under concurrent requests and enforces the total limit",async()=>{
  await caller(admin).admin.createCoupon({code:"DOLLAR",kind:"balance",amount:"1.00",maxRedemptions:1,expiresAt:null});
@@ -91,6 +100,26 @@ it("permanently deletes workflow data while retaining ledger history and rejecti
  const [job]=await db.db.select().from(workflowDeletions).where(eq(workflowDeletions.workflowId,workflowId));expect(job?.error).toBeNull();expect(job?.status).toBe("deleted");
  expect(await db.db.select().from(workflows).where(eq(workflows.id,workflowId))).toHaveLength(0);
  expect(await db.db.select().from(creditLedgerEntries).where(eq(creditLedgerEntries.accountId,user))).toEqual(before);
+});
+it("deletes unshared workflow blobs without materializing retained rows",async()=>{
+ const removed:string[]=[],unique=`sha256:${"1".repeat(64)}`,shared=`sha256:${"2".repeat(64)}`;
+ const deleting=await createWorkflow(db.db,{accountId:user,userId:"test",name:"Delete blob refs"});
+ const deletingSeed=await seedWorkflow(db.db,{workflowId:deleting,tasks:{Browse:{kind:"browser",mode:"ai"}}});
+ const retained=await createWorkflow(db.db,{accountId:user,userId:"test",name:"Keep shared blob ref"});
+ const retainedSeed=await seedWorkflow(db.db,{workflowId:retained,tasks:{Browse:{kind:"browser",mode:"ai"}}});
+ await db.db.insert(runs).values([
+  {id:"delete-blob-run",taskId:deletingSeed.taskIds.Browse!,workflowVersionId:deletingSeed.versionId,status:"succeeded",modeUsed:"ai"},
+  {id:"retain-blob-run",taskId:retainedSeed.taskIds.Browse!,workflowVersionId:retainedSeed.versionId,status:"succeeded",modeUsed:"ai"},
+ ]);
+ await db.db.insert(artifacts).values([
+  {id:"delete-unique-artifact",runId:"delete-blob-run",kind:"fixture",blobRef:unique},
+  {id:"delete-shared-artifact",runId:"delete-blob-run",kind:"fixture",blobRef:shared},
+  {id:"retain-shared-artifact",runId:"retain-blob-run",kind:"fixture",blobRef:shared},
+ ]);
+ await requestWorkflowDeletion(db.db,user,deleting);
+ await processWorkflowDeletion(db.db,db.pool,{put:async()=>"",get:async()=>Buffer.from("{}"),remove:async ref=>{removed.push(ref);}});
+ expect(removed).toEqual([unique]);
+ expect((await db.db.select().from(workflowDeletions).where(eq(workflowDeletions.workflowId,deleting)))[0]).toMatchObject({status:"deleted",error:null});
 });
 it("generates a persisted action description without charging the customer wallet",async()=>{
  const workflowId=await createWorkflow(db.db,{accountId:user,userId:"test",name:"Summaries"});

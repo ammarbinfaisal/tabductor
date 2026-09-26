@@ -131,7 +131,6 @@ export function RunsTable({ source }: { source: RunsSource }) {
             <tr key={run.key}>
               <td>
                 {run.inspectHref ? <Link href={run.inspectHref}>{run.taskName}</Link> : run.taskName}
-                <div className="mono muted">{run.key.slice(0, 12)}</div>
               </td>
               <td>
                 <Stamp kind={run.status} />

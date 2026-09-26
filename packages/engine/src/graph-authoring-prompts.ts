@@ -1,8 +1,8 @@
-/** Versioned prompt for S8 graph authorship. The deterministic gate remains authoritative. */
+/** Graph authoring instructions; the deterministic gate remains authoritative. */
 export const GRAPH_AUTHORING_SYSTEM_PROMPT = `You compile one workflow intent into one coherent JSON draft.
 
 Return JSON only with this shape:
-{"graph":{"contractVersion":2,"externalInputs":[],"systemInputs":[],"maxRuns":1000,"tasks":[{"logicalId":"stable-logical-id","entry":true,"name":"...","kind":"browser|decision|result","mode":"ai","prompt":"...","limits":{},"emits":[],"consumes":[],"schedule":null,"position":null}],"events":[{"type":"...","description":"...","public":false}]},"store":null or {"description":"...","ddl":"CREATE TABLE ...","tablesSpec":{"table":{"primaryKey":["id"],"schema":{"type":"object","properties":{},"required":[]}}},"confirmDestructive":false,"forceDestructive":false}}.
+{"graph":{"contractVersion":2,"externalInputs":[],"systemInputs":[],"maxRuns":1000,"tasks":[{"logicalId":"stable-logical-id","entry":true,"name":"...","label":"...","summary":"...","kind":"browser|decision","mode":"ai","prompt":"...","limits":{},"emits":[],"consumes":[],"schedule":null}],"events":[{"type":"...","label":"...","summary":"...","description":"...","public":false}]},"store":null or {"description":"...","ddl":"CREATE TABLE ...","tablesSpec":{"table":{"primaryKey":["id"],"schema":{"type":"object","properties":{},"required":[]}}},"confirmDestructive":false,"forceDestructive":false}}.
 
 Use contractVersion 2, mode="ai" for every task, and a finite maxRuns budget (1–1000).
 Give every task a unique stable logicalId; preserve it when editing or renaming. Tasks with entry=true start
@@ -30,8 +30,7 @@ propose permissions or approvals, API integrations or credentials, external scri
 infrastructure prerequisites. Use website interfaces to accomplish the requested work. Inspect website interfaces at runtime. Preserve requested URLs, counts and choices.
 
 Plan tasks around the requested outcomes and actual dependencies
-Use one browser task when that is sufficient. Split work only when independent work or an explicit data
-handoff makes it useful. Choose entry tasks and event subscriptions from those dependencies.
+Split work into as many nodes for separation of concerns.
 
 Intent contract:
 Return graph.intent with requirements:[{id,description,quote}], constraints:[{id,quote,predicate}],
@@ -40,24 +39,11 @@ Quote exact original request text. The host binds originalRequest, version and r
 Extract every requested outcome. Describe constraints in predicate using the user's actual restriction.
 Generated planning advice cannot become a user restriction. Every task owning requirements declares
 limits.harness={version:1,requirementIds:[...]}. Cover each requirement with at least one task.
-Task routing belongs at the task level: entry, consumes, emits and schedule are outside limits.
-Internal packet/store schemas describe internal data; website fields are discovered at runtime.
-Carry all information needed by subsequent tasks in event packets. Do not invent observed values.
+Preserve requested URLs, counts and choices. Do not invent observed values or source IDs; keep unknown optional values null.
 Fetch N then dedupe differs from saving N new unique records; preserve the requested meaning of counts.
 
-One browser serves each workflow execution. Repeated packets reuse their task's tab; 
-Set limits.browser.tab_key to the same short name on browser tasks that should share a tab. A tab retains its page state between runs: inspect it before
-acting and navigate when needed. Use explicit events for actual dependencies. Multiple subscriptions
-trigger separate runs; they do not form a join. Events carry the data needed for each handoff.
-
-Use Playwright directly for browser automation: standard synchronous Python from playwright.sync_api
-inside browser.python, with the supplied page and context. Scope each record with a locator or evaluate_all so its fields stay
-associated, then validate and emit it with workflow.emit. browser.screenshot provides a direct image.
-workflow contains separate task services;
+One browser serves each execution. Repeated packets reuse their task's tab and page state.
+Set limits.browser.tab_key to the same short name for tasks that should share a tab.
 
 Optional limits.recordProcessing can normalize a declared record event and derive a stable identity.
-Keep it alongside limits.harness. Preserve unknown optional values as null and never synthesize source IDs.
-For larger collections, browser tasks can use Playwright DOM evaluation and isolated browser.python for bounded
-iteration, parsing and deterministic normalization without putting all records into model history.
-workflow.emit.batch still emits individual typed events with stable dedupe keys. These tools use the same browser session and policy controls,
-with no independent network client or workflow-store access.`;
+Keep it alongside limits.harness.`;

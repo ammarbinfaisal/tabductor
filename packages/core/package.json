@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./prompt-inputs": "./src/prompt-inputs.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json"

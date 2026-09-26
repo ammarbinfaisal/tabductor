@@ -5,7 +5,7 @@ All new customer charges and wallet balances are USD. Money is stored as integer
 ## Deployment
 
 1. Back up the database. Stop application processes during the migration and code rollout. Apply migrations with the normal migration job (`pnpm exec tsx packages/db/src/migrate.ts`), then deploy engine, fleet, and web together. Migrations 0055–0058 add the administration tables, deletion guard, USD markers, immutable legacy ledger history, and model token limits.
-2. Set `ADMIN_ACCOUNT_IDS` to comma-separated **internal account IDs**, available on the signed-in Billing page. Local development uses `acct_local`. The allowlist is enforced on every admin RPC as well as navigation; `/admin` grants no privileges by itself.
+2. Set `ADMIN_ACCOUNT_IDS` to comma-separated internal account IDs (available on the signed-in Billing page) or Clerk user IDs. A Clerk ID may be written as `user_…` or `clerk:user_…`. Local development uses `acct_local`. The allowlist is enforced on every admin RPC as well as navigation; `/admin` grants no privileges by itself.
 3. Set browser, CAPTCHA, and model prices in **Admin → Pricing & costs** before enabling paid work. A missing price refuses new paid usage. Set actual provider costs separately; an empty cost means unknown, not zero.
 4. Configure Paddle and optional summary/proxy credentials below. `.env.example`, Compose, and Helm expose the settings. Helm can use `environment` or the existing external configuration secret. `fleet.usdPerMinute` replaces `fleet.unitsPerMinute`.
 

@@ -4,6 +4,34 @@ import type { Llm } from "./llm.js";
 import { readSdkEvidence } from "@tabductor/compiler";
 import { validatePythonCandidate } from "./python-validation.js";
 
+it("reuses a compiled browser.ai prompt with fresh manual inputs and AI results", async () => {
+  const f = pythonFixture();
+  const llm: Llm = { complete: vi.fn(async () => ({ text: '{"text":"First response"}', toolCalls: [], usage: { in: 1, out: 1 } })) };
+  const source = "answer = browser.ai('Write about $topic using $reply-style', {'type':'object','properties':{'text':{'type':'string'}},'required':['text']})\npage.locator('textarea').fill(answer['text'])\nworkflow.done()";
+  const compiled = "def run(page, context, workflow):\n    try:\n" + source.split("\n").map(line => "        " + line).join("\n") + "\n    except Exception as error:\n        workflow.deopt(reason=str(error))";
+  const first = f.tool({ llm, input: { promptInputs: { topic: "gardening", "reply-style": "friendly" } } });
+  expect(await first.execute({ source })).toMatchObject({ ok: true, terminal: { outcome: "done" } });
+  const evidence = readSdkEvidence({ runId: "inputs", entries: f.entries });
+  const selected = evidence.operations.filter(op => !op.name.startsWith("internal.") && !["playwright.open", "playwright.close"].includes(op.name));
+  const plan = { goal: "write a reply", guards: [], steps: selected.map(op => ({ operationId: op.operationId, why: "required" })), bindings: [], discarded: [], recoveryPrompt: "Inspect" };
+  expect(await validatePythonCandidate(testRunner(), compiled, evidence, plan)).toEqual({ ok: true });
+  expect((await validatePythonCandidate(testRunner(), compiled.replace("fill(answer['text'])", "fill('First response')"), evidence, plan)).ok).toBe(false);
+  vi.mocked(llm.complete).mockResolvedValue({ text: '{"text":"Second response"}', toolCalls: [], usage: { in: 1, out: 1 } });
+  const second = f.tool({ llm, compiled: true, input: { promptInputs: { topic: "astronomy", "reply-style": "formal" } } });
+  expect(await second.execute({ source: compiled })).toMatchObject({ ok: true, terminal: { outcome: "done" } });
+  const prompts = vi.mocked(llm.complete).mock.calls.map(([request]) => JSON.parse(request.messages[0]!.content as string).prompt);
+  expect(prompts).toEqual(["Write about gardening using friendly", "Write about astronomy using formal"]);
+  expect(f.calls.mock.calls.filter(([call]) => call.member === "fill").map(([call]) => call.args)).toEqual([["First response"], ["Second response"]]);
+});
+
+it("rejects missing browser.ai inputs before asking the model", async () => {
+  const f = pythonFixture();
+  const llm: Llm = { complete: vi.fn() };
+  expect(await f.tool({ llm }).execute({ source: "browser.ai('Write about $missing', {'type':'object'})" }))
+    .toMatchObject({ ok: false, error: expect.stringContaining("Missing prompt input: $missing") });
+  expect(llm.complete).not.toHaveBeenCalled();
+});
+
 it("returns schema-validated JSON from browser.ai and records a compilable operation", async () => {
   const f = pythonFixture();
   const runner = testRunner().open!({ runId: "browser-ai", leaseGeneration: 1 });

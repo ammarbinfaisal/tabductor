@@ -277,11 +277,71 @@ class ReusableTabs(unittest.IsolatedAsyncioTestCase):
         self.context.new_page.assert_awaited_once()
         tabs = await worker.list_tabs("tabs", 1, "Bearer fixture-token", "1")
         self.assertEqual([tab["tabKey"] for tab in tabs["tabs"]], ["x", "notion"])
+        self.assertEqual(worker.session.selected_page, second)
+        self.assertEqual(worker.session.pages[second].bring_to_front.await_count, 21)
+        worker.session.pages[second].bring_to_front.reset_mock()
         await worker.select_tab("tabs", worker.SelectTabRequest(generation=1, page_id=second), "Bearer fixture-token", "1")
         worker.session.pages[second].bring_to_front.assert_awaited_once()
         self.assertEqual(worker.session.selected_page, second)
         with self.assertRaises(worker.HTTPException):
             await worker.select_tab("tabs", worker.SelectTabRequest(generation=2, page_id=second), "Bearer fixture-token", "1")
+
+    async def test_replay_follows_each_node_and_keeps_recording_ordinary_python_calls(self):
+        recorder = types.SimpleNamespace(private=AsyncMock())
+        with patch.object(worker, "recorder", recorder):
+            for index, member in enumerate(("evaluate", "fill")):
+                page_id = (await self.acquire(f"node-{index}", f"acquire-{index}"))["value"]["page_id"]
+                page = worker.session.pages[page_id]
+                popup = types.SimpleNamespace(is_closed=lambda: False, bring_to_front=AsyncMock())
+                scope = types.SimpleNamespace(root=page, closed=False, ref=Mock(),
+                    origins={"target": popup}, owns=AsyncMock(return_value=True), start=Mock(return_value="ticket"))
+                worker.session.proxy_scopes = {"cell": scope}
+                await worker.automation("tabs", worker.CommandRequest(generation=1, input_generation=1,
+                    command_id=f"call-{index}", method="start", page_id=page_id,
+                    params={"invocation": "cell", "target": {"id": "target"}, "member": member, "recording_private": False}), "Bearer fixture-token", "1")
+                popup.bring_to_front.assert_awaited_once()
+                self.assertIs(worker.session.pages[worker.session.selected_page], popup)
+                scope.start.assert_called_once()
+            recorder.private.assert_not_awaited()
+
+    async def test_sensitive_input_stops_capture_before_foreground_or_dispatch(self):
+        page_id = (await self.acquire("login", "acquire"))["value"]["page_id"]
+        page = worker.session.pages[page_id]
+        recorder = types.SimpleNamespace(private=AsyncMock())
+        scope = types.SimpleNamespace(root=page, closed=False, ref=Mock(), origins={"target": page},
+            owns=AsyncMock(return_value=True), start=Mock(return_value="ticket"))
+        worker.session.proxy_scopes = {"cell": scope}
+        async def focus():
+            recorder.private.assert_awaited_once()
+            scope.start.assert_not_called()
+        page.bring_to_front = AsyncMock(side_effect=focus)
+        with patch.object(worker, "recorder", recorder):
+            await worker.automation("tabs", worker.CommandRequest(generation=1, input_generation=1,
+                command_id="secret", method="start", page_id=page_id,
+                params={"invocation": "cell", "target": {"id": "target"}, "member": "fill", "recording_private": True}), "Bearer fixture-token", "1")
+        page.bring_to_front.assert_awaited_once()
+        scope.start.assert_called_once()
+
+    async def test_privacy_inspection_resolves_keyword_selectors_and_rejects_unknown_frames(self):
+        page_id = (await self.acquire("login", "acquire"))["value"]["page_id"]
+        page = worker.session.pages[page_id]
+        page.url = "https://fixture.test"
+        locator = type("Locator", (), {})()
+        locator.count = AsyncMock(return_value=1)
+        locator.evaluate = AsyncMock(return_value={"type": "password", "tag": "input", "origin": page.url})
+        locator._impl_obj = types.SimpleNamespace(_selector="#password")
+        target = type("Page", (), {})()
+        target.locator = Mock(return_value=locator)
+        scope = types.SimpleNamespace(root=page, ref=Mock(return_value=target), origins={"target": page})
+        worker.session.proxy_scopes = {"cell": scope}
+        request = worker.CommandRequest(generation=1, input_generation=1, command_id="inspect", method="inspect", page_id=page_id,
+            params={"invocation": "cell", "call": {"target": {"id": "target"}, "args": [], "kwargs": {"selector": "#password"}}})
+        result = await worker.automation("tabs", request, "Bearer fixture-token", "1")
+        target.locator.assert_called_once_with("#password")
+        self.assertEqual(result["value"]["type"], "password")
+        scope.ref.return_value = types.SimpleNamespace()
+        page.evaluate.return_value = {"tag": "iframe", "origin": page.url}
+        self.assertEqual(await worker.automation("tabs", request, "Bearer fixture-token", "1"), {"value": None})
 
 
 class ClipboardPaste(unittest.IsolatedAsyncioTestCase):

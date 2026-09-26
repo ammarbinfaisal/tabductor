@@ -43,6 +43,7 @@ export type CompileOutcome = "ok" | "kind" | "evidence" | "llm" | "plan" | "lint
 export type DeoptTrigger =
   | "runtime_incompatible"
   | "guard_failure"
+  | "planned_ai"
   | "missing_element"
   | "unexpected_dialog"
   | "unexpected_url"

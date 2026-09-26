@@ -1,3 +1,4 @@
+import { PROMPT_INPUT_GUIDANCE } from "@tabductor/core";
 import { asSchema } from "ai";
 import type { AgentTool } from "./tools.js";
 
@@ -26,9 +27,10 @@ Ordinary exceptions retain earlier assignments; syntax errors execute nothing. L
 A new task run or interpreter restart starts a fresh namespace. replReset in a result indicates a restart; recreate variables and reacquire browser objects. Workspace files persist across restarts.
 Use normal Python open/pathlib/json for data in /workspace. Save reusable functions in agent_helpers.py;
 its revisions persist automatically. Helper initialization cannot perform browser/workflow operations.
+${PROMPT_INPUT_GUIDANCE}
 workflow.input contains the current trigger. workflow.emit(type=...,packet=...,dedupeKey=...) and workflow.emit.batch publish events.
 Use workflow.memory.get/set for observed facts and pending work.
-Use browser.ai(prompt, schema_def) for a bounded semantic subtask that must return JSON matching the supplied JSON Schema. Keep the prompt tied to current task input, preserve the exact schema, and treat the recorded result as data that static compilation may retain; it does not perform browser actions.
+Use browser.ai(prompt, schema_def) for a bounded semantic subtask that must return JSON matching the supplied JSON Schema. Keep the prompt tied to current task input, preserve the exact schema, and retain the call and use its fresh response during static execution; it does not perform browser actions.
 Use standard Playwright methods, locators, assertions, events, and argument names. workflow.describe(name='Page.evaluate') can inspect signatures if needed; workflow.describe() lists the separate workflow services.
 Imageless captchas might be solved directly using DOM apis.
 

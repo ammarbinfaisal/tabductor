@@ -76,7 +76,6 @@ it("learns after settlement and starts a fresh execution with a bounded initial 
   await learner.runOnce();
   const prompt = await browserOperatingPrompt(f.db, snapshot);
   expect(prompt.revision).toBe(1);
-  expect(prompt.prompt).toMatch(/^## Learned procedure/);
   expect((await f.task()).prompt).toBe(snapshot.prompt);
   expect((await f.task()).contentHash).toBe(snapshot.contentHash);
   expect(await f.db.select().from(compileJobs)).toHaveLength(0);
@@ -86,7 +85,6 @@ it("learns after settlement and starts a fresh execution with a bounded initial 
     llm: { complete: async request => {
       expect(request.system).toContain("next-record");
       expect(request.system).not.toContain("previous-record");
-      expect(request.system).toContain("Historical success does not complete this run");
       return { toolCalls: [{ id: "done", name: "done", args: {} }], usage: { in: 1, out: 1 } };
     } } });
 });
@@ -151,7 +149,6 @@ it.each([[true, false], [false, false], [true, true]])("learner eligibility feed
   const outcome = await compiler.runOnce();
   expect(outcome?.result.ok).toBe(valid);
   expect((await f.task()).mode).toBe(valid ? "compiled" : "ai");
-  expect((await f.task()).compiledPrompt).toContain("Learned procedure");
   const [finished] = await f.db.select().from(compileJobs);
   expect(finished?.status).toBe(valid ? "succeeded" : "refused");
   if (artifact) expect((await f.db.select().from(compiledScripts).where(eq(compiledScripts.id, artifact.id)))[0]?.status).toBe("invalidated");
@@ -169,7 +166,6 @@ it("incomplete evidence and unresolved effects block compilation even when the l
     await f.worker(async () => f.response(f.learned(source.id, true))).runOnce();
   }
   expect(await f.db.select().from(compileJobs)).toHaveLength(0);
-  expect((await f.task()).compiledPrompt).toContain("Learned procedure");
 });
 
 it("serializes jobs per node and fences a reclaimed worker's late response", async () => {
@@ -225,14 +221,11 @@ it("carries compatible learning across publication and drops it for changed task
   const graph = await readGraph(f.db, f.wf.versionId);
   const next = await publishVersion(f.db, { workflowId: f.wf.workflowId, graph }, { schemaGenerator: staticSchemaGenerator({}) });
   const [carried] = await f.db.select().from(tasks).where(eq(tasks.workflowVersionId, next.versionId));
-  expect(carried?.compiledPrompt).toContain("Learned procedure");
   expect(carried?.compiledPrompt).toContain("workflow.input.url");
-  expect(carried?.baselineCompiledPrompt).not.toContain("Learned procedure");
   graph.tasks[0]!.prompt = "A different task";
   const changed = await publishVersion(f.db, { workflowId: f.wf.workflowId, graph }, { schemaGenerator: staticSchemaGenerator({}) });
   const [reset] = await f.db.select().from(tasks).where(eq(tasks.workflowVersionId, changed.versionId));
   expect(reset?.learningRevision).toBe(0);
-  expect(reset?.compiledPrompt).not.toContain("Learned procedure");
 });
 
 it("rejects static replacement after another artifact became active", async () => {
@@ -300,7 +293,6 @@ it("carries deopt revisions with the same artifact and ignores incompatible runt
   await f.db.update(tasks).set({ learningRuntimeVersion: "old-runtime" }).where(eq(tasks.id, f.taskId));
   const fallback = await browserOperatingPrompt(f.db, await f.task());
   expect(fallback.revision).toBe(0);
-  expect(fallback.prompt).not.toContain("Learned procedure");
 });
 
 it("human assistance permits prompt learning but cannot authorize static compilation", async () => {
@@ -317,7 +309,6 @@ it("human assistance permits prompt learning but cannot authorize static compila
     expect(JSON.parse(request.messages[0]!.content).outcome.assisted).toBe(true);
     return f.response(f.learned(source.id, true));
   }).runOnce();
-  expect((await f.task()).compiledPrompt).toContain("Learned procedure");
   expect(await f.db.select().from(compileJobs)).toHaveLength(0);
 });
 

@@ -115,6 +115,21 @@ const TERMINAL_CODES = new Set([
   "agent_no_progress",
 ]);
 
+function invalidApiCall(name: string, error: z.ZodError): string {
+  const argument = (path: Array<string | number>) => path.map(String).join(".");
+  const detail = error.issues.flatMap(issue => {
+    if (issue.code === "invalid_type" && issue.received === "undefined" && issue.path.length) {
+      return [`missing required argument "${argument(issue.path)}"`];
+    }
+    if (issue.code === "unrecognized_keys") {
+      return issue.keys.map(key => `unexpected argument "${argument([...issue.path, key])}"`);
+    }
+    const prefix = issue.path.length ? `argument "${argument(issue.path)}": ` : "";
+    return [`${prefix}${issue.message.replace(/[.]$/, "")}`];
+  });
+  return `Invalid API call to "${name}": ${detail.join("; ")}.`;
+}
+
 export function defineTool<S extends z.ZodTypeAny>(spec: {
   name: string;
   description: string;
@@ -132,7 +147,7 @@ export function defineTool<S extends z.ZodTypeAny>(spec: {
         return {
           ok: false,
           code: "invalid_arguments", outcomeUncertain: false,
-          error: `invalid arguments for "${spec.name}": ${parsed.error.message}`,
+          error: invalidApiCall(spec.name, parsed.error),
         };
       }
       try {

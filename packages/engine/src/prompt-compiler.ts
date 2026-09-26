@@ -3,7 +3,6 @@ import { canonicalJson } from "@tabductor/core";
 import type { NodeKind } from "./graph.js";
 import { renderIntent, type IntentContract, type HarnessTask } from "./intent-contract.js";
 import type { ChatTransport } from "./schema-generator-llm.js";
-import { ASYNC_EVENT_EXECUTION_CONTRACT } from "./async-execution-contract.js";
 
 /** Deterministic publish-time task instructions. Original intent and task contracts are
  * authoritative; native tool definitions carry parameter schemas at runtime. Unrelated
@@ -79,7 +78,7 @@ export const TOOL_SURFACE: Record<NodeKind, ReadonlyArray<{ name: string; hint: 
 const KIND_ROLE: Record<NodeKind, string> = {
   result: "Generate the final JSON result from the completed workflow execution.",
   browser:
-    "Use Playwright directly in browser.python: standard synchronous Python from playwright.sync_api with the supplied page, context and expect. browser.screenshot captures a direct image. workflow provides separate task services. Explore freely in AI mode. You have no store access; everything you learn leaves this node only as emitted events.",
+    "Use Playwright directly in browser.python: standard synchronous Python from playwright.sync_api with the supplied page, context and expect. browser.screenshot captures a direct image. workflow provides separate task services. You have no store access; everything you learn leaves this node only as emitted events.",
   decision:
     "You perform semantic work: inspect the trigger, query or update the workflow store, and decide what to emit. You have no browser.",
 };
@@ -124,7 +123,6 @@ export function assemblePromptBrief(input: PromptCompileInput): string {
     [
       `# Node "${task.name}" (kind: ${task.kind}) in workflow "${input.workflow.name}"`,
       KIND_ROLE[task.kind],
-      ASYNC_EVENT_EXECUTION_CONTRACT,
       task.schedule
         ? `This node also runs on a schedule (cron "${task.schedule.cron}", ${task.schedule.tz}); a scheduled run arrives with no trigger packet.`
         : "",

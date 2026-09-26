@@ -132,6 +132,8 @@ it("lists task ownership and selects tabs only for the owning account", async ()
   vi.stubGlobal("fetch", rpc);
   const caller = (accountId: string) => createCaller({ db: handle.db, pool: handle.pool, accountId, schemaGenerator: staticSchemaGenerator() });
   const owner = caller(f.accountId);
+  expect((await owner.browserSession.list()).items[0]?.workflowName).toBe("X to Notion");
+  expect((await owner.browserSession.get({ sessionId })).name).toBe("X to Notion");
   expect(await owner.browserSession.tabs({ sessionId })).toEqual([
     { pageId: "p2", title: "Notion database", url: "https://app.notion.com/db", selected: false, tabKey: "notion", runId, taskName: "write" },
   ]);

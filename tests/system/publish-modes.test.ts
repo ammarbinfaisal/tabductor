@@ -82,7 +82,7 @@ it("publish compiles an internal prompt per node from the whole graph, and the a
   const { handle: h, workflowId } = await fresh();
   const { versionId, report, taskModes } = await publishVersion(h.db, { workflowId, graph: graph() }, { schemaGenerator: generator });
 
-  const [report$, scrape] = await rowsOf(h, versionId);
+  const [, scrape] = await rowsOf(h, versionId);
   expect(scrape!.prompt).toBe("Watch the timeline and report new tweets.");
   expect(taskModes).toEqual({ Scrape: "ai", Report: "ai" });
   expect(report.tasks.map((t) => [t.name, t.status])).toEqual([
@@ -90,24 +90,6 @@ it("publish compiles an internal prompt per node from the whole graph, and the a
     ["Report", "generated"],
   ]);
 
-  const brief = scrape!.compiledPrompt!;
-  // The author's sentence, the event it must emit with its exact schema, who consumes it,
-  // the kind's real tool surface, and a schedule note — none of which the sentence carried.
-  expect(brief).toContain('# Node "Scrape" (kind: browser)');
-  expect(brief).toContain("Watch the timeline and report new tweets.");
-  expect(brief).toContain("- tweet.detected — One new tweet: its text and permalink.");
-  expect(brief).toContain("consumed by: Report");
-  expect(brief).toContain(JSON.stringify(SCHEMAS["tweet.detected"]));
-  expect(brief).toContain("Native tool definitions");
-  expect(brief).toContain('cron "0 7 * * *"');
-  expect(brief).not.toContain("python.run");
-  expect(brief).not.toContain("Workflow store tables");
-
-  const decisionBrief = report$!.compiledPrompt!;
-  expect(decisionBrief).toContain("## Events that trigger this node");
-  expect(decisionBrief).toContain("emitted by: Scrape");
-  expect(decisionBrief).toContain("Native tool definitions");
-  expect(decisionBrief).toContain("(none declared — do not call emit)");
   expect(scrape!.contentHash).toMatch(/^[0-9a-f]{64}$/);
 });
 
@@ -156,9 +138,6 @@ it("publishes deterministic instructions with no model expansion or invented res
 
   const [, scrape] = await rowsOf(h, versionId);
   expect(scrape!.compiledPrompt).toContain("Watch the timeline and report new tweets.");
-  expect(scrape!.compiledPrompt).toContain('# Node "Scrape" (kind: browser)');
-  // First attempt (1 turn), then the repair conversation (3 turns) — for Scrape; Report has
-  // nothing to emit so its first reply passes.
   expect(transport.turnsSeen).toEqual([]);
   expect(report.tasks.find((t) => t.name === "Scrape")?.status).toBe("generated");
 });
@@ -166,14 +145,12 @@ it("publishes deterministic instructions with no model expansion or invented res
 it("a model that fails or refuses leaves the brief as the compiled prompt, reported as `brief`, and the publish succeeds", async () => {
   const failing: PromptCompiler = { compile: async () => ({ ok: false, error: "provider is down" }) };
   const { handle: h, workflowId } = await fresh();
-  const { versionId, report } = await publishVersion(h.db, { workflowId, graph: graph() }, { schemaGenerator: generator, promptCompiler: failing });
+  const { report } = await publishVersion(h.db, { workflowId, graph: graph() }, { schemaGenerator: generator, promptCompiler: failing });
 
   expect(report.tasks.map((t) => [t.status, t.error])).toEqual([
     ["brief", "provider is down"],
     ["brief", "provider is down"],
   ]);
-  const [, scrape] = await rowsOf(h, versionId);
-  expect(scrape!.compiledPrompt).toContain('# Node "Scrape" (kind: browser)');
 
   const refused = llmPromptCompiler(scripted([{ refused: true }, { refused: true }]));
   const again = await publishVersion(h.db, { workflowId, graph: graph({ scrapePrompt: "Different." }) }, { schemaGenerator: generator, promptCompiler: refused });

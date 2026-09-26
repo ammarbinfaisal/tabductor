@@ -1,8 +1,8 @@
 import type { StorageFlags, TraceRecorder } from "@tabductor/browser";
 import { AppError } from "@tabductor/core";
-import { workflowVersions, workflows, type Db, type TaskRow } from "@tabductor/db";
+import { events, workflowVersions, workflows, type Db, type TaskRow } from "@tabductor/db";
 import { assertRunLease, readEventSchemas, type RunHandle, type RunResult } from "@tabductor/engine";
-import { eq } from "drizzle-orm";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import type { AgentLoopResult, TriggerInfo } from "./loop.js";
 import type { EmitFn, EmitOutcome } from "./tools.js";
 
@@ -46,7 +46,14 @@ export async function triggerInfoOf(db: Db, handle: RunHandle): Promise<TriggerI
   // One `event_defs` row per (workflow_version_id, event_type) — the run's *pinned* version,
   // exactly like every other schema lookup in this codebase (packet-schema.ts's own query).
   const schemas = await readEventSchemas(db, handle.task.workflowVersionId);
-  return { type: handle.trigger.type, packet: handle.trigger.packet, schema: schemas[handle.trigger.type] ?? {} };
+  // Root manual events persist the invocation inputs. Read by execution (never latest
+  // workflow run), so downstream packets and retries keep the same values.
+  const [root] = handle.run.executionId ? await db.select({ packet: events.packet }).from(events)
+    .where(and(eq(events.executionId, handle.run.executionId), eq(events.type, "manual.trigger"), isNull(events.sourceRunId)))
+    .orderBy(asc(events.occurredAt), asc(events.eventId)).limit(1) : [];
+  const promptInputs = asRecord(asRecord(root?.packet)?.promptInputs);
+  const packet = promptInputs ? { ...asRecord(handle.trigger.packet), promptInputs } : handle.trigger.packet;
+  return { type: handle.trigger.type, packet, schema: schemas[handle.trigger.type] ?? {} };
 }
 
 /**

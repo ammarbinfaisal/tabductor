@@ -6,6 +6,9 @@ import {
   browserRecordingSegments,
   browserSessionActivity,
   browserSessions,
+  browserProfiles,
+  workflowExecutions,
+  workflows,
   type BrowserInputOwner,
   type BrowserRecordingSegmentStatus,
   type BrowserRecordingStatus,
@@ -392,11 +395,16 @@ export async function getBrowserSessionPlayback(
   input: { accountId: string; sessionId: string },
 ) {
   const session = await ownedSession(db, input.accountId, input.sessionId);
+  const [names] = await db.select({ workflowName: workflows.name, profileName: browserProfiles.name }).from(browserSessions)
+    .leftJoin(workflowExecutions, eq(workflowExecutions.id, browserSessions.executionId))
+    .leftJoin(workflows, eq(workflows.id, workflowExecutions.workflowId))
+    .leftJoin(browserProfiles, eq(browserProfiles.id, browserSessions.profileId))
+    .where(eq(browserSessions.id, input.sessionId));
   const segments = await db.select().from(browserRecordingSegments)
     .where(eq(browserRecordingSegments.sessionId, input.sessionId))
     .orderBy(asc(browserRecordingSegments.sequence));
   const [blockingSession] = session.status === "queued" ? await db.select({ id: browserSessions.id })
     .from(browserProfileLeases).innerJoin(browserSessions, eq(browserSessions.id, browserProfileLeases.sessionId))
     .where(and(eq(browserProfileLeases.profileId, session.profileId), eq(browserSessions.accountId, input.accountId))) : [];
-  return { session, segments, waitingForSessionId: blockingSession?.id ?? null };
+  return { session, segments, name: names?.workflowName ?? names?.profileName ?? "Browser session", waitingForSessionId: blockingSession?.id ?? null };
 }

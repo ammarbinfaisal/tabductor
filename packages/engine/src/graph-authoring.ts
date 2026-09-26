@@ -1,3 +1,4 @@
+import { promptInputNames } from "@tabductor/core";
 import type { Pool } from "pg";
 import { Ajv } from "ajv";
 import { compileReports, proposedGrants, type Db } from "@tabductor/db";
@@ -461,6 +462,10 @@ export function llmGraphCompiler(transport: ChatTransport, opts: { pool?: Pool; 
             ...parsed,
             graph: withWorkflowResult(parsed.graph, input.intent, input.resultSchema),
           };
+          const declaredInputs = promptInputNames(input.intent);
+          const taskInputs = promptInputNames(...artifact.graph.tasks.filter(task => task.kind !== "result").map(task => task.prompt));
+          const missingInputs = declaredInputs.filter(name => !taskInputs.includes(name));
+          if (missingInputs.length) throw new Error(`Preserve prompt input references in the relevant operating tasks: ${missingInputs.map(name => "$" + name).join(", ")}`);
           const gated = await gateGraphDraft(artifact, { ...(input.gateContext ?? {}), ...(opts.pool ? { pool: opts.pool } : {}) });
           lastChecks = gated.checks;
           const failures = lastChecks.filter((check) => check.status === "fail");

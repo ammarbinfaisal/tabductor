@@ -1,6 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
 import { createCamoufoxWorkerDriver } from "./camoufox-worker-driver.js";
 
+it.each([false, true])("passes host recording privacy classification (%s) to the worker", async recordingPrivate => {
+  const fetch = vi.fn(async (_url, init) => {
+    const command = JSON.parse(String(init.body));
+    if (command.method === "page.create") return Response.json({ value: { page_id: "root" } });
+    if (command.method === "start") {
+      expect(command.params.recording_private).toBe(recordingPrivate);
+      return Response.json({ value: { ticket: "job" } });
+    }
+    return Response.json({ value: { pending: false, events: [], result: { ok: true, value: null } } });
+  });
+  const conn = await createCamoufoxWorkerDriver({ token: "fixture", sessionId: "s", generation: 1, fetch: fetch as typeof globalThis.fetch }).connect("http://worker");
+  try {
+    const page = await conn.createPage();
+    await page.proxy!({ command: "call", call: { target: { id: "page", class: "Page", scope: "cell" }, member: "evaluate", args: ["() => document.title"], kwargs: {} } }, { invocation: "cell", recordingPrivate });
+    expect(fetch.mock.calls.filter(([, init]) => JSON.parse(String(init.body)).method === "start")).toHaveLength(1);
+  } finally { await conn.close(); }
+});
+
 it.each([
   { detail: { code: "browser_invocation_expired", message: "Start a fresh cell", outcomeUncertain: false }, code: "browser_invocation_expired", uncertain: false },
   { detail: { code: "browser_invocation_expired", message: "Inspect prior effects", outcomeUncertain: true }, code: "browser_invocation_expired", uncertain: true },

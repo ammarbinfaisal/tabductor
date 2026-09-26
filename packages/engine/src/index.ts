@@ -2,7 +2,6 @@ export { createEngine, type Engine, type EngineDeps } from "./engine.js";
 export { assertRunLease } from "./run-lease.js";
 export { settleWorkflowExecutions } from "./execution-state.js";
 export { RUN_BUDGET_EXCEEDED } from "./execution-budget.js";
-export { ASYNC_EVENT_EXECUTION_CONTRACT } from "./async-execution-contract.js";
 export {
   claimBrowserAllocation,
   createBrowserProfile,

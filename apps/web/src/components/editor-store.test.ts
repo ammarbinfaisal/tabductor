@@ -59,6 +59,45 @@ const automationGraph: Graph = {
   events: [],
 };
 
+it("requires prompt inputs and sends fresh values for each manual run", async () => {
+  const graph = { ...automationGraph, automationPrompt: "Write about $topic" };
+  const store = createEditorStore({ workflowId: "wf", versionId: "v1", graph, tasks: [], eventSchemas: {} });
+  await store.triggerWorkflow();
+  expect(api.workflow.trigger.mutate).not.toHaveBeenCalled();
+  expect(store.getState().error?.message).toContain("$topic");
+  vi.mocked(api.workflow.trigger.mutate).mockResolvedValue({ workflowId: "wf", executionId: "exec", accepted: 0, runs: [] });
+  store.setPromptInput("topic", "gardening");
+  await store.triggerWorkflow();
+  expect(api.workflow.trigger.mutate).toHaveBeenLastCalledWith({ workflowId: "wf", requestId: expect.any(String), inputs: { topic: "gardening" } });
+  const firstId = vi.mocked(api.workflow.trigger.mutate).mock.calls[0]![0].requestId;
+  store.setPromptInput("topic", "astronomy");
+  await store.triggerWorkflow();
+  expect(api.workflow.trigger.mutate).toHaveBeenLastCalledWith({ workflowId: "wf", requestId: expect.any(String), inputs: { topic: "astronomy" } });
+  expect(vi.mocked(api.workflow.trigger.mutate).mock.calls[1]![0].requestId).not.toBe(firstId);
+});
+
+it("restores inputs with uncertain trigger retries and changes the key when inputs change", async () => {
+  const storage = new Map<string, string>();
+  vi.stubGlobal("sessionStorage", {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+    removeItem: (key: string) => storage.delete(key),
+  });
+  const init = { workflowId: "wf", versionId: "v1", graph: { ...automationGraph, automationPrompt: "$topic" }, tasks: [], eventSchemas: {} };
+  const store = createEditorStore(init);
+  store.setPromptInput("topic", "gardening");
+  vi.mocked(api.workflow.trigger.mutate).mockRejectedValue(new Error("Connection interrupted"));
+  await store.triggerWorkflow();
+  const reloaded = createEditorStore(init);
+  reloaded.restorePromptInputs();
+  expect(reloaded.getState().promptInputs).toEqual({ topic: "gardening" });
+  await reloaded.triggerWorkflow();
+  expect(vi.mocked(api.workflow.trigger.mutate).mock.calls[1]![0]).toEqual(vi.mocked(api.workflow.trigger.mutate).mock.calls[0]![0]);
+  reloaded.setPromptInput("topic", "astronomy");
+  await reloaded.triggerWorkflow();
+  expect(vi.mocked(api.workflow.trigger.mutate).mock.calls[2]![0].requestId).not.toBe(vi.mocked(api.workflow.trigger.mutate).mock.calls[0]![0].requestId);
+});
+
 function mockPublication(graph: Graph) {
   vi.mocked(api.workflow.publishVersion.mutate).mockResolvedValue({ versionId: "v2", taskIds: {}, taskModes: {}, report: { events: [], tasks: [] } });
   vi.mocked(api.workflow.get.query).mockResolvedValue({

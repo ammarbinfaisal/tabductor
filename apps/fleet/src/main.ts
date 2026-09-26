@@ -6,7 +6,7 @@ import { configuredBlobStore } from "@tabductor/browser";
 import { encryptEnvelope, configuredKeyWrapper, withEnvelope, type EncryptedEnvelope } from "@tabductor/secrets";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { claimBrowserAllocation, failBrowserAllocation, fulfillBrowserAllocation, endBrowserSession, browserWorkerToken,
-  browserCreditAdmission, settleBrowserUsage, acknowledgeBrowserPause, acknowledgeBrowserResume, requestBrowserTakeover, expireBrowserTakeovers, stopBrowserSession, stopFinishedExecutionBrowsers, appendBrowserRecordingSegment, expireBrowserRecordings } from "@tabductor/engine";
+  browserCreditAdmission, settleBrowserUsage, acknowledgeBrowserPause, acknowledgeBrowserResume, requestBrowserTakeover, expireBrowserTakeovers, stopBrowserSession, stopFinishedExecutionBrowsers, appendBrowserRecordingSegment, finishBrowserRecording, expireBrowserRecordings } from "@tabductor/engine";
 
 const config = loadConfig();
 const namespace = process.env.BROWSER_NAMESPACE ?? "tabductor-staging";
@@ -165,6 +165,8 @@ async function reconcile(): Promise<void> {
             const [lease] = await trx.select().from(browserProfileLeases).where(and(eq(browserProfileLeases.sessionId, session.id), eq(browserProfileLeases.generation, session.generation))).for("update");
             if (!lease) throw new Error("profile ownership ended before snapshot publication");
             await trx.update(browserProfiles).set({ snapshotBlobRef: ref, pendingAuthEnvelope: null, snapshotGeneration: sql`${browserProfiles.snapshotGeneration} + 1`, updatedAt: sql`now()` }).where(eq(browserProfiles.id, session.profileId));
+            const [recording] = await trx.select({ status: browserSessions.recordingStatus }).from(browserSessions).where(eq(browserSessions.id, session.id));
+            if (recording?.status === "recording") await finishBrowserRecording(trx, { sessionId: session.id, generation: session.generation, status: "complete" });
             await endBrowserSession(trx, session.id);
           });
           await settleBrowserUsage(handle.db, session.id);

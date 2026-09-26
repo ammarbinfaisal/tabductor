@@ -42,6 +42,8 @@ describe("workflow control MCP", () => {
       expect(control.publish).toHaveBeenCalledWith({ prompt: "Check portals", resultSchema: { type: "object" } });
       expect(control.update).toHaveBeenCalledWith({ workflowId: "wf_1", prompt: "Check portals and escalate failures" });
       expect(control.trigger).toHaveBeenCalledWith({ workflowId: "wf_1" });
+      await client.callTool({ name: "workflow_trigger", arguments: { workflow_id: "wf_1", inputs: { "reply-style": "friendly" } } });
+      expect(control.trigger).toHaveBeenLastCalledWith({ workflowId: "wf_1", inputs: { "reply-style": "friendly" } });
       expect(control.schedule).toHaveBeenCalledWith({ workflowId: "wf_1", cron: "0 7 * * *", timezone: "Asia/Kolkata", enabled: true });
     } finally {
       await client.close();

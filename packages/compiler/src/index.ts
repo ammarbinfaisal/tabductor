@@ -53,4 +53,12 @@ export { lintScript, LINT_RULES, type LintResult, type LintRule, type LintViolat
 export { loadRunTraces, previousCleanAiRunIds } from "./traces.js";
 
 export { validateSdkCandidate, lintSdkScript } from "./sdk-validate.js";
-export { readSdkEvidence, checkSdkPlan, sdkPlanSchema, type SdkPlan, type SdkEvidence } from "./sdk-evidence.js";
+export {
+  readSdkEvidence,
+  checkSdkPlan,
+  isPlannedDeopt,
+  sdkPlanSchema,
+  PLANNED_DEOPT_EVIDENCE_KEY,
+  type SdkPlan,
+  type SdkEvidence,
+} from "./sdk-evidence.js";

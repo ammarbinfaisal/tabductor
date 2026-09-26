@@ -67,6 +67,13 @@ The **Automation** tab accepts a finished prompt or helps write one through chat
 draft, review its behavior, publish, and run it. **Graph** is a separate local-only tab;
 hosted deployments show Automation and Activity.
 
+Use `$variable-name` in a workflow prompt to request text input for each manual run. For
+example: “Open the editor and write a post about $topic using $writing-style.” After
+publishing, fill in **Inputs for this run** and choose **Run workflow**. Repeated references
+share one value; names support letters, digits, underscores and hyphens, starting with a
+letter or underscore. Use `$$` for a literal dollar sign; prices such as `$20` stay literal.
+See [prompt inputs](docs/prompt-inputs.md) for API and compiled-runtime examples.
+
 Compose starts Postgres, MinIO, one-shot migrations, the engine, and the Next.js control plane.
 After signing in, open **Models**, save your provider key, and select a model under
 **Use your own key**. This account selection enables chat, workflow compilation, and AI tasks.

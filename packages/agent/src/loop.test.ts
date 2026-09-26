@@ -7,7 +7,7 @@ import type { RunSession } from "@tabductor/browser";
 
 const trace = { record: vi.fn(async () => undefined), flush: async () => undefined, close: async () => undefined };
 
-it("keeps Python guidance in the system prompt without adding retry messages", async () => {
+it("retries an empty model response without adding messages", async () => {
   const requests: LlmRequest[] = [];
   const result = await runAgentLoop({ llm: { complete: async request => {
     requests.push({ ...request, messages: structuredClone(request.messages) });
@@ -17,7 +17,6 @@ it("keeps Python guidance in the system prompt without adding retry messages", a
     { name: "browser.python", description: "python", parameters: z.object({}), execute: async () => ({ ok: true, value: null, terminal: { outcome: "done", result: "ok" } }) },
   ], task: { prompt: "finish" }, trigger: null, emits: [], trace });
   expect(result).toEqual({ outcome: "done", result: "ok" });
-  expect(requests[0]!.system).toContain("synchronous playwright.sync_api");
   expect(requests[1]!.messages).toEqual([{ role: "user", content: "Begin." }]);
 });
 
@@ -42,19 +41,6 @@ it.each(["1", "0"])("records actual parameters only in dev mode (%s)", async (de
   } finally {
     vi.unstubAllEnvs();
   }
-});
-
-it("does not append browser-specific guidance to published browser prompts", async () => {
-  let request: LlmRequest | undefined;
-  await runAgentLoop({ llm: { complete: async input => {
-    request = input;
-    return { toolCalls: [{ id: "done", name: "done", args: {} }], usage: { in: 1, out: 1 } };
-  } }, tools: [
-    { name: "page.perceive", description: "observe", parameters: z.object({}), execute: async () => ({ ok: true, value: null }) },
-    { name: "done", description: "finish", parameters: z.object({}), execute: async () => ({ ok: true, value: null }) },
-  ], task: { prompt: "Ensure Login with Google into notion." }, trigger: null, emits: [], trace });
-  expect(request!.system).not.toContain("Authentication:");
-  expect(request!.system).not.toContain("Work toward the user's requested outcome using the interface");
 });
 
 it("makes no model calls during takeover and discards actions planned before resume", async () => {

@@ -3,7 +3,7 @@ import { workflowDeletions, workflows, type Db } from "@tabductor/db";
 import type { BlobStore } from "@tabductor/browser";
 import { deprovision } from "@tabductor/store";
 import type { Pool } from "pg";
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, ne, sql, type SQL } from "drizzle-orm";
 import { audit } from "./billing-prices.js";
 import { stopBrowserSession } from "./browser-session-control.js";
 
@@ -20,6 +20,23 @@ export async function requestWorkflowDeletion(db:Db,accountId:string,workflowId:
   });
 }
 const refsIn=(value:unknown)=>[...new Set(JSON.stringify(value).match(/sha256:[0-9a-f]{64}/g)??[])];
+const blobRefPattern="(sha256:[0-9a-f]{64})";
+
+/**
+ * Extract references in Postgres instead of returning every source row to Node and
+ * stringifying it there. Trace payloads can be several gigabytes even for a modest number
+ * of runs; materialising those rows in the engine made one deletion consume the whole V8
+ * heap. The result of this query is bounded by the number of distinct content hashes.
+ */
+async function storedRefs(db:Db,documents:SQL):Promise<string[]> {
+  const result=await db.execute<{ref:string}>(sql`
+    select distinct found.parts[1] as ref
+    from (${documents}) documents
+    cross join lateral regexp_matches(documents.data, ${blobRefPattern}, 'g') as found(parts)
+  `);
+  return result.rows.map(row=>row.ref);
+}
+
 async function expandRefs(blobs:BlobStore,roots:string[]){
   const seen=new Set<string>(),queue=[...roots];
   for(let i=0;i<queue.length;i++){
@@ -61,12 +78,12 @@ export async function processWorkflowDeletion(db:Db,pool:Pool,blobs:BlobStore){
       if(pending.rows.length||sessions.rows.some(s=>!["ended","failed"].includes(s.status))){
         await trx.update(workflowDeletions).set({status:"settling",error:"Waiting for browser shutdown and outstanding charges to settle.",updatedAt:new Date()}).where(eq(workflowDeletions.workflowId,id));return;
       }
-      const inventory=await trx.execute(sql`select to_jsonb(t) as data from trace_entries t where run_id in (${runIds}) union all
-        select to_jsonb(a) from artifacts a where run_id in (${runIds}) union all
-        select to_jsonb(s) from task_state s where task_id in (${taskIds}) union all
-        select to_jsonb(c) from compiled_scripts c where task_id in (${taskIds}) union all
-        select to_jsonb(r) from browser_recording_segments r where session_id in (${sessionIds})`);
-      const blobRefs=await expandRefs(blobs,refsIn(inventory.rows));
+      const roots=await storedRefs(trx,sql`select to_jsonb(t)::text as data from trace_entries t where run_id in (${runIds}) union all
+        select to_jsonb(a)::text from artifacts a where run_id in (${runIds}) union all
+        select to_jsonb(s)::text from task_state s where task_id in (${taskIds}) union all
+        select to_jsonb(c)::text from compiled_scripts c where task_id in (${taskIds}) union all
+        select to_jsonb(r)::text from browser_recording_segments r where session_id in (${sessionIds})`);
+      const blobRefs=await expandRefs(blobs,roots);
       // Operational receipts may be deleted only after their financial facts are retained.
       const receipts=await trx.execute(sql`select reservation_id,to_jsonb(b) as data from browser_billing b where session_id in (${sessionIds})
           union all select reservation_id,to_jsonb(c)-'solution_json' from captcha_jobs c where run_id in (${runIds})
@@ -96,12 +113,14 @@ export async function processWorkflowDeletion(db:Db,pool:Pool,blobs:BlobStore){
     if(current?.status!=="blobs")return;
     if(current.blobRefs.length&&!blobs.remove)throw new Error("Blob storage does not support permanent deletion");
     // Content hashes can be shared. Traverse remaining manifests before removing objects.
-    const remaining=await db.execute(sql`select to_jsonb(t) as data from trace_entries t where blob_ref is not null or payload_json::text like '%sha256:%'
-      union all select to_jsonb(a) from artifacts a union all select to_jsonb(s) from task_state s
-      union all select to_jsonb(c) from compiled_scripts c union all select to_jsonb(p) from browser_profiles p
-      union all select to_jsonb(r) from browser_recording_segments r`);
-    const shared=new Set(await expandRefs(blobs,refsIn(remaining.rows)));
-    for(const ref of current.blobRefs)if(!shared.has(ref))await blobs.remove?.(ref);
+    if(current.blobRefs.length){
+      const roots=await storedRefs(db,sql`select to_jsonb(t)::text as data from trace_entries t where blob_ref is not null or payload_json::text like '%sha256:%'
+        union all select to_jsonb(a)::text from artifacts a union all select to_jsonb(s)::text from task_state s
+        union all select to_jsonb(c)::text from compiled_scripts c union all select to_jsonb(p)::text from browser_profiles p
+        union all select to_jsonb(r)::text from browser_recording_segments r`);
+      const shared=new Set(await expandRefs(blobs,roots));
+      for(const ref of current.blobRefs)if(!shared.has(ref))await blobs.remove?.(ref);
+    }
     await db.update(workflowDeletions).set({status:"deleted",blobRefs:[],error:null,updatedAt:new Date()}).where(eq(workflowDeletions.workflowId,job.workflowId));
   }catch(error){await db.update(workflowDeletions).set({error:error instanceof Error?error.message:"Deletion failed",updatedAt:new Date()}).where(eq(workflowDeletions.workflowId,job.workflowId));}
 }

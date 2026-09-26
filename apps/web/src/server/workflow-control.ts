@@ -1,5 +1,5 @@
 import { recordProgress } from "@tabductor/engine";
-import { AppError } from "@tabductor/core";
+import { AppError, promptInputsSchema, workflowPromptInputNames } from "@tabductor/core";
 import { workflows, workflowTriggerRequests, workflowExecutions, runs } from "@tabductor/db";
 import { and, eq } from "drizzle-orm";
 import {
@@ -19,6 +19,7 @@ import { requireWorkflowOwner } from "./trpc.js";
 export type WorkflowTriggerInput = {
   workflowId: string;
   requestId?: string;
+  inputs?: Record<string, string>;
 };
 
 export type WorkflowScheduleInput = {
@@ -69,6 +70,16 @@ export async function triggerWorkflow(ctx: Context, input: WorkflowTriggerInput)
       readGraph(trx, versionId),
       listVersionTasks(trx, versionId),
     ]);
+    const parsed = promptInputsSchema.safeParse(input.inputs ?? {});
+    if (!parsed.success) throw new AppError("prompt_inputs_invalid", parsed.error.message);
+    const names = workflowPromptInputNames(graph);
+    const missing = names.filter(name => !Object.hasOwn(parsed.data, name));
+    const unknown = Object.keys(parsed.data).filter(name => !names.includes(name));
+    if (missing.length || unknown.length) throw new AppError("prompt_inputs_invalid", [
+      missing.length ? `Missing prompt inputs: ${missing.map(name => "$" + name).join(", ")}` : "",
+      unknown.length ? `Unknown prompt inputs: ${unknown.join(", ")}` : "",
+    ].filter(Boolean).join(". "));
+    const packet = names.length ? { promptInputs: parsed.data } : {};
     const entries = new Set(workflowEntryNames(graph));
     const taskIds = tasks.filter((task) => entries.has(task.name)).map((task) => task.id);
     if (taskIds.length === 0) {
@@ -83,7 +94,7 @@ export async function triggerWorkflow(ctx: Context, input: WorkflowTriggerInput)
       ...(graph.maxRuns ? { maxRuns: graph.maxRuns } : {}),
     });
     const runs: Awaited<ReturnType<typeof triggerTask>>[] = [];
-    for (const taskId of taskIds) runs.push(await triggerTask(trx, { taskId, executionId }));
+    for (const taskId of taskIds) runs.push(await triggerTask(trx, { taskId, executionId, packet }));
     const result = {
       workflowId: input.workflowId,
       executionId,

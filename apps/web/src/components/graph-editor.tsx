@@ -1,5 +1,7 @@
 "use client";
 
+import { workflowPromptInputNames } from "@tabductor/core/prompt-inputs";
+
 import type {
   Graph,
   PersistedGraphCompileReport,
@@ -8,6 +10,7 @@ import type {
 } from "@tabductor/engine";
 import Link from "next/link";
 import { resultSchemaTextOf } from "../lib/result-schema.js";
+import { useMountHook } from "../lib/use-mount-hook.js";
 import { useStoreBridge } from "../lib/store.js";
 import {
   createEditorStore,
@@ -17,6 +20,7 @@ import {
 } from "./editor-store.js";
 import { SectionLabel } from "./primitives.js";
 import { WorkflowWorkspace } from "./workflow-workspace.js";
+import { WorkflowName } from "./workflow-name.js";
 
 /** Graph, packet traces and conversational changes share one workflow document. */
 let store: EditorStore | undefined;
@@ -59,11 +63,11 @@ export function GraphEditor(props: {
   return (
     <>
       <div className="row row--between editor-header">
-        <span>
+        <div>
           <span className="section-label">
             <Link href="/workflows">Workflows</Link> /
           </span>
-          <h1 style={{ display: "inline", marginLeft: "var(--space-2)" }}>{props.workflowName}</h1>
+          <WorkflowName workflowId={props.workflowId} name={props.workflowName} />
           <span className="section-label" style={{ marginLeft: "var(--space-3)" }}>
             {state.versionId
               ? state.dirty || promptChanged || schemaChanged
@@ -71,16 +75,13 @@ export function GraphEditor(props: {
                 : "Published"
               : "draft · never published"}
           </span>
-        </span>
+        </div>
         <span className="row" style={{ flexDirection: "column", alignItems: "flex-end", gap: "var(--space-1)" }}>
           <span className="row">
             <button
               className="btn--primary"
-              onClick={() => void s.triggerWorkflow().then(result => {
-                if (!result) return;
-                const runId = result.runs.find(run => run.runId)?.runId;
-                window.location.assign(runId ? `/workflows/${state.workflowId}/runs/${runId}` : `/workflows/${state.workflowId}/runs`);
-              })}
+              type="submit"
+              form="workflow-trigger-form"
               disabled={state.busy || operationReason !== null}
               title={operationReason ?? "Start the published workflow now"}
             >
@@ -106,6 +107,8 @@ export function GraphEditor(props: {
         </span>
       </div>
 
+      <WorkflowTriggerForm key={state.workflowId} store={s} state={state} disabled={state.busy || operationReason !== null} />
+
       {state.error ? (
         <div className="banner banner--error">
           {state.error.message}
@@ -126,6 +129,7 @@ export function GraphEditor(props: {
           <label className="field"><span>Workflow prompt</span><textarea value={state.automationPrompt} disabled={state.busy} maxLength={20000}
             placeholder="Open X, collect 100 unique tweets from my For You timeline, and add them to my Notion database at… Skip tweets already saved and verify each new entry."
             onChange={(event) => s.setAutomationPrompt(event.target.value)} /></label>
+          <p className="muted">Use $variable-name for an input you supply each time you run the workflow, for example “Write a reply using $reply-instructions”. Use $$ for a literal dollar sign.</p>
           <details className="advanced-options"><summary>Result schema <span className="muted">Optional</span></summary>
           <label className="field"><span>Result schema (JSON Schema draft-07)</span>
             <textarea className="mono" rows={7} disabled={state.busy} value={state.resultSchemaText}
@@ -271,5 +275,30 @@ function WorkflowSchedule({
         </div>
       </div>
     </section>
+  );
+}
+
+function WorkflowTriggerForm({ store, state, disabled }: { store: EditorStore; state: EditorState; disabled: boolean }) {
+  useMountHook(() => store.restorePromptInputs());
+  const inputNames = workflowPromptInputNames(state.graph);
+  return (
+    <form id="workflow-trigger-form" onSubmit={(event) => {
+      event.preventDefault();
+      void store.triggerWorkflow().then(result => {
+        if (!result) return;
+        const runId = result.runs.find(run => run.runId)?.runId;
+        window.location.assign(runId ? `/workflows/${state.workflowId}/runs/${runId}` : `/workflows/${state.workflowId}/runs`);
+      });
+      }}>
+      {inputNames.length > 0 ? <section className="automation-brief" aria-labelledby="prompt-inputs-heading">
+        <h2 id="prompt-inputs-heading">Inputs for this run</h2>
+        <p className="muted">Supply a value for each variable, then run the workflow.</p>
+        {inputNames.map(name => <label className="field" key={name}>
+          <span>${name}</span>
+          <textarea required rows={2} maxLength={20000} disabled={disabled}
+            value={state.promptInputs[name] ?? ""} onChange={event => store.setPromptInput(name, event.target.value)} />
+        </label>)}
+      </section> : null}
+    </form>
   );
 }

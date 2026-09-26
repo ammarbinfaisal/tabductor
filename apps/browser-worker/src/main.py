@@ -571,12 +571,18 @@ async def command(
             current.tab_slots[key] = page_id
         if current.observations:
             current.observations.dialog_seen.discard(page_id)
+        # A session records the browser screen, so each node's leased tab must be visible.
+        await page.bring_to_front()
+        current.selected_page = page_id
         return {"value": {"page_id": page_id, "url": page.url}}
     if request.method == "page.create":
         if len(current.context.pages) >= 16:
             raise HTTPException(429, "session tab budget exhausted")
         page = await current.context.new_page()
-        return {"value": {"page_id": current.add_page(page)}}
+        page_id = current.add_page(page)
+        await page.bring_to_front()
+        current.selected_page = page_id
+        return {"value": {"page_id": page_id}}
 
     page = require_page(current, request.page_id)
     if request.method == "page.goto":
@@ -834,9 +840,21 @@ async def automation(session_id: str, request: CommandRequest, authorization: st
                 if len(current.commands) >= 10000:
                     raise HTTPException(429, "session command budget exhausted")
                 current.commands.add(request.command_id)
-                # Broad evaluation and user input may contain credentials.
-                if recorder and args.get("member") in ("evaluate", "evaluate_handle", "fill", "type", "press_sequentially", "insert_text", "set_input_files"):
+                # The trusted host classifies secret/password input before dispatch.
+                # Routine evaluation and public form input must not end the replay.
+                # Older hosts without classification keep the conservative behavior.
+                private = args.get("recording_private", args.get("member") in (
+                    "evaluate", "evaluate_handle", "fill", "type", "press_sequentially", "insert_text", "set_input_files"))
+                if recorder and private:
                     await recorder.private()
+                target = args["target"]
+                scope.ref(target)
+                page = scope.origins[target["id"]]
+                if not await scope.owns(page):
+                    raise HTTPException(403, "target belongs to another browser node")
+                if not page.is_closed():
+                    await page.bring_to_front()
+                    current.selected_page = current.add_page(page)
                 return {"value": {"ticket": scope.start(args, request.command_id)}}
         if request.method == "expect":
             target = scope.ref(args["target"])
@@ -850,8 +868,10 @@ async def automation(session_id: str, request: CommandRequest, authorization: st
             target = scope.ref(target_ref)
             page = scope.origins[target_ref["id"]]
             call = args.get("call") or {}
-            if type(target).__name__ in ("Page", "Frame") and call.get("args"):
-                target = target.locator(call["args"][0])
+            if type(target).__name__ in ("Page", "Frame"):
+                selector = call["args"][0] if call.get("args") else call.get("kwargs", {}).get("selector")
+                if selector is not None:
+                    target = target.locator(selector)
             if type(target).__name__ == "Locator":
                 if await target.count() != 1:
                     return {"value": None}
@@ -865,6 +885,8 @@ async def automation(session_id: str, request: CommandRequest, authorization: st
                     value["selector"] = f'[data-tabductor-secret-target="{pin}"]'
             else:
                 value = await page.evaluate("() => ({type:document.activeElement?.type,tag:document.activeElement?.tagName.toLowerCase(),origin:location.origin})")
+                if value.get("tag") in ("iframe", "frame"):
+                    return {"value": None}
             return {"value": {**value, "pageId": current.add_page(page), "pageOrigin": urlparse(page.url).scheme + "://" + urlparse(page.url).netloc}}
         if request.method == "poll":
             return {"value": await scope.poll(args["ticket"])}

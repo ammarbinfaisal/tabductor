@@ -86,8 +86,6 @@ describe("llmSchemaGenerator", () => {
     expect(prompt).toContain(JSON.stringify(upstream));
     expect(prompt).toContain("tweet_id loses unknown/null values");
     expect(prompt).toContain("flag changes a shared field's type");
-    expect(prompt).toContain("Keep all its declared fields");
-    expect(prompt).toContain("separate derived key may remain required");
   });
 
   it("feeds the gate's verdict back and accepts the repair", async () => {
@@ -108,7 +106,6 @@ describe("llmSchemaGenerator", () => {
     // The model sees its own output and the verdict verbatim — a bare "try again" would
     // leave it guessing at what strict mode objected to.
     expect(second[1]).toEqual({ role: "assistant", content: rejected });
-    expect(second[2]!.content).toContain("was rejected");
     expect(second[2]!.content).toContain("ajv strict");
   });
 

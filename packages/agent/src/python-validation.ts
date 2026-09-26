@@ -36,6 +36,17 @@ export async function validatePythonCandidate(runner:PythonRunner, source:string
     else if(value&&typeof value==="object")for(const [k,v] of Object.entries(value))collect(v,`${path}.${k}`);
   };
   collect(evidence.input);
+  // An AI response is runtime data too. A retained AI call followed by a baked-in
+  // sample answer must not pass replay. Leave constrained schema values alone.
+  const collectAiResult = (value: unknown, schema: Record<string, unknown>, path: string) => {
+    if (schema.const !== undefined || schema.enum || schema.anyOf || schema.oneOf || schema.allOf || schema.$ref) return;
+    if (Array.isArray(value)) value.forEach((item, index) => collectAiResult(item, obj(schema.items), `${path}.${index}`));
+    else if (value && typeof value === "object") {
+      for (const [key, item] of Object.entries(value)) collectAiResult(item, obj(obj(schema.properties)[key]), `${path}.${key}`);
+    } else if (typeof value === "string" && !schema.pattern && !schema.format && schema.maxLength === undefined && schema.minLength === undefined) collect(value, path);
+    else if (typeof value === "number" && ["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"].every(key => schema[key] === undefined)) collect(value, path);
+  };
+  for (const op of operations) if (op.name === "browser.ai") collectAiResult(op.result.value, obj(op.args.schema_def), "aiResult");
   for(const op of operations)if(op.name==="playwright.call"&&["evaluate","evaluate_all","json","all_text_contents"].includes(String(op.args.member)))collect(op.result.value,"observed");
   const references=(value:unknown)=>{
     if(!value||typeof value!=="object")return;
@@ -61,6 +72,9 @@ export async function validatePythonCandidate(runner:PythonRunner, source:string
     return value;
   };
   const roots=evidence.operations.find(op=>op.name==="playwright.open"&&op.result.ok)?.result.value;
+  const replayArgs = (op: RecordedOperation) => op.name === "browser.ai"
+    ? { ...obj(replace(op.args)), schema_def: op.args.schema_def }
+    : replace(op.args);
   if(!roots)return {ok:false,reason:"Missing Playwright root-object evidence"};
   const callbacks:Record<string,unknown>[]=(evidence.callbacks??[]).map(event=>({...event,...(event.callback?{callback:callbackRef(String(event.invocationId),String(event.callback))}:{})}));
   const replay=async(failedId?:string,faultValue?:unknown)=>{
@@ -86,7 +100,7 @@ export async function validatePythonCandidate(runner:PythonRunner, source:string
         }
         if(name==="internal.helpers.use")return {ok:true,value:args};
         if(terminal)return {ok:false,error:"Execution already ended"};
-        const op=operations.find(op=>!seen.has(op.operationId)&&op.name===name&&canonical(replace(op.args))===canonical(args));
+        const op=operations.find(op=>!seen.has(op.operationId)&&op.name===name&&canonical(replayArgs(op))===canonical(args));
         if(!op){violation=`Ungrounded, repeated or sample-bound operation: ${name}: ${canonical(args).slice(0,1500)}; next recorded: ${String(canonical(replace(operations.find(o=>!seen.has(o.operationId)&&o.name===name)?.args))).slice(0,1500)}`;return {ok:false,error:violation};}
         if(op.operationId===failedId){broken=true;return faultValue===undefined?{ok:false,error:"Recorded operation failed",outcomeUncertain:op.effect}:{ok:true,value:faultValue};}
         if(broken&&op.effect){violation="Effect after a failed guard or uncertain operation";return {ok:false,error:violation};}

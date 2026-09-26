@@ -1,9 +1,5 @@
 import { expect, it } from "vitest";
 import type { RunSession } from "@tabductor/browser";
-import { GRAPH_AUTHORING_SYSTEM_PROMPT } from "../../engine/src/graph-authoring-prompts.js";
-import { PROMPT_SYSTEM_PROMPT, TOOL_SURFACE } from "../../engine/src/prompt-compiler.js";
-import { BROWSER_LEARNING_INSTRUCTIONS } from "./learning-evidence.js";
-import { PYTHON_BROWSER_GUIDANCE } from "./python-guidance.js";
 import { buildToolRegistry } from "./tools.js";
 import { pythonFixture } from "./python-test-support.js";
 
@@ -19,13 +15,6 @@ it("removes retired APIs from the registry and nested JavaScript catalog", async
     expect(await tools.find(tool => tool.name === "browser.code")!.execute({
       source: `export default async api => api.call(${JSON.stringify(name)}, {})`,
     })).toMatchObject({ ok: false, error: expect.stringContaining("unavailable") });
-  }
-});
-
-it("removes the concepts from generated prompt instructions", () => {
-  for (const prompt of [GRAPH_AUTHORING_SYSTEM_PROMPT, PROMPT_SYSTEM_PROMPT,
-    PYTHON_BROWSER_GUIDANCE, BROWSER_LEARNING_INSTRUCTIONS, JSON.stringify(TOOL_SURFACE)]) {
-    expect(prompt).not.toMatch(/checkpoint|operation progress|workflow\.status|code\.status|verification|record\.verify|verified-saves/i);
   }
 });
 

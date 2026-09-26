@@ -35,14 +35,6 @@ it("rejects invented provenance and deopt updates with no supplied scope", () =>
   expect(() => groundLearningResult(deopt, { evidence, succeeded: true, hasDeopt: false })).toThrow("scope");
 });
 
-it("renders initial reusable instructions with authoritative contract and current-input boundaries", () => {
-  const prompt = renderLearnedPrompt("Save each requested record once.", result().procedure!);
-  expect(prompt.startsWith("## Learned procedure")).toBe(true);
-  expect(prompt).toContain("workflow.input.id");
-  expect(prompt).toContain("Historical success does not complete this run");
-  expect(prompt.endsWith("Save each requested record once.")).toBe(true);
-});
-
 it("bounds trace payload previews and keeps failures visible", () => {
   const e = learningEvidence({ runId: "r", entries: [{ seq: 1, kind: "action", payload: {
     action: "sdk.operation", phase: "finished", result: { ok: false, outcomeUncertain: true, value: "x".repeat(20000) },

@@ -1,4 +1,4 @@
-import { browserSessions, browserProfiles, browserWorkers, browserTabLeases, tasks, workflowBrowserProfiles } from "@tabductor/db";
+import { browserSessions, browserProfiles, browserWorkers, browserTabLeases, tasks, workflowBrowserProfiles, workflowExecutions, workflows } from "@tabductor/db";
 import { and, eq, desc, asc, sql } from "drizzle-orm";
 import { AppError } from "@tabductor/core";
 import {
@@ -103,8 +103,13 @@ export const browserSessionRouter = router({
       }
       const [rows,counts]=await Promise.all([
         ctx.db.select({id:browserSessions.id,status:browserSessions.status,profileId:browserSessions.profileId,createdAt:browserSessions.createdAt,
-          cursorAt:sql<string>`to_char(${browserSessions.createdAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,inputOwner:browserSessions.inputOwner})
-          .from(browserSessions).where(and(owner,boundary)).orderBy(reverse?asc(browserSessions.createdAt):desc(browserSessions.createdAt),reverse?asc(browserSessions.id):desc(browserSessions.id)).limit(limit+1),
+          cursorAt:sql<string>`to_char(${browserSessions.createdAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,inputOwner:browserSessions.inputOwner,
+          workflowName:workflows.name,profileName:browserProfiles.name})
+          .from(browserSessions)
+          .leftJoin(workflowExecutions,eq(workflowExecutions.id,browserSessions.executionId))
+          .leftJoin(workflows,eq(workflows.id,workflowExecutions.workflowId))
+          .leftJoin(browserProfiles,eq(browserProfiles.id,browserSessions.profileId))
+          .where(and(owner,boundary)).orderBy(reverse?asc(browserSessions.createdAt):desc(browserSessions.createdAt),reverse?asc(browserSessions.id):desc(browserSessions.id)).limit(limit+1),
         ctx.db.select({total:sql<number>`count(*)::int`,active:sql<number>`count(*) filter (where status not in ('ended','failed'))::int`}).from(browserSessions).where(owner),
       ]);
       const items=rows.slice(0,limit);if(reverse)items.reverse();

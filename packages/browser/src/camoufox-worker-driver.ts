@@ -161,7 +161,8 @@ export function createCamoufoxWorkerDriver(options: CamoufoxWorkerDriverOptions)
               if (hooks.onNavigationRequest && !await hooks.onNavigationRequest({url:destination,cause:"initial"}))
                 throw new AppError("navigation_denied","Navigation denied",{details:{outcomeUncertain:false}});
             }
-            const { ticket } = await send<{ticket:string}>("start",{...call});
+            const { ticket } = await send<{ticket:string}>("start",{...call,
+              ...(opts.recordingPrivate === undefined ? {} : { recording_private: opts.recordingPrivate })});
             const pending = new Set<Promise<void>>();
             let callbackError: unknown;
             for (;;) {

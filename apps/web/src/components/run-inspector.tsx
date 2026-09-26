@@ -153,7 +153,7 @@ export function RunInspector({ workflowId, runId }: { workflowId: string; runId:
     <>
       <div className="page-heading">
         <div><Link href={`/workflows/${workflowId}/runs`} className="eyebrow">← Workflow runs</Link>
-          <h1>{readableName(task.name)}</h1><p className="mono muted">Run / {run.id.slice(0, 12)}</p>
+          <h1>{readableName(task.name)}</h1><p className="muted">{run.startedAt ? `Started ${run.startedAt.toLocaleString()}` : "Waiting to start"}</p>
         </div>
         {state.detail.browserSession ? <Link className="btn" href={`/sessions/${state.detail.browserSession.id}`}>Open session ↗︎</Link> : null}
       </div>

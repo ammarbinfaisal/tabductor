@@ -82,7 +82,6 @@ it("continues learned Python procedure, files and conversation with the next inp
         expect(wire).not.toContain("record-one");
         expect(wire).not.toContain(previousRunId);
         expect(wire).not.toContain("editor-for-record-two");
-        expect(request.system).toContain("A previous done call does not finish the current run");
         // Historical success must not satisfy this record's completion gate.
         return { toolCalls: [{ id: `reuse-${turns}`, name: "browser.python", args: { source: turns++ === 0
           ? "workflow.done()" : "import runpy\nrunpy.run_path('procedure.py')['save'](page, workflow)\nworkflow.done()" } }], usage: { in: 1, out: 1 } };

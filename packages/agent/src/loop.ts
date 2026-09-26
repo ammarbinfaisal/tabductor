@@ -1,3 +1,4 @@
+import { PROMPT_INPUT_GUIDANCE } from "@tabductor/core";
 import { toModelMessages } from "./llm-live.js";
 import { readActionHistory } from "./browser-actions.js";
 import { estimateModelInput, isDevMode, maskText, DEFAULT_TOKEN_PATTERNS } from "@tabductor/core";
@@ -65,7 +66,7 @@ function loopInstructions(tools: AgentTool[]): string {
 }
 
 function buildSystemPrompt(opts: RunAgentLoopOptions, tools: AgentTool[]): string {
-  const sections: string[] = [opts.task.prompt ?? ""];
+  const sections: string[] = [opts.task.prompt ?? "", PROMPT_INPUT_GUIDANCE];
 
   if (opts.trigger) {
     sections.push(
