@@ -427,6 +427,33 @@ export async function gateGraphDraft(
   return { artifact: { ...artifact, proposedGrants: nextGrants }, checks };
 }
 
+/**
+ * `$name` references are values on the manual trigger, not independently routed packets.
+ * Treat the prompt syntax as authoritative even when the model incorrectly turns those
+ * names into event types. A task wired only to those pseudo-events is the entry that reads
+ * the manual trigger.
+ */
+function removePromptInputEventWiring(graph: Graph, names: readonly string[]): Graph {
+  if (names.length === 0) return graph;
+  const inputs = new Set(names);
+  const isInput = (type: string): boolean => inputs.has(type) || (type.startsWith("$") && inputs.has(type.slice(1)));
+  return {
+    ...graph,
+    ...(graph.externalInputs ? { externalInputs: graph.externalInputs.filter((type) => !isInput(type)) } : {}),
+    events: graph.events.filter((event) => !isInput(event.type)),
+    tasks: graph.tasks.map((task) => {
+      const consumes = task.consumes.filter((type) => !isInput(type));
+      const consumedPromptInput = consumes.length !== task.consumes.length;
+      return {
+        ...task,
+        consumes,
+        emits: task.emits.filter((type) => !isInput(type)),
+        ...(task.kind !== "result" && !task.entry && consumedPromptInput && consumes.length === 0 ? { entry: true } : {}),
+      };
+    }),
+  };
+}
+
 export function llmGraphCompiler(transport: ChatTransport, opts: { pool?: Pool; maxAttempts?: number } = {}): GraphCompiler {
   const maxAttempts = opts.maxAttempts ?? 3;
   return {
@@ -454,14 +481,14 @@ export function llmGraphCompiler(transport: ChatTransport, opts: { pool?: Pool; 
             graph.intent = bindIntent(input.intent, graph.intent as Partial<IntentContract> | undefined);
           }
           const parsed = graphDraftArtifactSchema.parse(raw);
+          const declaredInputs = promptInputNames(input.intent);
           // Publish stores the result task too. Add it before the gate so the artifact that
           // leaves this loop is exactly the artifact that will be published; otherwise a
           // result-task failure is discovered after the model's repair budget is gone.
           const artifact = {
             ...parsed,
-            graph: withWorkflowResult(parsed.graph, input.intent, input.resultSchema),
+            graph: withWorkflowResult(removePromptInputEventWiring(parsed.graph, declaredInputs), input.intent, input.resultSchema),
           };
-          const declaredInputs = promptInputNames(input.intent);
           const taskInputs = promptInputNames(...artifact.graph.tasks.filter(task => task.kind !== "result").map(task => task.prompt));
           const missingInputs = declaredInputs.filter(name => !taskInputs.includes(name));
           if (missingInputs.length) throw new Error(`Preserve prompt input references in the relevant operating tasks: ${missingInputs.map(name => "$" + name).join(", ")}`);

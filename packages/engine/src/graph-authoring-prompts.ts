@@ -10,6 +10,11 @@ on manual/scheduled workflow triggers with an empty packet; all others have entr
 emitted event. Every consumed type must have an emitter or be declared in externalInputs (with descriptions
 and schemas) or systemInputs. Keep schedules on entry tasks; use schedule:null when no cadence is requested.
 
+References such as $username or $course are manual promptInputs supplied when an execution starts. Preserve
+each $variable-name reference verbatim in the relevant task prompt. Prompt inputs are data, not events: never
+put their names in externalInputs, systemInputs, events, emits, consumes, or store schemas. An entry task can
+read them from its manual trigger without event wiring. Do not copy prompt input values into emitted packets.
+
 Derive each task's operating prompt and the final output from the single workflow prompt. Include one
 kind="result" node with entry=false, empty emits/consumes, no schedule, and a prompt describing the final
 JSON output. Its optional resultSchema is a JSON Schema draft-07 object or boolean. The supplied final

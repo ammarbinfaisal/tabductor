@@ -35,6 +35,54 @@ const valid = {
 };
 
 describe("llmGraphCompiler", () => {
+  it("keeps manual prompt inputs out of event wiring", async () => {
+    const intent = `Open s.amizone.net
+Username: $username
+Password: $password
+
+Click on "$course" under "Amigo Courses" and complete all quizzes correctly.`;
+    const draft = {
+      graph: {
+        contractVersion: 2 as const,
+        externalInputs: ["username", "password", "course"],
+        systemInputs: [],
+        maxRuns: 1000,
+        intent: bindIntent(intent, { requirements: [{ id: "complete", description: "Complete the selected course", quote: "complete all quizzes correctly", category: "destination" }] }),
+        tasks: [{
+          logicalId: "complete-course",
+          entry: false,
+          name: "complete-course",
+          kind: "browser" as const,
+          mode: "ai" as const,
+          prompt: intent,
+          limits: { harness: { version: 1 as const, role: "source", requirementIds: ["complete"] } },
+          emits: ["username"],
+          consumes: ["username", "password", "course"],
+          schedule: null,
+          position: null,
+        }],
+        events: [{ type: "username", description: "Incorrectly modeled prompt input", public: false }],
+      },
+      store: null,
+      proposedGrants: [],
+    };
+    const compiler = llmGraphCompiler({ complete: async (turns) => {
+      expect(turns[0]?.content).toContain("Prompt inputs are data, not events");
+      return { text: JSON.stringify(draft) };
+    } });
+
+    const result = await compiler.compile({ intent });
+
+    expect(result).toMatchObject({ ok: true, report: { attempts: 1 } });
+    if (!result.ok) return;
+    expect(result.artifact.graph.externalInputs).toEqual([]);
+    expect(result.artifact.graph.events).toEqual([]);
+    expect(result.artifact.graph.tasks[0]).toMatchObject({ entry: true, emits: [], consumes: [] });
+    expect(result.artifact.graph.tasks[0]?.prompt).toContain("$username");
+    expect(result.artifact.graph.tasks[0]?.prompt).toContain("$password");
+    expect(result.artifact.graph.tasks[0]?.prompt).toContain("$course");
+  });
+
   it("repairs a draft that drops a declared prompt input", async () => {
     const intent = valid.graph.automationPrompt + " about $topic";
     const draft = structuredClone(valid);
