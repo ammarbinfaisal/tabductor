@@ -1,0 +1,24 @@
+# Required Python execution service; scripts/local/up.mjs includes this overlay.
+services:
+  engine:
+    environment:
+      BROWSER_AGENT_BACKEND: python
+      PYTHON_RUNNER_URL: ws://python-runner:8092
+      PYTHON_RUNNER_TOKEN: ${PYTHON_RUNNER_TOKEN:?Set a random token of at least 32 characters}
+  python-runner:
+    build:
+      context: .
+      dockerfile: apps/python-runner/Dockerfile
+    image: tabductor-python-broker:local
+    userns_mode: host
+    user: "0:0"
+    environment:
+      PYTHON_RUNNER_TOKEN: ${PYTHON_RUNNER_TOKEN:?Set a random token of at least 32 characters}
+    volumes: ["${DOCKER_SOCKET_PATH:?Run pnpm local:up}:/var/run/docker.sock"]
+    restart: unless-stopped
+  python-runner-image:
+    profiles: ["build-only"]
+    image: tabductor-python-runner:local
+    build:
+      context: vendor/browser-harness
+      dockerfile: Dockerfile.tabductor
