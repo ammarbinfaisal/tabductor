@@ -1,6 +1,6 @@
 # AI browser harness
 
-Browser runs expose **`browser.python({source, timeoutMs?})` and `browser.screenshot({selector?})`**. Python receives synchronous Playwright `page`, `context`, and `expect` objects, plus `workflow` for Tabductor services. AI exploration and compiled tasks use the same Python runtime. No additional anchor-action, `harness.*`, `api`/`td`, or JavaScript tool is exposed.
+Browser runs expose **`browser.python({source, timeoutMs?})` and `browser.screenshot({selector?})`**. Python receives synchronous Playwright `page`, `context`, and `expect` objects, plus `browser` for run services. AI exploration and compiled tasks use the same Python runtime. No additional anchor-action, `harness.*`, `api`/`td`, or JavaScript tool is exposed.
 
 The registry is [buildBrowserCodeTools](../packages/agent/src/tools.ts), implemented in [python-tool.ts](../packages/agent/src/python-tool.ts). [python-guidance.ts](../packages/agent/src/python-guidance.ts) supplies the model instructions.
 
@@ -12,7 +12,7 @@ flowchart TD
   Gateway -->|authenticated WebSocket| Broker[pyrunner broker]
   Broker -->|stdio protocol| Python[Networkless Python sandbox]
   Python -->|proxy calls and callback replies| Gateway
-  Gateway --> Session[RunSession: policy and tracing]
+  Gateway --> Session[RunSession: limits and tracing]
   Session -->|authenticated object RPC| Worker[Camoufox worker]
   Worker --> Browser[Owned Playwright pages]
   Worker -->|callback events| Session
@@ -28,11 +28,11 @@ flowchart TD
 | --- | --- | --- |
 | Executor and AI loop | Acquire the lease, construct run services, execute cells and finish/suspend the task. | [executor.ts](../packages/agent/src/executor.ts), [loop.ts](../packages/agent/src/loop.ts) |
 | Gateway | Validate calls, journal effects before dispatch, record evidence and enforce completion. | [python-tool.ts](../packages/agent/src/python-tool.ts) |
-| Runner client | Protocol-v3 messages, reentrant callbacks, output, execution budgets and cancellation. | [python-runner.ts](../packages/agent/src/python-runner.ts) |
+| Runner client | Protocol-v4 messages, reentrant callbacks, output, execution budgets and cancellation. | [python-runner.ts](../packages/agent/src/python-runner.ts) |
 | pyrunner broker | Authenticate the engine, manage execution containers/pods, relay streams. It implements no browser tools. | [main.ts](../apps/python-runner/src/main.ts), [containers.ts](../apps/python-runner/src/containers.ts) |
-| Sandbox supervisor | Fresh interpreter per cell, injected objects, helper loading and workspace persistence. | [tabductor_runner.py](../vendor/browser-harness/src/browser_harness/tabductor_runner.py) |
-| Python proxy | Synchronous Playwright signatures, object references, callbacks, bytes and workflow namespace. | [playwright_proxy.py](../vendor/browser-harness/src/browser_harness/playwright_proxy.py) |
-| Session and driver | Host policy, resource accounting and authenticated worker transport. | [session.ts](../packages/browser/src/session.ts), [camoufox-worker-driver.ts](../packages/browser/src/camoufox-worker-driver.ts) |
+| Sandbox supervisor | Run-scoped interpreter, injected objects, helper loading and workspace persistence. | [tabductor_runner.py](../vendor/browser-harness/src/browser_harness/tabductor_runner.py) |
+| Python proxy | Synchronous Playwright signatures, object references, callbacks, bytes and browser services. | [playwright_proxy.py](../vendor/browser-harness/src/browser_harness/playwright_proxy.py) |
+| Session and driver | Resource accounting, tracing and authenticated worker transport. | [session.ts](../packages/browser/src/session.ts), [camoufox-worker-driver.ts](../packages/browser/src/camoufox-worker-driver.ts) |
 | Browser worker | Own real objects and Camoufox, fence ownership generations, execute operations and deliver callbacks. | [automation endpoint](../apps/browser-worker/src/main.py), [playwright_worker.py](../vendor/browser-harness/src/browser_harness/playwright_worker.py) |
 
 Camoufox runs only in the worker. Python never receives a browser connection or profile credentials. The vendored harness supplies the proxy and worker implementation; its upstream CLI, daemon and CDP attachment path are not used here. **pyrunner executes Python; Camoufox executes the website.**
@@ -42,51 +42,52 @@ Camoufox runs only in the worker. Python never receives a browser connection or 
 ```python
 from playwright.sync_api import Page, Locator, expect, TimeoutError
 
-# page, context and workflow are injected for the current run.
+# page, context and browser are injected for the current run.
 
-page.goto(workflow.input["url"])
-page.get_by_role("textbox", name="Body").fill(workflow.input["body"])
+page.goto(browser.input["url"])
+page.get_by_role("textbox", name="Body").fill(browser.input["body"])
 page.get_by_role("button", name="Save").click()
-expect(page.locator("article")).to_have_text(workflow.input["body"])
-workflow.emit(type="record.saved", packet={"id": workflow.input["id"]},
-              dedupeKey=workflow.input["id"])
-workflow.done()
+expect(page.locator("article")).to_have_text(browser.input["body"])
+browser.emit(type="record.saved", packet={"id": browser.input["id"]},
+              dedupeKey=browser.input["id"])
+browser.done()
 ```
 
-Imports are optional: `page`, `context`, `expect` and `workflow` are injected. Standard browser types and errors are importable from `playwright.sync_api`; `TimeoutError` catches browser timeouts, and `Error` catches browser failures. Existing `browser_harness` imports remain compatible with saved helpers. `browser.screenshot` returns a viewport image (or selector crop) without starting a Python cell. Calls return values or raise Python exceptions. `print()` contributes tool output; screenshots also become image attachments. Finishing a cell does not finish the task. Host-accepted terminal calls stop the cell through an internal exception, after which persistence runs.
+Imports are optional: `page`, `context`, `expect` and `browser` are injected. Standard browser types and errors are importable from `playwright.sync_api`; `TimeoutError` catches browser timeouts, and `Error` catches browser failures. Existing `browser_harness` imports remain compatible with saved helpers. `browser.screenshot` returns a viewport image (or selector crop) without starting a Python cell. Calls return values or raise Python exceptions. `print()` contributes tool output; screenshots also become image attachments. Finishing a cell does not finish the task. Host-accepted terminal calls stop the cell through an internal exception, after which persistence runs.
 
-Browser operations include locators, DOM evaluation, frames, element/JS handles, keyboard/mouse/touch input, assertions, screenshots, uploads/downloads, request/response objects, event expectations, routes and synchronous callbacks. `context.pages` contains owned pages; `context.new_page()` creates a normal owned page with no opener; its ownership survives later cells. DOM evaluation, handles and exposed callbacks use native Playwright evaluation. For application globals, use Camoufox's explicit JSON-only main-world form: `page.evaluate("mw:() => window.appData")`; main-world evaluation cannot return handles. `context.request` permits same-origin requests with redirects disabled.
+Browser operations include locators, DOM evaluation, frames, element/JS handles, keyboard/mouse/touch input, assertions, screenshots, uploads/downloads, request/response objects, event expectations, routes and synchronous callbacks. `context.pages` contains owned pages; `context.new_page()` creates a normal owned page with no opener; its ownership survives later cells. DOM evaluation, handles and exposed callbacks use native Playwright evaluation. For application globals, use Camoufox's explicit JSON-only main-world form: `page.evaluate("mw:() => window.appData")`; main-world evaluation cannot return handles. `context.request` supports browser network requests without an origin or redirect policy gate.
 
 The exact contract is the checked-in [manifest](../vendor/browser-harness/src/browser_harness/playwright_manifest.json), generated from pinned **Playwright 1.55.0** by [generate_playwright_manifest.py](../vendor/browser-harness/scripts/generate_playwright_manifest.py). Both endpoints reject unknown members. The contract covers every generated public class/member in that version (36 classes, 646 members), plus public typed dictionaries and aliases. Classes retain their property/method distinction, argument names/defaults, handle inheritance and per-cell object identity. Context operations, Clock, Worker, Video and Tracing are included. [Compatibility scope and tests](playwright-compatibility.md) distinguish API coverage from host and browser constraints.
 
-| Workflow methods | Responsibility |
+| Browser services | Responsibility |
 | --- | --- |
 | `input` | Current trigger packet. |
 | `emit`, `emit.batch` | Schema-validated, deduplicated events. |
-| `record.verify`, `record.outcome` | Compare fresh browser readback on the host and account for the record. |
-| `checkpoint.get/set`, `memory.get/set`, `status` | Durable progress, exploration memory and effect uncertainty. |
+| `record.outcome` | Account for each observed record outcome. |
+| `memory.get/set` | Exploration facts and pending work. |
+| `store.define_table/query/insert/upsert` | Read and write the run's workflow store. |
 | `history.read`, `output.read` | Retrieve retained operation evidence and output. |
 | `secrets.fill` | Fill a named secret into a live locator through the host broker. |
-| `captcha.providers/create_task/get_result/wait/solve/push_variable` | Host-owned native CAPTCHA provider calls, durable jobs and internal credit accounting. See [Python CAPTCHA services](captcha-python-api.md). |
-| `human_action.request` | Suspend for an observed blocker requiring human input. |
+| `browser.captcha` | Separate agent tool for host-owned CAPTCHA provider calls, durable jobs and credit accounting. See [CAPTCHA browser tool](captcha-python-api.md). |
+| `browser.network` | Inspect earlier requests and read selected headers or bounded body text. |
 | `done`, `fail`, `deopt`, `yield_control` | Finish, fail, hand off to AI, or continue in a fresh cell. |
-| `describe` | Discover supported browser members and available workflow schemas. |
+| `describe` | Discover supported Playwright members and available browser service schemas. |
 
-For example, `workflow.describe(name="Locator.click")` describes a browser member; `workflow.describe(name="record.verify")` describes a workflow operation. Services such as secrets and record accounting require the corresponding run capability.
+For example, `browser.describe(name="Locator.click")` describes a Playwright member. `browser.network` and `browser.captcha` are separate agent tools, so they do not appear in `browser.describe()`'s Python service list. Services such as secrets and record accounting require the corresponding run capability.
 
-Use ordinary Python files and modules (`open`, `pathlib`, `json`, `csv`). Edit `agent_helpers.py` to persist reusable task helpers, pinned by revision per invocation. Public workspace, batch, file-handle and helper tool families do not duplicate Python's file API. `workflow.checkpoint_files()` explicitly commits files; cell termination also checkpoints them.
+Use ordinary Python files and modules (`open`, `pathlib`, `json`, `csv`). Edit `agent_helpers.py` to persist reusable task helpers, pinned by revision per invocation. Public workspace, batch, file-handle and helper tool families do not duplicate Python's file API. Cell termination checkpoints workspace files.
 
 ## Calls, callbacks and state
 
 A locator call crosses the sandbox proxy and broker to the engine. The gateway records invocation/operation IDs and arguments, checks control, and journals effects before dispatch. The session forwards authenticated `/automation` RPC with session generation, input generation, command ID and invocation ID. The worker resolves the object in that invocation's registry and owned page scope, checks the manifest member and executes real Playwright. Results follow the reverse route.
 
-The typed codec supports JSON values, scoped references, bytes, regexes, nonfinite numbers and callback references. Objects expire at cell end; reacquire them in later cells. Browser state survives because the worker owns it independently.
+The typed codec supports JSON values, scoped references, bytes, regexes, nonfinite numbers and callback references. Objects remain available across cells in the same interpreter; reacquire them after an interpreter reset or page change. Browser state survives because the worker owns it independently.
 
 Long operations return tickets. Polling delivers callback events while the parent is pending. Python callbacks may make nested browser calls: a pending callback token allows reentrancy past the worker's ordinary operation lock. Callback starts, nested calls and completion are traced. Cleanup cancels jobs/expectations, unregisters listeners/routes, disposes handles and expires exposed bindings. Takeover closes scopes before draining commands.
 
 | State | Lifetime |
 | --- | --- |
-| Python globals and remote references | One cell. |
+| Python globals and remote references | One run-scoped interpreter, until reset or close. |
 | DOM, pages, login/profile state | Leased browser session. |
 | Workspace | Blob-backed snapshots restored in replacement sandboxes. |
 | Helper source | Task-scoped, versioned and pinned. |
@@ -101,7 +102,7 @@ The execution container has no network, browser credentials, Docker socket or Ku
 
 Compilation is **per reusable task**. [sdk-evidence.ts](../packages/compiler/src/sdk-evidence.ts) reads all source-run cells, operations/results, callbacks, helper revisions and starting workspace. [sdk-compile.ts](../packages/compiler/src/sdk-compile.ts) also considers compatible prior runs with the same task/content/destination scope and runtime. Each supporting run receives its own grounded plan, allowing exploration sequences to differ.
 
-The LLM first identifies required work and explains discarded exploration, then writes a Python module defining `run(page, context, workflow)`. [python-validation.ts](../packages/agent/src/python-validation.ts) runs it in the same sandbox against a replay-only host: no live browser or external effects. Validation changes input/observed values and object IDs, checks retained operations/effect order, requires verification and event dedupe keys, and injects operation failures and changed guard observations. Failed checks refuse promotion. The runner also applies a conservative Python AST lint to compiled source.
+The LLM first identifies required work and explains discarded exploration, then writes a Python module defining `run(page, context, browser)`. [python-validation.ts](../packages/agent/src/python-validation.ts) runs it in the same sandbox against a replay-only host: no live browser or external effects. Validation changes input/observed values and object IDs, checks retained operations/effect order, requires verification and event dedupe keys, and injects operation failures and changed guard observations. Failed checks refuse promotion. The runner also applies a conservative Python AST lint to compiled source.
 
 [compiled-executor.ts](../packages/agent/src/compiled-executor.ts) runs accepted Python through the same gateway without model calls. Failed guards, operations, uncertain effects or missing verification deopt into AI on the same run, browser and durable state. The stopped artifact does not restart its writes. Artifacts pin the API/runtime/browser versions and helper source.
 

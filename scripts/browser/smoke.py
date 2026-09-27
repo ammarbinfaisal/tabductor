@@ -27,7 +27,7 @@ def worker():
     name = 'tabductor-smoke-'+uuid.uuid4().hex[:10]; names.append(name)
     source_mount = ['-v',str(Path(__file__).resolve().parents[2]/'apps/browser-worker/src')+':/worker/src:ro'] if os.environ.get('TABDUCTOR_BROWSER_SMOKE_SOURCE') == '1' else []
     docker('run','-d',*source_mount,'--name',name,'--network',network,'-p','127.0.0.1::8080','--shm-size=1g',
-           '-e',f'TABDUCTOR_WORKER_TOKEN={token}','-e','TABDUCTOR_ALLOW_PRIVATE_EGRESS=1','tabductor-browser-worker:local')
+           '-e',f'TABDUCTOR_WORKER_TOKEN={token}','tabductor-browser-worker:local')
     port = json.loads(docker('inspect',name))[0]['NetworkSettings']['Ports']['8080/tcp'][0]['HostPort']
     url=f'http://127.0.0.1:{port}'
     for _ in range(60):

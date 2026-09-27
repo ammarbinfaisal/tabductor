@@ -54,7 +54,7 @@ it("preserves callbacks and records their registration across cells for replay",
     return original(command, options);
   };
   const first = "values = []\ndef loaded():\n    values.append(page.title())\npage.on('load', loaded)\ntarget = page.locator('button')";
-  const second = "if target.count() != 1: workflow.deopt(reason='target changed')\ntarget.click()\nprint(values)\nworkflow.done()";
+  const second = "if target.count() != 1: browser.deopt(reason='target changed')\ntarget.click()\nprint(values)\nbrowser.done()";
   expect(await f.tool.execute({ source: first })).toMatchObject({ ok: true });
   expect(await f.tool.execute({ source: second })).toMatchObject({ ok: true, terminal: { outcome: "done" } });
   const evidence = readSdkEvidence({ runId: "repl-callback", entries: f.entries });
@@ -64,23 +64,23 @@ it("preserves callbacks and records their registration across cells for replay",
   const plan = { goal: "click", guards: [{ operationId: guard.operationId, condition: "one target" }],
     steps: operations.filter(op => op !== guard).map(op => ({ operationId: op.operationId, why: "required" })),
     bindings: [], discarded: [], recoveryPrompt: "Inspect" };
-  const source = "def run(page, context, workflow):\n    try:\n" + (first + "\n" + second).split("\n").map(line => "        " + line).join("\n") + "\n    except Exception as error:\n        workflow.deopt(reason=str(error))";
+  const source = "def run(page, context, browser):\n    try:\n" + (first + "\n" + second).split("\n").map(line => "        " + line).join("\n") + "\n    except Exception as error:\n        browser.deopt(reason=str(error))";
   expect(await validatePythonCandidate(testRunner(), source, evidence, plan)).toEqual({ ok: true });
 });
 
-it("isolates separate runs and updates workflow.input without dropping user variables", async () => {
+it("isolates separate runs and updates browser.input without dropping user variables", async () => {
   const a = fixture("one"), b = fixture("two");
   expect(await a.tool.execute({ source: "private_value = 'run one'" })).toMatchObject({ ok: true });
   expect(await b.tool.execute({ source: "assert 'private_value' not in globals()" })).toMatchObject({ ok: true });
   const resumed = a.tool = pythonFixture().tool({ pythonRunner: a.runner, input: { id: "current" }, session: a.session });
-  expect(await resumed.execute({ source: "assert private_value == 'run one'\nassert workflow.input['id'] == 'current'" })).toMatchObject({ ok: true });
+  expect(await resumed.execute({ source: "assert private_value == 'run one'\nassert browser.input['id'] == 'current'" })).toMatchObject({ ok: true });
 });
 
 it("keeps compiled-to-AI handoffs in the same interpreter", async () => {
   const f = fixture();
   const compiled = pythonFixture().tool({ pythonRunner: f.runner, compiled: true, session: f.session });
-  expect(await compiled.execute({ source: "def run(page, context, workflow):\n    global selected\n    selected = page.locator('input')\n    workflow.deopt(reason='finish with AI')" })).toMatchObject({ ok: true, terminal: { outcome: "deopt" } });
-  expect(await f.tool.execute({ source: "selected.fill('recovered')\nworkflow.done()" })).toMatchObject({ ok: true, terminal: { outcome: "done" } });
+  expect(await compiled.execute({ source: "def run(page, context, browser):\n    global selected\n    selected = page.locator('input')\n    browser.deopt(reason='finish with AI')" })).toMatchObject({ ok: true, terminal: { outcome: "deopt" } });
+  expect(await f.tool.execute({ source: "selected.fill('recovered')\nbrowser.done()" })).toMatchObject({ ok: true, terminal: { outcome: "done" } });
 });
 
 it("reports namespace loss after an interpreter reset and closes old browser scopes", async () => {

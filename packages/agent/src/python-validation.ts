@@ -9,7 +9,7 @@ const browserEffect=(op:RecordedOperation)=>op.effect&&!op.name.startsWith("inte
 
 /** Candidates run in the ordinary networkless sandbox with a replay-only host. */
 export async function validatePythonCandidate(runner:PythonRunner, source:string, evidence:SdkEvidence, plan:SdkPlan):Promise<{ok:true}|{ok:false;reason:string}> {
-  if(!/^def run\(page, context, workflow\):/m.test(source))return {ok:false,reason:"Define run(page, context, workflow)"};
+  if(!/^def run\(page, context, browser\):/m.test(source))return {ok:false,reason:"Define run(page, context, browser)"};
   const selected=new Set([...plan.guards,...plan.steps].map(x=>x.operationId));
   const plannedDeopt=plan.deopts?.[0];
   const callbackIds=new Map<string,string>();

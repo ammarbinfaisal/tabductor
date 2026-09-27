@@ -2,7 +2,7 @@
 export function pythonOutputPreview(output: string) {
   if (output.length <= 8000) return { output, outputChars: output.length, outputTruncated: false };
   const headEnd = 3000, tailStart = output.length - 4500;
-  return { output: output.slice(0, headEnd) + `\n[Output characters ${headEnd}..${tailStart} omitted; use workflow.output.read with this invocationId and offset=${headEnd}.]\n` + output.slice(tailStart),
+  return { output: output.slice(0, headEnd) + `\n[Output characters ${headEnd}..${tailStart} omitted; use browser.output.read with this invocationId and offset=${headEnd}.]\n` + output.slice(tailStart),
     outputChars: output.length, outputTruncated: true, omittedRange: { start: headEnd, end: tailStart } };
 }
 

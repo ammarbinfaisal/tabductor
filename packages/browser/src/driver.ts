@@ -17,9 +17,8 @@ import type { NavCause } from "@tabductor/core";
 export type NavigationRequest = { url: string; cause: NavCause };
 
 /**
- * The guard the session installs. `false` aborts the request in flight. Async because the
- * real check is `PolicyGate.checkNavigation`, and a policy evaluator that reads grants from
- * the database is exactly what Phase 7 makes this.
+ * The session's navigation observer. `false` aborts a request in flight; the run session
+ * records navigations and permits them.
  */
 export type NavigationHook = (req: NavigationRequest) => Promise<boolean>;
 

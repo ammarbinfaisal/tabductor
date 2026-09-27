@@ -7,10 +7,8 @@ import json
 import tarfile
 import time
 import secrets
-import ipaddress
 import os
 import re
-import socket
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -228,22 +226,6 @@ async def secret_target(current, page, selector):
             return locator
     return None
 
-def public_url(value: str) -> str:
-    parsed = urlparse(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise HTTPException(400, "only http(s) navigation is allowed")
-    try:
-        addresses = {item[4][0] for item in socket.getaddrinfo(parsed.hostname, parsed.port or 443)}
-    except socket.gaierror as error:
-        raise HTTPException(400, "navigation host did not resolve") from error
-    for address in addresses:
-        ip = ipaddress.ip_address(address)
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
-            if os.environ.get("TABDUCTOR_ALLOW_PRIVATE_EGRESS") != "1":
-                raise HTTPException(403, "private network navigation is blocked")
-    return value
-
-
 @app.get("/healthz")
 async def healthz() -> dict[str, Any]:
     return {"ok": True, "rpc_version": RPC_VERSION, "allocated": session is not None}
@@ -419,10 +401,7 @@ async def navigate(session_id: str, request: NavigateRequest, authorization: str
             raise HTTPException(404, "session not found")
         if current.input_owner != "human" or current.input_generation != request.input_generation:
             raise HTTPException(409, "human input ownership required")
-        parsed = urlparse(request.url)
-        if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
-            raise HTTPException(400, "invalid website address")
-        target = public_url(request.url)
+        target = request.url
         pages = [page for page in current.context.pages if not page.is_closed()]
         page = current.pages.get(current.selected_page)
         if page is None or page.is_closed():
@@ -598,7 +577,7 @@ async def command(
 
     page = require_page(current, request.page_id)
     if request.method == "page.goto":
-        await page.goto(public_url(str(params["url"])), wait_until=params.get("wait_until"), timeout=params.get("timeout"))
+        await page.goto(str(params["url"]), wait_until=params.get("wait_until"), timeout=params.get("timeout"))
         return {"value": None}
     if request.method == "page.click":
         async with snapshot_target(locator_for(current, page, str(params["selector"])), str(params["selector"])) as target:

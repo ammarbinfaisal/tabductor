@@ -32,14 +32,14 @@ it.skipIf(!process.env.CAMOUFOX_TEST_URL || !process.env.PYTHON_RUNNER_TEST_URL)
     await new Promise<void>(resolve => server.listen(0, host, resolve));
     const url = `http://${host}:${(server.address() as {port:number}).port}`;
     const sources = [
-      `page.goto(workflow.input['url'])
+      `page.goto(browser.input['url'])
 assert 'Choose an account' in page.locator('body').inner_text()
 page.get_by_role('link',name='Missing account').click(timeout=300)`,
       `page.screenshot()
 assert page.locator('p').inner_text() == 'Choose an account'
 page.get_by_role('link',name='Fixture account').click()
 expect(page.locator('p')).to_have_text('Signed in',timeout=2000)
-workflow.done(result='login recovered')`,
+browser.done(result='login recovered')`,
     ];
     rig = await startAgentRig({
       pythonRunner:remotePythonRunner(process.env.PYTHON_RUNNER_TEST_URL!, process.env.PYTHON_RUNNER_TEST_TOKEN!),

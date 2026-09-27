@@ -2,7 +2,6 @@ import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { launchChrome, type Chrome } from "@tabductor/testkit";
 import { openRunSession, playwrightDriver, type BrowserConn, type RunSession, type TraceRecorder } from "@tabductor/browser";
-import { AllowAllGate } from "@tabductor/policy";
 import { buildToolRegistry } from "../../packages/agent/src/tools.js";
 
 let chrome: Chrome;
@@ -33,10 +32,9 @@ function recorder() {
 
 it("keeps concurrent sessions in different browser targets and traces their own tab IDs", async () => {
   const first = recorder(); const second = recorder();
-  const gate = new AllowAllGate({ navAllowlist: ["127.0.0.1"] });
   const [a, b] = await Promise.all([
-    openRunSession({ conn, gate, trace: first.trace, taskCtx: { runId: "run_a", taskId: "task_a" } }),
-    openRunSession({ conn, gate, trace: second.trace, taskCtx: { runId: "run_b", taskId: "task_b" } }),
+    openRunSession({ conn, trace: first.trace }),
+    openRunSession({ conn, trace: second.trace }),
   ]);
   try {
     expect(a.page.id).toBeTruthy(); expect(b.page.id).toBeTruthy(); expect(a.page.id).not.toBe(b.page.id);

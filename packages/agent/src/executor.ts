@@ -145,8 +145,6 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
         const limits = browserLimitsOf(handle.task);
         session = await openRunSession({
           conn: lease.conn,
-          gate,
-          taskCtx: { taskId: handle.task.id, runId: handle.run.id },
           trace,
           ...(metrics ? { metrics } : {}),
           ...(limits ? { limits } : {}),

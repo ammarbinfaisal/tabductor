@@ -18,7 +18,7 @@ The result of either execution mode is persisted for an independent, durable fin
 The finalizer has no browser tools, validates the optional result schema, and retries
 up to three times without repeating the browser work.
 
-`workflow.store.define_table`, `query`, `insert`, and `upsert` are available from
+`browser.store.define_table`, `query`, `insert`, and `upsert` are available from
 Python. Tables can gain nullable columns; existing column types and primary keys
 cannot change. Writes commit before acknowledgment and carry an execution-scoped
 idempotency key. Reusing a key with changed input fails. Compiled queries observe

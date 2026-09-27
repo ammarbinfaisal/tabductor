@@ -7,8 +7,8 @@ import { validatePythonCandidate } from "./python-validation.js";
 it("reuses a compiled browser.ai prompt with fresh manual inputs and AI results", async () => {
   const f = pythonFixture();
   const llm: Llm = { complete: vi.fn(async () => ({ text: '{"text":"First response"}', toolCalls: [], usage: { in: 1, out: 1 } })) };
-  const source = "answer = browser.ai('Write about $topic using $reply-style', {'type':'object','properties':{'text':{'type':'string'}},'required':['text']})\npage.locator('textarea').fill(answer['text'])\nworkflow.done()";
-  const compiled = "def run(page, context, workflow):\n    try:\n" + source.split("\n").map(line => "        " + line).join("\n") + "\n    except Exception as error:\n        workflow.deopt(reason=str(error))";
+  const source = "answer = browser.ai('Write about $topic using $reply-style', {'type':'object','properties':{'text':{'type':'string'}},'required':['text']})\npage.locator('textarea').fill(answer['text'])\nbrowser.done()";
+  const compiled = "def run(page, context, browser):\n    try:\n" + source.split("\n").map(line => "        " + line).join("\n") + "\n    except Exception as error:\n        browser.deopt(reason=str(error))";
   const first = f.tool({ llm, input: { promptInputs: { topic: "gardening", "reply-style": "friendly" } } });
   expect(await first.execute({ source })).toMatchObject({ ok: true, terminal: { outcome: "done" } });
   const evidence = readSdkEvidence({ runId: "inputs", entries: f.entries });
@@ -37,7 +37,7 @@ it("returns schema-validated JSON from browser.ai and records a compilable opera
   const runner = testRunner().open!({ runId: "browser-ai", leaseGeneration: 1 });
   const llm: Llm = { complete: vi.fn(async () => ({ text: '{"label":"approved","score":3}', toolCalls: [], usage: { in: 1, out: 1 } })) };
   const tool = f.tool({ pythonRunner: runner, llm });
-  const result = await tool.execute({ source: "answer = browser.ai('Classify the current item', {'type':'object','properties':{'label':{'type':'string'},'score':{'type':'integer'}},'required':['label','score'],'additionalProperties':False})\nprint(answer['label'])\nworkflow.done()" });
+  const result = await tool.execute({ source: "answer = browser.ai('Classify the current item', {'type':'object','properties':{'label':{'type':'string'},'score':{'type':'integer'}},'required':['label','score'],'additionalProperties':False})\nprint(answer['label'])\nbrowser.done()" });
   expect(result).toMatchObject({ ok: true, terminal: { outcome: "done" } });
   expect(llm.complete).toHaveBeenCalledWith(expect.objectContaining({ output: expect.objectContaining({ type: "json" }) }));
   const evidence = readSdkEvidence({ runId: "browser-ai", entries: f.entries });
@@ -47,7 +47,7 @@ it("returns schema-validated JSON from browser.ai and records a compilable opera
   const done = evidence.operations.find(operation => operation.name === "workflow.done");
   expect(ai && done).toBeTruthy();
   const plan = { goal: "classify", guards: [], steps: [{ operationId: ai!.operationId, why: "semantic result" }, { operationId: done!.operationId, why: "finish" }], bindings: [], discarded: [], recoveryPrompt: "Inspect" };
-  expect(await validatePythonCandidate(testRunner(), "def run(page, context, workflow):\n    browser.ai('Classify the current item', {'type':'object','properties':{'label':{'type':'string'},'score':{'type':'integer'}},'required':['label','score'],'additionalProperties':False})\n    workflow.done()", evidence, plan)).toEqual({ ok: true });
+  expect(await validatePythonCandidate(testRunner(), "def run(page, context, browser):\n    browser.ai('Classify the current item', {'type':'object','properties':{'label':{'type':'string'},'score':{'type':'integer'}},'required':['label','score'],'additionalProperties':False})\n    browser.done()", evidence, plan)).toEqual({ ok: true });
   await runner.close?.();
 });
 

@@ -40,9 +40,9 @@ it.skipIf(!process.env.CAMOUFOX_TEST_URL || !process.env.PYTHON_RUNNER_TEST_URL)
   const url=`http://${host}:${(server.address() as {port:number}).port}`;
   const extract="mw:() => window.fixtureRows";
   const readback="mw:async () => (await fetch('/rows'+location.search)).json()";
-  const verify=`assert sorted(page.evaluate(${JSON.stringify(readback)}),key=lambda r:r['id']) == sorted(rows,key=lambda r:r['id'])\nworkflow.done()`;
-  const extractSource=`import json\npage.goto(workflow.input['url'])\nrows=page.evaluate(${JSON.stringify(extract)})\nif len(rows)!=100 or any(not isinstance(r.get('id'),str) or not isinstance(r.get('text'),str) for r in rows) or len({r['id'] for r in rows})!=100: workflow.deopt(reason='Dataset shape changed')\nopen('rows.json','w').write(json.dumps(rows))`;
-  const writeSource=`import json\nrows=json.load(open('rows.json'))\nresponse=context.request.post('/save',data={'rows':rows})\nif not response.ok: workflow.deopt(reason='Inspect partially committed rows before another write')\n${verify}`;
+  const verify=`assert sorted(page.evaluate(${JSON.stringify(readback)}),key=lambda r:r['id']) == sorted(rows,key=lambda r:r['id'])\nbrowser.done()`;
+  const extractSource=`import json\npage.goto(browser.input['url'])\nrows=page.evaluate(${JSON.stringify(extract)})\nif len(rows)!=100 or any(not isinstance(r.get('id'),str) or not isinstance(r.get('text'),str) for r in rows) or len({r['id'] for r in rows})!=100: browser.deopt(reason='Dataset shape changed')\nopen('rows.json','w').write(json.dumps(rows))`;
+  const writeSource=`import json\nrows=json.load(open('rows.json'))\nresponse=context.request.post('/save',data={'rows':rows})\nif not response.ok: browser.deopt(reason='Inspect partially committed rows before another write')\n${verify}`;
   const pythonRunner=remotePythonRunner(process.env.PYTHON_RUNNER_TEST_URL!,process.env.PYTHON_RUNNER_TEST_TOKEN!);
   let calls=0;
   try {
@@ -56,7 +56,7 @@ it.skipIf(!process.env.CAMOUFOX_TEST_URL || !process.env.PYTHON_RUNNER_TEST_URL)
         let source:string;
         if(calls===1) source=extractSource;
         else if(calls===2) source=writeSource;
-        else source=`import json\nrows=json.load(open('rows.json'))\nactual=context.request.get('/rows?batch='+workflow.input['batch']).json()\nassert sorted(page.evaluate(${JSON.stringify(readback)}),key=lambda r:r['id']) == sorted(actual,key=lambda r:r['id'])\nseen={r['id'] for r in actual}\nmissing=[r for r in rows if r['id'] not in seen]\nassert len(missing)==95\ncontext.request.post('/save',data={'rows':missing})\n${verify}`;
+        else source=`import json\nrows=json.load(open('rows.json'))\nactual=context.request.get('/rows?batch='+browser.input['batch']).json()\nassert sorted(page.evaluate(${JSON.stringify(readback)}),key=lambda r:r['id']) == sorted(actual,key=lambda r:r['id'])\nseen={r['id'] for r in actual}\nmissing=[r for r in rows if r['id'] not in seen]\nassert len(missing)==95\ncontext.request.post('/save',data={'rows':missing})\n${verify}`;
         return {usage:{in:1,out:1},toolCalls:[{id:"python",name:"browser.python",args:{source}}]};
       }})});
     const definition = await createPromptWorkflow(rig.handle.db, { accountId: "acct_local", userId: "user_local", prompt: "Copy all 100 rows and verify exact identity and text" });
@@ -76,7 +76,7 @@ it.skipIf(!process.env.CAMOUFOX_TEST_URL || !process.env.PYTHON_RUNNER_TEST_URL)
     const plan={goal:"Copy exact dataset",guards:guards.map(o=>({operationId:o.operationId,condition:"Expected destination and 100 records"})),
       steps:kept.filter(o=>!guards.includes(o)).map(o=>({operationId:o.operationId,why:"Required data flow"})),bindings:[],checkpoints:[],
       discarded:evidence.operations.filter(o=>!kept.includes(o)).map(o=>({operationId:o.operationId,why:"Transport bootstrap or workspace synchronization; preserve ordinary Python file data flow"})),recoveryPrompt:"Use Python and existing rows.json; read saved rows and write only missing identities"};
-    const program="def run(page, context, workflow):\n    try:\n"+(extractSource+'\n'+writeSource).split('\n').map(line=>'        '+line).join('\n')+"\n    except Exception as error:\n        workflow.deopt(reason=str(error))";
+    const program="def run(page, context, browser):\n    try:\n"+(extractSource+'\n'+writeSource).split('\n').map(line=>'        '+line).join('\n')+"\n    except Exception as error:\n        browser.deopt(reason=str(error))";
     let turn=0;
     const compiled=await compileTask({db:rig.handle.db,validatePython:(source,evidence,plan)=>validatePythonCandidate(pythonRunner,source,evidence,plan),llm:{complete:async()=>({text:turn++===0?JSON.stringify(plan):program})}},{taskId:wf.taskIds.Save!,sourceRunId:first.id,traces});
     expect(compiled.ok,compiled.ok?"":compiled.error).toBe(true);if(!compiled.ok)return;

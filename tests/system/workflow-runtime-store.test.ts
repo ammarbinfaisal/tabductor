@@ -31,12 +31,12 @@ it("creates additive tables, commits immediately, and deduplicates writes across
   expect(await call("define_table", { ...definition, columns: { price: { type: "text" } } })).toMatchObject({ ok: false });
   expect(await call("query", { sql: "select sku, note from products" })).toMatchObject({ ok: true, value: { rows: [{ sku: "a", note: null }] } });
   const python = pythonFixture().tool({ storeTools: tools });
-  expect(await python.execute({ source: `workflow.store.define_table(table='products', columns={'note': {'type': 'text', 'nullable': True}}, primaryKey=['sku'])
-workflow.store.upsert(table='products', row={'sku': 'b', 'price': 25}, idempotencyKey='product-b')
-workflow.store.insert(table='products', row={'sku': 'c', 'price': 30}, idempotencyKey='product-c')
-result = workflow.store.query(sql='select sku from products order by sku')
+  expect(await python.execute({ source: `browser.store.define_table(table='products', columns={'note': {'type': 'text', 'nullable': True}}, primaryKey=['sku'])
+browser.store.upsert(table='products', row={'sku': 'b', 'price': 25}, idempotencyKey='product-b')
+browser.store.insert(table='products', row={'sku': 'c', 'price': 30}, idempotencyKey='product-c')
+result = browser.store.query(sql='select sku from products order by sku')
 assert [row['sku'] for row in result['rows']] == ['a', 'b', 'c']
-workflow.done(result=result)` })).toMatchObject({ ok: true, terminal: { outcome: "done" } });
+browser.done(result=result)` })).toMatchObject({ ok: true, terminal: { outcome: "done" } });
   await db.db.update(runs).set({ status: "cancelled" }).where(eq(runs.id, run.id));
   await expect(call("insert", { ...write, idempotencyKey: "new" })).rejects.toThrow("ownership");
 });

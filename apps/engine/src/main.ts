@@ -166,7 +166,6 @@ function agentExecutorEntry(db: Db): ReturnType<typeof createAgentExecutor> | un
 const liveSecretRuns = new Map<string, SecretsBrokerRunDeps>();
 const secretsBroker = createSecretsBroker({
   db: handle.db,
-  gate,
   keyWrapper: configuredKeyWrapper(config),
   resolveRun: (runId) => liveSecretRuns.get(runId),
   metrics: telemetry.metrics,

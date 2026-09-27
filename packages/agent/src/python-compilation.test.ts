@@ -26,8 +26,8 @@ it.each([false, true])("compiles recorded Python data flow with optional asserti
       return null;
     });
     const python=f.tool({pythonRunner:runner,workspace,trace});
-    const collect="import json\nrows=page.evaluate('() => window.fixtureRows')\nif len(rows)!=100 or any(not isinstance(r.get('id'),str) or not isinstance(r.get('text'),str) for r in rows) or len({r['id'] for r in rows})!=100: workflow.deopt(reason='shape changed')\nopen('rows.json','w').write(json.dumps(rows))";
-    const save="import json\nrows=json.load(open('rows.json'))\nresponse=context.request.post('/save',data={'rows':rows})\nif not response.ok: workflow.deopt(reason='save failed')\nassert page.evaluate('() => window.savedRows') == rows\nworkflow.done()";
+    const collect="import json\nrows=page.evaluate('() => window.fixtureRows')\nif len(rows)!=100 or any(not isinstance(r.get('id'),str) or not isinstance(r.get('text'),str) for r in rows) or len({r['id'] for r in rows})!=100: browser.deopt(reason='shape changed')\nopen('rows.json','w').write(json.dumps(rows))";
+    const save="import json\nrows=json.load(open('rows.json'))\nresponse=context.request.post('/save',data={'rows':rows})\nif not response.ok: browser.deopt(reason='save failed')\nassert page.evaluate('() => window.savedRows') == rows\nbrowser.done()";
     const saving = includeAssertion ? save : save.split("\n").filter(line => !line.startsWith("assert ")).join("\n");
     expect(await python.execute({source:collect})).toMatchObject({ok:true});
     expect(await python.execute({source:saving})).toMatchObject({ok:true,terminal:{outcome:'done'}});
@@ -35,7 +35,7 @@ it.each([false, true])("compiles recorded Python data flow with optional asserti
     const selected=evidence.operations.filter(o=>!o.name.startsWith('internal.')&&!['playwright.open','playwright.close'].includes(o.name));
     const guard=selected.find(o=>o.args.member==='evaluate')!;
     const plan={goal:"save rows",guards:[{operationId:guard.operationId,condition:"100 rows with ids"}],steps:selected.filter(o=>o!==guard).map(o=>({operationId:o.operationId,why:"required"})),bindings:[],checkpoints:[],discarded:[],recoveryPrompt:"Inspect destination"};
-    const source="def run(page, context, workflow):\n    try:\n"+(collect+'\n'+saving).split('\n').map(line=>'        '+line).join('\n')+"\n    except Exception as error:\n        workflow.deopt(reason=str(error))";
+    const source="def run(page, context, browser):\n    try:\n"+(collect+'\n'+saving).split('\n').map(line=>'        '+line).join('\n')+"\n    except Exception as error:\n        browser.deopt(reason=str(error))";
     expect(await validatePythonCandidate(runner,source,evidence,plan)).toEqual({ok:true});
     expect((await validatePythonCandidate(runner,source.replace("json.dumps(rows)",JSON.stringify(JSON.stringify(data))),evidence,plan)).ok).toBe(false);
   } finally { await runner.close!(); }

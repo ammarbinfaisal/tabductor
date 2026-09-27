@@ -12,14 +12,13 @@ import {
 import { AppError } from "@tabductor/core";
 import type { Db, TaskRow } from "@tabductor/db";
 import type { RunHandle, RunResult, TaskExecutor } from "@tabductor/engine";
-import type { PolicyGate } from "@tabductor/core";
 import type { Metrics } from "@tabductor/telemetry";
 import { z } from "zod";
 
 /**
  * The test-only executor for task mode `scripted` (S3b deliverable 6): it reads a fixed
  * JSON action list off `tasks.limits_json.script` and drives it through the real
- * pool/gate/session/trace stack. This is the harness that lets the engine, the endpoint
+ * pool/session/trace stack. This is the harness that lets the engine, the endpoint
  * pool, and the browser layer be exercised *together* before an agent (Phase 4) exists to
  * decide its own actions or a compiler (Phase 6) exists to emit a static program — it is
  * neither of those things, and nothing here anticipates their shape.
@@ -116,7 +115,6 @@ function parseLimits(limitsJson: unknown): ParsedLimits {
 
 export type ScriptedExecutorDeps = {
   pool: EndpointPool;
-  gate: PolicyGate;
   blobs: BlobStore;
   /** For the per-run `TraceRecorder` — the executor does not own a connection to the DB. */
   db: Db;
@@ -289,7 +287,7 @@ const defaultStorageFlagsOf = (task: TaskRow): StorageFlags => parseLimits(task.
  * the only path that runs packet validation, dedupe, the loop budget, and the outbox.
  */
 export function createScriptedBrowserExecutor(deps: ScriptedExecutorDeps): TaskExecutor {
-  const { pool, gate, blobs, db, endpointFor, metrics } = deps;
+  const { pool, blobs, db, endpointFor, metrics } = deps;
   const storageFlagsOf = deps.storageFlagsOf ?? defaultStorageFlagsOf;
 
   return {
@@ -303,8 +301,6 @@ export function createScriptedBrowserExecutor(deps: ScriptedExecutorDeps): TaskE
         const trace = createTraceRecorder(db, blobs, handle.run.id, storageFlagsOf(handle.task));
         session = await openRunSession({
           conn: lease.conn,
-          gate,
-          taskCtx: { taskId: handle.task.id, runId: handle.run.id },
           trace,
           ...(metrics ? { metrics } : {}),
           ...(browser ? { limits: browser } : {}),

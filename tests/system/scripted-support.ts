@@ -9,7 +9,6 @@ import {
 import { cdpEndpoints, traceEntries, type TraceEntryRow } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import { createEngine, executorKey, type Engine } from "@tabductor/engine";
-import { AllowAllGate, type PolicyGate } from "@tabductor/policy";
 import {
   createScriptedBrowserExecutor,
   createTestBlobStore,
@@ -25,7 +24,7 @@ import { asc, eq } from "drizzle-orm";
  * bus and engine, the real endpoint pool bound to one real Chrome, and the fixture sites —
  * the `ScriptedBrowserExecutor` registered under mode `scripted` is the only executor this
  * engine knows, so every task these tests seed with `mode: "scripted"` runs through the
- * actual pool/gate/session/trace stack, not a stand-in for it.
+ * actual pool/session/trace stack, not a stand-in for it.
  *
  * Structurally compatible with `Rig` (`engine-support.ts`) — extra fields, none missing —
  * so `trigger`/`waitFor`/`waitForQuiet`/`runsForTask`/`eventsOfType` all accept it directly.
@@ -39,11 +38,10 @@ export type ScriptedRig = {
   fx: Fixtures;
   blobs: BlobStore;
   endpointId: string;
-  gate: PolicyGate;
   stop: () => Promise<void>;
 };
 
-export async function startScriptedRig(opts: { chrome?: Chrome; gate?: PolicyGate } = {}): Promise<ScriptedRig> {
+export async function startScriptedRig(opts: { chrome?: Chrome } = {}): Promise<ScriptedRig> {
   const ownsChrome = !opts.chrome;
   const [handle, chrome, fx, testBlobs] = await Promise.all([
     createMigratedTestDb(),
@@ -52,7 +50,6 @@ export async function startScriptedRig(opts: { chrome?: Chrome; gate?: PolicyGat
     createTestBlobStore(),
   ]);
   const blobs = testBlobs.store;
-  const gate = opts.gate ?? new AllowAllGate({ navAllowlist: ["127.0.0.1"] });
 
   const endpointId = newId("endpoint");
   await handle.db.insert(cdpEndpoints).values({ id: endpointId, wsUrl: chrome.wsUrl });
@@ -60,7 +57,6 @@ export async function startScriptedRig(opts: { chrome?: Chrome; gate?: PolicyGat
   const pool = createEndpointPool({ db: handle.db, driver: playwrightDriver });
   const executor = createScriptedBrowserExecutor({
     pool,
-    gate,
     blobs,
     db: handle.db,
     endpointFor: async () => endpointId,
@@ -89,7 +85,6 @@ export async function startScriptedRig(opts: { chrome?: Chrome; gate?: PolicyGat
     fx,
     blobs,
     endpointId,
-    gate,
     stop: async () => {
       await dispatcher.stop();
       await engine.stop();

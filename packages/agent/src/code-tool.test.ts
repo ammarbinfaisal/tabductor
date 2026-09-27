@@ -7,6 +7,7 @@ import { readSdkEvidence } from "@tabductor/compiler";
 import { AppError } from "@tabductor/core";
 import { pythonFixture, testRunner } from "./python-test-support.js";
 import { runAgentLoop } from "./loop.js";
+import type { CaptchaService } from "@tabductor/engine";
 
 function fixture(compiled = false) {
   const entries: Array<{seq:number;kind:string;payload:Record<string,unknown>}> = [];
@@ -27,8 +28,16 @@ it("exposes Python and screenshots and documents the underlying typed SDK",()=>{
   const tools=buildBrowserCodeTools({session:pythonFixture().session,pythonRunner:testRunner(),emit:async()=>({outcome:"deduped"})});
   expect(tools.map(t=>t.name)).toEqual(["browser.python", "browser.screenshot"]);
   expect(tools[0]!.description).toContain("page");
-  expect(tools[0]!.description).toContain("workflow.done(");
+  expect(tools[0]!.description).toContain("browser.done(");
   expect(tools[0]!.description).toContain("playwright.sync_api");
+});
+
+it("exposes network history and CAPTCHA as separate browser tools", () => {
+  const session = pythonFixture().session;
+  session.network = { list: async () => ({ records: [], total: 0 }) } as unknown as typeof session.network;
+  const tools = buildBrowserCodeTools({ session, pythonRunner: testRunner(), captcha: {} as CaptchaService,
+    emit: async () => ({ outcome: "deduped" }) });
+  expect(tools.map(tool => tool.name)).toEqual(["browser.python", "browser.screenshot", "browser.network", "browser.captcha"]);
 });
 
 it("uses structured input and journals operations before writes, stopping at terminal completion",async()=>{

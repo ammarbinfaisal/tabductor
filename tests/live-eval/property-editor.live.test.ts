@@ -3,7 +3,6 @@ import { createServer } from "node:http";
 import { expect, it } from "vitest";
 import { launchChrome } from "@tabductor/testkit";
 import { openRunSession, playwrightDriver } from "@tabductor/browser";
-import { AllowAllGate } from "@tabductor/policy";
 import { liveLlm, runAgentLoop } from "@tabductor/agent";
 import { buildToolRegistry } from "../../packages/agent/src/tools.js";
 
@@ -18,7 +17,7 @@ it.skipIf(!process.env.OPENAI_API_KEY)("prepares a property in a delayed editor 
   const conn = await playwrightDriver.connect(chrome.wsUrl);
   const events: Array<Record<string, unknown>> = [];
   const trace = { record: async (_kind: string, payload: Record<string, unknown>) => { events.push(payload); }, flush: async () => {}, close: async () => {} };
-  const session = await openRunSession({ conn, trace, taskCtx: { runId: "fixture", taskId: "property" }, gate: new AllowAllGate({ navAllowlist: ["127.0.0.1"] }) });
+  const session = await openRunSession({ conn, trace });
   let journal: unknown = [];
   const actions = { get: async () => journal, set: async (value: unknown) => { journal = value; } };
   const controller = new AbortController();

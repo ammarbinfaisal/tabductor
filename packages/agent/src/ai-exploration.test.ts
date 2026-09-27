@@ -34,8 +34,8 @@ it("lets AI inspect and correct an uncertain action, assess the result and finis
 except Exception: pass
 page.inner_text('body')
 page.click('corrected')
-workflow.record.outcome(collection='items',recordKey='item-1',status='saved',reason='Observed the saved identity and body in the custom editor')
-workflow.done(result='saved')`});
+browser.record.outcome(collection='items',recordKey='item-1',status='saved',reason='Observed the saved identity and body in the custom editor')
+browser.done(result='saved')`});
   expect(result, JSON.stringify(result)).toMatchObject({ok:true,terminal:{outcome:"done"}});
   expect(f.calls).toHaveBeenCalledTimes(3);
   expect(f.record).toHaveBeenCalledWith({collection:"items",recordKey:"item-1",status:"saved",reason:"Observed the saved identity and body in the custom editor"});
@@ -45,16 +45,16 @@ workflow.done(result='saved')`});
 
 it("keeps uncertain-effect and verified-completion guards in static mode",async()=>{
   const f = fixture(true);
-  const result=await f.code.execute({source:`def run(page, context, workflow):
+  const result=await f.code.execute({source:`def run(page, context, browser):
     try:
         page.click('old')
         page.click('corrected')
     except Exception as error:
-        workflow.deopt(reason=str(error))`});
+        browser.deopt(reason=str(error))`});
   expect(result).toMatchObject({ok:true,terminal:{outcome:"deopt"}});
   expect(f.calls).toHaveBeenCalledOnce();
-  expect(await f.code.execute({source:"def run(page, context, workflow):\n    workflow.record.outcome(collection='items',recordKey='item-1',status='saved',reason='unsupported assertion')"})).toMatchObject({ok:true,terminal:{outcome:'deopt'}});
-  expect(await f.code.execute({source:"def run(page, context, workflow):\n    workflow.done()"})).toMatchObject({ok:true,terminal:{outcome:'deopt'}});
+  expect(await f.code.execute({source:"def run(page, context, browser):\n    browser.record.outcome(collection='items',recordKey='item-1',status='saved',reason='unsupported assertion')"})).toMatchObject({ok:true,terminal:{outcome:'deopt'}});
+  expect(await f.code.execute({source:"def run(page, context, browser):\n    browser.done()"})).toMatchObject({ok:true,terminal:{outcome:'deopt'}});
   expect(f.record).not.toHaveBeenCalled();
 });
 

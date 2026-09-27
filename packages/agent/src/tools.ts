@@ -1,5 +1,7 @@
 import { pythonTool } from "./python-tool.js";
 import { browserScreenshotTool } from "./browser-screenshot.js";
+import { browserNetworkTool } from "./browser-network.js";
+import { browserCaptchaTool } from "./browser-captcha.js";
 import { browserMutation, observeAfterAction, readActionHistory, withActionSummaries, type BrowserActionSummary, type ObservationMetadata, type BrowserRecovery } from "./browser-actions.js";
 import { recordOutcomeTool } from "./record-tools.js";
 import { createHash } from "node:crypto";
@@ -240,7 +242,7 @@ function encodeBody(body: { bytes: Buffer; mime: string } | null | undefined): u
   };
 }
 
-function encodeNetworkRead(result: NetworkReadResult): Record<string, unknown> {
+export function encodeNetworkRead(result: NetworkReadResult): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (result.request_headers !== undefined) out.request_headers = result.request_headers;
   if (result.response_headers !== undefined) out.response_headers = result.response_headers;
@@ -639,7 +641,9 @@ export function buildToolRegistry(deps: AgentToolDeps): AgentTool[] {
   return summarized;
 }
 
-/** Browser models execute Python or request an image directly. */
+/** Browser models receive Python, screenshot, network history and CAPTCHA tools. */
 export function buildBrowserCodeTools(deps: AgentToolDeps): AgentTool[] {
-  return [pythonTool(deps), browserScreenshotTool(deps)];
+  return [pythonTool(deps), browserScreenshotTool(deps),
+    ...(deps.session.network ? [browserNetworkTool(deps.session)] : []),
+    ...(deps.captcha ? [browserCaptchaTool(deps.captcha, deps.beforeCall)] : [])];
 }

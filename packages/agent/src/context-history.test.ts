@@ -31,7 +31,7 @@ it("sends only the direct Python tool result to the next model invocation",async
     expect(wire).toContain('browser__python');
     expect(wire).toContain('invocationId');
     expect(wire).not.toContain('Observed but never printed');
-    return {toolCalls:[{id:'done',name:'browser.python',args:{source:'workflow.done()'}}],usage:{in:1,out:1}};
+    return {toolCalls:[{id:'done',name:'browser.python',args:{source:'browser.done()'}}],usage:{in:1,out:1}};
   }},tools:[tool],task:{prompt:'explore'},trigger:null,emits:[],trace:trace(),contextHistory:f.history});
   expect(result.outcome).toBe('done');
   expect((await f.restore().pending()).filter(e=>e.name==='playwright.call')).toHaveLength(2);
@@ -203,7 +203,7 @@ it("restores the prior tool call/result transcript after an interrupted model lo
       const wire = JSON.stringify(toModelMessages(request.messages));
       expect(wire).toContain("page.click('button')");
       expect(wire).not.toContain("record-7");
-      return { toolCalls: [{ id: "finish", name: "browser.python", args: { source: "workflow.done()" } }], usage: { in: 1, out: 1 } };
+      return { toolCalls: [{ id: "finish", name: "browser.python", args: { source: "browser.done()" } }], usage: { in: 1, out: 1 } };
     } },
   })).toMatchObject({ outcome: "done" });
   expect(mutate).toHaveBeenCalledOnce();

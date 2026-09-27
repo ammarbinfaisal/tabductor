@@ -3,7 +3,6 @@ import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { launchChrome, type Chrome } from "@tabductor/testkit";
 import { openRunSession, playwrightDriver, type BrowserConn, type RunSession } from "@tabductor/browser";
-import { AllowAllGate } from "@tabductor/policy";
 import { buildToolRegistry } from "../../packages/agent/src/tools.js";
 import { runAgentLoop } from "../../packages/agent/src/loop.js";
 import { summarizePerception } from "../../packages/agent/src/tools.js";
@@ -24,7 +23,7 @@ beforeAll(async()=>{
 });
 afterAll(async()=>{await conn?.close();await chrome?.close();await new Promise<void>(r=>server?.close(()=>r()));});
 async function setup(){
-  const session=await openRunSession({conn,trace,taskCtx:{taskId:"t",runId:"r"},gate:new AllowAllGate({navAllowlist:["127.0.0.1"]})});
+  const session=await openRunSession({conn,trace});
   await session.page.goto(origin);const tools=new Map(buildToolRegistry({session,emit:async()=>({outcome:"deduped"})}).map(t=>[t.name,t]));
   return {session,tools,call:(name:string,args:unknown={})=>tools.get(name)!.execute(args)};
 }

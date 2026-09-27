@@ -2,20 +2,13 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
-import { AllowAllGate } from "@tabductor/policy";
 import { runCompiledScript } from "@tabductor/static-rt";
 import { openSession, startBrowserRig, type BrowserRig, type SessionRig } from "./browser-support.js";
 import { memoryState, recordingEmit, script } from "./static-rt-support.js";
 
 /**
  * The cage wired to a real browser: the §11-shaped fixture script against `fake-tweets`, the
- * proof that a `ctx.page.*` call lands on the *existing* `PolicyGate`, and the dialog hook.
- *
- * The gate case is the one that matters most. `ctx.page.goto` is not "a gated method" in its
- * own right — it binds straight to `RunSession.page.goto`, which already runs every action
- * through `PolicyGate` inside the session's `act()` wrapper. Testing a denial here proves the
- * isolate call reached that check rather than a bypass or, worse, a second gate that could
- * drift away from the first.
+ * proof that `ctx.page.*` calls reach the traced browser session, and the dialog hook.
  */
 
 const FIXTURE = readFileSync(
@@ -61,15 +54,14 @@ it("runs the §11-shaped fixture script end to end and emits what it extracted",
   expect(state.all().seen).toBe(emit.calls.length);
 }, 120_000);
 
-it("a ctx.page.goto to a denylisted host is denied by the session's own PolicyGate", async () => {
-  // The allowlist is the gate's existing carve-out; 127.0.0.1 is in it, example.com is not.
-  sess = await openSession(rig, { gate: new AllowAllGate({ navAllowlist: ["127.0.0.1"] }) });
+it("a ctx.page.goto proceeds without a navigation policy check", async () => {
+  sess = await openSession(rig);
   const state = memoryState();
 
   const result = await runCompiledScript(
     script(`
   try {
-    await ctx.page.goto("http://example.com/");
+    await ctx.page.goto(${JSON.stringify(`${rig.fx.url}/fake-tweets`)});
     await ctx.state.set("outcome", "allowed");
   } catch (e) {
     await ctx.state.set("outcome", "denied:" + String(e.message));
@@ -78,9 +70,8 @@ it("a ctx.page.goto to a denylisted host is denied by the session's own PolicyGa
   );
 
   expect(result.outcome).toBe("completed");
-  expect(String(state.all().outcome)).toMatch(/^denied:/);
-  // The page never went anywhere — the denial happened before navigation, not after.
-  expect(sess.session.page.url()).not.toContain("example.com");
+  expect(state.all().outcome).toBe("allowed");
+  expect(sess.session.page.url()).toContain("/fake-tweets");
 }, 120_000);
 
 it("guard.all reports which checks failed, and the script deopts with them as evidence", async () => {

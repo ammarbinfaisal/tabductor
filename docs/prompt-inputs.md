@@ -9,7 +9,7 @@ text values, supplied per manual trigger. Repeated references share a value. Nam
 with a letter or underscore and can contain letters, digits, underscores and hyphens.
 `$$` escapes a literal dollar sign; `$20` is a price, not an input.
 
-The tRPC `workflow.trigger` mutation accepts:
+The tRPC `browser.trigger` mutation accepts:
 
 ```json
 {
@@ -32,7 +32,7 @@ values with a combined serialized limit of 100,000 characters.
 The manual trigger event stores the values under `promptInputs`. Browser and decision
 tasks receive the same values throughout that execution, including downstream tasks and
 retries. In browser Python, literal values are available as
-`workflow.input["promptInputs"]["editor-url"]`. Input values are data, never Python source.
+`browser.input["promptInputs"]["editor-url"]`. Input values are data, never Python source.
 Schedules do not supply prompt inputs; use manual runs for parameterized workflows.
 
 ## Static execution with AI portions
@@ -40,21 +40,21 @@ Schedules do not supply prompt inputs; use manual runs for parameterized workflo
 Variable-dependent semantic work can remain inside a compiled browser routine:
 
 ```python
-def run(page, context, workflow):
+def run(page, context, browser):
     try:
-        page.goto(workflow.input["promptInputs"]["editor-url"])
+        page.goto(browser.input["promptInputs"]["editor-url"])
         editor = page.get_by_role("textbox", name="Post")
         if editor.count() != 1:
-            workflow.deopt(reason="The post editor changed")
+            browser.deopt(reason="The post editor changed")
         answer = browser.ai(
             "Write a post about $topic using $writing-style",
             {"type": "object", "properties": {"text": {"type": "string"}},
              "required": ["text"], "additionalProperties": False},
         )
         editor.fill(answer["text"])
-        workflow.done()
+        browser.done()
     except Exception as error:
-        workflow.deopt(reason=str(error))
+        browser.deopt(reason=str(error))
 ```
 
 The host resolves references inside `browser.ai` against the current execution's values

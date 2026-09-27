@@ -45,7 +45,7 @@ it("records imported SDK calls and preserves complete stdout with a bounded prev
 it("commits helpers and files even when the cell finishes the task",async()=>{
   const f=workspace(), define=vi.fn(async(name:string,source:string)=>({name,source,revision:"v2"}));
   const tool=pythonFixture().tool({pythonRunner:factory(),workspace:f.workspace,helpers:{list:async()=>[],define}});
-  expect(await tool.execute({source:"open('agent_helpers.py','w').write('def example(): return 1')\nopen('result.json','w').write('[42]')\nworkflow.done()"})).toMatchObject({ok:true,terminal:{outcome:"done"}});
+  expect(await tool.execute({source:"open('agent_helpers.py','w').write('def example(): return 1')\nopen('result.json','w').write('[42]')\nbrowser.done()"})).toMatchObject({ok:true,terminal:{outcome:"done"}});
   expect(define).toHaveBeenCalledOnce();
   expect(await f.workspace.read("result.json")).toEqual({content:"[42]",encoding:"utf8"});
 });
@@ -63,7 +63,7 @@ it("makes complete error output readable after restoring the run workspace",asyn
   expect(result.ok).toBe(false);
   if (!result.ok) {
     expect(result.error).toContain("first-line");
-    expect(result.error).toContain("omitted; use workflow.output.read");
+    expect(result.error).toContain("omitted; use browser.output.read");
   }
   const invocationId=(result.value as {invocationId:string}).invocationId;
   const read=f.restore().tools().find(t=>t.name==="output.read")!;

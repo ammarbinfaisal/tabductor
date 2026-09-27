@@ -2,7 +2,6 @@ import { withAutomationControl } from "./control.js";
 import { proxyMember } from "./playwright-contract.js";
 import { randomBytes } from "node:crypto";
 import { AppError, SCRIPT_RUNTIME_VERSION } from "@tabductor/core";
-import type { PolicyGate, TaskCtx } from "@tabductor/core";
 import type { Metrics } from "@tabductor/telemetry";
 import type {
   Anchor,
@@ -22,10 +21,8 @@ import type {
 import type { BlobInput, TraceRecorder } from "./trace.js";
 
 /**
- * Where the three halves of Phase 3 meet: a raw driver page, the policy gate, and the trace
- * recorder. Executors never see the driver directly — they get one of these, so "guarded"
- * and "traced" are properties of the only page they can reach rather than a discipline each
- * executor has to remember (impl-phases §0).
+ * Joins a raw driver page with run limits and trace recording. Executors receive this
+ * session so every browser action is recorded consistently.
  *
  * The connection is a parameter, not something this opens: S3b's endpoint pool owns
  * connections and their leases, and a session that connected for itself would be a second
@@ -41,7 +38,7 @@ export type RunSession = {
    * `ctx.guard.noDialog()` exists to let a compiled script refuse exactly that situation.
    */
   dialogSeen: () => boolean;
-  /** A second guarded+traced page on the same connection (§8 `max_tabs`). */
+  /** A second traced page on the same connection (§8 `max_tabs`). */
   openTab: () => Promise<Page>;
   /**
    * Resolves a snapshot-qualified anchor from the most recent `perceive()` call on any page in
@@ -104,13 +101,7 @@ export type NetworkApi = {
   list: (opts?: { urlPattern?: string; limit?: number }) => Promise<NetworkListResult>;
   waitForResponse: (opts: NetworkWaitOptions) => Promise<NetworkListRecord>;
   body: (index: number) => Promise<Buffer>;
-  /**
-   * §9 step 3: each requested part is gated through `PolicyGate.checkNetworkRead`
-   * individually (not once for the whole call) — the permissive verdict today is a formality,
-   * but the per-part call site is what lets S7 turn "headers denied by default" into a policy
-   * change instead of a tool-shape change. Header values cross `gate.redact` before they
-   * leave this function (identity today, same reason).
-   */
+  /** Read selected captured request and response parts. */
   read: (index: number, parts: NetworkReadPart[]) => Promise<NetworkReadResult>;
 };
 
@@ -122,10 +113,8 @@ export type ResourceLimits = {
 
 export type SessionDeps = {
   conn: BrowserConn;
-  gate: PolicyGate;
-  taskCtx: TaskCtx;
   trace: TraceRecorder;
-  /** Injected, exactly like `PolicyGate` (§17.2 rule 1). Absent means uninstrumented, not broken. */
+  /** Optional telemetry; absence does not affect browser actions. */
   metrics?: Metrics;
   /**
    * `limits_json.browser` (§8), passed through as plain options — wiring these from the task
@@ -141,15 +130,12 @@ export type SessionDeps = {
 const DEFAULT_NETWORK_LIST_LIMIT = 50;
 
 export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
-  const { conn, gate, taskCtx, trace, metrics, limits } = deps;
+  const { conn, trace, metrics, limits } = deps;
   const openedAt = Date.now();
   const browserVersion = await withAutomationControl(conn, () => conn.version());
   await trace.record("runtime", { browserVersion, runtimeVersion: SCRIPT_RUNTIME_VERSION });
 
-  // ---- resource limits (§8): runtime-enforced, checked before policy. A run that has
-  // already spent its budget gets nothing from learning whether the action it can't afford
-  // would otherwise have been allowed, and these are cost/correctness controls rather than
-  // permissions (impl-phases §0 carve-out 2), so they are not `PolicyGate`'s business. ----
+  // ---- Resource limits (§8) bound the cost and duration of a run. ----
   let visitCount = 0;
   let tabCount = 0;
 
@@ -159,10 +145,7 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
     detail: Record<string, unknown>,
   ): Promise<never> => {
     metrics?.resourceLimitAborts.add({ limit });
-    // Kind `action`, not `policy_denied`: a breach is not a `PolicyGate` verdict, and giving
-    // it the policy kind would blur a distinction the trace exists to keep — every
-    // `policy_denied` row is a gate decision and nothing else's. The `limit` field is what a
-    // reader (or the compiler) greps for; `action` says what was attempted when it broke.
+    // The limit and attempted action identify the failure in the trace.
     await trace.record("action", {
       action,
       ...detail,
@@ -273,22 +256,6 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
       });
     }
 
-    const verdict = await gate.checkNetworkRead(taskCtx, { index, url: record.url }, { body: true });
-    metrics?.policyVerdicts.add({ check: "network_read", result: verdict.allow ? "allow" : "deny" });
-    if (!verdict.allow) {
-      // Mirrors `onNavigationRequest`'s denial shape: a denied read is a security signal, not
-      // run exhaust, so it is unaffected by the `network` storage opt-out (§14).
-      await trace.record("policy_denied", {
-        check: "network_read",
-        index,
-        url: record.url,
-        rule: verdict.rule,
-      });
-      throw new AppError("action_denied", `network.body denied by ${verdict.rule}`, {
-        details: { action: "network.body", index, rule: verdict.rule },
-      });
-    }
-
     const parts = partsOf.get(index);
     if (!parts) {
       throw new AppError("network_body_unavailable", `no response body for network record ${index}`, {
@@ -328,14 +295,7 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
     }
   };
 
-  /**
-   * §9 step 3, S4b's `network.read` tool. One `checkNetworkRead` per requested part — never
-   * one verdict for the whole call — so a future policy (S7: "headers denied by default")
-   * changes which parts a task gets, not the tool's shape or call pattern. Header values pass
-   * through `gate.redact` before they leave this function; body bytes do not (redaction's
-   * documented job is credential-shaped header values, §9 step 4), but the call site exists
-   * for both so a Phase 7 body-redaction rule needs no new plumbing either.
-   */
+  /** Read selected parts of a captured request. */
   const networkRead = async (
     index: number,
     parts: NetworkReadPart[],
@@ -357,32 +317,12 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
     const started = Date.now();
     try {
       for (const part of parts) {
-        const headerPart = part === "request_headers" || part === "response_headers";
-        const verdict = await gate.checkNetworkRead(
-          taskCtx,
-          { index, url: record.url },
-          headerPart ? { headers: true } : { body: true },
-        );
-        metrics?.policyVerdicts.add({ check: "network_read", result: verdict.allow ? "allow" : "deny" });
-        if (!verdict.allow) {
-          await trace.record("policy_denied", {
-            check: "network_read",
-            index,
-            url: record.url,
-            part,
-            rule: verdict.rule,
-          });
-          throw new AppError("action_denied", `network.read(${part}) denied by ${verdict.rule}`, {
-            details: { action: "network.read", index, part, rule: verdict.rule },
-          });
-        }
-
         switch (part) {
           case "request_headers":
-            result.request_headers = (await gate.redact(taskCtx, { headers: await bag.requestHeaders() })).headers;
+            result.request_headers = await bag.requestHeaders();
             break;
           case "response_headers":
-            result.response_headers = (await gate.redact(taskCtx, { headers: await bag.responseHeaders() })).headers;
+            result.response_headers = await bag.responseHeaders();
             break;
           case "request_body":
             result.request_body = await bag.requestBody();
@@ -418,39 +358,12 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
   };
 
   const onNavigationRequest = async (req: NavigationRequest): Promise<boolean> => {
-    let url: URL;
-    try {
-      url = new URL(req.url);
-    } catch {
-      // A navigation target we cannot even parse is not one we can reason about, so it does
-      // not get the benefit of the doubt.
-      await trace.record("policy_denied", { check: "navigation", ...req, rule: "url_unparsable" });
-      metrics?.policyVerdicts.add({ check: "navigation", result: "deny" });
-      return false;
-    }
-
-    const verdict = await gate.checkNavigation(taskCtx, url, req.cause);
-    metrics?.policyVerdicts.add({
-      check: "navigation",
-      result: verdict.allow ? "allow" : "deny",
-    });
-    if (verdict.allow) {
-      // Recorded per navigation rather than per `goto`: a redirect chain is three entries,
-      // which is exactly what someone debugging "where did it end up" needs to see.
-      await trace.record("navigation", { url: req.url, cause: req.cause });
-      return true;
-    }
-    await trace.record("policy_denied", {
-      check: "navigation",
-      url: req.url,
-      cause: req.cause,
-      rule: verdict.rule,
-    });
-    return false;
+    await trace.record("navigation", { url: req.url, cause: req.cause });
+    return true;
   };
 
   /**
-   * One wrapper for every action: limit check, then verdict, then the call, then the entry —
+   * One wrapper for every action: limit check, then the call, then the entry —
    * including on failure, because a run that failed halfway is precisely the run someone
    * reads the trace of. `detail` carries the *resolved* selector, which is what the Phase 6
    * checker matches traces on.
@@ -462,15 +375,6 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
     onResult?: { detail?: (result: T) => Record<string, unknown>; blob?: (result: T) => BlobInput },
   ): Promise<T> => {
     if (wallClockExceeded()) return limitBreach(action, "max_wall_ms", detail);
-
-    const verdict = await gate.checkAction(taskCtx, { kind: action, ...detail });
-    metrics?.policyVerdicts.add({ check: "action", result: verdict.allow ? "allow" : "deny" });
-    if (!verdict.allow) {
-      await trace.record("policy_denied", { check: "action", action, ...detail, rule: verdict.rule });
-      throw new AppError("action_denied", `${action} denied by ${verdict.rule}`, {
-        details: { action, rule: verdict.rule, ...detail },
-      });
-    }
 
     const started = Date.now();
     try {
@@ -571,13 +475,6 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
       const call = command.call;
       const spec = call ? proxyMember(call) : undefined;
       if (command.command === "close") return raw.proxy!(command, opts);
-      const networkRead = call && ["Request", "Response", "APIResponse"].includes(call.target.class) &&
-        ["body","text","json","headers","all_headers","headers_array","header_value","header_values","post_data","post_data_buffer","post_data_json"].includes(call.member);
-      if (networkRead) {
-        const url = String(await raw.proxy!({command:"call",call:{target:call.target,member:"url",args:[],kwargs:{},callback:call.callback}},opts));
-        const verdict = await gate.checkNetworkRead(taskCtx, {index:0,url}, call.member.includes("header") ? {headers:true} : {body:true});
-        if (!verdict.allow) throw new AppError("network_read_denied", "Network evidence access denied",{details:{outcomeUncertain:false}});
-      }
       if (call?.member === "goto") {
         visitCount++;
         if (limits?.maxVisits !== undefined && visitCount > limits.maxVisits) return limitBreach("goto","max_visits",{});
@@ -595,19 +492,6 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
         {pageId:raw.id}, async () => {
           const value = await raw.proxy!(command, opts);
           if (spec?.kind === "effect") dispatchStatus="executed";
-          if (networkRead && call) {
-            if (call.member === "all_headers" || call.member === "headers")
-              return (await gate.redact(taskCtx,{headers:value as Record<string,string>})).headers;
-            if (call.member === "headers_array")
-              return Promise.all((value as Array<{name:string;value:string}>).map(async h=>({...h,value:(await gate.redact(taskCtx,{headers:{[h.name]:h.value}})).headers?.[h.name]??""})));
-            if (call.member === "header_value" || call.member === "header_values") {
-              const name=String(call.args[0]??call.kwargs.name);
-              const clean=async(v:string)=>(await gate.redact(taskCtx,{headers:{[name]:v}})).headers?.[name]??"";
-              return Array.isArray(value)?Promise.all(value.map(clean)):typeof value==="string"?clean(value):value;
-            }
-            if (typeof value === "string") return (await gate.redact(taskCtx,{body:value})).body;
-            if (call.member === "json" || call.member === "post_data_json") return JSON.parse((await gate.redact(taskCtx,{body:JSON.stringify(value)})).body??"null");
-          }
           return value;
         });
     }} : {}),
@@ -640,8 +524,8 @@ export async function openRunSession(deps: SessionDeps): Promise<RunSession> {
     waitForLoadState: (state, opts) =>
       pageAct("waitForLoadState", { state, timeout: opts?.timeout }, () =>
         waitWithinBudget("waitForLoadState", opts?.timeout, (timeout) => raw.waitForLoadState(state, { timeout }))),
-    // Untraced passthroughs, deliberately outside `pageAct()`: no policy check, no trace entry —
-    // the secrets broker (S5b) writes its own `action`/`policy_denied` rows with the outcome
+    // Untraced passthroughs, deliberately outside `pageAct()`: the secrets broker
+    // writes its own access and action rows with the outcome
     // it decided, and `insertTextRaw`'s whole point is a call site that leaves nothing in the
     // trace for its `text` argument to leak into (`packages/secrets/src/broker.ts`).
     probeTarget: (selector) => raw.probeTarget(selector),

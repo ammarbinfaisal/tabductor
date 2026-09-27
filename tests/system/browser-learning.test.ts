@@ -28,7 +28,7 @@ async function fixture() {
     const snapshot = await task();
     const [row] = await db.insert(runs).values({ id: newId("run"), taskId, workflowVersionId: wf.versionId, modeUsed, status,
       endedAt: status === "running" ? null : new Date() }).returning();
-    const invocationId = "invocation", source = "def run(page, context, workflow):\n    page.goto(workflow.input['url'])\n    workflow.done()";
+    const invocationId = "invocation", source = "def run(page, context, browser):\n    page.goto(browser.input['url'])\n    browser.done()";
     const payloads: Record<string, unknown>[] = [
       { runtimeVersion: SCRIPT_RUNTIME_VERSION, browserVersion: "fixture" },
       { action: "sdk.invocation", invocationId, source, input: { url: "https://fixture.test", id: "previous-record" },
@@ -48,14 +48,14 @@ async function fixture() {
     return row!;
   }
   function learned(runId: string, eligible = false, successSeq = 3): BrowserLearningResult {
-    return { procedure: { steps: [{ instruction: "Open the requested editor using workflow.input.url.", evidence: [`${runId}:${successSeq}`] }],
+    return { procedure: { steps: [{ instruction: "Open the requested editor using browser.input.url.", evidence: [`${runId}:${successSeq}`] }],
       cautions: [], instructions: "Read back the saved value before finishing." }, deopt: null,
       compile: { eligible, reason: eligible ? "Straightforward observed work" : "Needs further exploration", evidence: [`${runId}:${successSeq}`] } };
   }
   const response = (result: BrowserLearningResult) => ({ text: JSON.stringify(result), toolCalls: [], usage: { in: 1, out: 1 } });
   const worker = (complete: (request: LlmRequest) => Promise<ReturnType<typeof response>>) => createBrowserLearningWorker({ db, llmFor: () => ({ complete }) });
   async function script() {
-    const item = await insertCandidateScript(db, { taskId, source: "def run(page, context, workflow):\n    workflow.deopt(reason='Inspect current editor')",
+    const item = await insertCandidateScript(db, { taskId, source: "def run(page, context, browser):\n    browser.deopt(reason='Inspect current editor')",
       guardsMeta: { language: "python", apiVersion: "playwright-python-v1", compatibility: { runtimeVersion: SCRIPT_RUNTIME_VERSION, browserVersion: "fixture" },
         plan: { recoveryPrompt: "Inspect current editor", deopts: [{ id: "finish", prompt: "Judge and finish the current editor" }] } }, fromRuns: [] });
     await activateScript(db, item.id);
@@ -146,7 +146,7 @@ it.each([[true, false], [false, false], [true, true]])("learner eligibility feed
     compileLlmFor: () => ({ complete: async () => ({ text: turns++ === 0 ? JSON.stringify({
       goal: "save", guards: [{ operationId: "open", condition: "editor visible" }],
       steps: [{ operationId: "finish", why: "verified completion" }], bindings: [], checkpoints: [], discarded: [], recoveryPrompt: "Inspect the editor",
-    }) : "def run(page, context, workflow):\n    workflow.done()" }) }) });
+    }) : "def run(page, context, browser):\n    browser.done()" }) }) });
   const outcome = await compiler.runOnce();
   expect(outcome?.result.ok).toBe(valid);
   expect((await f.task()).mode).toBe(valid ? "compiled" : "ai");
@@ -222,7 +222,7 @@ it("carries compatible learning across publication and drops it for changed task
   const graph = await readGraph(f.db, f.wf.versionId);
   const next = await publishVersion(f.db, { workflowId: f.wf.workflowId, graph }, { schemaGenerator: staticSchemaGenerator({}) });
   const [carried] = await f.db.select().from(tasks).where(eq(tasks.workflowVersionId, next.versionId));
-  expect(carried?.compiledPrompt).toContain("workflow.input.url");
+  expect(carried?.compiledPrompt).toContain("browser.input.url");
   graph.tasks[0]!.prompt = "A different task";
   const changed = await publishVersion(f.db, { workflowId: f.wf.workflowId, graph }, { schemaGenerator: staticSchemaGenerator({}) });
   const [reset] = await f.db.select().from(tasks).where(eq(tasks.workflowVersionId, changed.versionId));

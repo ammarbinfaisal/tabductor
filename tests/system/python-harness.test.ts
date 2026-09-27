@@ -25,14 +25,14 @@ it.skipIf(!process.env.CAMOUFOX_TEST_URL)("compiles a Python Camoufox writer, wr
     : localPythonRunnerForTest(fileURLToPath(new URL("../../vendor/browser-harness/src/browser_harness/tabductor_runner.py",import.meta.url)));
   const python=(label:string)=>`from playwright.sync_api import Page, expect, TimeoutError
 assert isinstance(page, Page)
-page.goto(workflow.input['url'])
+page.goto(browser.input['url'])
 target = page.get_by_role('textbox', name='${label}')
-if target.count() != 1: workflow.deopt(reason='Editor changed')
-target.fill(workflow.input['body'])
+if target.count() != 1: browser.deopt(reason='Editor changed')
+target.fill(browser.input['body'])
 page.get_by_role('button', name='Save').click()
-expect(page.locator('article')).to_have_text(workflow.input['id']+' '+workflow.input['body'], timeout=1000)
-workflow.emit(type='record.saved',packet={'id':workflow.input['id'],'body':workflow.input['body']},dedupeKey=workflow.input['id'])
-workflow.done()`;
+expect(page.locator('article')).to_have_text(browser.input['id']+' '+browser.input['body'], timeout=1000)
+browser.emit(type='record.saved',packet={'id':browser.input['id'],'body':browser.input['body']},dedupeKey=browser.input['id'])
+browser.done()`;
   const saved = new Map<string,string>();
   const saves = new Map<string,number>();
   let changed = false;
@@ -55,7 +55,7 @@ workflow.done()`;
   const fixtureHost=process.env.CAMOUFOX_FIXTURE_HOST ?? "127.0.0.1";
   await new Promise<void>(resolve=>server.listen(0,fixtureHost,resolve));
   const url=`http://${fixtureHost}:${(server.address() as {port:number}).port}`;
-  const program=(label:string)=>"from playwright.sync_api import expect\ndef run(page, context, workflow):\n    try:\n"+python(label).split("\n").map(line=>"        "+line).join("\n")+"\n    except Exception as error:\n        workflow.deopt(reason=str(error))";
+  const program=(label:string)=>"from playwright.sync_api import expect\ndef run(page, context, browser):\n    try:\n"+python(label).split("\n").map(line=>"        "+line).join("\n")+"\n    except Exception as error:\n        browser.deopt(reason=str(error))";
   let modelCalls=0;
   try {
     rig=await startAgentRig({compiled:{},pythonRunner,
@@ -63,12 +63,12 @@ workflow.done()`;
       chrome:{wsUrl:workerUrl.replace(/^http/,"ws"),version:"camoufox",close:async()=>{}},
       driver:{connect:()=>createCamoufoxWorkerDriver({token,sessionId,generation:1}).connect(workerUrl)},llmFor:()=>({complete:async request=>{
       modelCalls++;
-      expect(request.tools.map(t=>t.name)).toEqual(["browser.python", "browser.screenshot"]);
+      expect(request.tools.map(t=>t.name)).toEqual(["browser.python", "browser.screenshot", "browser.network"]);
       if (modelCalls === 1) return { usage: { in: 1, out: 1 }, toolCalls: [{ id: "image", name: "browser.screenshot", args: {} }] };
       if (modelCalls === 2) expect(request.messages.some(m => m.toolResults?.some(r => r.name === "browser.screenshot" && r.result.images?.[0]?.mime === "image/png"))).toBe(true);
-      const recovery=`expect(page.locator('article')).to_have_text(workflow.input['id']+' '+workflow.input['body'], timeout=10000)
-workflow.emit(type='record.saved',packet={'id':workflow.input['id'],'body':workflow.input['body']},dedupeKey=workflow.input['id'])
-workflow.done()`;
+      const recovery=`expect(page.locator('article')).to_have_text(browser.input['id']+' '+browser.input['body'], timeout=10000)
+browser.emit(type='record.saved',packet={'id':browser.input['id'],'body':browser.input['body']},dedupeKey=browser.input['id'])
+browser.done()`;
       return {usage:{in:1,out:1},toolCalls:[{id:"code",name:"browser.python",args:{source:delayedCommit?recovery:python(changed?"Record content":"Body")}}]};
     }})});
     const definition = await createPromptWorkflow(rig.handle.db, { accountId: "acct_local", userId: "user_local", prompt: "Write and verify this record" });
@@ -87,7 +87,7 @@ workflow.done()`;
     const evidence=readSdkEvidence(traces[0]!);
     expect(evidence.sourceLanguage).toBe("python");
     const plan={goal:"Write record",guards:evidence.operations.filter(o=>o.name==="playwright.call" && o.args.member==="count").map(o=>({operationId:o.operationId,condition:"Body editor exists"})),
-      steps:evidence.operations.filter(o=>!(o.name==="playwright.call" && o.args.member==="count") && !o.name.startsWith("internal.")).map(o=>({operationId:o.operationId,why:"required"})),bindings:[{source:"workflow.input",use:"record fields"}],checkpoints:[],discarded:evidence.operations.filter(o=>o.name.startsWith("internal.")).map(o=>({operationId:o.operationId,why:"No task file dependencies"})),recoveryPrompt:"Inspect changed editor"};
+      steps:evidence.operations.filter(o=>!(o.name==="playwright.call" && o.args.member==="count") && !o.name.startsWith("internal.")).map(o=>({operationId:o.operationId,why:"required"})),bindings:[{source:"browser.input",use:"record fields"}],checkpoints:[],discarded:evidence.operations.filter(o=>o.name.startsWith("internal.")).map(o=>({operationId:o.operationId,why:"No task file dependencies"})),recoveryPrompt:"Inspect changed editor"};
     let compileTurn=0;
     const compiled=await compileTask({db:rig.handle.db,validatePython:(source,evidence,plan)=>validatePythonCandidate(pythonRunner,source,evidence,plan),llm:{complete:async()=>({text:compileTurn++===0?JSON.stringify(plan):program("Body")})}},{taskId:wf.taskIds.Write!,sourceRunId:first.id,traces});
     expect(compiled.ok,compiled.ok?"":compiled.error).toBe(true);

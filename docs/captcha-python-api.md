@@ -1,43 +1,47 @@
-# CAPTCHA services for browser Python
+# CAPTCHA Python API and browser tool
 
-`workflow.captcha` exposes CapSolver, 2Captcha and Anti-Captcha through the host. Python continues using `playwright.sync_api` and the existing run-owned `page` and `context`. Provider credentials and outbound provider requests stay on the engine; Python needs no network access or API keys.
+The injected Python `captcha` object and the top-level `browser.captcha` model tool expose CapSolver, 2Captcha and Anti-Captcha through the host. Use `browser.python` with the existing `page` and `context` to observe a challenge and apply a ready solution. Provider credentials and outbound provider requests stay on the engine.
 
 ## API
 
+Inside `browser.python`, call these synchronous methods directly. The `captcha` object is available in REPL cells, helper functions and compiled `run(page, context, browser)` functions without an import. Methods are enabled when the run has a CAPTCHA service.
+
 ```python
-providers = workflow.captcha.providers()
-job = workflow.captcha.solve(
+providers = captcha.providers()
+job = captcha.solve(
     provider="2captcha",
-    task={
-        "type": "TurnstileTaskProxyless",
-        "websiteURL": page.url,
-        "websiteKey": observed_site_key,
-    },
+    task={"type": "TurnstileTaskProxyless", "websiteURL": page.url, "websiteKey": "observed-site-key"},
     idempotency_key="login-challenge-1",
     wait_ms=90000,
 )
 if job["status"] in ("pending", "submitting"):
-    workflow.checkpoint.set(value={"captcha_job_id": job["id"]})
-    # In this cell or a later cell, poll the same job:
-    job = workflow.captcha.wait(job_id=job["id"], wait_ms=90000)
+    job = captcha.wait(job_id=job["id"], wait_ms=90000)
 if job["status"] == "ready":
-    token = job["solution"]["token"]
-    # Apply the solution using the site's actual callback/fields with Playwright,
-    # then verify that the website accepted it before proceeding.
+    solution = job["solution"]  # Apply using the observed site callback or fields, then verify acceptance.
 ```
 
-`workflow.describe(name="captcha.solve")` exposes the input schema. The provider catalog reports availability, missing keys/rates, credit units, rate version and official task documentation.
+`captcha.create_task(provider=..., task={...}, idempotency_key=..., options={...})` submits without waiting; `options` is optional and is also accepted by `solve`. `captcha.get_result(job_id=...)` reads or polls a job. `captcha.push_variable(job_id=..., name=..., value=...)` supplies an AntiGate variable. Use `browser.describe()` to discover available services and `browser.describe(name="captcha.solve")` for an exact argument schema. The agent loop system prompt documents all six methods.
 
-| Method | Behavior |
+The same operations are available as separate calls to the `browser.captcha` model tool:
+
+```json
+{"action":"providers"}
+{"action":"solve","provider":"2captcha","task":{"type":"TurnstileTaskProxyless","websiteURL":"https://example.com","websiteKey":"observed-site-key"},"idempotency_key":"login-challenge-1","wait_ms":90000}
+{"action":"wait","job_id":"returned-job-id","wait_ms":90000}
+```
+
+The provider catalog reports availability, missing keys/rates, credit units, rate version and official task documentation. After a ready result, apply the solution using the site's callback or fields, then verify that the website accepted it.
+
+| Action | Behavior |
 | --- | --- |
-| `providers()` | Discover configured providers and native task documentation. |
-| `create_task(provider, task, idempotency_key, options?)` | Reserve credits and submit once; may return an immediate solution. |
-| `get_result(job_id)` | Retrieve/poll the existing job; never purchases another solve. |
-| `wait(job_id, wait_ms?)` | Poll on the host, returning the current job at the deadline. |
-| `solve(provider, task, idempotency_key, options?, wait_ms?)` | Create/reuse and wait. |
-| `push_variable(job_id, name, value)` | Supply an AntiGate variable to a pending Anti-Captcha `AntiGateTask`. |
+| `providers` | Discover configured providers and native task documentation. |
+| `create_task` | Reserve credits and submit once; may return an immediate solution. |
+| `get_result` | Retrieve/poll the existing job; never purchases another solve. |
+| `wait` | Poll on the host, returning the current job at the deadline. |
+| `solve` | Create/reuse and wait. |
+| `push_variable` | Supply an AntiGate variable to a pending Anti-Captcha `AntiGateTask`. |
 
-Wait defaults to 90 seconds and is capped at 120 seconds. Jobs survive Python cells and resumed leases of the same run. Separate run IDs have separate jobs. Reuse the job ID or the same idempotency key for the same challenge; a key with different input is rejected. Identical submissions already in flight are also reused.
+Wait defaults to 90 seconds and is capped at 120 seconds. Jobs survive browser tool calls and resumed leases of the same run. Separate run IDs have separate jobs. Reuse the job ID or the same idempotency key for the same challenge; a key with different input is rejected. Identical submissions already in flight are also reused.
 
 Native task objects accept all provider task types and fields, rather than a fixed CAPTCHA enum. Full solution objects preserve tokens, text, coordinates, cookies and multi-field results. The optional `options.languagePool` supports `en`/`ru`; credentials, callback URLs and provider endpoints remain host-owned. Requests and responses are bounded at 2 MB. CapSolver's immediate `createTask` results are supported.
 
@@ -60,7 +64,7 @@ Web account initialization grants 1,000 internal credits once per verified Clerk
 
 Migration `0051_native_captcha_jobs.sql` stores run/account ownership, the provider task ID, request digest, rate, reservation and result. It does not store raw task inputs or provider keys. Calls check run leases and browser automation control. CAPTCHA request/result payloads and sensitive invocation source/output are omitted from SDK trace archives; provider solutions remain available to the Python caller and in the job row.
 
-Compose forwards credentials and rates only to the engine. Rebuild the app and Python runner image, apply migrations, and recreate the engine when upgrading. The Python proxy must include the `captcha` method allowlist.
+Compose forwards credentials and rates only to the engine. Rebuild the app and Python runner image, apply migrations, and recreate the engine when upgrading. The Tabductor runner extension injects `captcha` and registers its method allowlist.
 
 ## Website handling
 

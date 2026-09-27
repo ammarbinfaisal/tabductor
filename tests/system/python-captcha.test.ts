@@ -6,6 +6,7 @@ import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db
 import { appendCreditAdjustment, createBrowserProfile, createCaptchaService, createWorkflow, expireCreditReservations, getCreditBalance, resolveAccountIdentity, type CaptchaProvider, type RunHandle } from "@tabductor/engine";
 import { seedWorkflow } from "@tabductor/engine/testing";
 import { pythonFixture } from "../../packages/agent/src/python-test-support.js";
+import { browserCaptchaTool } from "../../packages/agent/src/browser-captcha.js";
 
 let database: MigratedTestDb;
 beforeAll(async()=>{database=await createMigratedTestDb();});
@@ -97,38 +98,29 @@ it("fences submissions during human control and settles acknowledged results aft
   await expect(f.service.getResult((await f.db.select().from(captchaJobs).where(eq(captchaJobs.runId,f.handle.run.id)))[0]!.id)).rejects.toMatchObject({code:"run_lease_lost"});
 });
 
-it("exposes native solving to real Python cells and keeps solutions out of archived traces", async()=>{
+it("exposes native solving through browser.captcha", async()=>{
   const f=await fixture();vi.mocked(f.provider.submit).mockResolvedValue({status:"ready",taskId:"immediate",solution:{text:"native-answer",coordinates:[{x:3,y:4}]}});
-  const python=pythonFixture();const tool=python.tool({captcha:f.service});
-  expect(tool.description).toContain("workflow.captcha.solve");
-  const result=await tool.execute({source:`assert workflow.captcha.providers()[0]['available']
-r = workflow.captcha.solve(provider='capsolver', task={'type':'ImageToTextTask','body':'base64'}, idempotency_key='python-job')
-assert r['status'] == 'ready'
-assert r['solution']['text'] == 'native-answer'
-assert r['solution']['coordinates'][0]['x'] == 3
-print(r['id'])`});
-  expect(result,JSON.stringify(result)).toMatchObject({ok:true});
+  const tool=browserCaptchaTool(f.service);
+  expect(await tool.execute({action:"providers"})).toMatchObject({ok:true,value:[{available:true}]});
+  expect(await tool.execute({action:"solve",provider:"capsolver"})).toMatchObject({ok:false,error:expect.stringContaining("missing required argument")});
+  const result=await tool.execute({action:"solve",provider:"capsolver",task:{type:"ImageToTextTask",body:"base64"},idempotency_key:"tool-job"});
+  expect(result,JSON.stringify(result)).toMatchObject({ok:true,value:{status:"ready",solution:{text:"native-answer",coordinates:[{x:3,y:4}]}}});
   expect(f.provider.submit).toHaveBeenCalledTimes(1);
-  expect(JSON.stringify(python.entries)).not.toContain("native-answer");
   expect(await getCreditBalance(f.db,f.accountId)).toMatchObject({availableUnits:9,reservedUnits:0});
 });
 
-it("keeps pending jobs usable across separate Python cells", async()=>{
-  const f=await fixture(), python=pythonFixture(), tool=python.tool({captcha:f.service});
-  const first=await tool.execute({source:`job = workflow.captcha.solve(provider='capsolver',task={'type':'TurnstileTask'},idempotency_key='pending',wait_ms=0)
-assert job['status'] == 'pending'
-print(job['id'])`});
-  expect(first,JSON.stringify(first)).toMatchObject({ok:true});
+it("keeps pending jobs usable across separate tool calls", async()=>{
+  const f=await fixture(), tool=browserCaptchaTool(f.service);
+  const first=await tool.execute({action:"solve",provider:"capsolver",task:{type:"TurnstileTask"},idempotency_key:"pending",wait_ms:0});
+  expect(first,JSON.stringify(first)).toMatchObject({ok:true,value:{status:"pending"}});
   const [job]=await f.db.select().from(captchaJobs).where(eq(captchaJobs.runId,f.handle.run.id));
   await readyToPoll(job!.id);
-  const second=await tool.execute({source:`job = workflow.captcha.wait(job_id='${job!.id}',wait_ms=0)
-assert job['status'] == 'ready'
-assert job['solution']['token'] == 'solved-token'`});
-  expect(second,JSON.stringify(second)).toMatchObject({ok:true});
+  const second=await tool.execute({action:"wait",job_id:job!.id,wait_ms:0});
+  expect(second,JSON.stringify(second)).toMatchObject({ok:true,value:{status:"ready",solution:{token:"solved-token"}}});
   expect(f.provider.submit).toHaveBeenCalledTimes(1);
 });
 
-it.skipIf(!process.env.CAMOUFOX_TEST_URL)("solves through Python and applies an explicit-render callback in a real browser", async()=>{
+it.skipIf(!process.env.CAMOUFOX_TEST_URL)("solves with a browser tool and applies an explicit-render callback in Python", async()=>{
   const {createCamoufoxWorkerDriver}=await import("@tabductor/browser");
   const {pythonTool}=await import("../../packages/agent/src/python-tool.js");
   const {testRunner}=await import("../../packages/agent/src/python-test-support.js");
@@ -142,8 +134,8 @@ it.skipIf(!process.env.CAMOUFOX_TEST_URL)("solves through Python and applies an 
   try {
     const f=await fixture();vi.mocked(f.provider.submit).mockResolvedValue({status:"ready",taskId:"immediate",solution:{token:"fixture-solved-token"}});
     const page=await connection.createPage();
-    const tool=pythonTool({session:{page} as import("@tabductor/browser").RunSession,pythonRunner:runner,captcha:f.service,emit:async()=>({outcome:"deduped"})});
-    const result=await tool.execute({source:`from playwright.sync_api import expect
+    const tool=pythonTool({session:{page} as import("@tabductor/browser").RunSession,pythonRunner:runner,emit:async()=>({outcome:"deduped"})});
+    const setup=await tool.execute({source:`from playwright.sync_api import expect
 page.set_content('''<div id="Capthcadiv"></div><input id="RecaptchaToken" type="hidden"><input id="_QString" type="hidden"><output>Awaiting challenge</output>
 <script>
 window.turnstile = { render: (container, options) => { document.querySelector(container).textContent = 'Verify you are human'; } };
@@ -157,13 +149,16 @@ window.turnstile.render('#Capthcadiv', {sitekey:'observed-key',callback:function
 }});
 </script>''')
 key = page.evaluate('mw:() => window.observedChallenge.sitekey')
-job = workflow.captcha.solve(provider='capsolver',task={'type':'AntiTurnstileTaskProxyLess','websiteURL':'https://fixture.test','websiteKey':key},idempotency_key='observed-widget')
-assert job['status'] == 'ready'
-page.evaluate('mw:token => window.observedChallenge.callback(token)', job['solution']['token'])
+assert key == 'observed-key'`});
+    expect(setup).toMatchObject({ok:true});
+    const solved=await browserCaptchaTool(f.service).execute({action:"solve",provider:"capsolver",task:{type:"AntiTurnstileTaskProxyLess",websiteURL:"https://fixture.test",websiteKey:"observed-key"},idempotency_key:"observed-widget"});
+    expect(solved).toMatchObject({ok:true,value:{status:"ready"}});
+    const solution=(solved as {value:{solution:{token:string}}}).value.solution;
+    const result=await tool.execute({source:`page.evaluate('mw:token => window.observedChallenge.callback(token)', ${JSON.stringify(solution.token)})
 expect(page.locator('output')).to_have_text('Verification accepted')
 assert page.locator('#RecaptchaToken').input_value() == 'fixture-solved-token'
 assert page.locator('#_QString').input_value() == 'test'
-workflow.done()`});
+browser.done()`});
     expect(result,JSON.stringify(result)).toMatchObject({ok:true,terminal:{outcome:"done"}});
     expect(f.provider.submit).toHaveBeenCalledWith(expect.objectContaining({task:expect.objectContaining({websiteKey:"observed-key"})}),expect.any(AbortSignal));
   } finally {

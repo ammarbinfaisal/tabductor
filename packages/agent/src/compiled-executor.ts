@@ -49,7 +49,7 @@ import { browserLoopControl } from "./browser-loop-control.js";
  * and the trace it leaves has zero `llm` entries. That absence is the product's core claim,
  * and the flagship test asserts it rather than trusting it.
  *
- * When the guards fail, `workflow.deopt` does **not** fail the run. The same run row continues under
+ * When the guards fail, `browser.deopt` does **not** fail the run. The same run row continues under
  * the agent loop, on the same session, with the page exactly where the script left it — the
  * compiler-authored recovery prompt, the original task prompt and the guard evidence are what
  * the agent wakes up to. `runs.mode_used` stays `compiled`, because the run *was* a compiled
@@ -156,8 +156,6 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
         const limits = browserLimitsOf(handle.task);
         session = await openRunSession({
           conn: lease.conn,
-          gate,
-          taskCtx: { taskId: handle.task.id, runId: handle.run.id },
           trace,
           ...(metrics ? { metrics } : {}),
           ...(limits ? { limits } : {}),

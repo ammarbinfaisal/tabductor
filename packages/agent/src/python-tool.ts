@@ -18,7 +18,9 @@ import { parseJsonResponse, validateJsonSchema } from "./browser-ai.js";
 const obj = (v: unknown): Record<string, unknown> => v && typeof v === "object" ? v as Record<string,unknown> : {};
 const ref = z.object({id:z.string(),class:z.string(),scope:z.string()}).passthrough();
 const callSchema = z.object({target:ref,member:z.string(),args:z.array(z.unknown()),kwargs:z.record(z.unknown())});
-const readWorkflow = new Set(["store.query","describe","history.read","output.read","memory.get","captcha.providers","captcha.get_result","captcha.wait","deopt","fail"]);
+const readWorkflow = new Set(["store.query","describe","history.read","output.read","memory.get","deopt","fail","captcha.providers","captcha.get_result","captcha.wait"]);
+const publicServiceName = (name: string) => name.replace(/^workflow\.captcha\./, "captcha.").replace(/^workflow\./, "browser.");
+const readBrowser = new Set(["browser.ai"]);
 const replStates = new WeakMap<PythonRunner, {
   scopes: Map<string, () => Promise<unknown>>; sensitive: Set<string>; lastSession?: string;
 }>();
@@ -41,8 +43,8 @@ export function pythonTool(deps: AgentToolDeps): AgentTool {
   const replState = repl;
   const memory = deps.memory ?? (() => {let value:unknown={facts:[],pending:[]};return {get:async()=>value,set:async(v:unknown)=>{value=v;}};})();
   const workflow: AgentTool[] = [...(deps.storeTools ?? []), emitTool(deps.emit),doneTool(),failTool(),
-    ...batchTools(deps.session,deps.emit,deps.signal,deps.progress).filter(t=>t.name==="emit.batch"),
     ...captchaTools(deps.captcha, deps.beforeCall),
+    ...batchTools(deps.session,deps.emit,deps.signal,deps.progress).filter(t=>t.name==="emit.batch"),
     defineTool({name:"memory.get",description:"Read exploration facts and pending work.",parameters:z.object({}),execute:async()=>({ok:true,value:await memory.get()})}),
     defineTool({name:"memory.set",description:"Save concise observed facts and pending work.",parameters:z.object({facts:z.array(z.string().max(500)).max(12),pending:z.array(z.string().max(500)).max(8)}),execute:async value=>{await memory.set(value);return {ok:true,value:{saved:true}};}}),
     defineTool({name:"deopt",description:"Hand off the current state to AI reasoning.",parameters:z.object({reason:z.string().min(1),evidence:z.unknown().optional()}),execute:async value=>({ok:true,value})}),
@@ -53,10 +55,10 @@ export function pythonTool(deps: AgentToolDeps): AgentTool {
   if(deps.contextHistory) allowed.set("workflow.history.read",defineTool({name:"history.read",description:"Search or page the durable operation archive.",
     parameters:z.object({name:z.string().optional(),invocationId:z.string().optional(),query:z.string().optional(),failedOnly:z.boolean().default(false),sequence:z.number().int().positive().optional(),before:z.number().int().positive().optional(),offset:z.number().int().min(0).default(0),limit:z.number().int().min(1).max(8000).default(4000)}),
     execute:async args=>({ok:true,value:await deps.contextHistory!.read(args)})}));
-  const availableWorkflow = [...allowed.keys()].filter(name => name.startsWith("workflow."));
-  availableWorkflow.push("workflow.describe");
-  if (deps.fillSecret) availableWorkflow.push("workflow.secrets.fill");
-  if (deps.recordOutcome) availableWorkflow.push("workflow.record.outcome");
+  const availableBrowser = [...allowed.keys()].filter(name => name.startsWith("workflow.")).map(publicServiceName);
+  availableBrowser.push("browser.describe");
+  if (deps.fillSecret) availableBrowser.push("browser.secrets.fill");
+  if (deps.recordOutcome) availableBrowser.push("browser.record.outcome");
   const browserAi = defineTool({
     name: "browser.ai",
     description: "Ask the task model for one JSON result matching schema_def. The result is recorded as a grounded operation and may be retained by static compilation; this does not perform browser actions.",
@@ -84,7 +86,7 @@ export function pythonTool(deps: AgentToolDeps): AgentTool {
       }
     },
   });
-  return defineTool({name:"browser.python",description:`${PYTHON_BROWSER_GUIDANCE}\n${pythonWorkflowGuidance(availableWorkflow)}`,
+  return defineTool({name:"browser.python",description:`${PYTHON_BROWSER_GUIDANCE}\n${pythonWorkflowGuidance(availableBrowser)}`,
     parameters:z.object({source:z.string().min(1).max(24000),timeoutMs:z.number().int().min(1).max(180000).default(180000)}),
     async execute(args, callSignal) {
       const signal=deps.signal&&callSignal?AbortSignal.any([deps.signal,callSignal]):deps.signal??callSignal??new AbortController().signal;
@@ -124,13 +126,14 @@ export function pythonTool(deps: AgentToolDeps): AgentTool {
           return {ok:true,value:await deps.fillSecret!(a.name,inputs[0]!.anchor)};
         }}));
       if(deps.recordOutcome) registry.set("workflow.record.outcome",recordOutcomeTool(deps.recordOutcome));
-      registry.set("workflow.describe",defineTool({name:"describe",description:"Inspect the supported Playwright and workflow API.",parameters:z.object({name:z.string().optional()}),execute:async({name})=>{
-        if(!name)return {ok:true,value:{browser:playwrightManifest,workflow:[...registry.keys()].filter(n=>n.startsWith("workflow."))}};
-        const tool=registry.get(name.startsWith("workflow.")?name:`workflow.${name}`);
+      registry.set("workflow.describe",defineTool({name:"describe",description:"Inspect the supported Playwright and browser service API.",parameters:z.object({name:z.string().optional()}),execute:async({name})=>{
+        if(!name)return {ok:true,value:{playwright:playwrightManifest,services:[...registry.keys()].filter(name=>name.startsWith("workflow.")||name.startsWith("browser.")).map(publicServiceName)}};
+        const publicName=name.replace(/^browser\./,"");
+        const tool=registry.get(publicName==="ai"?`browser.${publicName}`:`workflow.${publicName}`);
         if(tool)return {ok:true,value:{name:tool.name,description:tool.description,parameters:asSchema(tool.parameters).jsonSchema}};
         const [cls,member]=name.replace(/^page\./,"Page.").split(".");
         const value=member?playwrightManifest.classes[cls!]?.[member]:playwrightManifest.classes[cls!];
-        return value?{ok:true,value}:{ok:false,error:`Unknown or unavailable API member for this task. ${pythonWorkflowGuidance(availableWorkflow)}`};
+        return value?{ok:true,value}:{ok:false,error:`Unknown or unavailable API member for this task. ${pythonWorkflowGuidance(availableBrowser)}`};
       }}));
       await state(current=>({...current,...(current.inFlight?{requiresReconciliation:true,uncertainOperation:current.inFlight,inFlight:null}:{})}));
       const result=await deps.pythonRunner!(args.source,async(name,input,operationSignal,_wait,context)=>{
@@ -141,8 +144,8 @@ export function pythonTool(deps: AgentToolDeps): AgentTool {
         let call:ProxyCall|undefined, invalid:unknown;
         let spec:ReturnType<typeof proxyMember>|undefined;
         try{if(name==="playwright.call"){call=callSchema.parse(input) as ProxyCall;spec=proxyMember(call);}}catch(error){invalid=error;}
-        const effect=invalid?false:call?spec!.kind==="effect":name.startsWith("workflow.")&&!readWorkflow.has(name.slice(9))&&!internal;
-        let sensitive=(name.startsWith("workflow.captcha.") && name!=="workflow.captcha.providers") || name==="workflow.secrets.fill" || call?.member==="set_input_files" || !!(call&&deps.storageFlags?.network===false&&(["Request","Response","APIRequestContext","APIResponse"].includes(call.target.class) || call.member === "request" || ["get","post","put","patch","delete","fetch"].includes(call.member)));
+        const effect=invalid?false:call?spec!.kind==="effect":name.startsWith("workflow.")?!readWorkflow.has(name.slice(9)):name.startsWith("browser.")?!readBrowser.has(name):false;
+        let sensitive=name==="workflow.secrets.fill" || (name.startsWith("workflow.captcha.")&&name!=="workflow.captcha.providers") || call?.member==="set_input_files" || !!(call&&deps.storageFlags?.network===false&&(["Request","Response","APIRequestContext","APIResponse"].includes(call.target.class) || call.member === "request" || ["get","post","put","patch","delete","fetch"].includes(call.member)));
         if(call&&["fill","type","insert_text","press_sequentially"].includes(call.member)){
           const target=await proxy({command:"inspect",call}).catch(()=>null);
           sensitive ||= !target||obj(target).type==="password"||obj(target).origin!==obj(target).pageOrigin;
@@ -217,7 +220,7 @@ export function pythonTool(deps: AgentToolDeps): AgentTool {
         });
       await stateQueue;
       await archive({action:"sdk.invocation",invocationId,replSessionId,replReset,evidenceScope:deps.evidenceScope,language:"python",operationVersion:3,apiVersion:PLAYWRIGHT_API_VERSION,source:deps.storageFlags?.actions===false||sensitiveInvocation?undefined:args.source,
-        workspaceBefore:sensitiveInvocation?undefined:workspaceBefore,evidenceOmitted:deps.storageFlags?.actions===false||sensitiveInvocation,input:sensitiveInvocation?undefined:sdkEvidence(deps.input),helpers:sensitiveInvocation?[]:helpers,api:[...registry.entries()].filter(([name])=>name.startsWith("workflow.") || name === "browser.ai").map(([name,t])=>({name,parameters:asSchema(t.parameters).jsonSchema})),
+        workspaceBefore:sensitiveInvocation?undefined:workspaceBefore,evidenceOmitted:deps.storageFlags?.actions===false||sensitiveInvocation,input:sensitiveInvocation?undefined:sdkEvidence(deps.input),helpers:sensitiveInvocation?[]:helpers,api:[...registry.entries()].filter(([name])=>name.startsWith("workflow.") || name.startsWith("browser.")).map(([name,t])=>({name,parameters:asSchema(t.parameters).jsonSchema})),
         outcome:terminal?.outcome??result.outcome,compiled:deps.compiled===true,calls:result.calls});
       if(fatal)throw fatal;
       if(terminal&&result.outcome==="completed")return {ok:true,value:{outcome:terminal.outcome},terminal,images};

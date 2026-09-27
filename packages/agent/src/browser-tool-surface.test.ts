@@ -18,24 +18,25 @@ it("removes retired APIs from the registry and nested JavaScript catalog", async
   }
 });
 
-it("does not advertise or expose retired Python workflow services", async () => {
+it("does not advertise or expose retired Python services or a workflow global", async () => {
   const tool = pythonFixture().tool();
-  expect(tool.description).not.toMatch(/checkpoint|workflow\.status|record\.verify|verification/i);
-  expect(await tool.execute({ source: `names = workflow.describe()['workflow']
-assert not any('checkpoint' in name or name in ['workflow.status', 'workflow.record.verify'] for name in names)
+  expect(tool.description).not.toMatch(/checkpoint|browser\.status|record\.verify|verification/i);
+  expect(await tool.execute({ source: `names = browser.describe()['services']
+assert 'workflow' not in globals()
+assert not any('checkpoint' in name or name in ['browser.status', 'browser.record.verify'] for name in names)
 for name in ['checkpoint', 'checkpoint_files', 'status']:
-    assert not hasattr(workflow, name)
-assert not hasattr(workflow.record, 'verify')
-workflow.done()` })).toMatchObject({ ok: true, terminal: { outcome: "done" } });
+    assert not hasattr(browser, name)
+assert not hasattr(browser.record, 'verify')
+browser.done()` })).toMatchObject({ ok: true, terminal: { outcome: "done" } });
 });
 
-it.each(["workflow.checkpoint.get()", "workflow.checkpoint.set(value={})", "workflow.status()", "workflow.record.verify()", "workflow.checkpoint_files()"])(
+it.each(["browser.checkpoint.get()", "browser.checkpoint.set(value={})", "browser.status()", "browser.record.verify()", "browser.checkpoint_files()"])(
   "rejects retired Python service %s", async source => {
-    expect(await pythonFixture().tool().execute({ source })).toMatchObject({ ok: false, error: expect.stringContaining("Unknown workflow method") });
+    expect(await pythonFixture().tool().execute({ source })).toMatchObject({ ok: false, error: expect.stringContaining("Unknown browser method") });
   });
 
 it.each([false, true])("permits task completion without a verification call (compiled: %s)", async compiled => {
-  const body = "page.locator('input').fill('current value')\nworkflow.done(result='finished')";
-  const source = compiled ? "def run(page, context, workflow):\n" + body.split("\n").map(line => "    " + line).join("\n") : body;
+  const body = "page.locator('input').fill('current value')\nbrowser.done(result='finished')";
+  const source = compiled ? "def run(page, context, browser):\n" + body.split("\n").map(line => "    " + line).join("\n") : body;
   expect(await pythonFixture().tool({ compiled }).execute({ source })).toMatchObject({ ok: true, terminal: { outcome: "done", result: "finished" } });
 });

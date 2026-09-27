@@ -2,7 +2,7 @@
 
 > Runtime update: browser execution and compilation now use Python with one Playwright proxy. See [harness-summary.md](harness-summary.md) for the current contract; earlier JavaScript/anchor SDK details below describe the superseded implementation.
 
-Browser tasks retain the same session, policy checks, event schemas and run lease through
+Browser tasks retain the same session, resource limits, event schemas and run lease through
 the single model-facing `browser.code` tool and its tracked JavaScript SDK. These are browser-task tools,
 not a new task kind or a general-purpose server runtime.
 
@@ -270,7 +270,7 @@ other tasks' tab ownership. Switching produces fresh perception.
 
 `page.download` retains up to four 1 MB files outside model history. `file.read` reads a
 bounded text slice, `file.release` frees a handle, and `page.upload` accepts a retained file
-or bounded inline base64. Upload/download use the existing action policy gates. Handles expire
+or bounded inline base64. Upload/download use the same run limits. Handles expire
 with the executor; no filesystem paths are exposed to the model or code isolate.
 
 Browser `done` requires a successful `page.verify` against the current snapshot. Verification

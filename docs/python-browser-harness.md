@@ -4,7 +4,7 @@ The supported browser runtime is Python plus Camoufox. See [harness-summary.md](
 
 ## Configuration
 
-The engine requires `PYTHON_RUNNER_URL` and `PYTHON_RUNNER_TOKEN`. `BROWSER_AGENT_BACKEND`, if set, must be `python`; `BROWSER_MODE`, if set, must be `fleet`. There is no JavaScript/CDP fallback. The Python runner, worker and engine must be deployed together: runner protocol v3, Playwright API `playwright-python-v1`, operation evidence v3.
+The engine requires `PYTHON_RUNNER_URL` and `PYTHON_RUNNER_TOKEN`. `BROWSER_AGENT_BACKEND`, if set, must be `python`; `BROWSER_MODE`, if set, must be `fleet`. There is no JavaScript/CDP fallback. The Python runner, worker and engine must be deployed together: runner protocol v4, Playwright API `playwright-python-v1`, operation evidence v3.
 
 - Local: `pnpm local:up` builds the worker, broker and execution images, provisions the broker token and includes `docker-compose.python.yml`.
 - Staging: `pnpm staging:up` builds/loads the Python images and enables the runner chart.
@@ -17,11 +17,13 @@ Drain active runs before upgrading. Publish the vendored fork commit before remo
 
 ## Persistence and isolation
 
-One run-bound sandbox transport serves fresh Python interpreters for successive cells. `/workspace` files are restored from immutable blobs and checkpointed after normal completion, Python exceptions and terminal calls. `workflow.checkpoint_files()` commits explicitly. Variables and browser object references expire each cell; the separately leased browser retains its state. Interrupted cells are not automatically repeated.
+One run-bound Python interpreter serves successive cells. Variables and browser object references persist while that interpreter remains connected. `/workspace` files are checkpointed after normal completion, Python exceptions and terminal calls, and are restored if the interpreter restarts. The separately leased browser retains its state. Interrupted cells are not automatically repeated.
 
 The execution container has a read-only root, non-root UID, dropped capabilities, resource limits and no direct network or infrastructure credentials. Website operations travel through the engine gateway to the owned browser. The broker has infrastructure access only to manage sandboxes. [Container tests](../tests/system/python-runner-container.test.ts) verify these boundaries.
 
-Helpers are versioned in `agent_helpers.py`; their initialization cannot issue browser/workflow effects. Output is retained with a bounded model preview and can be paged through `workflow.output.read`. `workflow.history.read` retrieves the durable operation archive. Storage opt-outs and sensitive evidence can prevent compilation.
+Helpers are versioned in `agent_helpers.py`; their initialization cannot issue browser effects. Output is retained with a bounded model preview and can be paged through `browser.output.read`. `browser.history.read` retrieves the durable operation archive. Storage opt-outs and sensitive evidence can prevent compilation.
+
+The separate `browser.network` tool accepts `{ "action": "list", "urlPattern": "/api" }` to return earlier requests with stable indexes, method, URL, resource type, status and timings. `{ "action": "read", "index": 0, "parts": ["response_body"] }` reads selected request or response headers and bodies. Body values contain MIME type, size and bounded text. Browser navigation, page interactions and network reads have no policy gate; run ownership and resource limits still apply.
 
 Browser continuity retains workspace and exploration context across runs within one workflow execution/task/runtime scope. Per-record checkpoints, effect journals and completion/accounting remain separate. A failed browser operation may have committed; AI can inspect and reconcile it, while compiled execution deopts before further effects.
 

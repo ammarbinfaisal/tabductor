@@ -21,7 +21,6 @@ import {
 } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import { seedWorkflow } from "@tabductor/engine/testing";
-import { AllowAllGate, type PolicyGate } from "@tabductor/policy";
 import {
   createTestBlobStore,
   launchChrome,
@@ -96,21 +95,17 @@ export type SessionRig = {
 };
 
 /**
- * Connects, opens a guarded and traced session, and hands back the pieces a test asserts
- * on. The gate defaults to the fixture host only, which is the `HARNESS_NAV_ALLOWLIST`
- * carve-out (impl-phases §0.1) doing its job in the tests as well as in development.
+ * Connects, opens a traced session, and hands back the pieces a test asserts on.
  */
 export async function openSession(
   rig: BrowserRig,
-  opts: { gate?: PolicyGate; storage?: StorageFlags; limits?: ResourceLimits } = {},
+  opts: { storage?: StorageFlags; limits?: ResourceLimits } = {},
 ): Promise<SessionRig> {
   const runId = await newRun(rig);
   const trace = createTraceRecorder(rig.handle.db, rig.blobs, runId, opts.storage ?? {});
   const conn = await playwrightDriver.connect(rig.chrome.wsUrl);
   const session = await openRunSession({
     conn,
-    gate: opts.gate ?? new AllowAllGate({ navAllowlist: ["127.0.0.1"] }),
-    taskCtx: { taskId: rig.taskId, runId },
     trace,
     limits: opts.limits,
   });

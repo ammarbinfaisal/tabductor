@@ -1,6 +1,6 @@
 # Playwright compatibility
 
-Browser agents are instructed to **use Playwright directly**: normal synchronous Python imports from `playwright.sync_api`, with `page` and `context` already supplied. `workflow` is a separate Tabductor service for inputs, events, checkpoints and completion.
+Browser agents are instructed to **use Playwright directly**: normal synchronous Python imports from `playwright.sync_api`, with `page` and `context` already supplied. The injected `browser` object provides inputs, events, CAPTCHA solving, network history and completion.
 
 ```python
 from playwright.sync_api import Page, expect, TimeoutError
@@ -15,7 +15,7 @@ assert opened.value is child
 child.close()
 
 page.screenshot(path="screenshots/result.png")
-workflow.done()
+browser.done()
 ```
 
 ## Contract
@@ -36,9 +36,9 @@ Complete public API coverage does **not** mean unrestricted or engine-independen
 - A task can inspect and operate on its owned pages. Context-wide operations that would affect another task's page are rejected. Browser context enumeration exposes only the leased context.
 - Camoufox/Firefox has its own native feature support; Chromium-only APIs such as PDF generation and CDP sessions remain unavailable on this backend.
 - Camoufox's normal evaluation world is retained. Its `mw:` extension provides JSON-only evaluation of application globals; main-world handles are not supported.
-- Existing host budgets and network policy remain: browser requests are same-origin with redirects disabled, transfers are bounded, and cells/calls have deadlines.
+- Existing host budgets remain: transfers are bounded, and cells/calls have deadlines.
 - HAR replay is supported; HAR updating requires closing the host-owned context and is rejected. Worker filesystem paths remain private. Uploads accept individual files, directories and file payloads within the transfer budget.
-- Globals and callbacks expire at cell exit. Browser state and workspace files persist; old `browser_harness` imports remain compatible for saved helpers.
+- Globals and callbacks persist across cells in the same run interpreter. Browser state and workspace files survive interpreter resets; old `browser_harness` imports remain compatible for saved helpers.
 
 These are documented runtime limitations, not missing names silently omitted from the API contract. Signature coverage alone does not prove every possible behavioral combination; regressions are checked with the tests below.
 

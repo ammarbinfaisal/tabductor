@@ -9,7 +9,7 @@ const evidence = learningEvidence({ runId: "r", entries: [
   { seq: 2, kind: "action", payload: { action: "sdk.operation", phase: "finished", result: { ok: true, value: "opened editor" } } },
 ] });
 const result = (): BrowserLearningResult => ({ procedure: {
-  steps: [{ instruction: "Open the editor for workflow.input.id", evidence: ["r:2"] }],
+  steps: [{ instruction: "Open the editor for browser.input.id", evidence: ["r:2"] }],
   cautions: [{ instruction: "Inspect the editor before selecting a locator", evidence: ["r:1"] }], instructions: "Verify the saved record.",
 }, deopt: null, compile: { eligible: true, reason: "A short successful procedure", evidence: ["r:2"] } });
 

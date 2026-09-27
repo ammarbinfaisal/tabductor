@@ -14,7 +14,6 @@ import {
   type SecretRow,
 } from "@tabductor/db";
 import type { Metrics } from "@tabductor/telemetry";
-import type { PolicyGate } from "@tabductor/core";
 import { unsealValue, zero, type KeyWrapper } from "./crypto.js";
 
 /**
@@ -61,14 +60,12 @@ export type SecretsBrokerDeps = {
   /** Ceiling on fills per run (default 3). A task may only lower this, never raise it
    * (`S5b-secrets-broker.md`) — that enforcement is the caller's, this is just the default. */
   maxFillsPerRun?: number;
-  /** S7 grant enforcement. Omitted by lower-level broker tests and pre-S7 callers. */
-  gate?: PolicyGate;
 };
 
 export type SecretsBrokerHandle = SecretsBroker;
 
 export function createSecretsBroker(deps: SecretsBrokerDeps): SecretsBrokerHandle {
-  const { db, keyWrapper, resolveRun, metrics, gate } = deps;
+  const { db, keyWrapper, resolveRun, metrics } = deps;
   const maxFillsPerRun = deps.maxFillsPerRun ?? DEFAULT_MAX_FILLS_PER_RUN;
 
   // Per-run fill counts are bookkeeping, not a cache of anything decrypted.
@@ -89,9 +86,9 @@ export function createSecretsBroker(deps: SecretsBrokerDeps): SecretsBrokerHandl
   const resolveSecretForRun = async (
     runId: string,
     secretName: string,
-  ): Promise<{ secret: SecretRow; taskId: string } | undefined> => {
+  ): Promise<{ secret: SecretRow } | undefined> => {
     const rows = await db
-      .select({ secret: secrets, taskId: tasks.id })
+      .select({ secret: secrets })
       .from(runs)
       .innerJoin(tasks, eq(tasks.id, runs.taskId))
       .innerJoin(workflowVersions, eq(workflowVersions.id, tasks.workflowVersionId))
@@ -165,22 +162,7 @@ export function createSecretsBroker(deps: SecretsBrokerDeps): SecretsBrokerHandl
           `no secret named "${secretName}" for this run's user`,
         );
       }
-      const { secret, taskId } = resolved;
-
-      if (gate) {
-        const verdict = await gate.checkSecretUse({ taskId, runId }, secretName);
-        if (!verdict.allow) {
-          return refuseFill(
-            run,
-            runId,
-            secretName,
-            anchor,
-            "denied_grant",
-            "denied_grant",
-            `secret use denied by ${verdict.rule}`,
-          );
-        }
-      }
+      const { secret } = resolved;
 
       // 1. Origin binding (§16): the page's *live* origin, asked of the driver — never the
       // task's nav allowlist, which is a different control for a different threat.

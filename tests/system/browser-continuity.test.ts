@@ -75,8 +75,8 @@ it("continues learned Python procedure, files and conversation with the next inp
         if (id === "record-one") {
           expect(turns++, JSON.stringify(request.messages.at(-1))).toBe(0);
           return { toolCalls: [{ id: "learn", name: "browser.python", args: { source:
-            ["open('procedure.py','w').write(" + JSON.stringify('def save(page, workflow):\n    page.fill("#id", workflow.input["id"])\n    assert page.evaluate("() => window.savedId") == workflow.input["id"]\n') + ")",
-              "import runpy", "runpy.run_path('procedure.py')['save'](page, workflow)", "workflow.done()"].join("\n") } }], usage: { in: 1, out: 1 } };
+            ["open('procedure.py','w').write(" + JSON.stringify('def save(page, browser):\n    page.fill("#id", browser.input["id"])\n    assert page.evaluate("() => window.savedId") == browser.input["id"]\n') + ")",
+              "import runpy", "runpy.run_path('procedure.py')['save'](page, browser)", "browser.done()"].join("\n") } }], usage: { in: 1, out: 1 } };
         }
         const wire = JSON.stringify(request.messages);
         expect(wire).toContain("procedure.py");
@@ -85,11 +85,11 @@ it("continues learned Python procedure, files and conversation with the next inp
         expect(wire).not.toContain("editor-for-record-two");
         // Historical success must not satisfy this record's completion gate.
         return { toolCalls: [{ id: `reuse-${turns}`, name: "browser.python", args: { source: turns++ === 0
-          ? "workflow.done()" : "import runpy\nrunpy.run_path('procedure.py')['save'](page, workflow)\nworkflow.done()" } }], usage: { in: 1, out: 1 } };
+          ? "browser.done()" : "import runpy\nrunpy.run_path('procedure.py')['save'](page, browser)\nbrowser.done()" } }], usage: { in: 1, out: 1 } };
       } } });
     expect(result.outcome).toBe("done");
     expect(turns).toBe(id === "record-one" ? 1 : 2);
-    await continuity.memory.set({ facts: ["Use procedure.py save(page, workflow)"], pending: [], interactions: [{ operation: "write" }] });
+    await continuity.memory.set({ facts: ["Use procedure.py save(page, browser)"], pending: [], interactions: [{ operation: "write" }] });
     await f.db.insert(runRecordOutcomes).values({ runId: handle.run.id, status: "saved", reason: `Verified ${id}` });
     await continuity.release(true);
     previousRunId = handle.run.id;
@@ -97,7 +97,7 @@ it("continues learned Python procedure, files and conversation with the next inp
   expect(written).toEqual(["record-one", "record-two"]);
   expect(verified).toEqual(written);
   const third = (await acquireBrowserContinuity(f.db, await f.handle("record-three"), "python"))!;
-  expect(await third.memory.get()).toEqual({ facts: ["Use procedure.py save(page, workflow)"], pending: [] });
+  expect(await third.memory.get()).toEqual({ facts: ["Use procedure.py save(page, browser)"], pending: [] });
   expect(third.handoff.previous).toMatchObject({ runId: previousRunId, recordKey: "record-two", recordStatus: "saved" });
   await third.release(true);
 });
@@ -190,13 +190,13 @@ it("wires continuity through AI execution and compiled fallback without exposing
       expect(requests.length).toBeLessThanOrEqual(2);
       return { toolCalls: [{ id: `record-${requests.length}`, name: "browser.python", args: { source: requests.length === 1
         ? `open('procedure.txt','w').write('learned editor sequence')
-workflow.memory.set(facts=['use procedure.txt'],pending=[])
-workflow.done()`
+browser.memory.set(facts=['use procedure.txt'],pending=[])
+browser.done()`
         : `assert open('procedure.txt').read() == 'learned editor sequence'
-assert 'use procedure.txt' in workflow.memory.get()['facts']
-assert not any('checkpoint' in name for name in workflow.describe()['workflow'])
-assert workflow.input['id'] == 'second'
-workflow.done()` } }], usage: { in: 1, out: 1 } };
+assert 'use procedure.txt' in browser.memory.get()['facts']
+assert not any('checkpoint' in name for name in browser.describe()['services'])
+assert browser.input['id'] == 'second'
+browser.done()` } }], usage: { in: 1, out: 1 } };
     } }) };
   try {
     const first = await f.handle("first");

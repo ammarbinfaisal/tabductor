@@ -1,13 +1,12 @@
 import { expect, it, vi } from "vitest";
 import { AppError } from "@tabductor/core";
 import { readSdkEvidence } from "@tabductor/compiler";
-import type { CaptchaService } from "@tabductor/engine";
 import { pythonFixture } from "./python-test-support.js";
 
 it("records Python calls, results and pinned helper provenance",async()=>{
   const f=pythonFixture();
   const helper={name:"agent_helpers",revision:"python-v1",source:"def write(text):\n    page.locator('input').fill(text)"};
-  const result=await f.tool({input:{body:"current"},helpers:{list:async()=>[helper],define:vi.fn()}}).execute({source:"import agent_helpers\nagent_helpers.write(workflow.input['body'])\nexpect(page.locator('input')).to_have_value(workflow.input['body'])\nworkflow.done()"});
+  const result=await f.tool({input:{body:"current"},helpers:{list:async()=>[helper],define:vi.fn()}}).execute({source:"import agent_helpers\nagent_helpers.write(browser.input['body'])\nexpect(page.locator('input')).to_have_value(browser.input['body'])\nbrowser.done()"});
   expect(result).toMatchObject({ok:true,terminal:{outcome:"done"}});
   expect(f.calls.mock.calls.filter(([c])=>c.member==="fill")).toHaveLength(1);
   const evidence=readSdkEvidence({runId:"r",entries:f.entries});
@@ -32,12 +31,12 @@ it("reports browser failures without a Python traceback while preserving output"
   expect(result).toMatchObject({ok:false,error:"AppError: Browser operation timed out; inspect the page before repeating effects.\nOutput:\n4 1 <span class=\"menu-text\">My Courses</span>\n"});
 });
 
-it("reports invalid workflow API calls without a Python traceback",async()=>{
+it("rejects network history calls inside Python",async()=>{
   const f=pythonFixture();
-  const result=await f.tool({captcha:{} as CaptchaService}).execute({source:"workflow.captcha.wait(id='job-1')"});
+  const result=await f.tool().execute({source:"browser.network.list()"});
   expect(result).toMatchObject({
     ok:false,
-    error:'Invalid API call to "captcha.wait": missing required argument "job_id"; unexpected argument "id".',
+    error:expect.stringContaining("Unknown browser method: network"),
   });
 });
 
@@ -63,7 +62,7 @@ it("does not execute helper initialization effects",async()=>{
 
 it("discovers exact schemas and rejects retired aliases",async()=>{
   const f=pythonFixture();const tool=f.tool();
-  expect(await tool.execute({source:"assert workflow.describe(name='Locator.click')['parameters']\nassert 'source' not in workflow.describe(name='done')['parameters']['properties']\nfrom browser_harness import api"})).toMatchObject({ok:false,error:expect.stringContaining("cannot import name 'api'")});
+  expect(await tool.execute({source:"assert browser.describe(name='Locator.click')['parameters']\nassert 'source' not in browser.describe(name='done')['parameters']['properties']\nfrom browser_harness import api"})).toMatchObject({ok:false,error:expect.stringContaining("cannot import name 'api'")});
   expect(f.calls).not.toHaveBeenCalled();
 });
 
@@ -81,16 +80,16 @@ it.each(["await page.title()", "page.click('button')\nif True print('bad')"])("r
 it("exposes task services without destination role protocols", async () => {
   const f = pythonFixture();
   const tool = f.tool();
-  expect(tool.description).not.toContain("workflow.destination");
-  expect(tool.description).not.toContain("workflow.secrets.fill");
-  expect(await tool.execute({ source: "assert not any('destination' in name for name in workflow.describe()['workflow'])" })).toMatchObject({ ok: true });
-  expect(await tool.execute({ source: "workflow.describe(name='destination.contract.publish')" })).toMatchObject({ ok: false, error: expect.stringContaining("unavailable") });
+  expect(tool.description).not.toContain("browser.destination");
+  expect(tool.description).not.toContain("browser.secrets.fill");
+  expect(await tool.execute({ source: "assert not any('destination' in name for name in browser.describe()['services'])" })).toMatchObject({ ok: true });
+  expect(await tool.execute({ source: "browser.describe(name='destination.contract.publish')" })).toMatchObject({ ok: false, error: expect.stringContaining("unavailable") });
 });
 
 it("assesses tracked record outcomes without a destination mapping", async () => {
   const f = pythonFixture(), recordOutcome = vi.fn(async () => {});
   const tool = f.tool({recordOutcome, recordInput: {key: "id", packet: {id: "item-1"}}});
-  expect(await tool.execute({source: "workflow.record.outcome(collection='items',recordKey='item-1',status='saved', reason='Observed the saved item')"})).toMatchObject({ok:true});
+  expect(await tool.execute({source: "browser.record.outcome(collection='items',recordKey='item-1',status='saved', reason='Observed the saved item')"})).toMatchObject({ok:true});
   expect(recordOutcome).toHaveBeenCalledWith({collection:"items",recordKey:"item-1",status:"saved", reason:"Observed the saved item"});
 });
 

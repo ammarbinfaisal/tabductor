@@ -20,7 +20,7 @@ it("supports standard sync_api imports, annotations and typed errors", async () 
   const source = `from playwright.sync_api import Page, BrowserContext, Locator, Error, TimeoutError as PlaywrightTimeoutError, expect
 import playwright.sync_api as pw
 from playwright import sync_api
-def run(page: Page, context: BrowserContext, workflow):
+def run(page: Page, context: BrowserContext, browser):
     assert isinstance(page, Page) and isinstance(context, BrowserContext)
     assert pw.page is page and sync_api.context is context
     assert isinstance(page.locator('body'), Locator)
@@ -39,8 +39,8 @@ def run(page: Page, context: BrowserContext, workflow):
         pass
     else:
         raise AssertionError('error was not raised')
-    workflow.done(result='standard imports work')
-\nrun(page, context, workflow)`;
+    browser.done(result='standard imports work')
+\nrun(page, context, browser)`;
   expect(await f.tool().execute({ source })).toMatchObject({ ok: true, terminal: { outcome: "done", result: "standard imports work" } });
 });
 
@@ -48,17 +48,17 @@ it("supports standard sync_api imports in compiled entry points", async () => {
   const source = `from playwright.sync_api import Page, BrowserContext, expect, Error, TimeoutError
 import playwright.sync_api as pw
 from playwright import sync_api
-def run(page: Page, context: BrowserContext, workflow):
+def run(page: Page, context: BrowserContext, browser):
     assert isinstance(page, Page) and isinstance(context, BrowserContext)
     assert pw.page is page and sync_api.context is context
     assert issubclass(TimeoutError, Error)
     expect(page.locator('body')).to_have_text('Fixture')
-    workflow.done(result='compiled imports work')`;
+    browser.done(result='compiled imports work')`;
   expect(await pythonFixture().tool({ compiled: true }).execute({ source })).toMatchObject({ ok: true, terminal: { outcome: "done", result: "compiled imports work" } });
 });
 
 it.each(["from playwright.sync_api import sync_playwright", "from playwright import async_api", "import playwright._impl", "from playwright.sync_api import workflow"])("rejects unsupported runtime imports: %s", async source => {
-  expect(await pythonFixture().tool({ compiled: true }).execute({ source: source + "\ndef run(page, context, workflow): pass" })).toMatchObject({ ok: true, terminal: { outcome: "deopt", reason: expect.stringContaining("ValueError") } });
+  expect(await pythonFixture().tool({ compiled: true }).execute({ source: source + "\ndef run(page, context, browser): pass" })).toMatchObject({ ok: true, terminal: { outcome: "deopt", reason: expect.stringContaining("ValueError") } });
 });
 
 it("keeps persisted browser_harness helper imports compatible", async () => {
@@ -77,7 +77,7 @@ it("uses only Playwright objects and workflow, with fresh cells and terminal com
   }}} as unknown as RunSession;
   const tool=pythonTool({pythonRunner:runner,session,emit:async()=>({outcome:"published",eventId:"e"})});
   expect(tool.name).toBe("browser.python");
-  const result=await tool.execute({source:"assert 'api' not in globals()\npage.get_by_role('textbox', name='Name').fill('Alice')\nworkflow.done(result={'saved': True})"});
+  const result=await tool.execute({source:"assert 'api' not in globals()\npage.get_by_role('textbox', name='Name').fill('Alice')\nbrowser.done(result={'saved': True})"});
   expect(result).toMatchObject({ok:true,terminal:{outcome:"done",result:{saved:true}}});
   expect(methods).toEqual(["get_by_role","fill"]);
 });
@@ -99,7 +99,7 @@ it("pumps callbacks that make nested browser calls without deadlocking",async()=
 
 it("runs a compiled Python entry point and rejects legacy browser methods",async()=>{
   const calls:string[]=[];
-  const result=await runner("def run(page, context, workflow):\n    print(page.title())\n    workflow.done(result='ok')",async(name)=>{
+  const result=await runner("def run(page, context, browser):\n    print(page.title())\n    browser.done(result='ok')",async(name)=>{
     calls.push(name);
     return {ok:true,value:name==="playwright.open"?{page:reference("Page"),context:reference("BrowserContext")}:"Page"};
   },{compiled:true});
@@ -121,16 +121,16 @@ it("validates Python from complete recorded evidence and rejects sample-bound pr
     return null;
   }}} as unknown as RunSession;
   const trace={record:async(kind:string,payload:Record<string,unknown>)=>{entries.push({seq:entries.length,kind,payload});},flush:async()=>{},close:async()=>{}};
-  const source="target = page.get_by_role('textbox', name='Name')\nif target.count() != 1: workflow.deopt(reason='missing target')\ntarget.fill(workflow.input['name'])\nexpect(target).to_have_value(workflow.input['name'])\nworkflow.done()";
+  const source="target = page.get_by_role('textbox', name='Name')\nif target.count() != 1: browser.deopt(reason='missing target')\ntarget.fill(browser.input['name'])\nexpect(target).to_have_value(browser.input['name'])\nbrowser.done()";
   const tool=pythonTool({pythonRunner:runner,session,trace,input:{name:"Original"},emit:async()=>({outcome:"published",eventId:"e"})});
   expect(await tool.execute({source})).toMatchObject({ok:true,terminal:{outcome:"done"}});
   const evidence=readSdkEvidence({runId:"r",entries});
   const ops=evidence.operations.filter(op=>!op.name.startsWith("internal.")&&!["playwright.open","playwright.close"].includes(op.name));
   const guard=ops.find(op=>op.args.member==="count")!;
   const plan={goal:"fill current input",guards:[{operationId:guard.operationId,condition:"target exists"}],steps:ops.filter(o=>o!==guard).map(o=>({operationId:o.operationId,why:"work"})),bindings:[],checkpoints:[],discarded:[],recoveryPrompt:"inspect"};
-  const compiled="from playwright.sync_api import expect\ndef run(page, context, workflow):\n    try:\n"+source.split("\n").map(line=>"        "+line).join("\n")+"\n    except Exception as error:\n        workflow.deopt(reason=str(error))";
+  const compiled="from playwright.sync_api import expect\ndef run(page, context, browser):\n    try:\n"+source.split("\n").map(line=>"        "+line).join("\n")+"\n    except Exception as error:\n        browser.deopt(reason=str(error))";
   expect(await validatePythonCandidate(runner,compiled,evidence,plan)).toEqual({ok:true});
-  expect((await validatePythonCandidate(runner,compiled.replaceAll("workflow.input['name']","'Original'"),evidence,plan)).ok).toBe(false);
+  expect((await validatePythonCandidate(runner,compiled.replaceAll("browser.input['name']","'Original'"),evidence,plan)).ok).toBe(false);
 
   const fillIndex=ops.findIndex(op=>op.args.member==="fill");
   const hybridPlan={...plan,
@@ -138,14 +138,14 @@ it("validates Python from complete recorded evidence and rejects sample-bound pr
     deopts:[{id:"semantic-finish",operationIds:ops.slice(fillIndex).map(op=>op.operationId),
       prompt:"Inspect the current editor, complete the semantic work, verify it, and finish.",
       why:"The remaining choice requires runtime semantic judgment"}]};
-  const hybrid=`def run(page, context, workflow):
+  const hybrid=`def run(page, context, browser):
     try:
         target = page.get_by_role('textbox', name='Name')
         if target.count() != 1:
-            workflow.deopt(reason='target changed')
-        workflow.deopt(reason='Inspect the current editor, complete the semantic work, verify it, and finish.', evidence={'plannedDeopt': 'semantic-finish'})
+            browser.deopt(reason='target changed')
+        browser.deopt(reason='Inspect the current editor, complete the semantic work, verify it, and finish.', evidence={'plannedDeopt': 'semantic-finish'})
     except Exception as error:
-        workflow.deopt(reason=str(error))`;
+        browser.deopt(reason=str(error))`;
   expect(await validatePythonCandidate(runner,hybrid,evidence,hybridPlan)).toEqual({ok:true});
   expect((await validatePythonCandidate(runner,hybrid.replace("'semantic-finish'","'wrong-marker'"),evidence,hybridPlan)).ok).toBe(false);
 },20000);
@@ -166,14 +166,14 @@ it("replays callback data flow and rejects a sample-bound callback result",async
     return null;
   }}} as unknown as RunSession;
   const trace={record:async(kind:string,payload:Record<string,unknown>)=>{entries.push({seq:entries.length,kind,payload});},flush:async()=>{},close:async()=>{}};
-  const source="target=page.locator('button')\nif target.count()!=1: workflow.deopt(reason='changed')\npage.on('load',lambda p:(p.title(),workflow.input['name'])[1])\ntarget.click()\nexpect(target).to_have_text(workflow.input['name'])\nworkflow.done()";
+  const source="target=page.locator('button')\nif target.count()!=1: browser.deopt(reason='changed')\npage.on('load',lambda p:(p.title(),browser.input['name'])[1])\ntarget.click()\nexpect(target).to_have_text(browser.input['name'])\nbrowser.done()";
   const tool=pythonTool({session,trace,pythonRunner:runner,input:{name:"Original"},emit:async()=>({outcome:"deduped"})});
   expect(await tool.execute({source})).toMatchObject({ok:true,terminal:{outcome:"done"}});
   const evidence=readSdkEvidence({runId:"callbacks",entries});
   const ops=evidence.operations.filter(o=>!o.name.startsWith("internal.")&&!["playwright.open","playwright.close"].includes(o.name));
   const guard=ops.find(o=>o.args.member==="count")!;
   const plan={goal:"callback",guards:[{operationId:guard.operationId,condition:"target exists"}],steps:ops.filter(o=>o!==guard).map(o=>({operationId:o.operationId,why:"required"})),bindings:[],checkpoints:[],discarded:[],recoveryPrompt:"inspect"};
-  const compiled="from playwright.sync_api import expect\ndef run(page, context, workflow):\n    try:\n"+source.split("\n").map(line=>"        "+line).join("\n")+"\n    except Exception as error:\n        workflow.deopt(reason=str(error))";
+  const compiled="from playwright.sync_api import expect\ndef run(page, context, browser):\n    try:\n"+source.split("\n").map(line=>"        "+line).join("\n")+"\n    except Exception as error:\n        browser.deopt(reason=str(error))";
   expect(await validatePythonCandidate(runner,compiled,evidence,plan)).toEqual({ok:true});
-  expect((await validatePythonCandidate(runner,compiled.replace("p.title(),workflow.input['name']","p.title(),'Original'"),evidence,plan)).ok).toBe(false);
+  expect((await validatePythonCandidate(runner,compiled.replace("p.title(),browser.input['name']","p.title(),'Original'"),evidence,plan)).ok).toBe(false);
 },20000);

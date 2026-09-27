@@ -62,7 +62,7 @@ print('compatibility passed')` });
 child = next(p for p in context.pages if p.title() == 'Compatibility')
 assert isinstance(child, Page) and child.context is context
 child.close()
-workflow.done(result='persisted ownership')` });
+browser.done(result='persisted ownership')` });
     expect(resumed).toMatchObject({ ok: true, terminal: { outcome: "done", result: "persisted ownership" } });
   } finally {
     await runner.close!();

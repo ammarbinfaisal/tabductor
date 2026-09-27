@@ -38,7 +38,7 @@ try {
   // Worker allocation is intentionally single-use, including after session deletion.
   for(const test of ["tests/system/python-captcha.test.ts", "tests/system/playwright-compatibility.test.ts", "tests/system/python-control-reconciliation.test.ts", "tests/system/python-login-recovery.test.ts", "tests/system/python-harness.test.ts", "tests/system/python-dataset.test.ts"]){
     if (selected.size && !selected.has(test)) continue;
-    docker("run","-d","--rm","--name",worker,"-p","127.0.0.1::8080","-e",`TABDUCTOR_WORKER_TOKEN=${token}`,"-e","TABDUCTOR_ALLOW_PRIVATE_EGRESS=1","tabductor-browser-worker:harness-test");
+    docker("run","-d","--rm","--name",worker,"-p","127.0.0.1::8080","-e",`TABDUCTOR_WORKER_TOKEN=${token}`,"tabductor-browser-worker:harness-test");
     try {
       const workerUrl=origin(worker,8080);await ready(workerUrl);
       await run("pnpm",["exec","vitest","run","--maxWorkers=2",test],{
