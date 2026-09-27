@@ -63,6 +63,7 @@ it("makes no model calls during takeover and discards actions planned before res
 it("bounds model history without injecting durable state", async () => {
   const lengths: number[] = [];
   const result = await runAgentLoop({ llm: { complete: async (request) => {
+    if (request.tools.length === 0) return { text: "Historical observations were collected; collection remains in progress.", toolCalls: [], usage: { in: 1, out: 1 } };
     lengths.push(request.messages.reduce((n, message) => n + message.content.length, 0));
     expect(request.messages.some((message) => message.content.includes('"emitted":75'))).toBe(false);
     return { toolCalls: [{ id: String(lengths.length), name: lengths.length === 100 ? "done" : "observe", args: {} }], usage: { in: 1, out: 1 } };

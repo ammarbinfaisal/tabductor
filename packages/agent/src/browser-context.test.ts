@@ -5,7 +5,7 @@ import { toModelMessages } from "./llm-live.js";
 import { estimateModelInput } from "@tabductor/core";
 import { buildToolRegistry, summarizePerception } from "./tools.js";
 import type { RunSession } from "@tabductor/browser";
-import type { LlmMessage } from "./llm.js";
+import type { LlmMessage, LlmRequest } from "./llm.js";
 const trace={record:async()=>{},flush:async()=>{},close:async()=>{}};
 
 it("uses native tool call IDs and image content without serializing image bytes as text",()=>{
@@ -38,13 +38,27 @@ it("returns native skipped outcomes for every call after a terminal action",asyn
   expect(result.toolResults?.[1]?.result).toMatchObject({ok:false,error:expect.stringContaining("not executed")});
 });
 
-it("compacts complete call/result pairs without synthesizing context",()=>{
+it("compacts complete call/result pairs into cumulative historical context",async()=>{
   const messages:LlmMessage[]=[{role:"user",content:"Begin"}];
-  for(let i=0;i<5;i++)messages.push({role:"assistant",content:"act"},{role:"tool",content:"bounded data ".repeat(1500)});
-  compactHistory(messages);
-  expect(messages[0]).toEqual({role:"user",content:"Begin"});
+  for(let i=0;i<5;i++)messages.push({role:"assistant",content:`act ${i}`},{role:"tool",content:`result ${i} `+"bounded data ".repeat(1500)});
+  const sources:Array<{previousSummary:string;conversation:Array<{content:string}>}>=[];
+  const llm={complete:async(request:LlmRequest)=>{
+    sources.push(JSON.parse(request.messages[0]!.content));
+    return{text:`Cumulative historical summary ${sources.length}.`,toolCalls:[],usage:{in:1,out:1}};
+  }};
+  await compactHistory(messages,llm);
+  expect(sources[0]!.conversation[0]!.content).toContain("act 0");
+  expect(sources[1]).toMatchObject({previousSummary:"Cumulative historical summary 1."});
+  expect(sources[1]!.conversation[0]!.content).toContain("act 2");
+  expect(messages[0]!.content).toContain("UNTRUSTED HISTORICAL SUMMARY");
+  expect(messages[0]!.content).toContain("Cumulative historical summary 2.");
   expect(messages[1]!.role).toBe("assistant");expect(messages[2]!.role).toBe("tool");
   expect(messages).toHaveLength(5);
+  await compactHistory(messages,llm,true);
+  expect(sources[2]).toMatchObject({previousSummary:"Cumulative historical summary 2."});
+  expect(sources[2]!.conversation[0]!.content).toContain("act 3");
+  expect(messages[0]!.content).toContain("Cumulative historical summary 3.");
+  expect(messages).toHaveLength(3);
 });
 
 it("bounds dense observations with continuation instead of converting success to failure",()=>{
