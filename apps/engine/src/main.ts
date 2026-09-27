@@ -250,8 +250,8 @@ const heartbeat = setInterval(() => {
 heartbeat.unref();
 const paddlePacks = config.PADDLE_USD_PACKS_JSON
   ? parsePaddleCreditPacks(config.PADDLE_USD_PACKS_JSON)
-  : undefined;
-const paymentReconciler = paddlePacks ? setInterval(() => {
+  : new Map();
+const paymentReconciler = config.PADDLE_API_KEY ? setInterval(() => {
   void processPendingPaddleWebhookEvents(handle.db, paddlePacks)
     .catch((err) => log.warn("payment webhook reconciliation failed", { error: String(err) }));
 }, 2_000) : undefined;

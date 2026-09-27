@@ -1,5 +1,5 @@
+import { browserAllowanceAvailable, meterAllowance } from "./subscriptions.js";
 import { currentBrowserOperation } from "@tabductor/browser/operation-context";
-import { findBillingRate } from "./billing-prices.js";
 import { requestChallengeRecovery, advanceChallengeRecovery, type SolverProvider } from "./challenge-recovery.js";
 import { createHmac } from "node:crypto";
 import { AppError, newId } from "@tabductor/core";
@@ -11,7 +11,7 @@ import { createBrowserProfile, ensureExecutionBrowserSession, type BrowserAdmiss
 import { requestBrowserTakeover, browserAutomationIsReady } from "./browser-session-control.js";
 import { assertBrowserTabLease, browserTabKey, claimBrowserTab, releaseBrowserTab, type BrowserTabLease } from "./browser-tabs.js";
 import { assertRunLease } from "./run-lease.js";
-import { reserveCredits, settleCreditReservation } from "./credits.js";
+import { settleCreditReservation } from "./credits.js";
 
 export function browserWorkerToken(key: string, podName: string): string {
   if (key.length < 32) throw new AppError("worker_key_invalid", "worker signing key must contain at least 32 characters");
@@ -36,24 +36,36 @@ export function browserCreditAdmission(rate: { version: string; unitsPerMinute: 
     throw new AppError("browser_rate_invalid", "browser allocation requires a versioned rate and a bounded session duration");
   }
   return { async reserve(input, trx) {
-    const configured=await findBillingRate(trx,"browser","","minute");
-    const unitsPerMinute=configured?.chargeMicros??rate.unitsPerMinute;
-    if(unitsPerMinute<=0)throw new AppError("browser_rate_missing","Set a browser USD/minute rate in Admin before allocating a paid browser.");
-    const reservation = await reserveCredits(trx, { accountId: input.accountId, operationId: `browser:${input.sessionId}`, category: "browser", units: Math.ceil(rate.maxSeconds / 60) * unitsPerMinute, ttlMs: 86400_000,
-      cost:{provider:"browser",rateId:configured?.id??rate.version,unitCharge:unitsPerMinute,unitCost:configured?.costMicros??null} });
-    await trx.insert(browserBilling).values({ sessionId: input.sessionId, reservationId: reservation.id, rateVersion: configured?.id??rate.version, unitsPerMinute, maxSeconds: rate.maxSeconds });
+    if (!await browserAllowanceAvailable(trx, input.accountId)) throw new AppError("browser_allowance_exhausted", "Browser or proxy allowance exhausted");
   } };
 }
 
+/** Called every fleet tick as well as on termination; row locking makes retries harmless. */
 export async function settleBrowserUsage(db: Db, sessionId: string): Promise<void> {
-  await db.transaction(async (trx) => {
+  await db.transaction(async trx => {
     const [session] = await trx.select().from(browserSessions).where(eq(browserSessions.id, sessionId));
-    const [billing] = await trx.select().from(browserBilling).where(eq(browserBilling.sessionId, sessionId)).for("update");
-    if (!billing || billing.endedAt || !session?.endedAt) return;
-    const seconds = session.readyAt ? Math.min(billing.maxSeconds, Math.max(0, (session.endedAt.getTime() - session.readyAt.getTime()) / 1000)) : 0;
-    await settleCreditReservation(trx, { accountId: session.accountId, reservationId: billing.reservationId,
-      actualUnits: Math.ceil(seconds / 60) * billing.unitsPerMinute });
-    await trx.update(browserBilling).set({ endedAt: session.endedAt }).where(eq(browserBilling.sessionId, sessionId));
+    if (!session?.readyAt) return;
+    // Retain pre-cutover reservation settlement without charging a second time.
+    const [legacy] = await trx.select().from(browserBilling).where(eq(browserBilling.sessionId, sessionId)).for("update");
+    if (legacy) {
+      if (session.endedAt && !legacy.endedAt) {
+        const seconds = Math.min(legacy.maxSeconds, Math.max(0, (session.endedAt.getTime() - session.readyAt.getTime()) / 1000));
+        await settleCreditReservation(trx, { accountId: session.accountId, reservationId: legacy.reservationId, actualUnits: Math.ceil(seconds / 60) * legacy.unitsPerMinute });
+        await trx.update(browserBilling).set({ endedAt: session.endedAt }).where(eq(browserBilling.sessionId, sessionId));
+      }
+      return;
+    }
+    await trx.execute(sql`insert into browser_usage_cursors(session_id,metered_at) values(${sessionId},${session.readyAt}) on conflict do nothing`);
+    const cursor = (await trx.execute<{ metered_at: Date }>(sql`select metered_at from browser_usage_cursors where session_id=${sessionId} for update`)).rows[0]!;
+    const end = session.endedAt ?? new Date();
+    const elapsed = Math.max(0, end.getTime() - new Date(cursor.metered_at).getTime());
+    if (!elapsed) return;
+    const available = await meterAllowance(trx, session.accountId, "browser", elapsed, `${sessionId}:${end.toISOString()}`);
+    await trx.execute(sql`update browser_usage_cursors set metered_at=${end} where session_id=${sessionId}`);
+    if ((!available || !await browserAllowanceAvailable(trx, session.accountId)) && !session.endedAt) {
+      await trx.update(browserSessions).set({ status: "stopping", inputOwner: "paused", inputOwnerGeneration: sql`${browserSessions.inputOwnerGeneration}+1` })
+        .where(and(eq(browserSessions.id, sessionId), inArray(browserSessions.status, ["ready", "running"])));
+    }
   });
 }
 

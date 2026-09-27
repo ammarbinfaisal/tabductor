@@ -1,3 +1,4 @@
+import { processSubscriptionEvent } from "./paddle-subscriptions.js";
 import { assertUsdAccount } from "./billing-prices.js";
 import { usdMicros } from "@tabductor/core";
 import { AppError, newId } from "@tabductor/core";
@@ -210,6 +211,10 @@ export async function processPaddleWebhookEvent(
     if (!event) throw new AppError("paddle_event_not_found", "Paddle webhook event does not exist");
     if (event.status === "processed") return "processed";
     if (event.status === "failed") return "failed";
+    if (await processSubscriptionEvent(trx, event)) {
+      await setEventStatus(trx, notificationId, "processed");
+      return "processed";
+    }
     if (event.eventType === "adjustment.created" || event.eventType === "adjustment.updated") {
       return processAdjustmentEvent(trx, event, notificationId);
     }

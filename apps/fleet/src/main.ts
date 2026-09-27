@@ -5,7 +5,7 @@ import { createDb, browserFleetStatus, browserRecordingSegments, browserAllocati
 import { configuredBlobStore } from "@tabductor/browser";
 import { encryptEnvelope, configuredKeyWrapper, withEnvelope, type EncryptedEnvelope } from "@tabductor/secrets";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
-import { claimBrowserAllocation, failBrowserAllocation, fulfillBrowserAllocation, endBrowserSession, browserWorkerToken,
+import { withAccountProxy, claimBrowserAllocation, failBrowserAllocation, fulfillBrowserAllocation, endBrowserSession, browserWorkerToken,
   browserCreditAdmission, settleBrowserUsage, acknowledgeBrowserPause, acknowledgeBrowserResume, requestBrowserTakeover, expireBrowserTakeovers, stopBrowserSession, stopFinishedExecutionBrowsers, appendBrowserRecordingSegment, finishBrowserRecording, expireBrowserRecordings } from "@tabductor/engine";
 
 const config = loadConfig();
@@ -136,6 +136,7 @@ async function reconcile(): Promise<void> {
         if (pod.metadata?.annotations?.["karpenter.sh/do-not-disrupt"] !== "true") {
           await core.patchNamespacedPod({ namespace, name: worker.podName, body: { metadata: { annotations: { "karpenter.sh/do-not-disrupt": "true" } } } });
         }
+        await settleBrowserUsage(handle.db, session.id);
         const [billing] = await handle.db.select().from(browserBilling).where(eq(browserBilling.sessionId, session.id));
         if (billing && session.readyAt && Date.now() - session.readyAt.getTime() >= billing.maxSeconds * 1000 && session.status !== "stopping") {
           await stopBrowserSession(handle.db, { accountId: session.accountId, sessionId: session.id });
@@ -144,10 +145,10 @@ async function reconcile(): Promise<void> {
         if (session.status === "allocating") {
           const [profile] = await handle.db.select().from(browserProfiles).where(eq(browserProfiles.id, session.profileId));
           const importedStates = profile!.pendingAuthEnvelope ? await withEnvelope(wrapper, profile!.pendingAuthEnvelope, async bytes => JSON.parse(bytes.toString())) : [];
-          const start = async (snapshot?: string) => rpc(worker.podName, url, "/v1/sessions", "POST", {
+          const start = async (snapshot?: string) => withAccountProxy(handle.db, wrapper, session.accountId, proxy => rpc(worker.podName, url, "/v1/sessions", "POST", {
             session_id: session.id, generation: session.generation, profile_dir: session.profileId,
-            fingerprint: profile!.fingerprintJson, imported_states: importedStates, ...(snapshot ? { snapshot } : {}),
-          });
+            fingerprint: profile!.fingerprintJson, imported_states: importedStates, ...(proxy ? { proxy } : {}), ...(snapshot ? { snapshot } : {}),
+          }));
           if (profile!.snapshotBlobRef) {
             const envelope = JSON.parse((await blobs.get(profile!.snapshotBlobRef)).toString()) as EncryptedEnvelope;
             await withEnvelope(wrapper, envelope, (bytes) => start(bytes.toString("base64")));

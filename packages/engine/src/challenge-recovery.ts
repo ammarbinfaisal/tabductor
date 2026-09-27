@@ -1,11 +1,14 @@
+import { assertCaptchaIncluded } from "./subscriptions.js";
+import { recordCost } from "./billing-prices.js";
+import { settleIncludedCaptcha } from "./captcha-service.js";
 import { findBillingRate } from "./billing-prices.js";
 import { usdMicros } from "@tabductor/core";
 import { createHash } from "node:crypto";
 import { AppError, newId } from "@tabductor/core";
 import { browserChallenges, challengeAttempts, browserSessions, browserSessionActivity, type Db } from "@tabductor/db";
-import { and, desc, eq } from "drizzle-orm";
+import { sql, and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
-import { reserveCredits, settleCreditReservation } from "./credits.js";
+import { settleCreditReservation } from "./credits.js";
 
 export type ChallengeKind = "recaptcha_v2" | "turnstile";
 export type Challenge = { kind: string; websiteUrl: string; siteKey: string };
@@ -109,10 +112,11 @@ export async function advanceChallengeRecovery(db: Db, id: string, providers: re
     const item=capabilities[provider.name as keyof typeof capabilities]?.[challenge.kind as ChallengeKind]??challenge.kind;
     const configured=await findBillingRate(trx,"solver",provider.name,item);
     const amount=configured?.chargeMicros??provider.creditUnits, version=configured?.id??provider.rateVersion;
-    const reservation = await reserveCredits(trx, { accountId: challenge.accountId, category: "solver", operationId: attemptId, units: amount,
-      cost:{provider:provider.name,rateId:version,unitCharge:amount,unitCost:configured?.costMicros??null} });
+    const plan = await assertCaptchaIncluded(trx, challenge.accountId);
+    await recordCost(trx, { accountId: challenge.accountId, category: "solver", provider: provider.name, sourceId: attemptId, costMicros: null });
+    await trx.execute(sql`update operating_costs set status='pending',plan_revision_id=${plan.id},snapshot=${JSON.stringify({ unitCharge: 0, unitCost: configured?.costMicros ?? null })}::jsonb where source_id=${attemptId} and category='solver'`);
     const [attempt] = await trx.insert(challengeAttempts).values({ id: attemptId, challengeId: id, provider: provider.name, rateVersion: version,
-      creditUnits: amount, reservationId: reservation.id, status: "submitting" }).returning();
+      creditUnits: 0, reservationId: null, status: "submitting" }).returning();
     await trx.update(browserChallenges).set({ attempts: challenge.attempts + 1 }).where(eq(browserChallenges.id, id));
     await trx.insert(browserSessionActivity).values({ sessionId: challenge.sessionId, kind: "challenge_submitted", payloadJson: { challengeId: id, provider: provider.name, reservedUsdMicros: amount } });
     return { challenge, attempt: attempt!, provider, poll: false as const };
@@ -126,7 +130,8 @@ export async function advanceChallengeRecovery(db: Db, id: string, providers: re
       const result = await provider.submit(challenge);
       await db.transaction(async (trx) => {
         if ("rejected" in result) {
-          await settleCreditReservation(trx, { accountId: challenge.accountId, reservationId: attempt.reservationId, actualUnits: 0 });
+          if (attempt.reservationId) await settleCreditReservation(trx, { accountId: challenge.accountId, reservationId: attempt.reservationId, actualUnits: 0 });
+          else await settleIncludedCaptcha(trx, attempt.id, false);
           await trx.update(challengeAttempts).set({ status: "rejected" }).where(eq(challengeAttempts.id, attempt.id));
         } else await trx.update(challengeAttempts).set({ status: "submitted", providerTaskId: result.taskId }).where(eq(challengeAttempts.id, attempt.id));
         await trx.update(browserChallenges).set({ nextPollAt: new Date(Date.now() + 5000) }).where(eq(browserChallenges.id, id));
@@ -139,7 +144,8 @@ export async function advanceChallengeRecovery(db: Db, id: string, providers: re
       return "pending";
     }
     await db.transaction(async (trx) => {
-      await settleCreditReservation(trx, { accountId: challenge.accountId, reservationId: attempt.reservationId, actualUnits: attempt.creditUnits });
+      if (attempt.reservationId) await settleCreditReservation(trx, { accountId: challenge.accountId, reservationId: attempt.reservationId, actualUnits: attempt.creditUnits });
+      else await settleIncludedCaptcha(trx, attempt.id, true);
       await trx.update(challengeAttempts).set({ status: "applying" }).where(eq(challengeAttempts.id, attempt.id));
     });
     const [session] = await db.select().from(browserSessions).where(eq(browserSessions.id, challenge.sessionId));

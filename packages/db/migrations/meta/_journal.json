@@ -435,6 +435,20 @@
       "when": 1790499392765,
       "tag": "0061_workflow_definition",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1790499392766,
+      "tag": "0062_subscription_quotas",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1790499392767,
+      "tag": "0063_metering_receipts",
+      "breakpoints": true
     }
   ]
 }

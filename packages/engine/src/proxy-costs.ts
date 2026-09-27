@@ -1,3 +1,5 @@
+import { meterAllowance } from "./subscriptions.js";
+import { lockCreditAccount } from "./credits.js";
 import { proxyAccounts, billingSettings, operatingCosts, type Db } from "@tabductor/db";
 import { and, eq, sql } from "drizzle-orm";
 import { newId, scaledAmount } from "@tabductor/core";
@@ -40,7 +42,7 @@ export async function syncProxyCosts(db:Db,force=false,request:typeof fetch=fetc
     await trx.execute(sql`select pg_advisory_xact_lock(hashtextextended('iproyal-sync',0))`);
     const [row]=await trx.select().from(billingSettings).where(eq(billingSettings.key,"iproyal_sync"));
     const at=Number(row?.value.at??0);
-    if(Date.now()-at<(row?.value.running?300000:force?5000:3600000))return false;
+    if(Date.now()-at<(row?.value.running?300000:force?5000:300000))return false;
     await trx.insert(billingSettings).values({key:"iproyal_sync",value:{...row?.value,at:Date.now(),running:true}}).onConflictDoUpdate({target:billingSettings.key,set:{value:{...row?.value,at:Date.now(),running:true},updatedAt:new Date()}});return true;
   });
   if(!claimed)return;
@@ -62,7 +64,21 @@ export async function syncProxyCosts(db:Db,force=false,request:typeof fetch=fetc
         const snapshot=previous?.snapshot??{unitCharge:0,unitCost:rate?.costMicros??null};
         const values={accountId:previous?previous.accountId:mapping.accountId,category:"proxy",provider:"iproyal",sourceId,quantity:String(entry.bytes),snapshot,
           costMicros:snapshot.unitCost===null?null:scaledAmount(entry.bytes,snapshot.unitCost,1_000_000_000),rateId:previous?previous.rateId:rate?.id??null,occurredAt:new Date(`${entry.day}T00:00:00Z`)};
-        await db.insert(operatingCosts).values({id:newId("cost"),...values}).onConflictDoUpdate({target:[operatingCosts.category,operatingCosts.sourceId],set:values});
+        await db.transaction(async trx => {
+          if (mapping.accountId) await lockCreditAccount(trx, mapping.accountId);
+          const prior = (await trx.execute<{bytes:string;revision:number}>(sql`select * from proxy_usage_buckets where hash=${mapping.hash} and day=${entry.day} for update`)).rows[0];
+          const delta = entry.bytes - Number(prior?.bytes ?? 0);
+          if (delta && mapping.accountId) {
+            // Only traffic incurred after rollout is customer usage; retain earlier expenses as history.
+            const cutover = (await trx.execute<{at:string}>(sql`select value->>'at' as at from billing_settings where key='subscription_cutover'`)).rows[0];
+            if (cutover && entry.day >= new Date(cutover.at).toISOString().slice(0,10)) {
+              await meterAllowance(trx, mapping.accountId, "proxy", delta, `${sourceId}:${(prior?.revision ?? 0)+1}`);
+            }
+          }
+          await trx.execute(sql`insert into proxy_usage_buckets(hash,day,bytes) values(${mapping.hash},${entry.day},${entry.bytes})
+            on conflict(hash,day) do update set bytes=excluded.bytes,revision=proxy_usage_buckets.revision+1`);
+          await trx.insert(operatingCosts).values({id:newId("cost"),...values}).onConflictDoUpdate({target:[operatingCosts.category,operatingCosts.sourceId],set:values});
+        });
       }
     }
   }catch(cause){error=cause instanceof Error?cause.message:"IPRoyal sync failed";}

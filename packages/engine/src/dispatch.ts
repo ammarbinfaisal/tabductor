@@ -1,3 +1,4 @@
+import { admitMonthlyExecution } from "./subscriptions.js";
 import { claim, publish } from "@tabductor/bus";
 import { AppError, newId } from "@tabductor/core";
 import {
@@ -56,6 +57,7 @@ export async function createWorkflowExecution(
       maxHops: workflow.maxHops,
       maxRuns: Math.min(input.maxRuns ?? 1000, versionBudget),
     });
+    await admitMonthlyExecution(db, workflow.accountId, executionId);
     return executionId;
   });
 }

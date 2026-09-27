@@ -1,6 +1,6 @@
 import { checkWorkflowPrerequisites, persistPrerequisiteBlock, type PrerequisiteOptions } from "./prerequisites.js";
 import { publish } from "@tabductor/bus";
-import { createLogger, type Logger } from "@tabductor/core";
+import { AppError, createLogger, type Logger } from "@tabductor/core";
 import { runs, schedules, type Db, type ScheduleRow } from "@tabductor/db";
 import { context, inSpan, trace, type Metrics, type Tracer } from "@tabductor/telemetry";
 import { Cron } from "croner";
@@ -84,6 +84,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         try {
           if (await visit(row)) fired += 1;
         } catch (err) {
+          if (err instanceof AppError && ["monthly_run_limit", "subscription_renewal_pending"].includes(err.code)) continue;
           log.error("schedule tick failed", { scheduleId: row.id, error: String(err) });
         }
       }

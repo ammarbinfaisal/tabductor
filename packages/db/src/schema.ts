@@ -1536,7 +1536,7 @@ export const challengeAttempts = pgTable("challenge_attempts", {
   providerTaskId: text("provider_task_id"),
   rateVersion: text("rate_version").notNull(),
   creditUnits: bigint("credit_units", { mode: "number" }).notNull(),
-  reservationId: text("reservation_id").notNull().references(() => creditReservations.id, { onDelete: "restrict" }),
+  reservationId: text("reservation_id").references(() => creditReservations.id, { onDelete: "restrict" }),
   status: text("status").$type<"submitting" | "submitted" | "rejected" | "applying" | "solved" | "invalid" | "uncertain">().notNull(),
   createdAt: createdAt(),
 }, (t) => [index("challenge_attempts_challenge_idx").on(t.challengeId)]);
@@ -1556,7 +1556,7 @@ export const captchaJobs = pgTable("captcha_jobs", {
   errorCode: text("error_code"),
   rateVersion: text("rate_version").notNull(),
   creditUnits: bigint("credit_units", { mode: "number" }).notNull(),
-  reservationId: text("reservation_id").notNull().references(() => creditReservations.id, { onDelete: "restrict" }),
+  reservationId: text("reservation_id").references(() => creditReservations.id, { onDelete: "restrict" }),
   nextPollAt: ts("next_poll_at").notNull().defaultNow(),
   createdAt: createdAt(),
 }, t => [uniqueIndex("captcha_jobs_run_key").on(t.runId, t.idempotencyKey)]);
@@ -1699,3 +1699,13 @@ export const workflowStoreOperations = pgTable("workflow_store_operations", {
   resultJson: jsonb("result_json").notNull(),
   createdAt: createdAt(),
 }, t => [primaryKey({ columns: [t.executionId, t.operationKey] })]);
+
+/** Versioned commercial terms: editing creates a revision, subscriptions keep their pin. */
+export const planRevisions = pgTable("plan_revisions", {
+  id: text("id").primaryKey(), slug: text("slug").notNull(), revision: integer("revision").notNull(), name: text("name").notNull(),
+  monthlyMicros: bigint("monthly_micros", { mode: "number" }).notNull(), concurrentBrowsers: integer("concurrent_browsers").notNull(),
+  browserMs: bigint("browser_ms", { mode: "number" }).notNull(), workflowRuns: integer("workflow_runs").notNull(),
+  proxyBytes: bigint("proxy_bytes", { mode: "number" }).notNull(), captcha: boolean("captcha").notNull(),
+  browserHourMicros: bigint("browser_hour_micros", { mode: "number" }), proxyGbMicros: bigint("proxy_gb_micros", { mode: "number" }),
+  paddlePriceId: text("paddle_price_id"), public: boolean("public").notNull().default(true), enabled: boolean("enabled").notNull().default(true), createdAt: createdAt(),
+}, t => [uniqueIndex("plan_revision_key").on(t.slug,t.revision)]);

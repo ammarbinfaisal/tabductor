@@ -1,3 +1,4 @@
+import { browserAllowanceAvailable, entitlementLocked } from "./subscriptions.js";
 import { AppError, newId } from "@tabductor/core";
 import {
   browserAllocationRequests,
@@ -139,6 +140,7 @@ export async function claimBrowserAllocation(db: Db, options: {
                (select count(*)::int from browser_sessions live
                  where live.account_id = r.account_id
                    and live.status in ('allocating','ready','running','stopping')) as active_count,
+               coalesce((select p.concurrent_browsers from account_subscriptions a join plan_revisions p on p.id=a.plan_revision_id where a.account_id=r.account_id),1) as plan_limit,
                r.created_at
         from browser_allocation_requests r
         join browser_sessions s on s.id = r.session_id
@@ -149,12 +151,17 @@ export async function claimBrowserAllocation(db: Db, options: {
           ))
       )
       select "requestId", "sessionId", "accountId", "profileId", "generation"
-      from heads where account_rank = 1 and active_count < ${maxPerAccount}
+      from heads where account_rank = 1 and active_count < least(${maxPerAccount},plan_limit)
       order by active_count, created_at, "requestId"
       limit 1
     `);
     const candidate = selected.rows[0];
     if (!candidate) return undefined;
+    await entitlementLocked(trx, candidate.accountId);
+    if (!await browserAllowanceAvailable(trx, candidate.accountId)) {
+      await trx.update(browserAllocationRequests).set({ notBefore: new Date(Date.now() + 30000) }).where(eq(browserAllocationRequests.id, candidate.requestId));
+      return undefined;
+    }
     const lease = await trx.insert(browserProfileLeases).values({
       profileId: candidate.profileId, sessionId: candidate.sessionId, generation: candidate.generation,
     }).onConflictDoNothing().returning();

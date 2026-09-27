@@ -1,3 +1,5 @@
+import { assertCaptchaIncluded } from "./subscriptions.js";
+import { recordCost } from "./billing-prices.js";
 import { findBillingRate } from "./billing-prices.js";
 import { createHash } from "node:crypto";
 import { AppError, canonicalJson, newId, usdDecimal } from "@tabductor/core";
@@ -6,7 +8,7 @@ import { and, eq, inArray, sql, desc } from "drizzle-orm";
 import type { RunHandle } from "./executor.js";
 import { assertRunLease } from "./run-lease.js";
 import { browserAutomationIsReady } from "./browser-session-control.js";
-import { reserveCredits, settleCreditReservation } from "./credits.js";
+import { settleCreditReservation } from "./credits.js";
 import { captchaCreateSchema, type CaptchaCreate, type CaptchaProvider, type CaptchaProviderResult } from "./captcha-providers.js";
 
 type Job = typeof captchaJobs.$inferSelect;
@@ -45,8 +47,9 @@ export function createCaptchaService(input: { db: Db; handle: RunHandle; provide
   const persist = async (job: Job, result: CaptchaProviderResult) => db.transaction(async trx => {
     const current = await scopedJob(trx, job.id);
     if (["ready", "failed"].includes(current.status)) return describe(current);
-    if (result.status !== "pending") await settleCreditReservation(trx, { accountId: job.accountId, reservationId: job.reservationId,
+    if (result.status !== "pending" && job.reservationId) await settleCreditReservation(trx, { accountId: job.accountId, reservationId: job.reservationId,
       actualUnits: result.status === "ready" ? job.creditUnits : 0 });
+    if (result.status !== "pending" && !job.reservationId) await settleIncludedCaptcha(trx, job.id, result.status === "ready");
     const [updated] = await trx.update(captchaJobs).set({ status: result.status,
       providerTaskId: result.taskId ?? job.providerTaskId, solutionJson: result.solution ?? null, errorCode: result.errorCode ?? null,
       nextPollAt: new Date(Date.now() + 5000) }).where(eq(captchaJobs.id, job.id)).returning();
@@ -90,10 +93,12 @@ export function createCaptchaService(input: { db: Db; handle: RunHandle; provide
           .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId)).where(eq(workflowVersions.id, handle.task.workflowVersionId));
         if (!scope) throw failure("captcha_scope_missing", "Workflow account is unavailable");
         const id = newId("captcha");
-        const reservation = await reserveCredits(trx, { accountId: scope.accountId, operationId: id, category: "solver", units: rate.creditUnits, cost:{provider:args.provider,rateId:rate.rateVersion,unitCharge:rate.creditUnits,unitCost:configured?.costMicros??null} });
+        const plan = await assertCaptchaIncluded(trx, scope.accountId);
+        await recordCost(trx, { accountId: scope.accountId, category: "solver", provider: args.provider, sourceId: id, costMicros: null });
+        await trx.execute(sql`update operating_costs set status='pending',plan_revision_id=${plan.id},snapshot=${JSON.stringify({ unitCharge: 0, unitCost: configured?.costMicros ?? null })}::jsonb where source_id=${id} and category='solver'`);
         const [job] = await trx.insert(captchaJobs).values({ id, runId: handle.run.id, accountId: scope.accountId, idempotencyKey: args.idempotency_key,
           requestDigest: digest, provider: args.provider, taskType: args.task.type, status: "submitting", rateVersion: rate.rateVersion,
-          creditUnits: rate.creditUnits, reservationId: reservation.id, nextPollAt: new Date(Date.now() + 20000) }).returning();
+          creditUnits: 0, reservationId: null, nextPollAt: new Date(Date.now() + 20000) }).returning();
         return { job: job!, submit: true };
       });
       if (!claimed.submit) return describe(claimed.job);
@@ -150,7 +155,12 @@ export async function reconcileCaptchaJobs(db:Db,providers:readonly CaptchaProvi
   await db.transaction(async trx=>{
     const [current]=await trx.select().from(captchaJobs).where(eq(captchaJobs.id,job.id)).for("update");
     if(!current||current.status!=="pending")return;
-    if(result.status!=="pending")await settleCreditReservation(trx,{accountId:job.accountId,reservationId:job.reservationId,actualUnits:result.status==="ready"?job.creditUnits:0});
+    if(result.status!=="pending" && job.reservationId)await settleCreditReservation(trx,{accountId:job.accountId,reservationId:job.reservationId,actualUnits:result.status==="ready"?job.creditUnits:0});
+    if (result.status !== "pending" && !job.reservationId) await settleIncludedCaptcha(trx, job.id, result.status === "ready");
     await trx.update(captchaJobs).set({status:result.status,solutionJson:result.solution??null,errorCode:result.errorCode??null,nextPollAt:new Date(Date.now()+5000)}).where(eq(captchaJobs.id,job.id));
   });
+}
+
+export async function settleIncludedCaptcha(db: Db, id: string, solved: boolean) {
+  await db.execute(sql`update operating_costs set status='settled',cost_micros=case when ${solved} then (snapshot->>'unitCost')::bigint else 0 end where source_id=${id} and category='solver'`);
 }
