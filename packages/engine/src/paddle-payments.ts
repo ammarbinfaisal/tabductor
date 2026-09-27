@@ -158,7 +158,7 @@ const completedTransactionSchema = z.object({
   currency_code: z.string().min(3).max(3),
   discount_id: z.string().nullable().optional(),
   details: z.object({ totals: z.object({ total: z.string().regex(/^\d+$/) }).passthrough() }).passthrough(),
-  items: z.array(z.object({ price_id: z.string().min(1), quantity: z.number().int().positive() })).length(1),
+  items: z.array(z.object({ price_id: z.string().min(1).optional(), price: z.object({id:z.string().min(1)}).optional(), quantity: z.number().int().positive() }).transform(item => ({price_id:item.price?.id??item.price_id??"",quantity:item.quantity}))).length(1),
 });
 
 const adjustmentSchema = z.object({

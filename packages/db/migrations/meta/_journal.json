@@ -449,6 +449,27 @@
       "when": 1790499392767,
       "tag": "0063_metering_receipts",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1790499392768,
+      "tag": "0064_managed_openai",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1790499392769,
+      "tag": "0065_activity_groups",
+      "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1790499392770,
+      "tag": "0066_subscription_reconciliation",
+      "breakpoints": true
     }
   ]
 }

@@ -1,3 +1,4 @@
+import { listActivityGroups } from "./activity-groups.js";
 import { AppError, newId } from "@tabductor/core";
 import { chainOf } from "@tabductor/bus";
 import {
@@ -332,6 +333,11 @@ export async function listTraceEntries(db: Db, input: TraceListInput): Promise<P
   const after = input.cursor ? Number(input.cursor) : undefined;
   const afterSeq = after !== undefined && Number.isFinite(after) ? after : undefined;
 
+  if (input.view === "tools") {
+    const page = await listActivityGroups(db, {runId:input.runId,limit,...(afterSeq!==undefined?{after:afterSeq}:{})});
+    return {nextCursor:page.nextCursor,items:page.items.map(group=>({seq:Number(group.position),kind:"action" as const,createdAt:group.started_at,blobRef:group.blob_ref,
+      payloadJson:{action:"activity.group",groupId:group.id,summary:group.description,summaryLabel:group.label,status:group.status,revision:group.revision,ok:group.status!=="failed",offsetMs:group.offset_ms===null?null:Number(group.offset_ms)}}))};
+  }
   const rows = await db
     .select({
       seq: traceEntries.seq,
@@ -342,12 +348,7 @@ export async function listTraceEntries(db: Db, input: TraceListInput): Promise<P
     })
     .from(traceEntries)
     .where(and(eq(traceEntries.runId, input.runId), afterSeq !== undefined ? gt(traceEntries.seq, afterSeq) : undefined,
-      input.view === "tools" ? sql`${traceEntries.kind} = 'action' and (
-        ${traceEntries.payloadJson}->>'action' = 'tool.call' or (
-          ${traceEntries.payloadJson}->>'action' in ('goto','click','type','scroll','waitFor','waitForLoadState','queryAll','emit','network.list','network.read','network.body','network.waitForResponse','agent.done','agent.fail','secrets.fill')
-          and (not exists (select 1 from trace_entries tc where tc.run_id = ${input.runId} and tc.payload_json->>'action' = 'tool.call')
-            or ${traceEntries.seq} < (select min(tc.seq) from trace_entries tc where tc.run_id = ${input.runId} and tc.kind = 'llm'))
-        ))` : undefined))
+      undefined))
     .orderBy(asc(traceEntries.seq))
     .limit(limit + 1);
 

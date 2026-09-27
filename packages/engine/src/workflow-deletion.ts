@@ -95,6 +95,7 @@ export async function processWorkflowDeletion(db:Db,pool:Pool,blobs:BlobStore){
       await trx.execute(sql`delete from challenge_attempts where challenge_id in (select id from browser_challenges where session_id in (${sessionIds}))`);
       await trx.execute(sql`delete from browser_challenges where session_id in (${sessionIds})`);
       await trx.execute(sql`delete from browser_billing where session_id in (${sessionIds})`);
+      await trx.execute(sql`delete from browser_usage_cursors where session_id in (${sessionIds})`);
       await trx.execute(sql`delete from browser_sessions where id in (${sessionIds})`);
       await trx.execute(sql`delete from destination_records where workflow_id=${id}`);
       await trx.execute(sql`delete from destination_preparations where execution_id in (${executionIds})`);

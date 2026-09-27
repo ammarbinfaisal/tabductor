@@ -16,9 +16,9 @@ it("lists earlier calls and reads bounded response content through browser.netwo
   expect(await tool.execute({ action: "read", index: 3 })).toMatchObject({ ok: false, error: "browser.network read requires index and parts" });
 });
 
-it("does not expose network or CAPTCHA services inside Python", async () => {
+it("keeps network outside Python while exposing the managed CAPTCHA service", async () => {
   const tool = pythonFixture().tool();
   expect(await tool.execute({ source: `assert not hasattr(browser, 'network')
-assert not hasattr(browser, 'captcha')
+assert hasattr(browser, 'captcha')
 assert 'workflow' not in globals()` })).toMatchObject({ ok: true });
 });

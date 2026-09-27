@@ -1,11 +1,11 @@
-import { findBillingRate, recordCost } from "./billing-prices.js";
+import { enabledModels, ensureManagedOpenAIKey } from "./managed-openai.js";
 import { usdMicros } from "@tabductor/core";
 import { AppError, newId } from "@tabductor/core";
 import { billingSettings, modelCredentials, modelSelections, modelOperations, workflowExecutions, workflows, workflowVersions, runs, tasks, type Db } from "@tabductor/db";
-import { encryptEnvelope, withEnvelope, zero, type KeyWrapper } from "@tabductor/secrets";
+import { withEnvelope, type KeyWrapper } from "@tabductor/secrets";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
-import { reserveCredits, settleCreditReservation } from "./credits.js";
+import { getCreditBalance, lockCreditAccount, settleCreditReservation } from "./credits.js";
 
 export const modelProviderSchema = z.enum(["openai", "anthropic", "openai-compatible"]);
 export type ModelProvider = z.infer<typeof modelProviderSchema>;
@@ -14,7 +14,7 @@ export const graphAuthoringModelSchema = z.object({
   provider: platformModelProviderSchema,
   model: z.string().trim().min(1).max(200),
 }).strict();
-export const DEFAULT_GRAPH_AUTHORING_MODEL = { provider: "openai", model: "gpt-6-astra" } as const;
+export const DEFAULT_GRAPH_AUTHORING_MODEL = { provider: "openai", model: "gpt-5.4" } as const;
 
 export async function getGraphAuthoringModel(db: Db): Promise<z.infer<typeof graphAuthoringModelSchema>> {
   const [setting] = await db.select().from(billingSettings).where(eq(billingSettings.key, "graph_authoring_model"));
@@ -78,16 +78,7 @@ export function parseModelRates(value: string | undefined): ModelRate[] {
 
 export async function saveModelCredential(db: Db, wrapper: KeyWrapper,
   input: { accountId: string } & z.input<typeof modelCredentialInputSchema>) {
-  const { accountId, ...credentialInput } = input;
-  const validated = modelCredentialInputSchema.parse(credentialInput);
-  if (!validated.apiKey.trim()) throw new AppError("model_credential_invalid", "a provider API key is required");
-  const value = Buffer.from(validated.apiKey);
-  try {
-    const envelope = await encryptEnvelope(wrapper, value);
-    const [row] = await db.insert(modelCredentials).values({ id: newId("modelkey"), accountId,
-      provider: validated.provider, label: validated.label, baseUrl: validated.baseUrl ?? null, envelope }).returning({ id: modelCredentials.id, provider: modelCredentials.provider, label: modelCredentials.label, baseUrl: modelCredentials.baseUrl });
-    return row!;
-  } finally { zero(value); }
+  throw new AppError("managed_models_only", "Customer API keys are no longer accepted");
 }
 
 async function assertWorkflow(db: Db, accountId: string, workflowId: string) {
@@ -97,6 +88,8 @@ async function assertWorkflow(db: Db, accountId: string, workflowId: string) {
 
 export async function setModelSelection(db: Db, accountId: string, value: z.input<typeof modelSelectionSchema>) {
   const input = modelSelectionSchema.parse(value);
+  if (input.provider !== "openai" || input.funding !== "platform" || input.credentialId || !(await enabledModels(db)).some(m => m.model === input.model))
+    throw new AppError("model_unavailable", "Select an enabled managed model");
   return db.transaction(async (trx) => {
     if (input.scope !== "account") await assertWorkflow(trx, accountId, input.scope);
     if (input.credentialId) {
@@ -161,59 +154,36 @@ export function createModelResolver(deps: { db: Db; wrapper: KeyWrapper; rates: 
       // Graph generation and repair are platform-controlled, never inherited from execution settings.
       const selection = scope.purpose === "graph"
         ? { ...await getGraphAuthoringModel(deps.db), funding: "platform" as const, credentialId: null }
-        : pinned !== undefined ? pinned : selections.find((s) => s.scope === scope.workflowId) ?? selections.find((s) => s.scope === "account");
+        : pinned !== undefined ? pinned : selections.find((s) => s.scope === scope.workflowId) ?? selections.find((s) => s.scope === "account") ?? { provider: "openai" as const, model: "gpt-5.4", funding: "platform" as const, credentialId: null };
       if (!selection) throw new AppError("model_selection_missing", "Choose a model source in account settings before using AI");
-      let rate = deps.rates.find((r) => r.provider === selection.provider && r.model === selection.model);
-      const [inputRate,cachedRate,outputRate]=await Promise.all(["input","cached","output"].map(part=>findBillingRate(deps.db,"model",selection.provider,`${selection.model}:${part}`)));
-      if(inputRate&&outputRate)rate={provider:selection.provider as "openai"|"anthropic",model:selection.model,version:inputRate.id,input:inputRate.chargeMicros,
-        cachedInput:cachedRate?.chargeMicros??inputRate.chargeMicros,output:outputRate.chargeMicros,
-        maxInputTokens:inputRate.maxInputTokens??rate?.maxInputTokens??128000,maxOutputTokens:inputRate.maxOutputTokens??rate?.maxOutputTokens??8192};
-      if (selection.funding === "platform" && !rate) throw new AppError("model_rate_unknown", scope.purpose === "graph"
-              ? `Graph authoring model ${selection.provider}/${selection.model} has no configured rate. Configure it in Admin → Pricing & costs.`
-              : "this platform model has no configured rate");
-      const maxInput = rate?.maxInputTokens ?? 128_000;
-      const maxOutputTokens = rate?.maxOutputTokens ?? 8192;
-      if (input.inputTokenBound > maxInput) throw new AppError("model_input_limit",
-        `model input estimate ${input.inputTokenBound} exceeds configured limit ${maxInput}; compact history or reduce tool data`,
-        { details: { estimatedInputTokens: input.inputTokenBound, maxInputTokens: maxInput } });
-      const [credential] = selection.funding === "byo" ? await deps.db.select().from(modelCredentials).where(and(
-        eq(modelCredentials.id, selection.credentialId!), eq(modelCredentials.accountId, scope.accountId),
-        eq(modelCredentials.provider, selection.provider), isNull(modelCredentials.revokedAt))) : [];
-      if (selection.funding === "byo" && !credential) throw new AppError("model_credential_missing", "the selected BYO credential is unavailable");
-      const platformKey = selection.provider === "openai-compatible" ? undefined : deps.platformKeys[selection.provider];
-      if (selection.funding === "platform" && !platformKey) throw new AppError("model_platform_unavailable", scope.purpose === "graph"
-              ? `Graph authoring provider ${selection.provider} is unavailable. Configure its platform API key or change the model in Admin → Providers.`
-              : "the selected platform provider is unavailable");
+      if (selection.funding !== "platform" || selection.provider !== "openai") throw new AppError("managed_models_only", "Select a managed model");
+      const model = (await enabledModels(deps.db)).find(m => m.model === selection.model);
+      if (!model) throw new AppError("model_unavailable", "The selected model is disabled");
+      if (input.inputTokenBound > model.max_input_tokens) throw new AppError("model_input_limit", "Model input exceeds its configured limit");
+      if ((await getCreditBalance(deps.db, scope.accountId)).availableUnits <= 0) throw new AppError("credit_insufficient", "Add prepaid balance before using AI");
+      const credential = await ensureManagedOpenAIKey(deps.db, deps.wrapper, scope.accountId);
+      const maxOutputTokens = model.max_output_tokens;
       const id = input.operationId ?? newId("modelop");
-      await deps.db.transaction(async (trx) => {
-        const [admitted] = await trx.insert(modelOperations).values({ id, ...scope, funding: selection.funding,
-          provider: selection.provider, model: selection.model,
-          rateVersion: selection.funding === "platform" ? rate!.version : null,
-          rateJson: selection.funding === "platform" ? { input: rate!.input, cachedInput: rate!.cachedInput, output: rate!.output } : null,
-        }).onConflictDoNothing().returning({ id: modelOperations.id });
-        if (!admitted) throw new AppError("model_operation_exists", "model operation already submitted; reconcile its outcome before retrying");
-        if (selection.funding === "platform") {
-          const units = modelCreditUnits({ ...rate!, input: Math.max(rate!.input, rate!.cachedInput) }, { input: maxInput, output: maxOutputTokens });
-          const reservation = await reserveCredits(trx, { accountId: scope.accountId, operationId: id, category: "model", units });
-          await trx.update(modelOperations).set({ reservationId: reservation.id }).where(eq(modelOperations.id, id));
-        }
+      await deps.db.transaction(async trx => {
+        await lockCreditAccount(trx, scope.accountId);
+        if ((await getCreditBalance(trx, scope.accountId)).availableUnits <= 0) throw new AppError("credit_insufficient", "Add prepaid balance before using AI");
+        const active = await trx.execute(sql`select 1 from entitlement_history where id=${credential.entitlement_id} and account_id=${scope.accountId} and ends_at is null`);
+        if (!active.rows.length) throw new AppError("model_plan_changed", "Plan changed while preparing the model. Retry with the new plan.");
+        const [admitted] = await trx.insert(modelOperations).values({ id, ...scope, funding: "platform", provider: "openai", model: model.model }).onConflictDoNothing().returning({ id: modelOperations.id });
+        if (!admitted) throw new AppError("model_operation_exists", "Model operation already submitted");
+        await trx.execute(sql`update model_operations set managed_key_id=${credential.id} where id=${id}`);
       });
       try {
-        const invoke = (apiKey: string) => call({ provider: selection.provider, model: selection.model, apiKey,
-          ...(credential?.baseUrl ? { baseUrl: credential.baseUrl } : {}), maxOutputTokens });
-        const result = credential ? await withEnvelope(deps.wrapper, credential.envelope, (value) => invoke(value.toString("utf8"))) : await invoke(platformKey!);
-        if(selection.funding==="platform") await recordCost(deps.db,{category:"model",provider:selection.provider,accountId:scope.accountId,sourceId:id,
-          ...(inputRate?{rateId:inputRate.id}:{}),costMicros:inputRate?.costMicros!=null&&outputRate?.costMicros!=null?
-            modelCreditUnits({input:inputRate.costMicros,cachedInput:cachedRate?.costMicros??inputRate.costMicros,output:outputRate.costMicros},result.usage):null});
+        const result = await withEnvelope(deps.wrapper, credential.envelope, bytes => call({ provider: "openai", model: model.model, apiKey: bytes.toString("utf8"), maxOutputTokens }));
         validateUsage(result.usage);
         // Persist observed usage before settlement, so an unexpected provider overrun remains reconcilable.
         await deps.db.update(modelOperations).set({ inputTokens: result.usage.input, outputTokens: result.usage.output,
           cachedInputTokens: result.usage.cachedInput ?? 0, reasoningTokens: result.usage.reasoning ?? 0,
         }).where(eq(modelOperations.id, id));
-        await settleModelOperation(deps.db, scope.accountId, id);
+        await deps.db.update(modelOperations).set({ status: "succeeded", completedAt: new Date() }).where(eq(modelOperations.id, id));
         return result.value;
       } catch {
-        if(selection.funding==="platform")await recordCost(deps.db,{category:"model",provider:selection.provider,accountId:scope.accountId,sourceId:id,costMicros:null});
+
         await deps.db.update(modelOperations).set({ status: "uncertain" }).where(and(eq(modelOperations.id, id), eq(modelOperations.status, "pending")));
         // Provider errors may embed request headers. Never return their text, cause, or body.
         throw new AppError("model_operation_uncertain", "Model call failed; its usage is retained for reconciliation. The selected funding source was not changed.", { details: { operationId: id } });

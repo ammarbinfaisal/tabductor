@@ -78,7 +78,7 @@ export async function changeSubscription(db: Db, accountId: string, planId: stri
 const completed = z.object({
   id: z.string(), subscription_id: z.string(), status: z.literal("completed"), currency_code: z.literal("USD"),
   billing_period: z.object({ starts_at: z.string().datetime({ offset: true }), ends_at: z.string().datetime({ offset: true }) }),
-  items: z.array(z.object({ price_id: z.string(), quantity: z.literal(1) })).length(1),
+  items: z.array(z.object({ price_id: z.string().optional(), price: z.object({id:z.string()}).optional(), quantity: z.literal(1) }).transform(item => ({price_id:item.price?.id??item.price_id??"",quantity:item.quantity}))).length(1),
   details: z.object({ totals: z.object({ total: z.string().regex(/^\d+$/) }) }),
   custom_data: z.record(z.unknown()).nullable().optional(),
 });
@@ -95,19 +95,52 @@ export async function processSubscriptionEvent(db: Db, event: PaymentWebhookEven
       return true;
     }
     await lockCreditAccount(db, subscription.account_id);
-    if (!subscription.provider_updated_at || event.occurredAt > new Date(subscription.provider_updated_at)) {
+    const locked = (await db.execute<Subscription>(sql`select * from account_subscriptions where account_id=${subscription.account_id} for update`)).rows[0]!;
+    if (!locked.provider_updated_at || event.occurredAt > new Date(locked.provider_updated_at)) {
       const status = typeof data.status === "string" ? data.status : subscription.status;
       await db.execute(sql`update account_subscriptions set status=${status},provider_updated_at=${event.occurredAt},
         cancel_at_end=${record(data.scheduled_change).action === "cancel"} where account_id=${subscription.account_id}`);
     }
     return true;
   }
+  if (event.eventType.startsWith("adjustment.")) {
+    const payment=(await db.execute<{id:string;account_id:string;amount_micros:string;period_end:Date}>(sql`select * from subscription_transactions where id=${String(data.transaction_id)}`)).rows[0];
+    if (!payment) return false;
+    await lockCreditAccount(db,payment.account_id);
+    if (typeof data.id!=="string" || data.currency_code!=="USD" || !["refund","credit","chargeback"].includes(String(data.action))) throw new Error("Invalid subscription adjustment");
+    const amount=Number(record(data.totals).total)*10000;
+    if(!Number.isSafeInteger(amount)||amount<0)throw new Error("Invalid subscription refund amount");
+    await db.execute(sql`insert into subscription_adjustments(id,transaction_id,amount_micros,status,occurred_at)
+      values(${data.id},${payment.id},${amount},${String(data.status)},${event.occurredAt}) on conflict(id) do update set status=excluded.status,occurred_at=excluded.occurred_at
+      where subscription_adjustments.occurred_at<excluded.occurred_at`);
+    const refunded=(await db.execute<{amount:string}>(sql`select coalesce(sum(amount_micros),0)::text as amount from subscription_adjustments where transaction_id=${payment.id} and status='approved'`)).rows[0]!.amount;
+    await db.execute(sql`update subscription_transactions set refunded_micros=${Number(refunded)} where id=${payment.id}`);
+    if(Number(refunded)>=Number(payment.amount_micros)&&Number(payment.amount_micros)>0) {
+      // Refunding the current service period suspends paid entitlements, without touching prepaid AI funds.
+      await db.execute(sql`update account_subscriptions set status='refunded' where account_id=${payment.account_id} and period_end=${new Date(payment.period_end)}
+        and not exists(select 1 from subscription_transactions where account_id=${payment.account_id} and occurred_at>${event.occurredAt})`);
+    }
+    return true;
+  }
+  if (event.eventType.startsWith("transaction.") && custom.tabductor_subscription_checkout_id && event.eventType !== "transaction.completed") {
+    const intent = (await db.execute<SubscriptionCheckout>(sql`select * from subscription_checkouts where id=${String(custom.tabductor_subscription_checkout_id)}`)).rows[0];
+    if (!intent) throw new AppError("subscription_owner_pending", "Checkout intent is not available");
+    await lockCreditAccount(db,intent.account_id);
+    if (typeof data.id !== "string" || intent.transaction_id && intent.transaction_id !== data.id) throw new Error("Checkout transaction conflict");
+    const url=record(data.checkout).url;
+    await db.execute(sql`update subscription_checkouts set transaction_id=${data.id},checkout_url=coalesce(checkout_url,${typeof url==="string"?url:null}),
+      status=case when status='creating' then 'pending' else status end where id=${intent.id}`);
+    return true;
+  }
   if (event.eventType !== "transaction.completed" || !data.subscription_id) return false;
-  const tx = completed.parse(data);
+  // Initial checkout transactions may omit the period. Resolve it from authenticated provider state.
+  const period = data.billing_period ?? (await paddleRequest(`/subscriptions/${encodeURIComponent(String(data.subscription_id))}`,"GET")).current_billing_period;
+  const tx = completed.parse({...data,billing_period:period});
   const checkout = (await db.execute<SubscriptionCheckout>(sql`select * from subscription_checkouts where id=${String(custom.tabductor_subscription_checkout_id ?? "")}`)).rows[0];
   const owner = (await db.execute<Subscription>(sql`select * from account_subscriptions where paddle_subscription_id=${tx.subscription_id}`)).rows[0];
   const accountId = owner?.account_id ?? checkout?.account_id;
   if (!accountId) throw new AppError("subscription_owner_pending", "Subscription checkout has not arrived yet");
+  if (checkout && checkout.account_id !== accountId) throw new Error("Subscription checkout owner conflict");
   await lockCreditAccount(db, accountId);
   const current = (await db.execute<Subscription>(sql`select * from account_subscriptions where account_id=${accountId} for update`)).rows[0]!;
   current.period_start = new Date(current.period_start); current.period_end = new Date(current.period_end);
@@ -127,7 +160,7 @@ export async function processSubscriptionEvent(db: Db, event: PaymentWebhookEven
   if (!newer.rows.length && (end >= current.period_end || !owner)) {
     const samePeriod = Boolean(owner && start < current.period_end && end.getTime() === current.period_end.getTime());
     if (plan.id !== current.plan_revision_id) await transitionEntitlement(db, accountId, plan.id, new Date(), "paid_transaction");
-    await db.execute(sql`update account_subscriptions set plan_revision_id=${plan.id},paddle_subscription_id=${tx.subscription_id},status='active',
+    await db.execute(sql`update account_subscriptions set plan_revision_id=${plan.id},paddle_subscription_id=${tx.subscription_id},status=case when provider_updated_at>${event.occurredAt} then status else 'active' end,
       period_start=${samePeriod ? current.period_start : start},period_end=${end},pending_revision_id=null where account_id=${accountId}`);
     // Free-to-paid upgrades preserve consumption already incurred during the overlapping period.
     if (!owner) await db.execute(sql`update subscription_periods set starts_at=${start},ends_at=${end} where account_id=${accountId} and starts_at=${current.period_start}`);

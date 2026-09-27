@@ -1,9 +1,9 @@
 import { DEFAULT_TOKEN_PATTERNS, maskText } from "@tabductor/core";
 import {
-  actionSummaries, browserCommands, browserSessionActivity, browserSessions, browserTabLeases, events, runs,
-  tasks, traceEntries, workflowExecutions, workflows, type BrowserSessionActivityRow, type Db, type TraceEntryRow,
+  browserCommands, browserSessionActivity, browserSessions, browserTabLeases, events, runs,
+  tasks, workflowExecutions, workflows, type BrowserSessionActivityRow, type Db, type TraceEntryRow,
 } from "@tabductor/db";
-import { readWorkflowDefinition } from "@tabductor/engine";
+import { listActivityGroups, readWorkflowDefinition } from "@tabductor/engine";
 import { TRPCError } from "@trpc/server";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -111,15 +111,16 @@ export type InspectionItem = {
 
 /** Payload task/run/trigger ids are not authority. Raw source, arguments and thoughts never leave this projection. */
 export function inspectionAction(entry: TraceEntryRow, run: ActionRun, summary?: Summary): InspectionItem | null {
+  if (entry.kind === "llm") return null;
   const payload = object(entry.payloadJson);
   if (payload.private === true || payload.evidenceOmitted === true) return null;
   const isTool = entry.kind === "action" && payload.action === "tool.call";
   const isLegacy = entry.kind === "action" && LEGACY_ACTIONS.includes(String(payload.action));
   const isEmit = entry.kind === "action" && payload.action === "emit";
-  if (!isTool && !isLegacy && entry.kind !== "navigation" && entry.kind !== "llm") return null;
+  if (!isTool && !isLegacy && entry.kind !== "navigation") return null;
   const tool = isTool ? identifier(payload.tool) : isLegacy ? identifier(payload.action) : null;
   if (tool === "browser.events") return null;
-  const fallback: Label = entry.kind === "navigation" ? "navigation" : entry.kind === "llm" ? "agent_update"
+  const fallback: Label = entry.kind === "navigation" ? "navigation"
     : isEmit ? "workflow_event" : (tool && TOOL_LABELS[tool]) || "tool";
   const label = summary?.status === "ready" && LABELS.includes(summary.label as Label) ? summary.label as Label : fallback;
   let description = fallback === "navigation" || fallback === "screenshot" ? TITLES[fallback] : summary?.status === "ready" && summary.summary?.trim()
@@ -130,16 +131,6 @@ export function inspectionAction(entry: TraceEntryRow, run: ActionRun, summary?:
   if (tool && (TOOL_LABELS[tool] || ["browser.python", "browser.code"].includes(tool))) details.tool = tool;
   const durationMs = numeric(payload.duration_ms);
   if (durationMs !== null) details.durationMs = durationMs;
-  if (entry.kind === "llm") {
-    const usage = object(payload.usage);
-    const inputTokens = numeric(usage.in ?? usage.inputTokens);
-    const outputTokens = numeric(usage.out ?? usage.outputTokens);
-    details.usage = { inputTokens, outputTokens, cachedInputTokens: numeric(usage.cachedInput ?? usage.cachedInputTokens) };
-    details.toolCalls = Array.isArray(payload.tool_calls) ? payload.tool_calls
-      .filter((name): name is string => typeof name === "string" && (Object.hasOwn(TOOL_LABELS, name) || ["browser.python", "browser.code"].includes(name))).slice(0, 100) : [];
-    description = payload.phase === "rejected_or_failed" ? "Model request failed" : inputTokens !== null && outputTokens !== null
-      ? `Model update · ${inputTokens.toLocaleString("en-US")} input / ${outputTokens.toLocaleString("en-US")} output tokens` : "Agent update";
-  }
   if (isEmit && typeof payload.deduped === "boolean") details.deduped = payload.deduped;
   return {
     id: `${run.id}:${entry.seq}`, runId: run.id, taskId: run.taskId, runtimeName: run.taskName,
@@ -193,7 +184,7 @@ export async function inspectSession(db: Db, accountId: string, sessionId: strin
   const runSelection = { id: runs.id, taskId: runs.taskId, taskName: tasks.name, status: runs.status, attempt: runs.attempt,
     triggerEventId: runs.triggerEventId, startedAt: runs.startedAt, endedAt: runs.endedAt, createdAt: runs.createdAt,
     error: runs.error, modeUsed: runs.modeUsed };
-  const [definition, relatedSessions, runRows, packetRows, traceRows] = execution && session.executionId ? await Promise.all([
+  const [definition, relatedSessions, runRows, packetRows] = execution && session.executionId ? await Promise.all([
     readWorkflowDefinition(db, execution.workflowVersionId),
     db.select({ id: browserSessions.id, status: browserSessions.status }).from(browserSessions).where(and(eq(browserSessions.executionId, session.executionId), eq(browserSessions.accountId, accountId))).orderBy(asc(browserSessions.createdAt)),
     db.select(runSelection).from(runs).innerJoin(tasks, eq(tasks.id, runs.taskId))
@@ -201,24 +192,7 @@ export async function inspectSession(db: Db, accountId: string, sessionId: strin
     db.select({ eventId: events.eventId, type: events.type, sourceTaskId: events.sourceTaskId, sourceRunId: events.sourceRunId,
       causationId: events.causationId, packet: events.packet, occurredAt: events.occurredAt }).from(events)
       .where(eq(events.executionId, session.executionId)).orderBy(asc(events.occurredAt), asc(events.eventId)).limit(limit + 1).offset(cursor.packets),
-    db.select({ entry: traceEntries, run: runSelection,
-      summary: actionSummaries.summary, summaryStatus: actionSummaries.status,
-      offsetMs: sql<number | null>`(select min(a.offset_ms) from browser_session_activity a where a.session_id=${sessionId} and a.private=false and a.payload_json->>'clock'='recorder' and a.payload_json->>'callId'=${traceEntries.payloadJson}->>'callId')`,
-      label: sql<string | null>`to_jsonb(${actionSummaries})->>'label'` }).from(traceEntries)
-      .innerJoin(runs, eq(runs.id, traceEntries.runId)).innerJoin(tasks, eq(tasks.id, runs.taskId))
-      .leftJoin(actionSummaries, and(eq(actionSummaries.runId, traceEntries.runId),
-        eq(actionSummaries.callId, sql`${traceEntries.payloadJson}->>'callId'`), eq(actionSummaries.accountId, accountId)))
-      .where(and(eq(runs.executionId, session.executionId), sql`
-        (${traceEntries.kind} in ('navigation', 'llm') or
-          (${traceEntries.kind} = 'action' and ${inArray(sql`${traceEntries.payloadJson}->>'action'`, ["tool.call", ...LEGACY_ACTIONS])}))
-        and (${traceEntries.payloadJson}->>'private') is distinct from 'true'
-        and (${traceEntries.payloadJson}->>'evidenceOmitted') is distinct from 'true'
-        and (${traceEntries.payloadJson}->>'tool') is distinct from 'browser.events'
-        and not exists (select 1 from browser_session_activity private_activity where private_activity.session_id=${sessionId} and private_activity.private=true and private_activity.payload_json->>'callId'=${traceEntries.payloadJson}->>'callId')
-        and (exists (select 1 from browser_session_activity a where a.session_id=${sessionId} and a.private=false and a.payload_json->>'callId'=${traceEntries.payloadJson}->>'callId')
-          or (exists (select 1 from browser_commands c where c.run_id=${runs.id} and c.session_id=${sessionId})
-            and not exists (select 1 from browser_commands c where c.run_id=${runs.id} and c.session_id<>${sessionId})))`))
-      .orderBy(asc(traceEntries.createdAt), asc(traceEntries.runId), asc(traceEntries.seq)).limit(limit + 1).offset(cursor.traces),
+    Promise.resolve([]),
   ]) : [null, [], [], [], []] as const;
   const activityRows = await db.select({ activity: browserSessionActivity,
     run: { id: runs.id, taskId: runs.taskId, taskName: tasks.name, triggerEventId: runs.triggerEventId } }).from(browserSessionActivity)
@@ -231,13 +205,10 @@ export async function inspectSession(db: Db, accountId: string, sessionId: strin
         and (${browserSessionActivity.payloadJson}->>'evidenceOmitted') is distinct from 'true'
         and ${browserSessionActivity.kind} <> 'browser.events'`))
     .orderBy(asc(browserSessionActivity.cursor)).limit(limit + 1).offset(cursor.activity);
-  const items = traceRows.slice(0, limit).flatMap(row => {
-    const item = inspectionAction(row.entry, row.run, row.summaryStatus ? {
-      summary: row.summary, status: row.summaryStatus, label: row.label,
-    } : undefined);
-    return item ? [{ ...item, offsetMs: row.offsetMs === null ? null : Number(row.offsetMs) }] : [];
-  });
+  const grouped = await listActivityGroups(db,{sessionId,accountId,limit,offset:cursor.traces});
+  const items: InspectionItem[] = grouped.items.map(group=>({id:group.id,runId:group.run_id,taskId:null,runtimeName:null,triggerEventId:null,emittedEventIds:[],kind:"activity_group",label:group.label,description:group.description,status:group.status,occurredAt:group.started_at,offsetMs:group.offset_ms===null?null:Number(group.offset_ms),callId:null,details:{revision:group.revision,...(group.blob_ref?{screenshotRef:group.blob_ref}:{})},summaryStatus:"ready"}));
   for (const row of activityRows.slice(0, limit)) {
+    if (row.run?.id || object(row.activity.payloadJson).callId) continue;
     const run = row.run;
         const item = inspectionActivity(row.activity, run?.id && run.taskId && run.taskName !== null
           ? { id: run.id, taskId: run.taskId, taskName: run.taskName, triggerEventId: run.triggerEventId } : null);
@@ -246,11 +217,11 @@ export async function inspectSession(db: Db, accountId: string, sessionId: strin
   const rootCalls = new Set(items.filter(item => item.kind === "action" && item.callId).map(item => `${item.runId}:${item.callId}`));
   const deduplicated = items.filter(item => item.kind !== "navigation" || !item.callId || !rootCalls.has(`${item.runId}:${item.callId}`));
   deduplicated.sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime() || a.id.localeCompare(b.id));
-  const lengths = { runs: runRows.length, packets: packetRows.length, traces: traceRows.length, activity: activityRows.length };
+  const lengths = { runs: runRows.length, packets: packetRows.length, traces: grouped.items.length + (grouped.hasMore ? 1 : 0), activity: activityRows.length };
   const truncated = Object.values(lengths).some(length => length > limit);
   const nextCursor = truncated ? {
     runs: cursor.runs + Math.min(runRows.length, limit), packets: cursor.packets + Math.min(packetRows.length, limit),
-    traces: cursor.traces + Math.min(traceRows.length, limit), activity: cursor.activity + Math.min(activityRows.length, limit),
+    traces: cursor.traces + grouped.items.length, activity: cursor.activity + Math.min(activityRows.length, limit),
   } : null;
   return {
     workflow: execution && definition ? { id: execution.workflowId, name: execution.workflowName, versionId: execution.workflowVersionId, prompt: definition.prompt } : null,

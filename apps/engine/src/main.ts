@@ -1,4 +1,4 @@
-import { convertLegacyWallets, reconcileCaptchaJobs, processActionSummary, processWorkflowDeletion, syncProxyCosts } from "@tabductor/engine";
+import { syncOpenAICosts, convertLegacyWallets, reconcileCaptchaJobs, processActionSummary, processActivityGroups, processWorkflowDeletion, syncProxyCosts } from "@tabductor/engine";
 import { validatePythonCandidate } from "@tabductor/agent";
 import { eq } from "drizzle-orm";
 import {
@@ -258,8 +258,8 @@ const paymentReconciler = config.PADDLE_API_KEY ? setInterval(() => {
 paymentReconciler?.unref();
 const summaryWork = new Set<Promise<void>>();
 const summaryTimer = setInterval(() => {
-  for (let n = summaryWork.size; n < 4; n++) {
-    const work = processActionSummary(handle.db).catch(error => log.warn("action summary failed", { error: String(error) })).finally(() => summaryWork.delete(work));
+  for (let n = summaryWork.size; n < 1; n++) {
+    const work = Promise.all([processActivityGroups(handle.db), processActionSummary(handle.db)]).then(() => undefined).catch(error => log.warn("action summary failed", { error: String(error) })).finally(() => summaryWork.delete(work));
     summaryWork.add(work);
   }
 }, 1000);
@@ -267,7 +267,7 @@ summaryTimer.unref();
 let maintenanceWork:Promise<void>|undefined;
 const maintenance=setInterval(()=>{
   if(maintenanceWork)return;
-  maintenanceWork=Promise.allSettled([convertLegacyWallets(handle.db),reconcileCaptchaJobs(handle.db,captchaProviders),processWorkflowDeletion(handle.db,handle.pool,blobs),syncProxyCosts(handle.db)])
+  maintenanceWork=Promise.allSettled([convertLegacyWallets(handle.db),reconcileCaptchaJobs(handle.db,captchaProviders),processWorkflowDeletion(handle.db,handle.pool,blobs),syncProxyCosts(handle.db),syncOpenAICosts(handle.db)])
     .then(results=>{for(const result of results)if(result.status==="rejected")log.warn("billing maintenance failed",{error:String(result.reason)});})
     .finally(()=>{maintenanceWork=undefined;});
 },2000);

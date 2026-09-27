@@ -1482,3 +1482,19 @@ main:has(.session-replay) { max-width: none; padding: 24px; }
 .replay-result p { white-space: pre-wrap; line-height: 1.7; }.replay-result pre { overflow: auto; max-height: 400px; }
 .prompt-workspace { max-width: 1000px; margin: 0 auto; }.prompt-workspace textarea { line-height: 1.65; }.result-output { overflow: auto; max-height: 400px; }
 @media (max-width: 900px) { .replay-layout { grid-template-columns: 1fr; }.replay-browser { grid-row: 1; }.replay-events { max-height: 50vh; }main:has(.session-replay) { padding: 16px; } }
+
+.pricing-page { max-width: 1240px; margin: auto; padding: clamp(20px,5vw,64px); }
+.pricing-page header { display: flex; justify-content: space-between; gap: 24px; }
+.pricing-intro { max-width: 720px; margin: 64px 0 40px; }
+.pricing-intro h1, .auth-page h1 { font-size: clamp(32px,4vw,52px); line-height: 1.12; }
+.pricing-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,240px),1fr)); gap: 24px; margin: 32px 0; }
+.pricing-grid article { border-top: 2px solid currentColor; padding: 24px 0; display:flex; flex-direction:column; }
+.pricing-grid ul { padding-left: 20px; line-height: 2; }
+.plan-price { font-size: 32px; margin: 16px 0; } .plan-price small { font-size: 14px; }
+.plan-action { display: block; margin-top: auto; padding: 12px 16px; border: 1px solid currentColor; border-radius: 6px; text-align:center; }
+.allowance-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:24px; padding:24px 0; }
+.allowance-grid strong { font-size:28px; display:block; } .allowance-grid span { display:block; }
+.plan-controls { display:flex; gap:12px; flex-wrap:wrap; margin:24px 0; }
+.auth-page { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr)); align-items:center; gap:48px; max-width:1100px; margin:auto; padding:clamp(24px,6vw,80px); }
+.auth-page .auth-panel { padding:0; min-width:0; }
+.plan-admin details { margin:24px 0; } .plan-admin input,.plan-admin select,.plan-admin button,.plan-controls button { min-height:44px; }

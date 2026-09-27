@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { browserSessions, browserProfiles, browserProfileLeases, browserAllocationRequests, workflowExecutions } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import { claimBrowserAllocation, failBrowserAllocation, createWorkflow, createWorkflowExecution, reserveCredits, appendCreditAdjustment, getCreditBalance, createBrowserProfile, fulfillBrowserAllocation, endBrowserSession, requestBrowserSession, openBrowserProfileSession, stopBrowserSession, resolveAccountIdentity } from "@tabductor/engine";
+import { getEntitlement, claimBrowserAllocation, failBrowserAllocation, createWorkflow, createWorkflowExecution, reserveCredits, appendCreditAdjustment, getCreditBalance, createBrowserProfile, fulfillBrowserAllocation, endBrowserSession, requestBrowserSession, openBrowserProfileSession, stopBrowserSession, resolveAccountIdentity } from "@tabductor/engine";
 import { publishVersion, staticSchemaGenerator } from "@tabductor/engine/testing";
 import { eq, sql } from "drizzle-orm";
 
@@ -99,6 +99,8 @@ it("rejects foreign and terminal execution bindings before queueing a session", 
 
 it("atomically caps allocation across concurrent controllers and starts queued work after release", async () => {
   const accountId = await resolveAccountIdentity(handle.db, { provider: "fixture", subject: "capacity" });
+  await getEntitlement(handle.db,accountId);
+  await handle.db.execute(sql`update account_subscriptions set plan_revision_id='developer_v1' where account_id=${accountId}`);
   for (let n = 0; n < 5; n++) {
     const profileId = await createBrowserProfile(handle.db, { accountId, name: `Profile ${n}` });
     await requestBrowserSession(handle.db, { accountId, profileId });

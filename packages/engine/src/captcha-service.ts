@@ -2,9 +2,9 @@ import { assertCaptchaIncluded } from "./subscriptions.js";
 import { recordCost } from "./billing-prices.js";
 import { findBillingRate } from "./billing-prices.js";
 import { createHash } from "node:crypto";
-import { AppError, canonicalJson, newId, usdDecimal } from "@tabductor/core";
-import { billingRates, browserSessions, captchaJobs, workflowVersions, workflows, type Db } from "@tabductor/db";
-import { and, eq, inArray, sql, desc } from "drizzle-orm";
+import { AppError, canonicalJson, newId } from "@tabductor/core";
+import { browserSessions, captchaJobs, workflowVersions, workflows, type Db } from "@tabductor/db";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { RunHandle } from "./executor.js";
 import { assertRunLease } from "./run-lease.js";
 import { browserAutomationIsReady } from "./browser-session-control.js";
@@ -65,12 +65,10 @@ export function createCaptchaService(input: { db: Db; handle: RunHandle; provide
   };
   return {
     async providers() {
-      return Promise.all(providers.map(async p => { const rates=await db.select().from(billingRates).where(and(eq(billingRates.category,"solver"),eq(billingRates.provider,p.name))).orderBy(desc(billingRates.createdAt),desc(billingRates.id)); const rate=rates.find(r=>r.item==="*"); return ({ name: p.name, available: p.configured && Boolean(p.rate||rates.length),
-        reason: !p.configured ? "missing_api_key" : !p.rate&&!rates.length ? "missing_internal_rate" : null,
-        pricing: "USD rate depends on the native task type; a configured rate is required before submission",
-        ...(rate ? { price_usd: usdDecimal(rate.chargeMicros), rate_version: rate.id } : {}),
+      return providers.map(p => ({ name: p.name, available: p.configured,
+        reason: p.configured ? null : "missing_api_key", pricing: "Unlimited solves are included on paid plans; Free does not include CAPTCHA",
         documentation: p.documentation, task_format: "Native provider task object; all provider-supported task types and fields are accepted",
-        ...(p.name === "anti-captcha" ? { additional_operations: ["push_variable"] } : {}) }); }));
+        ...(p.name === "anti-captcha" ? { additional_operations: ["push_variable"] } : {}) }));
     },
     async createTask(raw: CaptchaCreate, signal?: AbortSignal): Promise<CaptchaJob> {
       const args = captchaCreateSchema.parse(raw);
@@ -88,7 +86,7 @@ export function createCaptchaService(input: { db: Db; handle: RunHandle; provide
         const provider = providerFor(args.provider);
         const configured=await findBillingRate(trx,"solver",args.provider,args.task.type);
         const rate=configured?{creditUnits:configured.chargeMicros,rateVersion:configured.id}:provider.rate;
-        if (!rate || rate.creditUnits<=0) throw failure("captcha_rate_missing", `${args.provider}: set a USD price for ${args.task.type} in Admin before submitting paid solves`);
+
         const [scope] = await trx.select({ accountId: workflows.accountId }).from(workflowVersions)
           .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId)).where(eq(workflowVersions.id, handle.task.workflowVersionId));
         if (!scope) throw failure("captcha_scope_missing", "Workflow account is unavailable");
@@ -97,7 +95,7 @@ export function createCaptchaService(input: { db: Db; handle: RunHandle; provide
         await recordCost(trx, { accountId: scope.accountId, category: "solver", provider: args.provider, sourceId: id, costMicros: null });
         await trx.execute(sql`update operating_costs set status='pending',plan_revision_id=${plan.id},snapshot=${JSON.stringify({ unitCharge: 0, unitCost: configured?.costMicros ?? null })}::jsonb where source_id=${id} and category='solver'`);
         const [job] = await trx.insert(captchaJobs).values({ id, runId: handle.run.id, accountId: scope.accountId, idempotencyKey: args.idempotency_key,
-          requestDigest: digest, provider: args.provider, taskType: args.task.type, status: "submitting", rateVersion: rate.rateVersion,
+          requestDigest: digest, provider: args.provider, taskType: args.task.type, status: "submitting", rateVersion: rate?.rateVersion ?? "included",
           creditUnits: 0, reservationId: null, nextPollAt: new Date(Date.now() + 20000) }).returning();
         return { job: job!, submit: true };
       });

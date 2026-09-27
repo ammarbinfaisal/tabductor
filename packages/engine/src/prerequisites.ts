@@ -1,4 +1,5 @@
-import { browserFleetStatus, browserWorkers, browserSessions, browserProfileLeases, workflowBrowserProfiles, cdpEndpoints, modelCredentials, modelSelections, runs, tasks, workflowExecutions, workflowVersions, workflows, type Db } from "@tabductor/db";
+import { enabledModels } from "./managed-openai.js";
+import { browserFleetStatus, browserWorkers, browserSessions, browserProfileLeases, workflowBrowserProfiles, cdpEndpoints, modelSelections, runs, tasks, workflowExecutions, workflowVersions, workflows, type Db } from "@tabductor/db";
 import { and, eq, gt, inArray, isNotNull, isNull } from "drizzle-orm";
 
 export type PrerequisiteBlock = { code: string; message: string };
@@ -18,17 +19,10 @@ export async function checkWorkflowPrerequisites(db: Db, taskId: string, opts: P
   if (steps.some(step => step.mode === "ai" || step.mode === "compiled")) {
     const selections = await db.select().from(modelSelections).where(eq(modelSelections.accountId, origin.workflow.accountId));
     // A missing selection at original admission can be filled before the first run starts.
-    const selected = execution?.modelSelectionJson ?? selections.find(s => s.scope === origin.workflow.id) ?? selections.find(s => s.scope === "account");
+    const selected = execution?.modelSelectionJson ?? selections.find(s => s.scope === origin.workflow.id) ?? selections.find(s => s.scope === "account") ?? { funding: "platform" as const, provider: "openai" as const, model: "gpt-5.4", credentialId: null };
     if (!selected) return { code: "model_selection_missing", message: "Choose a model in workflow or account settings to start." };
-    if (selected.funding === "byo") {
-      const [credential] = await db.select({ id: modelCredentials.id }).from(modelCredentials).where(and(
-        eq(modelCredentials.id, selected.credentialId ?? ""), eq(modelCredentials.accountId, origin.workflow.accountId),
-        eq(modelCredentials.provider, selected.provider), isNull(modelCredentials.revokedAt)));
-      if (!credential) return { code: "model_credential_missing", message: "The selected model credential is missing or revoked. Restore it or start a new execution with another model." };
-    } else {
-      if (!opts.platformProviders.includes(selected.provider)) return { code: "model_platform_unavailable", message: "The selected model provider is unavailable." };
-      if (!opts.platformModels.some(model => model.provider === selected.provider && model.model === selected.model)) return { code: "model_rate_unknown", message: "The selected platform model has no configured rate." };
-    }
+    if (selected.funding !== "platform" || selected.provider !== "openai" || !(await enabledModels(db)).some(m => m.model === selected.model))
+      return { code: "model_unavailable", message: "Choose an enabled managed model." };
     if (execution && !execution.modelSelectionJson) await db.update(workflowExecutions).set({ modelSelectionJson: {
       funding: selected.funding, provider: selected.provider, model: selected.model, credentialId: selected.credentialId,
     } }).where(and(eq(workflowExecutions.id, execution.id), isNull(workflowExecutions.modelSelectionJson)));

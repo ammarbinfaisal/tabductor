@@ -34,6 +34,7 @@ describe("Paddle payments", () => {
     expect(JSON.parse(request.body as string)).toEqual({
       items: [{ price_id: "pri_small", quantity: 1 }],
       collection_mode: "automatic",
+      currency_code: "USD",
       custom_data: { tabductor_purchase_id: "purchase_internal" },
       checkout: { url: "https://app.example.test/billing" },
     });

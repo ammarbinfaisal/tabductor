@@ -1,11 +1,13 @@
+import { SubscriptionPanel } from "../../components/subscription-panel.js";
 import { createServerCaller } from "../../server/router.js";
 import { CreditCheckout } from "../../components/credit-checkout.js";
 export const dynamic = "force-dynamic";
-export default async function BillingPage() {
+export default async function BillingPage({searchParams}:{searchParams:Promise<{plan?:string;offer?:string}>}) {
   const caller = await createServerCaller();
-  const billing = await caller.account.billing();
+  const [billing, subscription, query] = await Promise.all([caller.account.billing(),caller.subscription.current(),searchParams]);
   if(billing.conversionRequired)return <><h1>USD balance & usage</h1><p className="muted">Account: <code>{billing.accountId}</code></p><p role="status">Your balance will convert to USD automatically when outstanding usage finishes settling. Your existing balance is preserved.</p></>;
   return <><h1>USD balance & usage</h1><p className="muted">Account: <code>{billing.accountId}</code></p>
+    <SubscriptionPanel data={subscription} selectedPlan={query.plan} offerId={query.offer}/>
     <p><strong>${billing.balance.availableUsd} available</strong> · ${billing.balance.reservedUsd} reserved</p>
     <p>Reservations cover work in progress. Unused funds return when usage is settled.</p>
     <CreditCheckout packs={billing.packs} />

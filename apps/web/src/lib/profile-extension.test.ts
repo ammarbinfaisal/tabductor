@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { expect, it, vi } from "vitest";
-const source = readFileSync(new URL("../../../profile-extension/popup.js", import.meta.url), "utf8");
+const source = readFileSync(new URL("../../../profile-extension/cookie-access.js", import.meta.url), "utf8").replace(/^export /gm, "") + "\n" + readFileSync(new URL("../../../profile-extension/popup.js", import.meta.url), "utf8").replace(/^import .*;$/m, "");
 function extension() {
   const elements = Object.fromEntries(["code", "status", "target", "review", "sync"].map(id => [id, { value: "", textContent: "", hidden: false, disabled: false, listeners: {} as Record<string, () => Promise<void>>, addEventListener(event: string, listener: () => Promise<void>) { this.listeners[event] = listener; } }]));
   const cookie = { name: "session", value: "private-auth", domain: ".x.com", path: "/", session: true, httpOnly: true, secure: true, sameSite: "lax" };

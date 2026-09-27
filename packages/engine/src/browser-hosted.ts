@@ -1,4 +1,4 @@
-import { browserAllowanceAvailable, meterAllowance } from "./subscriptions.js";
+import { browserAllowanceAvailable, entitlementLocked, meterAllowance } from "./subscriptions.js";
 import { currentBrowserOperation } from "@tabductor/browser/operation-context";
 import { requestChallengeRecovery, advanceChallengeRecovery, type SolverProvider } from "./challenge-recovery.js";
 import { createHmac } from "node:crypto";
@@ -60,7 +60,15 @@ export async function settleBrowserUsage(db: Db, sessionId: string): Promise<voi
     const end = session.endedAt ?? new Date();
     const elapsed = Math.max(0, end.getTime() - new Date(cursor.metered_at).getTime());
     if (!elapsed) return;
-    const available = await meterAllowance(trx, session.accountId, "browser", elapsed, `${sessionId}:${end.toISOString()}`);
+    // Split elapsed time at every quota/entitlement boundary before advancing the cursor.
+    await entitlementLocked(trx, session.accountId);
+    const cuts = (await trx.execute<{at:Date}>(sql`select ends_at as at from subscription_periods where account_id=${session.accountId} and ends_at>${new Date(cursor.metered_at)} and ends_at<${end}
+      union select starts_at as at from entitlement_history where account_id=${session.accountId} and starts_at>${new Date(cursor.metered_at)} and starts_at<${end} order by at`)).rows;
+    let start = new Date(cursor.metered_at), available = true;
+    for (const finish of [...cuts.map(c => new Date(c.at)), end]) {
+      available = await meterAllowance(trx, session.accountId, "browser", finish.getTime()-start.getTime(), `${sessionId}:${finish.toISOString()}`, start);
+      start = finish;
+    }
     await trx.execute(sql`update browser_usage_cursors set metered_at=${end} where session_id=${sessionId}`);
     if ((!available || !await browserAllowanceAvailable(trx, session.accountId)) && !session.endedAt) {
       await trx.update(browserSessions).set({ status: "stopping", inputOwner: "paused", inputOwnerGeneration: sql`${browserSessions.inputOwnerGeneration}+1` })
@@ -193,7 +201,7 @@ export function createHostedBrowserPool(deps: { db: Db; tokenKey: string; worker
                             return applied.ok && (await applied.json() as { value: boolean }).value === true;
                           }));
                         } catch (error) {
-                          if (!(error instanceof AppError) || error.code !== "credit_insufficient") throw error;
+                          if (!(error instanceof AppError) || !["credit_insufficient","captcha_plan_disabled","subscription_renewal_pending"].includes(error.code)) throw error;
                           outcome = "human_required";
                         }
                         if (outcome === "pending") await new Promise((resolve) => setTimeout(resolve, 1000));

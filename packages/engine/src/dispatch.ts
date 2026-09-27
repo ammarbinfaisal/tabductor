@@ -53,7 +53,7 @@ export async function createWorkflowExecution(
       id: executionId,
       workflowId: workflow.id,
       workflowVersionId: versionId,
-      modelSelectionJson: selection ? { funding: selection.funding, provider: selection.provider, model: selection.model, credentialId: selection.credentialId } : null,
+      modelSelectionJson: selection ? { funding: selection.funding, provider: selection.provider, model: selection.model, credentialId: selection.credentialId } : { funding: "platform", provider: "openai", model: "gpt-5.4", credentialId: null },
       maxHops: workflow.maxHops,
       maxRuns: Math.min(input.maxRuns ?? 1000, versionBudget),
     });

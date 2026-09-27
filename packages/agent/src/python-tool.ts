@@ -155,7 +155,7 @@ export function pythonTool(deps: AgentToolDeps): AgentTool {
         const operationId=randomUUID(),start=Date.now();
         const entry={operationId,invocationId,sequence:sequence++,name,effect,...(context?.callbackId?{callbackId:context.callbackId}:{})};
         const argumentsEvidence=deps.storageFlags?.actions===false||sensitiveInvocation?{evidenceOmitted:true,reason:"sensitive"}:sdkEvidence(input,64_000_000);
-        await archive({action:"sdk.operation",phase:"started",...entry,args:argumentsEvidence});
+        await archive({action:"sdk.operation",phase:"started",...entry,args:argumentsEvidence,safeOperation:{member:sensitiveInvocation?"private":call?.member??"tool"}});
         running.set(operationId,{operationId,tool:name,effect});
         if(effect){await state(current=>({...current,inFlight:[...running.values()].filter(v=>v.effect)}));await deps.trace?.flush();}
         let value:ToolResult;
@@ -199,7 +199,18 @@ export function pythonTool(deps: AgentToolDeps): AgentTool {
           ...(value.ok&&effect?{lastAcknowledgedOperation:operationId}:{})}));
         if(!value.ok&&deps.compiled&&!internal){stopped=true;terminal={outcome:"deopt",reason:value.error,evidence:{operationId}};}
         const evidence=sensitiveInvocation||deps.storageFlags?.actions===false?{ok:value.ok,evidenceOmitted:true}:sdkEvidence(value,64_000_000);
-        await archive({action:"sdk.operation",phase:"finished",...entry,result:evidence,durationMs:Date.now()-start});
+        // Outcome metadata is deliberately independent of private arguments/results.
+        const captcha = name.startsWith("workflow.captcha.") && name !== "workflow.captcha.providers";
+        const safeOutcome = captcha ? { kind: "captcha", status: value.ok && obj(value.value).status === "ready" ? "succeeded" : value.ok && obj(value.value).status !== "failed" ? "pending" : "failed" } : undefined;
+        let hostname: string | undefined;
+        if (!sensitiveInvocation && call?.member === "goto" && typeof call.args[0] === "string") {
+          try { hostname = new URL(call.args[0]).hostname; } catch { /* Invalid navigation has no hostname. */ }
+        }
+        await archive({action:"sdk.operation",phase:"finished",...entry,result:evidence,durationMs:Date.now()-start,
+          safeOperation: { member: sensitiveInvocation ? "private" : call?.member ?? "tool", ok: value.ok, ...(hostname ? {hostname} : {}) }, ...(safeOutcome ? {safeOutcome} : {}) });
+        if (!sensitiveInvocation && value.ok && call?.member === "screenshot" && typeof obj(value.value).$bytes === "string") {
+          await deps.trace?.record("action", {action:"screenshot",operationId}, {kind:"screenshots",bytes:Buffer.from(String(obj(value.value).$bytes),"base64"),mime:call.kwargs.type==="jpeg"?"image/jpeg":"image/png"});
+        }
         historyQueue=historyQueue.then(()=>deps.contextHistory?.append({...entry,layer:"gateway",args:argumentsEvidence,result:evidence}));
         await historyQueue;
         return value;

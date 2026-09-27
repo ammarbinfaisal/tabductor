@@ -196,7 +196,7 @@ export function SessionInspector({ sessionId, profileSession }: { sessionId: str
         return <li key={item.id} data-selected={selected === item.id}><button type="button" onClick={() => seekEvent(item)} aria-current={selected === item.id ? "step" : undefined} aria-label={`${item.description}${seekable ? ", seek recording" : ""}`}>
           <span className="event-badge" data-color={label.color}>{label.title}</span><span className="event-description">{item.description}{item.status === "failed" ? <small className="event-failed">Failed</small> : null}</span>
           <time className="mono" title={seekable ? "Seek recording" : "No aligned recording available"}>{item.offsetMs === null ? "—" : `${Math.floor(item.offsetMs/60000)}:${String(Math.floor(item.offsetMs/1000)%60).padStart(2,"0")}`}</time>
-        </button></li>; })}</ol>
+        </button>{typeof item.details.screenshotRef === "string" ? <a href={`/api/blobs/${encodeURIComponent(item.details.screenshotRef)}`} target="_blank" rel="noreferrer">View screenshot</a> : null}</li>; })}</ol>
     </aside> : null}<div className="replay-browser"><section className="session-console" aria-label="Browser session">
     <div className="console-header">
       <div className="row"><span className="eyebrow">{setup ? "Profile browser" : stopped ? "Session replay" : "Live browser"}</span><Stamp kind={session?.status ?? "loading"} /></div>

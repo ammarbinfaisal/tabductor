@@ -1,4 +1,5 @@
-import { AppError, newId } from "@tabductor/core";
+import { findBillingRate } from "./billing-prices.js";
+import { AppError, newId, scaledAmount } from "@tabductor/core";
 import { type Db } from "@tabductor/db";
 import { sql } from "drizzle-orm";
 import { appendCreditAdjustmentLocked, getCreditBalance, lockCreditAccount } from "./credits.js";
@@ -32,8 +33,8 @@ export function monthlyPeriod(anchor: Date, now: Date): { start: Date; end: Date
 }
 
 export async function listPlans(db: Db, publicOnly = true): Promise<PlanRevision[]> {
-  return (await db.execute<PlanRevision>(sql`select distinct on (slug) * from plan_revisions
-    where enabled ${publicOnly ? sql`and public` : sql``} order by slug,revision desc`)).rows;
+  return (await db.execute<PlanRevision>(sql`select * from (select distinct on (slug) * from plan_revisions order by slug,revision desc) latest
+    where enabled ${publicOnly ? sql`and public` : sql``} order by slug`)).rows;
 }
 
 /** Call within a transaction: all quota and monetary mutations use the same account lock. */
@@ -53,14 +54,12 @@ export async function entitlementLocked(db: Db, accountId: string, now = new Dat
   subscription.period_start = new Date(subscription.period_start);
   subscription.period_end = new Date(subscription.period_end);
   let plan = (await db.execute<PlanRevision>(sql`select * from plan_revisions where id=${subscription.plan_revision_id}`)).rows[0]!;
-  if (now >= subscription.period_end) {
-    if (subscription.paddle_subscription_id && !["canceled", "cancelled"].includes(subscription.status)) {
-      throw new AppError("subscription_renewal_pending", "Waiting for verified subscription renewal");
-    }
+  if (now >= subscription.period_end && (!subscription.paddle_subscription_id || ["canceled", "cancelled"].includes(subscription.status))) {
     const dates = monthlyPeriod(subscription.anchor_at, now);
+    if (subscription.paddle_subscription_id && dates.start < subscription.period_end) dates.start = subscription.period_end;
     if (plan.slug !== "free") {
       plan = (await listPlans(db)).find(p => p.slug === "free")!;
-      await transitionEntitlement(db, accountId, plan.id, now, "cancellation");
+      await transitionEntitlement(db, accountId, plan.id, subscription.period_end, "cancellation");
     }
     subscription = (await db.execute<Subscription>(sql`update account_subscriptions set plan_revision_id=${plan.id},
       period_start=${dates.start},period_end=${dates.end},paddle_subscription_id=null,status='active',cancel_at_end=false,pending_revision_id=null
@@ -81,7 +80,8 @@ export async function transitionEntitlement(db: Db, accountId: string, revisionI
     values(${newId("ent")},${accountId},${revisionId},${at},${reason})`);
 }
 export async function admitMonthlyExecution(db: Db, accountId: string, executionId: string) {
-  const { plan, period } = await entitlementLocked(db, accountId);
+  const { subscription, plan, period } = await entitlementLocked(db, accountId);
+  assertSubscriptionCurrent(subscription);
   const prior = await db.execute(sql`select 1 from execution_admissions where execution_id=${executionId}`);
   if (prior.rows.length) return;
   if (period.runs >= plan.workflow_runs) throw new AppError("monthly_run_limit", "Monthly workflow run allowance exhausted; upgrade or wait for renewal");
@@ -89,7 +89,8 @@ export async function admitMonthlyExecution(db: Db, accountId: string, execution
   await db.execute(sql`update subscription_periods set runs=runs+1 where id=${period.id}`);
 }
 export async function assertCaptchaIncluded(db: Db, accountId: string) {
-  const { plan } = await entitlementLocked(db, accountId);
+  const { subscription, plan } = await entitlementLocked(db, accountId);
+  assertSubscriptionCurrent(subscription);
   if (!plan.captcha) throw new AppError("captcha_plan_disabled", "CAPTCHA solving requires a paid plan");
   return plan;
 }
@@ -105,7 +106,13 @@ export function overageMicros(quantity: number, included: number, rate: number |
 /** Provider cumulative traffic revisions are replaceable; wallet effects are transactional deltas. */
 export async function meterAllowance(db: Db, accountId: string, category: "browser" | "proxy", quantity: number, sourceId: string, now = new Date()) {
   return db.transaction(async trx => {
-    const { plan, period } = await entitlementLocked(trx, accountId, now);
+    await lockCreditAccount(trx, accountId);
+    const current = await entitlementLocked(trx, accountId);
+    const historical = (await trx.execute<AllowancePeriod>(sql`select * from subscription_periods where account_id=${accountId} and starts_at<=${now} and ends_at>${now} order by starts_at desc limit 1 for update`)).rows[0];
+    const period = historical ?? current.period;
+    const historicalPlan = (await trx.execute<PlanRevision>(sql`select p.* from entitlement_history h join plan_revisions p on p.id=h.plan_revision_id
+      where h.account_id=${accountId} and h.starts_at<=${now} and (h.ends_at is null or h.ends_at>${now}) order by h.starts_at desc limit 1`)).rows[0];
+    const plan = historicalPlan ?? current.plan;
     const column = category === "browser" ? "browser_ms" : "proxy_bytes";
     const chargedColumn = category === "browser" ? "browser_charged" : "proxy_charged";
     const rate = category === "browser" ? plan.browser_hour_micros : plan.proxy_gb_micros;
@@ -120,6 +127,11 @@ export async function meterAllowance(db: Db, accountId: string, category: "brows
     const delta = charge - before;
     await trx.execute(sql`insert into allowance_receipts(account_id,category,source_id,period_id,plan_revision_id,quantity,charge_micros)
       values(${accountId},${category},${sourceId},${period.id},${plan.id},${quantity},${delta})`);
+    if (category === "browser") {
+      const expense = await findBillingRate(trx,"browser","","minute");
+      await trx.execute(sql`insert into operating_costs(id,account_id,category,provider,source_id,cost_micros,quantity,rate_id,occurred_at,plan_revision_id)
+        values(${newId("cost")},${accountId},'browser','fleet',${`browser:${accountId}:${sourceId}`},${expense?.costMicros==null?null:scaledAmount(quantity,expense.costMicros,60000)},${String(quantity)},${expense?.id??null},${now},${plan.id}) on conflict(category,source_id) do nothing`);
+    }
     if (delta) await appendCreditAdjustmentLocked(trx, { accountId, kind: "adjustment", units: -delta,
       idempotencyKey: `allowance:${period.id}:${category}:${sourceId}`, metadata: { category, planRevisionId: plan.id, periodId: period.id } });
     await trx.execute(sql`update subscription_periods set ${sql.identifier(column)}=${total},${sql.identifier(chargedColumn)}=${Number(period[chargedColumn]) + delta} where id=${period.id}`);
@@ -127,7 +139,8 @@ export async function meterAllowance(db: Db, accountId: string, category: "brows
   });
 }
 export async function browserAllowanceAvailable(db: Db, accountId: string) {
-  const { plan, period } = await entitlementLocked(db, accountId);
+  const { subscription, plan, period } = await entitlementLocked(db, accountId);
+  if (new Date(subscription.period_end) <= new Date() || ["paused", "refunded"].includes(subscription.status)) return false;
   const balance = (await getCreditBalance(db, accountId)).availableUnits;
   return (["browser", "proxy"] as const).every(kind => {
     const used = Number(kind === "browser" ? period.browser_ms : period.proxy_bytes);
@@ -135,4 +148,9 @@ export async function browserAllowanceAvailable(db: Db, accountId: string) {
     const rate = kind === "browser" ? plan.browser_hour_micros : plan.proxy_gb_micros;
     return used < limit || rate !== null && (Number(rate) === 0 || balance > 0);
   });
+}
+
+export function assertSubscriptionCurrent(subscription: Subscription, now = new Date()) {
+  if (new Date(subscription.period_end) <= now || ["paused", "refunded"].includes(subscription.status))
+    throw new AppError("subscription_renewal_pending", "Waiting for verified subscription renewal");
 }

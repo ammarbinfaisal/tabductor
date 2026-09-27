@@ -1,8 +1,10 @@
+import { ensureManagedOpenAIKey } from "./managed-openai.js";
+import { configuredKeyWrapper, withEnvelope } from "@tabductor/secrets";
+import { loadConfig } from "@tabductor/core";
 import { actionSummaries, type Db } from "@tabductor/db";
 import { and, eq, sql } from "drizzle-orm";
-import { maskText, DEFAULT_TOKEN_PATTERNS, scaledAmount, ACTION_SUMMARY_LABELS, ACTION_SUMMARY_SOURCE_VERSION, sanitizeActionSummaryCode, fallbackActionSummary } from "@tabductor/core";
+import { maskText, DEFAULT_TOKEN_PATTERNS, ACTION_SUMMARY_LABELS, ACTION_SUMMARY_SOURCE_VERSION, sanitizeActionSummaryCode, fallbackActionSummary } from "@tabductor/core";
 import { z } from "zod";
-import { findBillingRate, recordCost } from "./billing-prices.js";
 
 const PROMPT_VERSION = "action-summary-v3";
 const MAX_DESCRIPTION = 180;
@@ -42,16 +44,6 @@ function parseSummary(body: Record<string, unknown>) {
   return { label: parsed.label, summary: description };
 }
 
-function parseUsage(value: unknown) {
-  const usage = record(value);
-  const inputTokens = usage.input_tokens;
-  const outputTokens = usage.output_tokens;
-  const cachedInputTokens = record(usage.input_tokens_details).cached_tokens ?? 0;
-  if (typeof inputTokens !== "number" || typeof outputTokens !== "number" || typeof cachedInputTokens !== "number" ||
-      ![inputTokens, outputTokens, cachedInputTokens].every(n => Number.isSafeInteger(n) && n >= 0) || cachedInputTokens > inputTokens) return null;
-  return { inputTokens, outputTokens, cachedInputTokens };
-}
-
 export async function processActionSummary(db: Db, request: typeof fetch = fetch) {
   const job = await db.transaction(async trx => {
     // A crashed call may have reached OpenAI. Never recycle a claim or a previously attempted job.
@@ -68,9 +60,7 @@ export async function processActionSummary(db: Db, request: typeof fetch = fetch
   if (!job) return;
   const where = and(eq(actionSummaries.runId, job.runId), eq(actionSummaries.callId, job.callId), eq(actionSummaries.status, "running"));
   let submitted = false;
-  let cost: number | null = null;
-  const model = process.env.ACTION_SUMMARY_MODEL?.trim() || "gpt-6-luna";
-  let quantity = JSON.stringify({ model, promptVersion: PROMPT_VERSION });
+  const model = process.env.ACTION_SUMMARY_MODEL?.trim() || "gpt-5.4";
   let fallback = fallbackActionSummary(undefined);
   try {
     if (job.source.length > 64000) throw new Error("Oversized summary source");
@@ -82,7 +72,7 @@ export async function processActionSummary(db: Db, request: typeof fetch = fetch
       await db.update(actionSummaries).set({ status: "ready" }).where(where);
       return;
     }
-    const key = process.env.OPENAI_API_KEY;
+    const key = process.env.OPENAI_ADMIN_KEY;
     if (!key?.trim() || model.length > 200 || source.tool !== "browser.python" ||
         source.sourceVersion !== ACTION_SUMMARY_SOURCE_VERSION || source.evidenceOmitted === true ||
         source.private === true || source.sensitive === true ||
@@ -90,14 +80,13 @@ export async function processActionSummary(db: Db, request: typeof fetch = fetch
       throw new Error("Summary configuration or source unavailable");
     }
     const input = JSON.stringify({ tool: "browser.python", code: sanitizeActionSummaryCode(source.code) });
-    const [inputRate, cachedRate, outputRate] = await Promise.all(
-      ["input", "cached", "output"].map(part => findBillingRate(db, "model", "openai", `${model}:${part}`)),
-    );
     // Provenance belongs to the worker, never to fields returned by the model.
     await db.update(actionSummaries).set({ model, promptVersion: PROMPT_VERSION }).where(where);
     submitted = true;
-    const response = await request("https://api.openai.com/v1/responses", {
-      method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+    const wrapper = configuredKeyWrapper(loadConfig());
+    const managed = await ensureManagedOpenAIKey(db, wrapper, null);
+    const response = await withEnvelope(wrapper, managed.envelope, bytes => request("https://api.openai.com/v1/responses", {
+      method: "POST", headers: { authorization: `Bearer ${bytes.toString("utf8")}`, "content-type": "application/json" },
       signal: AbortSignal.timeout(15000),
       body: JSON.stringify({
         model, reasoning: { effort: "none" }, store: false, max_output_tokens: 512, instructions, input,
@@ -108,26 +97,13 @@ export async function processActionSummary(db: Db, request: typeof fetch = fetch
           }, required: ["label", "description"], additionalProperties: false,
         } } },
       }),
-    });
+    }));
     if (!response.ok) throw new Error(`Summary provider returned ${response.status}`);
     const body = record(await response.json());
-    const usage = parseUsage(body.usage);
-    if (usage) {
-      quantity = JSON.stringify({ model, promptVersion: PROMPT_VERSION, ...usage });
-      const parts = [[usage.inputTokens - usage.cachedInputTokens, inputRate], [usage.cachedInputTokens, cachedRate], [usage.outputTokens, outputRate]] as const;
-      // No built-in estimates: absent provider costs remain unknown, not free.
-      if (parts.every(([tokens, rate]) => tokens === 0 || (rate?.costMicros != null && Number.isSafeInteger(rate.costMicros) && rate.costMicros >= 0))) {
-        cost = parts.reduce((total, [tokens, rate]) => total + (tokens === 0 ? 0 : scaledAmount(tokens, rate!.costMicros!, 1000000)), 0);
-        if (!Number.isSafeInteger(cost)) cost = null;
-      }
-    }
     await db.update(actionSummaries).set({ status: "ready", ...parseSummary(body) }).where(where);
   } catch {
     // Attempt provenance is retained on failures; the text itself is deterministic.
     await db.update(actionSummaries).set({ status: "unavailable", ...fallback,
       ...(!submitted ? { model: null, promptVersion: "deterministic-v1" } : {}) }).where(where);
-  } finally {
-    if (submitted) await recordCost(db, { category: "summary", provider: "openai", accountId: job.accountId,
-      sourceId: `${job.runId}:${job.callId}`, costMicros: cost, quantity });
   }
 }

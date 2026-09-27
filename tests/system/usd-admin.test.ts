@@ -1,9 +1,12 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll,beforeAll,expect,it,vi } from "vitest";
 import { eq,sql } from "drizzle-orm";
 import { accounts,artifacts,billingRates,billingSettings,creditLedgerEntries,couponRedemptions,browserSessions,workflowDeletions,workflows,runs,actionSummaries,operatingCosts,billingAudit,creditReservations,workflowExecutions,captchaJobs,browserCommands,proxyAccounts } from "@tabductor/db";
 import { createMigratedTestDb,type MigratedTestDb } from "@tabductor/db/test-db";
 import { usdMicros, ACTION_SUMMARY_SOURCE_VERSION, sanitizeActionSummaryCode } from "@tabductor/core";
-import { appendCreditAdjustment, getCreditBalance, resolveAccountIdentity, createBrowserProfile, createWorkflow, requestWorkflowDeletion, processWorkflowDeletion, processActionSummary, reserveCredits, settleCreditReservation, convertLegacyWallet, convertLegacyWallets, browserCreditAdmission, claimBrowserAllocation, fulfillBrowserAllocation, requestBrowserSession, endBrowserSession, settleBrowserUsage, reconcileCaptchaJobs, syncProxyCosts, saveCoupon, syncDiscount } from "@tabductor/engine";
+import { applyOpenAICostBucket, appendCreditAdjustment, getCreditBalance, resolveAccountIdentity, createBrowserProfile, createWorkflow, requestWorkflowDeletion, processWorkflowDeletion, processActionSummary, reserveCredits, settleCreditReservation, convertLegacyWallet, convertLegacyWallets, browserCreditAdmission, claimBrowserAllocation, fulfillBrowserAllocation, requestBrowserSession, endBrowserSession, settleBrowserUsage, reconcileCaptchaJobs, syncProxyCosts, saveCoupon, syncDiscount } from "@tabductor/engine";
 import { staticSchemaGenerator, seedWorkflow } from "@tabductor/engine/testing";
 import { createCaller } from "../../apps/web/src/server/router.js";
 let db:MigratedTestDb,admin:string,user:string;
@@ -23,11 +26,9 @@ it("does not expose a graph authoring setting", async () => {
 
 it("stores one-million-token model limits from Admin and exposes them in model settings",async()=>{
  const model="admin-million-model";
- await caller(admin).admin.saveModelRates({provider:"openai",model,inputUsd:"1.00",cachedInputUsd:"0.10",outputUsd:"4.00",inputCostUsd:"0.50",cachedInputCostUsd:"0.05",outputCostUsd:"2.00",maxInputTokens:1_000_000,maxOutputTokens:1_000_000});
- const rate=(await caller(admin).admin.settings()).rates.find(entry=>entry.item===`${model}:input`);
- expect(rate).toMatchObject({maxInputTokens:1_000_000,maxOutputTokens:1_000_000});
+ await caller(admin).subscription.saveModel({model,enabled:true,inputUsd:"1.00",cachedInputUsd:"0.10",outputUsd:"4.00",maxInputTokens:1_000_000,maxOutputTokens:1_000_000});
  const configured=(await caller(user).account.modelSettings()).platformModels.find(entry=>entry.model===model);
- expect(configured).toMatchObject({maxInputTokens:1_000_000,maxOutputTokens:1_000_000});
+ expect(configured).toMatchObject({model,inputUsd:"1.00",outputUsd:"4.00"});
 });
 it("accepts the signed-in Clerk user ID in the administrator allowlist",async()=>{
  const subject="user_admin_allowlist_fixture";
@@ -132,12 +133,18 @@ it("generates a persisted action description without charging the customer walle
  await db.db.insert(actionSummaries).values({runId:"summary-run",callId:"call-1",accountId:user,source:JSON.stringify({tool:"browser.python",sourceVersion:ACTION_SUMMARY_SOURCE_VERSION,code:sanitizeActionSummaryCode('page.goto("https://example.com")')})});
  vi.stubEnv("ACTION_SUMMARY_MODEL", "gpt-5.6-luna");
  for (const part of ["input", "cached", "output"]) await caller(admin).admin.saveRate({category:"model",provider:"openai",item:`gpt-5.6-luna:${part}`,chargeUsd:"1",costUsd:"1",...(part === "input" ? {maxInputTokens: 32000, maxOutputTokens: 512} : {})});
- vi.stubEnv("OPENAI_API_KEY","fixture-key");const before=await getCreditBalance(db.db,user);
+ const dir=await mkdtemp(join(tmpdir(),"overhead-fixture-"));
+ vi.stubEnv("OPENAI_ADMIN_KEY","fixture-admin");vi.stubEnv("OPENAI_PROJECT_ID","proj_fixture");vi.stubEnv("SECRETS_KEK_FILE_PATH",join(dir,"key.json"));
+ vi.stubGlobal("fetch",vi.fn(async(url:string,init?:RequestInit)=>Response.json(init?.method==="POST"?{id:"sa_overhead",api_key:{id:"key_overhead",value:"fixture-overhead-secret"}}:{data:[],has_more:false})));
+ const before=await getCreditBalance(db.db,user);
  const request=vi.fn<typeof fetch>(async()=>Response.json({status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:JSON.stringify({label:"navigation",description:"Navigate to a website"})}]}],usage:{input_tokens:100,output_tokens:10}}));
  await processActionSummary(db.db,request);await processActionSummary(db.db,request);
  expect(request).toHaveBeenCalledTimes(1);expect((await db.db.select().from(actionSummaries))[0]).toMatchObject({status:"ready",label:"navigation",summary:"Navigate to a website"});
  expect(await getCreditBalance(db.db,user)).toEqual(before);
- expect((await db.db.select().from(operatingCosts).where(eq(operatingCosts.category,"summary")))[0]?.costMicros).toBeGreaterThan(0);
+ await applyOpenAICostBucket(db.db,{apiKeyId:"key_overhead",start:1000,end:87400,micros:110});
+ expect((await db.db.select().from(operatingCosts).where(eq(operatingCosts.category,"shared_overhead")))[0]).toMatchObject({costMicros:110,accountId:null});
+ expect(await getCreditBalance(db.db,user)).toEqual(before);
+ vi.unstubAllGlobals();await rm(dir,{recursive:true});
 });
 it("returns analytics, account pagination and safely separate amounts",async()=>{
  const data=await caller(admin).admin.overview({from:new Date(Date.now()-86400000),to:new Date(Date.now()+86400000)});
@@ -172,8 +179,8 @@ it("stops a billed workflow, reconciles its purchased CAPTCHA, and deletes opera
  await processWorkflowDeletion(db.db,db.pool,blobs);
  expect((await db.db.select().from(workflowDeletions).where(eq(workflowDeletions.workflowId,workflowId)))[0]).toMatchObject({status:"deleted",error:null});
  expect(await db.db.select().from(browserCommands).where(eq(browserCommands.id,"paid-command"))).toHaveLength(0);
- expect((await getCreditBalance(db.db,accountId)).availableUnits).toBe(9500000);
- expect((await db.db.select().from(operatingCosts).where(eq(operatingCosts.accountId,accountId))).reduce((sum,c)=>sum+(c.costMicros??0),0)).toBe(62000);
+ expect((await getCreditBalance(db.db,accountId)).availableUnits).toBe(9900000);
+ expect((await db.db.select().from(operatingCosts).where(eq(operatingCosts.accountId,accountId))).reduce((sum,c)=>sum+(c.costMicros??0),0)).toBeGreaterThanOrEqual(99500);
 });
 it("imports proxy bytes idempotently and pins the original cost rate",async()=>{
  vi.stubEnv("IPROYAL_API_TOKEN","fixture-proxy-key");

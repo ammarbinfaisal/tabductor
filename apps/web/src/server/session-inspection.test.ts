@@ -20,9 +20,9 @@ describe("session event projection", () => {
     expect(inspectionAction(trace({ action: "tool.call", tool: "browser.screenshot" }), run)?.description).toBe("Screenshot");
     expect(inspectionAction(trace({}, "navigation"), run)?.description).toBe("Navigation");
   });
-  it("shows safe model usage without exposing generated thoughts", () => {
-    expect(inspectionAction(trace({ usage: { in: 1200, out: 85 }, text: "PRIVATE" }, "llm"), run)?.description)
-      .toBe("Model update · 1,200 input / 85 output tokens");
+  it("excludes model telemetry from activity feeds", () => {
+    expect(inspectionAction(trace({ usage: { in: 1200, out: 85 }, text: "PRIVATE" }, "llm"), run))
+      .toBeNull();
   });
   it("never exposes source, arguments, URLs, errors or hidden reasoning", () => {
     const projected = inspectionAction(trace({ action: "tool.call", tool: "browser.python", code: "PRIVATE", args: "PRIVATE", error: "PRIVATE", thought: "PRIVATE", response: "PRIVATE" }), run);

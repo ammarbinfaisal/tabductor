@@ -185,3 +185,5 @@ export { destinationPreparations, destinationContracts, destinationRecords, huma
 export { browserFleetStatus } from "./schema.js";
 
 export { billingSettings, billingRates, billingAudit, operatingCosts, billingCoupons, couponRedemptions, actionSummaries, workflowDeletions, proxyAccounts } from "./schema.js";
+
+export { planRevisions } from "./schema.js";

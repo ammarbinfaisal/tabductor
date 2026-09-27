@@ -238,3 +238,6 @@ export { createWorkflow } from "./workflow-definition.js";
 export * from "./subscriptions.js";
 export * from "./paddle-subscriptions.js";
 export * from "./proxy-credentials.js";
+export * from "./managed-openai.js";
+export * from "./openai-costs.js";
+export * from "./activity-groups.js";

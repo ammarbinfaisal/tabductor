@@ -6,8 +6,12 @@ import { ACTION_SUMMARY_LABELS, ACTION_SUMMARY_SOURCE_VERSION, sanitizeActionSum
 import { createTraceRecorder } from "../../browser/src/trace.js";
 import { processActionSummary } from "./action-summaries.js";
 import { findBillingRate, recordCost } from "./billing-prices.js";
+import { ensureManagedOpenAIKey } from "./managed-openai.js";
 
 vi.mock("./billing-prices.js", () => ({ findBillingRate: vi.fn(), recordCost: vi.fn() }));
+
+vi.mock("./managed-openai.js", () => ({ ensureManagedOpenAIKey: vi.fn() }));
+vi.mock("@tabductor/secrets", () => ({ configuredKeyWrapper: () => ({}), withEnvelope: async (_wrapper: unknown, _envelope: unknown, use: (bytes: Buffer) => unknown) => use(Buffer.from("managed-overhead-key")) }));
 
 const dialect = new PgDialect();
 type Row = typeof actionSummaries.$inferSelect;
@@ -54,7 +58,8 @@ const provider = (body: unknown = responseBody()) => vi.fn<typeof fetch>(async (
 
 beforeEach(() => {
   vi.resetAllMocks();
-  vi.stubEnv("OPENAI_API_KEY", "fixture-key");
+  vi.mocked(ensureManagedOpenAIKey).mockResolvedValue({ envelope: {} } as Awaited<ReturnType<typeof ensureManagedOpenAIKey>>);
+  vi.stubEnv("OPENAI_ADMIN_KEY", "fixture-key");
   vi.stubEnv("ACTION_SUMMARY_MODEL", "");
   // Accidental omission of the injected mock must never contact a live provider.
   vi.stubGlobal("fetch", vi.fn(() => { throw new Error("External provider calls forbidden in tests"); }));
@@ -70,19 +75,20 @@ describe("structured summary worker", () => {
     const [url, init] = request.mock.calls[0]!;
     expect(url).toBe("https://api.openai.com/v1/responses");
     const body = JSON.parse(String(init!.body));
-    expect(body).toMatchObject({ model: "gpt-6-luna", store: false, max_output_tokens: 512,
+    expect(body).toMatchObject({ model: "gpt-5.4", store: false, max_output_tokens: 512,
       text: { format: { type: "json_schema", strict: true, schema: {
         required: ["label", "description"], additionalProperties: false,
         properties: { label: { enum: [...ACTION_SUMMARY_LABELS] }, description: { minLength: 1, maxLength: 180 } },
       } } } });
     expect(init!.signal).toBeInstanceOf(AbortSignal);
     expect(f.row).toMatchObject({ status: "ready", label: "interaction", summary: "Click a page element",
-      model: "gpt-6-luna", promptVersion: "action-summary-v3", attempts: 1 });
+      model: "gpt-5.4", promptVersion: "action-summary-v3", attempts: 1 });
     expect(f.lock).toHaveBeenCalledWith("update", { skipLocked: true });
     expect(f.queries.some(query => query.sql.includes('"attempts" =') && query.params.includes(0))).toBe(true);
     expect(f.queries.some(query => query.params.includes("running") && query.params.includes("run") && query.params.includes("call"))).toBe(true);
-    expect(recordCost).toHaveBeenCalledWith(f.db, expect.objectContaining({ category: "summary", provider: "openai",
-      sourceId: "run:call", accountId: "account", costMicros: null }));
+    expect(ensureManagedOpenAIKey).toHaveBeenCalledWith(f.db, expect.anything(), null);
+    expect(init!.headers).toMatchObject({ authorization: "Bearer managed-overhead-key" });
+    expect(recordCost).not.toHaveBeenCalled();
   });
 
   it("requests a concrete explanation of the code and preserves a multi-operation summary", async () => {
@@ -114,15 +120,15 @@ describe("structured summary worker", () => {
     await processActionSummary(f.db, request);
     expect(JSON.parse(String(request.mock.calls[0]![1]!.body)).model).toBe("fixture-model");
     expect(f.row.model).toBe("fixture-model");
-    expect(findBillingRate).toHaveBeenCalledWith(f.db, "model", "openai", "fixture-model:input");
-    expect(recordCost).toHaveBeenCalledWith(f.db, expect.objectContaining({ costMicros: null }));
+    expect(findBillingRate).not.toHaveBeenCalled();
+    expect(recordCost).not.toHaveBeenCalled();
   });
 
   it.each([
     ["browser.screenshot", "screenshot", "Request a browser screenshot"],
     ["page.goto", "navigation", "Navigate to a page"],
   ])("uses deterministic intent for %s even without credentials", async (tool, label, summary) => {
-    vi.stubEnv("OPENAI_API_KEY", "");
+    vi.stubEnv("OPENAI_ADMIN_KEY", "");
     const f = workerDb({ source: JSON.stringify({ tool }) }), request = provider();
     await processActionSummary(f.db, request);
     expect(f.row).toMatchObject({ status: "ready", label, summary, model: null, promptVersion: "deterministic-v1" });
@@ -168,8 +174,8 @@ describe("structured summary worker", () => {
     const f = workerDb();
     await processActionSummary(f.db, provider(responseBody(value)));
     expect(f.row).toMatchObject({ status: "unavailable", label: "tool", summary: "Run browser Python code",
-      model: "gpt-6-luna", promptVersion: "action-summary-v3" });
-    expect(recordCost).toHaveBeenCalledOnce();
+      model: "gpt-5.4", promptVersion: "action-summary-v3" });
+    expect(recordCost).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -202,7 +208,7 @@ describe("structured summary worker", () => {
   });
 
   it("persists a fallback without charging overhead when the key is missing", async () => {
-    vi.stubEnv("OPENAI_API_KEY", "");
+    vi.stubEnv("OPENAI_ADMIN_KEY", "");
     const f = workerDb(), request = provider();
     await processActionSummary(f.db, request);
     expect(f.row).toMatchObject({ status: "unavailable", summary: "Run browser Python code", label: "tool", model: null });
@@ -220,7 +226,7 @@ describe("structured summary worker", () => {
     await processActionSummary(f.db, request);
     expect(f.row.status).toBe("unavailable");
     expect(request).toHaveBeenCalledOnce();
-    expect(recordCost).toHaveBeenCalledExactlyOnceWith(f.db, expect.objectContaining({ costMicros: null }));
+    expect(recordCost).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -244,14 +250,14 @@ describe("structured summary worker", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
-  it("accounts for reported usage at configured costs even when output validation fails", async () => {
+  it("defers overhead charges to imported provider costs even when output validation fails", async () => {
     vi.mocked(findBillingRate).mockImplementation(async (_db, _category, _provider, item) => ({
       costMicros: item.endsWith(":input") ? 1_000_000 : item.endsWith(":cached") ? 500_000 : 2_000_000,
     } as NonNullable<Awaited<ReturnType<typeof findBillingRate>>>));
     const f = workerDb();
     await processActionSummary(f.db, provider(responseBody({ label: "invalid", description: "Click" })));
-    expect(recordCost).toHaveBeenCalledWith(f.db, expect.objectContaining({ costMicros: 110,
-      quantity: JSON.stringify({ model: "gpt-6-luna", promptVersion: "action-summary-v3", inputTokens: 100, outputTokens: 10, cachedInputTokens: 20 }) }));
+    expect(recordCost).not.toHaveBeenCalled();
+    expect(findBillingRate).not.toHaveBeenCalled();
     expect(f.row.status).toBe("unavailable");
   });
 
@@ -260,7 +266,7 @@ describe("structured summary worker", () => {
     const f = workerDb();
     await processActionSummary(f.db, provider({ ...responseBody(), usage }));
     expect(f.row.status).toBe("ready");
-    expect(recordCost).toHaveBeenCalledWith(f.db, expect.objectContaining({ costMicros: null }));
+    expect(recordCost).not.toHaveBeenCalled();
   });
 });
 

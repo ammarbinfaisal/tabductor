@@ -1,9 +1,8 @@
-import { configuredKeyWrapper } from "@tabductor/secrets";
-import { modelCredentials, modelSelections, modelOperations, creditReservations, paymentPurchases, accountMcpTokens, accounts, billingRates } from "@tabductor/db";
+import { modelSelections, modelOperations, paymentPurchases, accountMcpTokens, accounts } from "@tabductor/db";
 import { AppError, loadConfig, usdDecimal } from "@tabductor/core";
 import {
   prepareUsdWallet, redeemBalanceCoupon, purchaseDiscount,
-  saveModelCredential, setModelSelection, modelSelectionSchema, modelCredentialInputSchema, parseModelRates,
+  enabledModels, setModelSelection, modelSelectionSchema,
   createAccountMcpToken,
   createPaddleCreditPurchase,
   createPaddleTransactionClient,
@@ -20,29 +19,13 @@ const accountIdOf = (accountId: string | undefined) => accountId ?? LOCAL_ACCOUN
 export const accountRouter = router({
   modelSettings: procedure.query(async ({ ctx }) => {
     const accountId = accountIdOf(ctx.accountId);
-    const [credentials, selections] = await Promise.all([
-      ctx.db.select({ id: modelCredentials.id, provider: modelCredentials.provider, label: modelCredentials.label, baseUrl: modelCredentials.baseUrl, createdAt: modelCredentials.createdAt })
-        .from(modelCredentials).where(and(eq(modelCredentials.accountId, accountId), isNull(modelCredentials.revokedAt))),
-      ctx.db.select().from(modelSelections).where(eq(modelSelections.accountId, accountId)),
+    const [selections, models] = await Promise.all([
+      ctx.db.select().from(modelSelections).where(eq(modelSelections.accountId, accountId)), enabledModels(ctx.db),
     ]);
-    const configured=parseModelRates(loadConfig().MODEL_USD_RATES_JSON);
-    const prices=await ctx.db.select().from(billingRates).where(eq(billingRates.category,"model")).orderBy(desc(billingRates.createdAt),desc(billingRates.id));
-    for(const p of prices.filter(p=>p.item.endsWith(":input"))){const model=p.item.slice(0,-6);if(prices.find(r=>r.provider===p.provider&&r.item===p.item)?.id!==p.id)continue;
-      const output=prices.find(r=>r.provider===p.provider&&r.item===`${model}:output`),cached=prices.find(r=>r.provider===p.provider&&r.item===`${model}:cached`);
-      if(!output)continue;const index=configured.findIndex(r=>r.provider===p.provider&&r.model===model);
-      const entry={provider:p.provider as "openai"|"anthropic",model,version:p.id,input:p.chargeMicros,cachedInput:cached?.chargeMicros??p.chargeMicros,output:output.chargeMicros,
-        maxInputTokens:p.maxInputTokens??128000,maxOutputTokens:p.maxOutputTokens??8192};
-      if(index<0)configured.push(entry);else configured[index]=entry;
-    }
-    return { credentials, selections, platformModels: configured.map(({input,output,cachedInput,...r})=>({...r,inputUsd:usdDecimal(input),outputUsd:usdDecimal(output),cachedInputUsd:usdDecimal(cachedInput)})) };
+    return { selections, platformModels: models.map(m => ({ provider: "openai" as const, model: m.model,
+      inputUsd: usdDecimal(Number(m.input_micros)), cachedInputUsd: usdDecimal(Number(m.cached_input_micros)), outputUsd: usdDecimal(Number(m.output_micros)) })) };
   }),
-  saveModelCredential: procedure.input(modelCredentialInputSchema)
-    .mutation(({ ctx, input }) => saveModelCredential(ctx.db, configuredKeyWrapper(loadConfig()), { ...input, accountId: accountIdOf(ctx.accountId) })),
-  setModel: procedure.input(modelSelectionSchema).mutation(({ ctx, input }) => setModelSelection(ctx.db, accountIdOf(ctx.accountId), input)),
-  revokeModelCredential: procedure.input(z.object({ id: z.string().min(1) })).mutation(async ({ ctx, input }) => {
-    const rows = await ctx.db.update(modelCredentials).set({ revokedAt: sql`now()` }).where(and(eq(modelCredentials.id, input.id), eq(modelCredentials.accountId, accountIdOf(ctx.accountId)), isNull(modelCredentials.revokedAt))).returning({ id: modelCredentials.id });
-    return { revoked: rows.length > 0 };
-  }),
+  setModel: procedure.input(modelSelectionSchema).mutation(({ctx,input}) => setModelSelection(ctx.db,accountIdOf(ctx.accountId),input)),
   billing: procedure.query(async ({ ctx }) => {
     const accountId = accountIdOf(ctx.accountId);
     const config = loadConfig();
@@ -53,8 +36,11 @@ export const accountRouter = router({
       getCreditBalance(ctx.db, accountId),
       ctx.db.select({ id: paymentPurchases.id, creditUnits: paymentPurchases.creditUnits, refundedUnits: paymentPurchases.refundedUnits, status: paymentPurchases.status, createdAt: paymentPurchases.createdAt })
         .from(paymentPurchases).where(eq(paymentPurchases.accountId, accountId)).orderBy(desc(paymentPurchases.createdAt)).limit(50),
-      ctx.db.select({ category: creditReservations.category, units: sql<number>`coalesce(sum(${creditReservations.settledUnits}), 0)::double precision` })
-        .from(creditReservations).where(and(eq(creditReservations.accountId, accountId), eq(creditReservations.status, "settled"))).groupBy(creditReservations.category),
+      ctx.db.execute<{category:string;units:number}>(sql`select category,sum(units)::double precision as units from (
+        select category,coalesce(settled_units,0) as units from credit_reservations where account_id=${accountId} and status='settled'
+        union all select metadata_json->>'category' as category,-units from credit_ledger_entries where account_id=${accountId}
+          and kind='adjustment' and money_unit='usd_micro' and metadata_json->>'category' in ('model','browser','proxy')
+      ) usage group by category`).then(result=>result.rows),
       ctx.db.select({ id: modelOperations.id, model: modelOperations.model, funding: modelOperations.funding, purpose: modelOperations.purpose, status: modelOperations.status,
         inputTokens: modelOperations.inputTokens, outputTokens: modelOperations.outputTokens, chargedUnits: modelOperations.chargedUnits, createdAt: modelOperations.createdAt })
         .from(modelOperations).where(eq(modelOperations.accountId, accountId)).orderBy(desc(modelOperations.createdAt)).limit(50),

@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { browserSessions, captchaJobs, creditReservations, runs, tasks, workflowExecutions } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import { appendCreditAdjustment, createBrowserProfile, createCaptchaService, createWorkflow, expireCreditReservations, getCreditBalance, resolveAccountIdentity, type CaptchaProvider, type RunHandle } from "@tabductor/engine";
+import { getEntitlement, appendCreditAdjustment, createBrowserProfile, createCaptchaService, createWorkflow, expireCreditReservations, getCreditBalance, resolveAccountIdentity, type CaptchaProvider, type RunHandle } from "@tabductor/engine";
 import { seedWorkflow } from "@tabductor/engine/testing";
 import { pythonFixture } from "../../packages/agent/src/python-test-support.js";
 import { browserCaptchaTool } from "../../packages/agent/src/browser-captcha.js";
@@ -11,8 +11,10 @@ import { browserCaptchaTool } from "../../packages/agent/src/browser-captcha.js"
 let database: MigratedTestDb;
 beforeAll(async()=>{database=await createMigratedTestDb();});
 afterAll(async()=>{await database?.close();});
-async function fixture(credits=10) {
+async function fixture(credits=10, paid=true) {
   const db=database.db, accountId=await resolveAccountIdentity(db,{provider:"fixture",subject:randomUUID()});
+  await getEntitlement(db,accountId);
+  if(paid)await db.execute(sql`update account_subscriptions set plan_revision_id='developer_v1' where account_id=${accountId}`);
   if(credits)await appendCreditAdjustment(db,{accountId,kind:"purchase",units:credits,idempotencyKey:randomUUID()});
   const workflowId=await createWorkflow(db,{name:"CAPTCHA",userId:"local",accountId});
   const wf=await seedWorkflow(db,{workflowId,tasks:{Browse:{kind:"browser",mode:"ai"}}});
@@ -27,28 +29,28 @@ async function fixture(credits=10) {
 const args={provider:"capsolver" as const,task:{type:"AntiTurnstileTaskProxyLess",websiteURL:"https://fixture.test",websiteKey:"observed-key"},idempotency_key:"challenge-one"};
 const readyToPoll=async(id:string)=>database.db.update(captchaJobs).set({nextPollAt:new Date(0)}).where(eq(captchaJobs.id,id));
 
-it("reserves once under concurrent submissions, resumes in another service instance, and settles once", async()=>{
+it("submits once under concurrent submissions, resumes in another service instance, and settles once", async()=>{
   const f=await fixture();
   const jobs=await Promise.all(Array.from({length:5},()=>f.service.createTask(args)));
   expect(new Set(jobs.map(j=>j.id)).size).toBe(1);expect(f.provider.submit).toHaveBeenCalledTimes(1);
-  expect(await getCreditBalance(f.db,f.accountId)).toMatchObject({availableUnits:9,reservedUnits:1});
+  expect(await getCreditBalance(f.db,f.accountId)).toMatchObject({availableUnits:10,reservedUnits:0});
   await readyToPoll(jobs[0]!.id);
   const restarted=createCaptchaService({db:f.db,handle:f.handle,providers:[f.provider]});
   expect(await restarted.getResult(jobs[0]!.id)).toMatchObject({status:"ready",solution:{token:"solved-token",extra:{native:true}}});
   await restarted.getResult(jobs[0]!.id);expect(f.provider.poll).toHaveBeenCalledTimes(1);
-  expect(await getCreditBalance(f.db,f.accountId)).toMatchObject({availableUnits:9,reservedUnits:0});
+  expect(await getCreditBalance(f.db,f.accountId)).toMatchObject({availableUnits:10,reservedUnits:0});
   expect(await restarted.createTask(args)).toMatchObject({status:"ready"});
   await expect(restarted.createTask({...args,task:{type:"Other"}})).rejects.toMatchObject({code:"captcha_idempotency_conflict"});
 });
 
-it("does not resubmit ambiguous jobs, even with a new key, and retains their credit holds", async()=>{
+it("does not resubmit ambiguous jobs, even with a new key, and records unknown provider expenses", async()=>{
   const f=await fixture();vi.mocked(f.provider.submit).mockRejectedValue(new Error("timeout"));
   const job=await f.service.createTask(args);expect(job.status).toBe("uncertain");
   expect(await f.service.createTask({...args,idempotency_key:"another-key"})).toMatchObject({id:job.id,status:"uncertain"});
   expect(f.provider.submit).toHaveBeenCalledTimes(1);
   await f.db.update(creditReservations).set({expiresAt:new Date(0)});
   await expireCreditReservations(f.db);
-  expect(await getCreditBalance(f.db,f.accountId)).toMatchObject({reservedUnits:1});
+  expect(await getCreditBalance(f.db,f.accountId)).toMatchObject({reservedUnits:0});
 });
 
 it("releases rejected solves and preserves provider failures", async()=>{
@@ -65,12 +67,13 @@ it("retries polling, never submission, after transient provider failures", async
   expect(f.provider.submit).toHaveBeenCalledTimes(1);
 });
 
-it("rejects missing rates, insufficient credit, cancellation and cross-run job access before spending", async()=>{
-  const f=await fixture(0);
-  await expect(f.service.createTask(args)).rejects.toMatchObject({code:"credit_insufficient"});
-  f.provider.rate=undefined;
-  expect((await f.service.providers())[0]).toMatchObject({available:false,reason:"missing_internal_rate"});
-  await expect(f.service.createTask(args)).rejects.toMatchObject({code:"captcha_rate_missing"});
+it("rejects Free submissions and cross-run access while allowing paid solves without prepaid balance", async()=>{
+  const f=await fixture(0,false);
+  await expect(f.service.createTask(args)).rejects.toMatchObject({code:"captcha_plan_disabled"});
+  const included=await fixture(0);included.provider.rate=undefined;
+  expect((await included.service.providers())[0]).toMatchObject({available:true});
+  expect(await included.service.createTask(args)).toMatchObject({status:"pending"});
+  expect(await getCreditBalance(included.db,included.accountId)).toMatchObject({availableUnits:0,reservedUnits:0});
   expect(f.provider.submit).not.toHaveBeenCalled();
   const funded=await fixture(), job=await funded.service.createTask(args);
   await expect(f.service.getResult(job.id)).rejects.toMatchObject({code:"captcha_job_not_found"});
@@ -94,7 +97,7 @@ it("fences submissions during human control and settles acknowledged results aft
     return {status:"ready",solution:{token:"accepted-before-cancellation"}};
   });
   expect(await f.service.createTask(args)).toMatchObject({status:"ready"});
-  expect(await getCreditBalance(f.db,f.accountId)).toMatchObject({availableUnits:9,reservedUnits:0});
+  expect(await getCreditBalance(f.db,f.accountId)).toMatchObject({availableUnits:10,reservedUnits:0});
   await expect(f.service.getResult((await f.db.select().from(captchaJobs).where(eq(captchaJobs.runId,f.handle.run.id)))[0]!.id)).rejects.toMatchObject({code:"run_lease_lost"});
 });
 
@@ -106,7 +109,7 @@ it("exposes native solving through browser.captcha", async()=>{
   const result=await tool.execute({action:"solve",provider:"capsolver",task:{type:"ImageToTextTask",body:"base64"},idempotency_key:"tool-job"});
   expect(result,JSON.stringify(result)).toMatchObject({ok:true,value:{status:"ready",solution:{text:"native-answer",coordinates:[{x:3,y:4}]}}});
   expect(f.provider.submit).toHaveBeenCalledTimes(1);
-  expect(await getCreditBalance(f.db,f.accountId)).toMatchObject({availableUnits:9,reservedUnits:0});
+  expect(await getCreditBalance(f.db,f.accountId)).toMatchObject({availableUnits:10,reservedUnits:0});
 });
 
 it("keeps pending jobs usable across separate tool calls", async()=>{

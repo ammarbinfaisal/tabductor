@@ -44,6 +44,8 @@ x-app: &app
     # schema, or a run of an `ai`-mode task, that fails.
     ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    OPENAI_ADMIN_KEY: ${OPENAI_ADMIN_KEY:-}
+    OPENAI_PROJECT_ID: ${OPENAI_PROJECT_ID:-}
     AI_GATEWAY_API_KEY: ${AI_GATEWAY_API_KEY:-}
     SCHEMA_MODEL: ${SCHEMA_MODEL:-}
     ADMIN_ACCOUNT_IDS: ${ADMIN_ACCOUNT_IDS:-}

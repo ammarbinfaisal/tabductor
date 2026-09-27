@@ -72,7 +72,7 @@ export async function syncProxyCosts(db:Db,force=false,request:typeof fetch=fetc
             // Only traffic incurred after rollout is customer usage; retain earlier expenses as history.
             const cutover = (await trx.execute<{at:string}>(sql`select value->>'at' as at from billing_settings where key='subscription_cutover'`)).rows[0];
             if (cutover && entry.day >= new Date(cutover.at).toISOString().slice(0,10)) {
-              await meterAllowance(trx, mapping.accountId, "proxy", delta, `${sourceId}:${(prior?.revision ?? 0)+1}`);
+              await meterAllowance(trx, mapping.accountId, "proxy", delta, `${sourceId}:${(prior?.revision ?? 0)+1}`, new Date(`${entry.day}T12:00:00Z`));
             }
           }
           await trx.execute(sql`insert into proxy_usage_buckets(hash,day,bytes) values(${mapping.hash},${entry.day},${entry.bytes})

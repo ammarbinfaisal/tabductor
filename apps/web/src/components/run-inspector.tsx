@@ -237,7 +237,7 @@ function TraceRow({ entry, workflowId, devMode }: { entry: TraceItem; workflowId
   const payload = entry.payloadJson as Record<string, unknown>;
   const denied = entry.kind === "policy_denied";
   const isLlm = entry.kind === "llm";
-  const screenshotRef = entry.kind === "action" && payload.action === "screenshot" ? entry.blobRef : null;
+  const screenshotRef = entry.kind === "action" && (payload.action === "screenshot" || payload.summaryLabel === "screenshot") ? entry.blobRef : null;
   const concisePythonFailure = payload.action === "tool.call" && payload.tool === "browser.python" && payload.ok === false;
 
   return (
@@ -265,10 +265,10 @@ function TraceRow({ entry, workflowId, devMode }: { entry: TraceItem; workflowId
             className="trace-screenshot"
           />
         ) : null}
-        <details>
+        {payload.action !== "activity.group" ? <details>
           <summary className="mono muted trace-row-raw-summary">Code and technical details</summary>
           <pre className="mono">{JSON.stringify(payload, null, 2)}</pre>
-        </details>
+        </details> : null}
       </div>
       <span className="mono muted trace-row-time">{entry.createdAt.toLocaleTimeString()}</span>
     </div>
@@ -292,6 +292,7 @@ function TraceSummary({
         </span>
       );
     case "action":
+      if (payload.action === "activity.group") return <span>{String(payload.summary)} <span className="muted">· {String(payload.status)}</span></span>;
       if (payload.action === "tool.call") {
         if (payload.tool === "browser.python") {
           return <span>{typeof payload.summary === "string" ? payload.summary : payload.ok === false ? "Browser action failed" : "Ran a browser action"}<span className="muted"> · {payload.ok === false ? "failed" : "completed"}{typeof payload.duration_ms === "number" ? ` · ${payload.duration_ms}ms` : ""}</span>{payload.ok === false ? <small className="muted"> · {String(payload.error ?? "")}</small> : null}</span>;

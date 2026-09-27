@@ -97,7 +97,7 @@ export async function advanceChallengeRecovery(db: Db, id: string, providers: re
       if(!provider.supports.includes(challenge.kind))continue;
       const item=capabilities[provider.name as keyof typeof capabilities]?.[challenge.kind as ChallengeKind]??challenge.kind;
       const configured=await findBillingRate(trx,"solver",provider.name,item);
-      if((configured?.chargeMicros??provider.creditUnits)>0)available.push(provider);
+      available.push(provider);
     }
     if (challenge.deadline.getTime() <= now || !available.length || previous && ["submitting", "uncertain", "applying"].includes(previous.status) || challenge.attempts >= 3 && previous?.status !== "submitted") {
       await trx.update(browserChallenges).set({ status: "human_required" }).where(eq(browserChallenges.id, id));
@@ -111,14 +111,14 @@ export async function advanceChallengeRecovery(db: Db, id: string, providers: re
     const attemptId = newId("solver");
     const item=capabilities[provider.name as keyof typeof capabilities]?.[challenge.kind as ChallengeKind]??challenge.kind;
     const configured=await findBillingRate(trx,"solver",provider.name,item);
-    const amount=configured?.chargeMicros??provider.creditUnits, version=configured?.id??provider.rateVersion;
+    const version=configured?.id??provider.rateVersion;
     const plan = await assertCaptchaIncluded(trx, challenge.accountId);
     await recordCost(trx, { accountId: challenge.accountId, category: "solver", provider: provider.name, sourceId: attemptId, costMicros: null });
     await trx.execute(sql`update operating_costs set status='pending',plan_revision_id=${plan.id},snapshot=${JSON.stringify({ unitCharge: 0, unitCost: configured?.costMicros ?? null })}::jsonb where source_id=${attemptId} and category='solver'`);
     const [attempt] = await trx.insert(challengeAttempts).values({ id: attemptId, challengeId: id, provider: provider.name, rateVersion: version,
       creditUnits: 0, reservationId: null, status: "submitting" }).returning();
     await trx.update(browserChallenges).set({ attempts: challenge.attempts + 1 }).where(eq(browserChallenges.id, id));
-    await trx.insert(browserSessionActivity).values({ sessionId: challenge.sessionId, kind: "challenge_submitted", payloadJson: { challengeId: id, provider: provider.name, reservedUsdMicros: amount } });
+    await trx.insert(browserSessionActivity).values({ sessionId: challenge.sessionId, kind: "challenge_submitted", payloadJson: { challengeId: id, provider: provider.name, included: true } });
     return { challenge, attempt: attempt!, provider, poll: false as const };
   });
   if ("terminal" in claimed) return claimed.challenge.status;
