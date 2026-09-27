@@ -106,6 +106,37 @@ it("keeps uncompacted evidence intact if summarization fails", async () => {
   expect(await f.restore().summary()).toBe("");
 });
 
+it.each([false, true])("preserves the durable archive while retrying oversized summaries (exhausted=%s)", async (exhausted) => {
+  const f = fixture(); await populate(f, 30);
+  const messages: LlmMessage[] = [{ role: "user", content: "Begin" }];
+  await f.history.saveMessages(messages);
+  const original = await f.restore().pending();
+  const complete = vi.fn(async () => {
+    // No unvalidated summary or dropped operations may become durable during retries.
+    if (exhausted || complete.mock.calls.length <= 2) {
+      expect(await f.restore().summary()).toBe("");
+      expect(await f.restore().pending()).toEqual(original);
+      expect(await f.restore().messages()).toEqual([{ role: "user", content: "Begin" }]);
+    }
+    return { text: exhausted || complete.mock.calls.length === 1 ? "x".repeat(8001)
+      : "Saved identity-1 (operation 1); failed selector (operation 2) still needs recovery.", toolCalls: [], usage: { in: 1, out: 1 } };
+  });
+  const preparation = prepareContext({ history: f.history, messages, llm: { complete }, trace: trace(),
+    system: "explore", tools: [], maxInputTokens: 32000, checkpoint: null, memory: null, progress: null });
+  if (exhausted) {
+    await expect(preparation).rejects.toMatchObject({ code: "context_compaction_failed" });
+    expect(complete).toHaveBeenCalledTimes(3);
+    expect(await f.restore().pending()).toEqual(original);
+    expect(await f.restore().summary()).toBe("");
+  } else {
+    await preparation;
+    expect(complete.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(await f.restore().summary()).toContain("Saved identity-1");
+    expect(await f.restore().read({ sequence: 1, offset: 0, limit: 8000 }))
+      .toMatchObject({ text: expect.stringContaining("saved identity-1") });
+  }
+});
+
 it("keeps history scoped to one run and supports paging older calls and large results", async () => {
   const f = fixture(); await populate(f, 25);
   const first = await f.history.read({ offset: 0, limit: 100 });

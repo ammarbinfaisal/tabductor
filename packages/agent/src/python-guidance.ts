@@ -55,7 +55,7 @@ The supplied browser is already running. Its lifecycle and shared-context owners
 export function pythonWorkflowGuidance(names: string[]): string {
   const available = new Set(names);
   const notes: Record<string, string> = {
-    "browser.record.outcome": "Track each record using collection and recordKey, observed status, and a reason.",
+    "browser.record.outcome": "Track each record using collection and recordKey, observed status, and a reason. Reuse the exact original collection and recordKey from extraction through saving; do not rename the collection for the destination or workflow stage, which creates a separate record and leaves the original unresolved.",
     "browser.store.define_table": "Create tables or add nullable columns using typed definitions; existing data is retained.",
     "browser.store.query": "Read the current workflow store using one SELECT. Writes are visible immediately.",
     "browser.store.insert": "Commit a row immediately with a stable logical idempotencyKey. Reuse that key after an uncertain response.",

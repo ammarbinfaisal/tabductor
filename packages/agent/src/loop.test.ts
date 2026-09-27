@@ -60,18 +60,23 @@ it("makes no model calls during takeover and discards actions planned before res
   expect(click).not.toHaveBeenCalled();
 });
 
-it("bounds model history without injecting durable state", async () => {
+it("recovers from an oversized summary and continues without repeating tools or injecting durable state", async () => {
   const lengths: number[] = [];
+  let summaries = 0;
+  const observe = vi.fn(async () => ({ ok: true as const, value: "x".repeat(18000) }));
   const result = await runAgentLoop({ llm: { complete: async (request) => {
-    if (request.tools.length === 0) return { text: "Historical observations were collected; collection remains in progress.", toolCalls: [], usage: { in: 1, out: 1 } };
+    if (request.tools.length === 0) return { text: ++summaries === 1 ? "oversized summary ".repeat(500)
+      : "Historical observations were collected; collection remains in progress.", toolCalls: [], usage: { in: 1, out: 1 } };
     lengths.push(request.messages.reduce((n, message) => n + message.content.length, 0));
     expect(request.messages.some((message) => message.content.includes('"emitted":75'))).toBe(false);
     return { toolCalls: [{ id: String(lengths.length), name: lengths.length === 100 ? "done" : "observe", args: {} }], usage: { in: 1, out: 1 } };
-  } }, tools: [{ name: "observe", description: "read", parameters: z.object({}), execute: async () => ({ ok: true, value: "x".repeat(18000) }) },
+  } }, tools: [{ name: "observe", description: "read", parameters: z.object({}), execute: observe },
     { name: "done", description: "finish", parameters: z.object({}), execute: async () => ({ ok: true, value: "collected" }) }],
     task: { prompt: "collect" }, trigger: null, emits: [], trace });
   expect(result).toEqual({ outcome: "done", result: "collected" });
   expect(lengths).toHaveLength(100);
+  expect(summaries).toBeGreaterThan(1);
+  expect(observe).toHaveBeenCalledTimes(99);
   expect(Math.max(...lengths)).toBeLessThan(160_000);
 });
 
