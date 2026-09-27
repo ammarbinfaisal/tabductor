@@ -266,7 +266,7 @@ export {
   type ProposedGrant,
 } from "./graph-authoring.js";
 
-export { createModelResolver, saveModelCredential, setModelSelection, modelSelectionSchema, modelCredentialInputSchema, modelProviderSchema, modelScopeForTask, parseModelRates, modelCreditUnits, settleModelOperation,
+export { getGraphAuthoringModel, graphAuthoringModelSchema, DEFAULT_GRAPH_AUTHORING_MODEL, createModelResolver, saveModelCredential, setModelSelection, modelSelectionSchema, modelCredentialInputSchema, modelProviderSchema, modelScopeForTask, parseModelRates, modelCreditUnits, settleModelOperation,
   type ModelResolver, type ModelRate, type ModelUsage, type ModelScope, type ModelPurpose, type ModelCallConfig, type ModelProvider } from "./model-funding.js";
 export { createHostedBrowserPool, ensureWorkflowBrowserProfile, browserWorkerToken, browserCreditAdmission, settleBrowserUsage } from "./browser-hosted.js";
 export { mintBrowserViewToken, verifyBrowserViewToken, type BrowserViewClaims } from "./browser-view-token.js";

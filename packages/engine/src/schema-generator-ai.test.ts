@@ -114,6 +114,7 @@ it.each(["syntax", "truncated", "gate"] as const)("keeps %s failures inside grap
   expect(await models.graphCompiler.compile({ intent })).toMatchObject({ ok: true, report: { attempts: 2 } });
   expect(requests).toHaveLength(2);
   expect(models.settled).toHaveLength(2);
+  expect(models.settled.map(call => call.purpose)).toEqual(["graph", "graph"]);
   expect(JSON.stringify(requests[1]!.input)).toContain("The deterministic gate rejected that draft");
   expect(requests[1]!.text).toMatchObject({ format: { type: "json_object" } });
   expect((requests[1]!.text as { format: Record<string, unknown> }).format).not.toHaveProperty("schema");

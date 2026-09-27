@@ -2,11 +2,11 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { billingRates, modelCredentials, modelOperations, modelSelections } from "@tabductor/db";
+import { billingSettings, billingRates, modelCredentials, modelOperations, modelSelections } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import { fileKeyWrapper } from "@tabductor/secrets";
 import { appendCreditAdjustment, createModelResolver, expireCreditReservations, getCreditBalance, modelCreditUnits,
-  createWorkflow, seedWorkflow, triggerTask, parseModelRates, resolveAccountIdentity, saveModelCredential, setModelSelection, settleModelOperation, staticSchemaGenerator, type ModelRate } from "@tabductor/engine";
+  getGraphAuthoringModel, createWorkflow, seedWorkflow, triggerTask, parseModelRates, resolveAccountIdentity, saveModelCredential, setModelSelection, settleModelOperation, staticSchemaGenerator, type ModelRate } from "@tabductor/engine";
 import { eq } from "drizzle-orm";
 import { createCaller } from "../../apps/web/src/server/router.js";
 
@@ -18,6 +18,61 @@ const rate: ModelRate = { provider: "openai", model: "fixture-model", version: "
 const wrapper = () => fileKeyWrapper(join(dir, "kek.json"));
 const resolver = (rates = [rate]) => createModelResolver({ db: db.db, wrapper: wrapper(), rates, platformKeys: { openai: "platform-fixture" } });
 const account = (subject: string) => resolveAccountIdentity(db.db, { provider: "fixture", subject });
+
+it("defaults graph generation and repair calls to the platform model without an account selection", async () => {
+  const a = await account("graph-default");
+  await appendCreditAdjustment(db.db, { accountId: a, kind: "purchase", units: 100, idempotencyKey: "graph-default-topup" });
+  expect(await getGraphAuthoringModel(db.db)).toEqual({ provider: "openai", model: "gpt-6-astra" });
+  const models = resolver([{ ...rate, model: "gpt-6-astra" }]);
+  const invoke = vi.fn(async (config) => {
+    expect(config).toMatchObject({ provider: "openai", model: "gpt-6-astra", apiKey: "platform-fixture" });
+    return { value: "draft", usage: { input: 100, output: 30 } };
+  });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await models.execute({ accountId: a, purpose: "graph" }, { inputTokenBound: 100 }, invoke);
+  }
+  expect(invoke).toHaveBeenCalledTimes(2);
+  const operations = await db.db.select().from(modelOperations).where(eq(modelOperations.accountId, a));
+  expect(operations).toHaveLength(2);
+  expect(operations.every(op => op.model === "gpt-6-astra" && op.funding === "platform" && op.status === "succeeded")).toBe(true);
+});
+
+it("uses admin graph overrides without changing workflow BYO execution", async () => {
+  const a = await account("graph-override");
+  const workflowId = await createWorkflow(db.db, { accountId: a, userId: "fixture", name: "Graph override" });
+  const key = await saveModelCredential(db.db, wrapper(), { accountId: a, provider: "openai", label: "Runtime", apiKey: "runtime-fixture" });
+  await setModelSelection(db.db, a, { funding: "byo", provider: "openai", model: "account-model", credentialId: key.id });
+  await setModelSelection(db.db, a, { scope: workflowId, funding: "byo", provider: "openai", model: "workflow-model", credentialId: key.id });
+  await appendCreditAdjustment(db.db, { accountId: a, kind: "purchase", units: 100, idempotencyKey: "graph-override-topup" });
+  const models = createModelResolver({ db: db.db, wrapper: wrapper(), rates: [{ ...rate, provider: "anthropic", model: "admin-model" }], platformKeys: { anthropic: "admin-provider-key" } });
+  await db.db.insert(billingSettings).values({ key: "graph_authoring_model", value: { provider: "anthropic", model: "admin-model" } });
+  try {
+    await models.execute({ accountId: a, workflowId, purpose: "graph" }, { inputTokenBound: 100 }, async config => {
+      expect(config).toMatchObject({ provider: "anthropic", model: "admin-model", apiKey: "admin-provider-key" });
+      return { value: "graph", usage: { input: 100, output: 30 } };
+    });
+    await models.execute({ accountId: a, workflowId, purpose: "runtime" }, { inputTokenBound: 100 }, async config => {
+      expect(config).toMatchObject({ provider: "openai", model: "workflow-model", apiKey: "runtime-fixture" });
+      return { value: "runtime", usage: { input: 100, output: 30 } };
+    });
+  } finally {
+    await db.db.delete(billingSettings).where(eq(billingSettings.key, "graph_authoring_model"));
+  }
+});
+
+it("never falls back from the graph model when rates or platform credentials are unavailable", async () => {
+  const a = await account("graph-unavailable");
+  const key = await saveModelCredential(db.db, wrapper(), { accountId: a, provider: "openai", label: "BYO", apiKey: "not-for-authoring" });
+  await setModelSelection(db.db, a, { funding: "byo", provider: "openai", model: "other-model", credentialId: key.id });
+  const invoke = vi.fn();
+  await expect(resolver([]).execute({ accountId: a, purpose: "graph" }, { inputTokenBound: 100 }, invoke))
+    .rejects.toMatchObject({ code: "model_rate_unknown", message: expect.stringContaining("gpt-6-astra") });
+  const unavailable = createModelResolver({ db: db.db, wrapper: wrapper(), rates: [{ ...rate, model: "gpt-6-astra" }], platformKeys: {} });
+  await expect(unavailable.execute({ accountId: a, purpose: "graph" }, { inputTokenBound: 100 }, invoke))
+    .rejects.toMatchObject({ code: "model_platform_unavailable", message: expect.stringContaining("Graph authoring") });
+  expect(invoke).not.toHaveBeenCalled();
+  expect(await db.db.select().from(modelOperations).where(eq(modelOperations.accountId, a))).toHaveLength(0);
+});
 
 it("encrypts BYO credentials and never returns them through settings, even to their owner", async () => {
   const a = await account("model-a"), b = await account("model-b");

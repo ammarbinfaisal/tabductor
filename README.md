@@ -31,7 +31,8 @@ open http://localhost:3000
 This starts the web app, engine, live-browser gateway, and a local fleet with up to three
 active Camoufox browsers and one clean spare. The local fleet uses the Docker socket to
 create disposable browser containers; it is unavailable in hosted mode. Local browser time
-does not consume Tabductor credits. Model calls still use your selected provider and funding.
+does not consume Tabductor credits. Execution model calls still use your selected provider and funding;
+graph authoring uses the admin-configured platform model and account balance.
 The command generates a local worker signing key in `.env` and selects the active Docker
 context's socket, including rootless Docker. For the control plane without managed browsers,
 use `docker compose up -d --build`.
@@ -76,10 +77,19 @@ See [prompt inputs](docs/prompt-inputs.md) for API and compiled-runtime examples
 
 Compose starts Postgres, MinIO, one-shot migrations, the engine, and the Next.js control plane.
 After signing in, open **Models**, save your provider key, and select a model under
-**Use your own key**. This account selection enables chat, workflow compilation, and AI tasks.
+**Use your own key**. This account selection enables chat, schema/prompt compilation, and AI tasks.
 Server `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` values configure the platform provider;
 they do not automatically select a model for a signed-in account. Platform models also
 require configured rates and account credits.
+
+Graph generation and repair always use the global **Admin → Providers → Graph authoring model**
+selection, defaulting to OpenAI `gpt-6-astra`. Account/workflow model overrides and `SCHEMA_MODEL`
+do not override this setting. Set the selected provider’s server API key, configure the model’s
+rates and token limits under **Admin → Pricing & costs**, and fund the account balance before
+authoring. There is no fallback to BYO credentials or another model if configuration is missing.
+The setting is stored in the database and changes apply to subsequent authoring calls without a restart.
+Confirm provider access to the selected model ID; no model prices are assumed or automatically seeded.
+
 MinIO stores browser trace blobs.
 
 After changing keys in `.env`, run `pnpm local:up` to recreate the managed local stack

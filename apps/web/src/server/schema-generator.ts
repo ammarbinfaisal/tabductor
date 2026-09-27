@@ -1,7 +1,7 @@
-import { createModelResolver, parseModelRates } from "@tabductor/engine";
+import { createModelResolver, parseModelRates, getGraphAuthoringModel } from "@tabductor/engine";
 import { configuredKeyWrapper } from "@tabductor/secrets";
 import { db, pool as databasePool } from "./db.js";
-import { loadConfig } from "@tabductor/core";
+import { AppError, loadConfig } from "@tabductor/core";
 import {
   staticPromptCompiler,
   type GraphCompiler,
@@ -21,10 +21,16 @@ import type { Pool } from "pg";
  */
 const store = globalThis as { __tabductorSchemaGen?: SchemaGenerator; __tabductorPromptCompiler?: PromptCompiler };
 
-export function graphCompiler(pool: Pool): GraphCompiler | undefined {
-  const { ANTHROPIC_API_KEY, OPENAI_API_KEY, AI_GATEWAY_API_KEY, SCHEMA_MODEL } = loadConfig();
-  const chosen = providerFromEnv({ ANTHROPIC_API_KEY, OPENAI_API_KEY, AI_GATEWAY_API_KEY });
-  return chosen ? aiGraphCompiler({ ...chosen, model: SCHEMA_MODEL, pool }) : undefined;
+export function graphCompiler(pool: Pool): GraphCompiler {
+  return {
+    async compile(input) {
+      const selection = await getGraphAuthoringModel(db());
+      const config = loadConfig();
+      const apiKey = selection.provider === "openai" ? config.OPENAI_API_KEY : config.ANTHROPIC_API_KEY;
+      if (!apiKey) throw new AppError("model_platform_unavailable", `Graph authoring provider ${selection.provider} is unavailable. Configure its platform API key or change the model in Admin → Providers.`);
+      return aiGraphCompiler({ ...selection, apiKey, pool }).compile(input);
+    },
+  };
 }
 
 export function schemaGenerator(): SchemaGenerator {

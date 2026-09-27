@@ -19,7 +19,7 @@ export function ModelSettings({ settings, workflowId }: { settings: RouterOutput
   const current = settings.selections.find((selection) => selection.scope === scope);
   return <section className="settings-section">
     <h2>{workflowId ? "Workflow model" : "Model source"}</h2>
-    <p>{workflowId ? "Override the account model for this workflow." : "Choose the model used for authoring, execution, recovery, and compilation."} Your own key is billed by its provider. Tabductor models use your prepaid USD balance.</p>
+    <p>{workflowId ? "Override the account model for this workflow." : "Choose the model used for execution, recovery, and schema/prompt compilation."} Graph authoring and repair use the admin-configured platform model and your prepaid USD balance. Your own key is billed by its provider. Tabductor models use your prepaid USD balance.</p>
     <p>Current selection: <strong>{current ? `${current.model} · ${current.funding === "byo" ? "your key" : "Tabductor balance"}` : workflowId ? "Account default" : "Not configured"}</strong></p>
     {error ? <p role="alert">{error}</p> : null}
     <form className="stack" onSubmit={(event) => { event.preventDefault(); const data = new FormData(event.currentTarget);

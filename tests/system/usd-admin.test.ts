@@ -17,6 +17,20 @@ it("protects every administration procedure and accepts exact USD prices",async(
  const [rate]=await db.db.select().from(billingRates);expect(rate).toMatchObject({chargeMicros:100000,costMicros:2000});
  expect((await caller(admin).admin.settings()).rates[0]).toMatchObject({chargeUsd:"0.10",costUsd:"0.002"});
 });
+it("allows only administrators to persist and audit the global graph authoring model",async()=>{
+ expect((await caller(admin).admin.settings()).graphAuthoringModel).toEqual({provider:"openai",model:"gpt-6-astra"});
+ await expect(caller(user).admin.saveGraphAuthoringModel({provider:"anthropic",model:"admin-graph-model"})).rejects.toMatchObject({code:"FORBIDDEN"});
+ await expect(caller(admin).admin.saveGraphAuthoringModel({provider:"openai",model:"   "})).rejects.toMatchObject({code:"BAD_REQUEST"});
+ await caller(admin).admin.saveGraphAuthoringModel({provider:"anthropic",model:" admin-graph-model "});
+ expect((await caller(admin).admin.settings()).graphAuthoringModel).toEqual({provider:"anthropic",model:"admin-graph-model"});
+ await caller(admin).admin.saveGraphAuthoringModel({provider:"openai",model:"gpt-6-astra"});
+ const settings=await db.db.select().from(billingSettings).where(eq(billingSettings.key,"graph_authoring_model"));
+ expect(settings).toHaveLength(1);
+ expect(settings[0]?.value).toEqual({provider:"openai",model:"gpt-6-astra"});
+ const audits=await db.db.select().from(billingAudit).where(eq(billingAudit.action,"graph_authoring_model.update"));
+ expect(audits).toHaveLength(2);
+ expect(audits.every(entry=>entry.actorId===admin)).toBe(true);
+});
 it("stores one-million-token model limits from Admin and exposes them in model settings",async()=>{
  const model="admin-million-model";
  await caller(admin).admin.saveModelRates({provider:"openai",model,inputUsd:"1.00",cachedInputUsd:"0.10",outputUsd:"4.00",inputCostUsd:"0.50",cachedInputCostUsd:"0.05",outputCostUsd:"2.00",maxInputTokens:1_000_000,maxOutputTokens:1_000_000});

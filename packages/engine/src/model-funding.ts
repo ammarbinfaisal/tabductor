@@ -1,7 +1,7 @@
 import { findBillingRate, recordCost } from "./billing-prices.js";
 import { usdMicros } from "@tabductor/core";
 import { AppError, newId } from "@tabductor/core";
-import { modelCredentials, modelSelections, modelOperations, workflowExecutions, workflows, workflowVersions, runs, tasks, type Db } from "@tabductor/db";
+import { billingSettings, modelCredentials, modelSelections, modelOperations, workflowExecutions, workflows, workflowVersions, runs, tasks, type Db } from "@tabductor/db";
 import { encryptEnvelope, withEnvelope, zero, type KeyWrapper } from "@tabductor/secrets";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -10,6 +10,16 @@ import { reserveCredits, settleCreditReservation } from "./credits.js";
 export const modelProviderSchema = z.enum(["openai", "anthropic", "openai-compatible"]);
 export type ModelProvider = z.infer<typeof modelProviderSchema>;
 const platformModelProviderSchema = z.enum(["openai", "anthropic"]);
+export const graphAuthoringModelSchema = z.object({
+  provider: platformModelProviderSchema,
+  model: z.string().trim().min(1).max(200),
+}).strict();
+export const DEFAULT_GRAPH_AUTHORING_MODEL = { provider: "openai", model: "gpt-6-astra" } as const;
+
+export async function getGraphAuthoringModel(db: Db): Promise<z.infer<typeof graphAuthoringModelSchema>> {
+  const [setting] = await db.select().from(billingSettings).where(eq(billingSettings.key, "graph_authoring_model"));
+  return graphAuthoringModelSchema.parse(setting ? setting.value : DEFAULT_GRAPH_AUTHORING_MODEL);
+}
 const compatibleBaseUrlSchema = z.string().trim().min(1).max(2048).url().refine((value) => {
   const url = new URL(value);
   return (url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password && !url.search && !url.hash;
@@ -147,15 +157,20 @@ export function createModelResolver(deps: { db: Db; wrapper: KeyWrapper; rates: 
           pinned = execution.selection;
         }
       }
-      const selections = await deps.db.select().from(modelSelections).where(eq(modelSelections.accountId, scope.accountId));
-      const selection = pinned !== undefined ? pinned : selections.find((s) => s.scope === scope.workflowId) ?? selections.find((s) => s.scope === "account");
+      const selections = scope.purpose === "graph" ? [] : await deps.db.select().from(modelSelections).where(eq(modelSelections.accountId, scope.accountId));
+      // Graph generation and repair are platform-controlled, never inherited from execution settings.
+      const selection = scope.purpose === "graph"
+        ? { ...await getGraphAuthoringModel(deps.db), funding: "platform" as const, credentialId: null }
+        : pinned !== undefined ? pinned : selections.find((s) => s.scope === scope.workflowId) ?? selections.find((s) => s.scope === "account");
       if (!selection) throw new AppError("model_selection_missing", "Choose a model source in account settings before using AI");
       let rate = deps.rates.find((r) => r.provider === selection.provider && r.model === selection.model);
       const [inputRate,cachedRate,outputRate]=await Promise.all(["input","cached","output"].map(part=>findBillingRate(deps.db,"model",selection.provider,`${selection.model}:${part}`)));
       if(inputRate&&outputRate)rate={provider:selection.provider as "openai"|"anthropic",model:selection.model,version:inputRate.id,input:inputRate.chargeMicros,
         cachedInput:cachedRate?.chargeMicros??inputRate.chargeMicros,output:outputRate.chargeMicros,
         maxInputTokens:inputRate.maxInputTokens??rate?.maxInputTokens??128000,maxOutputTokens:inputRate.maxOutputTokens??rate?.maxOutputTokens??8192};
-      if (selection.funding === "platform" && !rate) throw new AppError("model_rate_unknown", "this platform model has no configured rate");
+      if (selection.funding === "platform" && !rate) throw new AppError("model_rate_unknown", scope.purpose === "graph"
+              ? `Graph authoring model ${selection.provider}/${selection.model} has no configured rate. Configure it in Admin → Pricing & costs.`
+              : "this platform model has no configured rate");
       const maxInput = rate?.maxInputTokens ?? 128_000;
       const maxOutputTokens = rate?.maxOutputTokens ?? 8192;
       if (input.inputTokenBound > maxInput) throw new AppError("model_input_limit",
@@ -166,7 +181,9 @@ export function createModelResolver(deps: { db: Db; wrapper: KeyWrapper; rates: 
         eq(modelCredentials.provider, selection.provider), isNull(modelCredentials.revokedAt))) : [];
       if (selection.funding === "byo" && !credential) throw new AppError("model_credential_missing", "the selected BYO credential is unavailable");
       const platformKey = selection.provider === "openai-compatible" ? undefined : deps.platformKeys[selection.provider];
-      if (selection.funding === "platform" && !platformKey) throw new AppError("model_platform_unavailable", "the selected platform provider is unavailable");
+      if (selection.funding === "platform" && !platformKey) throw new AppError("model_platform_unavailable", scope.purpose === "graph"
+              ? `Graph authoring provider ${selection.provider} is unavailable. Configure its platform API key or change the model in Admin → Providers.`
+              : "the selected platform provider is unavailable");
       const id = input.operationId ?? newId("modelop");
       await deps.db.transaction(async (trx) => {
         const [admitted] = await trx.insert(modelOperations).values({ id, ...scope, funding: selection.funding,

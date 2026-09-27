@@ -17,6 +17,14 @@ export function BrowserRateForm(){return <Form action={data=>api.admin.saveRate.
   <label>Customer price (USD per minute) <input name="charge" required inputMode="decimal" placeholder="0.05"/></label>
   <label>Infrastructure cost (USD per minute, optional) <input name="cost" inputMode="decimal" placeholder="Unknown"/></label><button>Save browser rate</button>
 </Form>}
+export function GraphAuthoringModelForm({selection}:{selection:RouterOutputs["admin"]["settings"]["graphAuthoringModel"]}){return <Form action={data=>api.admin.saveGraphAuthoringModel.mutate({provider:text(data,"provider") as "openai"|"anthropic",model:text(data,"model")})}>
+  <legend>Graph authoring model</legend>
+  <p className="muted">Used globally for graph generation and repair, independently of account and workflow execution models. Uses platform API keys and charges the account’s prepaid balance at configured model rates. No fallback to another model.</p>
+  <label>Provider <select name="provider" defaultValue={selection.provider}><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></label>
+  <label>Model ID <input name="model" required maxLength={200} defaultValue={selection.model}/></label>
+  <p className="muted">Configure the provider API key on the server and model rates under Pricing & costs before authoring. Changes apply to subsequent authoring calls.</p>
+  <button>Save graph authoring model</button>
+</Form>}
 export function ModelRateForm(){return <Form action={data=>api.admin.saveModelRates.mutate({provider:text(data,"provider") as "openai"|"anthropic",model:text(data,"model"),
   inputUsd:text(data,"inputCharge"),cachedInputUsd:text(data,"cachedCharge"),outputUsd:text(data,"outputCharge"),inputCostUsd:optionalAmount(data,"inputCost"),cachedInputCostUsd:optionalAmount(data,"cachedCost"),outputCostUsd:optionalAmount(data,"outputCost"),
   maxInputTokens:Number(text(data,"maxInputTokens")),maxOutputTokens:Number(text(data,"maxOutputTokens"))})}>

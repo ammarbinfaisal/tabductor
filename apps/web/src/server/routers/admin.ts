@@ -2,7 +2,7 @@ import { z } from "zod";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { AppError, newId, usdMicros, usdDecimal, loadConfig } from "@tabductor/core";
 import { accounts, billingRates, billingSettings, billingAudit, billingCoupons, operatingCosts, proxyAccounts, workflowDeletions } from "@tabductor/db";
-import { legacyCreditUsd, audit, convertLegacyWallet, saveCoupon, syncDiscount, syncProxyCosts, parsePaddleCreditPacks, settleCreditReservation } from "@tabductor/engine";
+import { getGraphAuthoringModel, graphAuthoringModelSchema, legacyCreditUsd, audit, convertLegacyWallet, saveCoupon, syncDiscount, syncProxyCosts, parsePaddleCreditPacks, settleCreditReservation } from "@tabductor/engine";
 import { adminProcedure } from "../admin.js";
 import { router } from "../trpc.js";
 const amount=z.string().trim().max(30).refine(value=>{try{usdMicros(value);return true;}catch{return false;}},"Use a nonnegative USD amount with at most six decimal places");
@@ -19,8 +19,13 @@ export const adminRouter=router({
     const latest=new Map<string,typeof rates[number]>();for(const rate of rates){const key=JSON.stringify([rate.category,rate.provider,rate.item]);if(!latest.has(key))latest.set(key,rate);}
     return {rates:[...latest.values()].map(({chargeMicros,costMicros,...r})=>({...r,chargeUsd:usdDecimal(chargeMicros),costUsd:costMicros===null?null:usdDecimal(costMicros)})),coupons,
       welcomeUsd:String(settings.find(s=>s.key==="welcome")?.value.amountUsd??"0"),sync:settings.find(s=>s.key==="iproyal_sync")?.value??{},proxies,deletions,audits,
+      graphAuthoringModel:await getGraphAuthoringModel(ctx.db),
       proxyConfigured:Boolean(process.env.IPROYAL_API_TOKEN),summaryConfigured:Boolean(process.env.OPENAI_API_KEY)};
   }),
+  saveGraphAuthoringModel:adminProcedure.input(graphAuthoringModelSchema).mutation(({ctx,input})=>ctx.db.transaction(async trx=>{
+    await trx.insert(billingSettings).values({key:"graph_authoring_model",value:input}).onConflictDoUpdate({target:billingSettings.key,set:{value:input,updatedAt:new Date()}});
+    await audit(trx,ctx.accountId,"graph_authoring_model.update",input);return {saved:true};
+  })),
   saveRate:adminProcedure.input(z.object({category:z.enum(["browser","solver","model","proxy"]),provider:z.string().trim().max(100),item:z.string().trim().min(1).max(240),chargeUsd:amount,costUsd:amount.nullable(),
     maxInputTokens:z.number().int().min(1024).max(2_000_000).optional(),maxOutputTokens:z.number().int().min(1).max(2_000_000).optional()})).mutation(async ({ctx,input})=>{
     const chargeMicros=usdMicros(input.chargeUsd),costMicros=input.costUsd===null?null:usdMicros(input.costUsd),modelInput=input.category==="model"&&input.item.endsWith(":input");
