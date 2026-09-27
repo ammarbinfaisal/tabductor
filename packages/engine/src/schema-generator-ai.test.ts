@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { aiGraphCompiler, aiSchemaGenerator, fundedAuthoringModels, type SchemaProvider } from "./schema-generator-ai.js";
+import { aiGraphCompiler, aiSchemaGenerator, fundedAuthoringModels, type SchemaProvider } from "./testing/schema-generator-ai.js";
 import type { ModelResolver, ModelScope, ModelUsage } from "./model-funding.js";
 
 afterEach(() => vi.unstubAllGlobals());

@@ -4,10 +4,8 @@ import { sql } from "drizzle-orm";
 import { readFile } from "node:fs/promises";
 import { events, outbox, runs, workflowExecutions } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import {
-  createWorkflowExecution, dispatchEvent, finishRun, RUN_BUDGET_EXCEEDED,
-  seedWorkflow, settleWorkflowExecutions, startRun, triggerTask,
-} from "@tabductor/engine";
+import { createWorkflowExecution, dispatchEvent, finishRun, RUN_BUDGET_EXCEEDED, settleWorkflowExecutions, startRun, triggerTask } from "@tabductor/engine";
+import { seedWorkflow } from "@tabductor/engine/testing";
 
 let handle: MigratedTestDb;
 beforeEach(async () => { handle = await createMigratedTestDb(); });

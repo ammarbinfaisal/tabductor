@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { bindIntent, intentErrors } from "./intent-contract.js";
-import { graphSchema } from "./graph.js";
-import { llmPromptCompiler, promptInputHash, type PromptCompileInput } from "./prompt-compiler.js";
+import { graphSchema } from "./testing/graph.js";
+import { llmPromptCompiler, promptInputHash, type PromptCompileInput } from "./testing/prompt-compiler.js";
 import { normalizeRecord, recordProcessingSchema } from "./record-processing.js";
 import { destinationKey } from "./destination-contracts.js";
 

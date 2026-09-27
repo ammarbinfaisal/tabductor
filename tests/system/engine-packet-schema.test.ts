@@ -1,5 +1,6 @@
 import { afterEach, expect, it } from "vitest";
-import { RUN_FAILED, seedWorkflow } from "@tabductor/engine";
+import { RUN_FAILED } from "@tabductor/engine";
+import { seedWorkflow } from "@tabductor/engine/testing";
 import { allRuns, eventsOfType, runsForTask, startRig, trigger, waitForQuiet, type Rig } from "./engine-support.js";
 
 let rig: Rig;

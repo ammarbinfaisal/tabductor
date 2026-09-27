@@ -5,7 +5,7 @@ import { createStore } from "zustand/vanilla";
 import { EventChip, Stamp } from "./primitives.js";
 import { api, asApiError, type RouterOutputs } from "../lib/api.js";
 import { usePolling, useStoreBridge, type Store } from "../lib/store.js";
-import { SessionInspector } from "./session-inspector.js";
+import { ArrowRight, Radio } from "lucide-react";
 import { readableName } from "../lib/workflow-labels.js";
 
 /**
@@ -155,7 +155,13 @@ export function RunInspector({ workflowId, runId }: { workflowId: string; runId:
         <div><Link href={`/workflows/${workflowId}/runs`} className="eyebrow">← Workflow runs</Link>
           <h1>{readableName(task.name)}</h1><p className="muted">{run.startedAt ? `Started ${run.startedAt.toLocaleString()}` : "Waiting to start"}</p>
         </div>
-        {state.detail.browserSession ? <Link className="btn" href={`/sessions/${state.detail.browserSession.id}`}>Open session ↗︎</Link> : null}
+        {state.detail.sessionHref ? (
+          <Link className="btn" href={state.detail.sessionHref}>
+            {state.detail.sessionStatus === "ready" || state.detail.sessionStatus === "running"
+              ? <><Radio size={16} aria-hidden="true" />Watch live</>
+              : <>View session<ArrowRight size={16} aria-hidden="true" /></>}
+          </Link>
+        ) : null}
       </div>
 
       <div className="run-summary">
@@ -200,8 +206,15 @@ export function RunInspector({ workflowId, runId }: { workflowId: string; runId:
 
       {state.error ? <div className="banner banner--error">Refresh failed. {state.error}</div> : null}
 
-      {state.detail.browserSession ? <SessionInspector key={state.detail.browserSession.id} sessionId={state.detail.browserSession.id} />
-        : task.kind === "browser" ? <div className="viewer-empty" role="status"><span className="eyebrow">Browser session</span><h2>{run.endedAt ? "No browser session recorded" : "Preparing your live browser"}</h2><p>{run.endedAt ? "This run has no browser session to view." : "The live view will appear here as soon as the browser is allocated."}</p></div> : null}
+      {task.kind === "browser" ? (
+        <p className="muted" role="status">
+          {state.detail.sessionHref
+            ? "Live browser, replay, and session activity are available on the session page."
+            : run.endedAt
+              ? "No browser session is linked to this run."
+              : "No browser session is linked yet. A session link will appear when one is available."}
+        </p>
+      ) : null}
 
       <section className="run-trace" aria-label="Run tool calls">
       <h2 style={{ marginBottom: "var(--space-3)" }}>Tool calls</h2>

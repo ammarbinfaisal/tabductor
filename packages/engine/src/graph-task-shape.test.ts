@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
-import { checkGraph, graphSchema, graphTaskSchema } from "./graph.js";
+import { checkGraph, graphSchema, graphTaskSchema } from "./testing/graph.js";
 import { bindIntent } from "./intent-contract.js";
-import { gateGraphDraft, llmGraphCompiler } from "./graph-authoring.js";
+import { gateGraphDraft, llmGraphCompiler } from "./testing/graph-authoring.js";
 
 const request = "Collect tweets and save them to https://destination.test/database";
 function draft() {

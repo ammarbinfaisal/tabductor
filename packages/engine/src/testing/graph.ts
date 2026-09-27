@@ -1,8 +1,8 @@
 import { checkRecordContracts, recordContractIssues } from "./record-contracts.js";
-import { carryBrowserLearning } from "./browser-learning.js";
-import { intentSchema, intentErrors, harnessTask, taskIntentDigest } from "./intent-contract.js";
-import { recordProcessingSchema } from "./record-processing.js";
-import { compileResultSchema } from "./result-schema.js";
+import { carryBrowserLearning } from "../browser-learning.js";
+import { intentSchema, intentErrors, harnessTask, taskIntentDigest } from "../intent-contract.js";
+import { recordProcessingSchema } from "../record-processing.js";
+import { compileResultSchema } from "../result-schema.js";
 import { Ajv } from "ajv";
 import addFormatsModule from "ajv-formats";
 const addFormats = addFormatsModule.default ?? addFormatsModule;
@@ -45,7 +45,7 @@ import {
   type PromptStoreTable,
 } from "./prompt-compiler.js";
 import { promptHashOf, type SchemaGenerator, type SchemaGenInput } from "./schema-generator.js";
-import { publishStoreSchema } from "./store-schema.js";
+import { publishStoreSchema } from "../store-schema.js";
 import type { GraphCompileReport, GraphDraftArtifact, ProposedGrant } from "./graph-authoring.js";
 
 /**
@@ -840,7 +840,7 @@ export async function publishVersion(
       })
       .from(tasks)
       .where(eq(tasks.workflowVersionId, workflow.currentVersionId));
-    const [priorVersion] = await db.select({ graph: workflowVersions.graphJson }).from(workflowVersions).where(eq(workflowVersions.id, workflow.currentVersionId));
+    const [priorVersion] = await db.select({ graph: workflowVersions.definitionJson }).from(workflowVersions).where(eq(workflowVersions.id, workflow.currentVersionId));
     const priorGraph = graphSchema.safeParse(priorVersion?.graph);
     const previousByIdentity = new Map((priorGraph.success ? priorGraph.data.tasks : []).map((task) => [task.logicalId ?? task.name, task.name]));
     for (const task of graph.tasks) {
@@ -967,7 +967,7 @@ export async function publishVersion(
     await trx.insert(workflowVersions).values({
       id: versionId,
       workflowId: workflow.id,
-      graphJson: graph,
+      definitionJson: graph,
       storeSchemaId,
     });
 
@@ -1210,7 +1210,7 @@ export async function readGraph(db: Db, versionId: string): Promise<Graph> {
   }
 
   const taskRows = await db.select().from(tasks).where(eq(tasks.workflowVersionId, versionId));
-  const stored = graphSchema.safeParse(version.graphJson);
+  const stored = graphSchema.safeParse(version.definitionJson);
   const decoration = new Map(
     (stored.success ? stored.data.tasks : []).map((t) => [t.name, { position: t.position, label: t.label, summary: t.summary, logicalId: t.logicalId, entry: t.entry }]),
   );

@@ -1,4 +1,6 @@
-import { newId } from "@tabductor/core";
+import { currentBrowserOperation } from "./operation-context.js";
+import { createHash } from "node:crypto";
+import { newId, ACTION_SUMMARY_SOURCE_VERSION, sanitizeActionSummaryCode, fallbackActionSummary } from "@tabductor/core";
 import { artifacts, traceEntries, actionSummaries, type Db, type TraceKind } from "@tabductor/db";
 import { eq, sql } from "drizzle-orm";
 import type { BlobStore } from "./blob-store.js";
@@ -64,6 +66,7 @@ type PendingEntry = {
   payloadJson: Record<string, unknown>;
   blobRef: string | null;
   createdAt: Date;
+  summarySource?: string;
 };
 
 type PendingArtifact = { id: string; runId: string; kind: string; blobRef: string; meta: object };
@@ -89,6 +92,10 @@ export function createTraceRecorder(
   let closed = false;
   let timer: ReturnType<typeof setInterval> | undefined;
   const recording = new Set<Promise<void>>();
+  // The agent records a completed sdk.invocation before its sequential tool.call.
+  // Never trust tool.call.code alone: it does not carry the SDK's privacy decision.
+  let summaryInvocation: { fingerprint: string; code: string } | undefined;
+  const fingerprint = (source: string) => createHash("sha256").update(source.slice(0, 16000)).digest("hex");
 
   const flush = async (): Promise<void> => {
     const run = inFlight.then(async () => {
@@ -101,12 +108,16 @@ export function createTraceRecorder(
         await db.transaction(async (trx) => {
           // A lost commit response may retry an already-persisted batch. Both keys are
           // stable, so retrying trace persistence cannot duplicate entries or artifacts.
-          if (batch.length > 0) await trx.insert(traceEntries).values(batch).onConflictDoNothing();
-          const python=batch.filter(entry=>entry.payloadJson.tool==="browser.python"&&typeof entry.payloadJson.code==="string"&&typeof entry.payloadJson.callId==="string");
-          if(python.length){
-            const owner=await trx.execute<{account_id:string}>(sql`select w.account_id from runs r join workflow_versions v on v.id=r.workflow_version_id join workflows w on w.id=v.workflow_id where r.id=${runId}`);
-            if(owner.rows[0])await trx.insert(actionSummaries).values(python.map(entry=>({runId,callId:String(entry.payloadJson.callId),accountId:owner.rows[0]!.account_id,
-              source:JSON.stringify({code:entry.payloadJson.code,ok:entry.payloadJson.ok,error:entry.payloadJson.error})}))).onConflictDoNothing();
+          if (batch.length > 0) await trx.insert(traceEntries).values(batch.map(({ summarySource: _source, ...entry }) => entry)).onConflictDoNothing();
+          const summaryEntries = batch.filter(entry => entry.summarySource !== undefined);
+          if (summaryEntries.length) {
+            const owner = await trx.execute<{ account_id: string }>(sql`select w.account_id from runs r join workflow_versions v on v.id=r.workflow_version_id join workflows w on w.id=v.workflow_id where r.id=${runId}`);
+            if (owner.rows[0]) await trx.insert(actionSummaries).values(summaryEntries.map(({ payloadJson: payload, summarySource }) => ({
+              runId, callId: String(payload.callId), accountId: owner.rows[0]!.account_id,
+              ...fallbackActionSummary(payload.tool), promptVersion: "deterministic-v1",
+              // Only privacy-approved, sanitized invocation source enters the queue.
+              source: summarySource!,
+            }))).onConflictDoNothing();
           }
           if (batchArtifacts.length > 0) await trx.insert(artifacts).values(batchArtifacts).onConflictDoNothing();
         });
@@ -122,8 +133,31 @@ export function createTraceRecorder(
 
   return {
     record(kind, payload, blob) {
+      payload = { ...currentBrowserOperation(), ...payload };
       if (closed) return Promise.reject(new Error("trace recorder is closed"));
       if (!enabled(storageFlags, CATEGORY[kind])) return Promise.resolve();
+      let summarySource: string | undefined;
+      if (kind === "action" && payload.action === "sdk.invocation") {
+        summaryInvocation = payload.language === "python" && payload.evidenceOmitted === false &&
+          payload.private !== true && payload.sensitive !== true && payload.recordingPrivate !== true &&
+          typeof payload.source === "string"
+          ? { fingerprint: fingerprint(payload.source), code: sanitizeActionSummaryCode(payload.source) }
+          : undefined;
+      }
+      if (kind === "action" && payload.action === "tool.call") {
+        const invocation = summaryInvocation;
+        summaryInvocation = undefined;
+        if (typeof payload.callId === "string" &&
+            (payload.tool === "browser.python" || payload.tool === "browser.screenshot" || payload.tool === "page.goto")) {
+          const approved = payload.evidenceOmitted !== true && payload.private !== true &&
+            payload.sensitive !== true && payload.recordingPrivate !== true &&
+            invocation && typeof payload.code === "string" && invocation.fingerprint === fingerprint(payload.code);
+          summarySource = JSON.stringify({ tool: payload.tool,
+            ...(payload.tool === "browser.python" && approved
+              ? { code: invocation.code, sourceVersion: ACTION_SUMMARY_SOURCE_VERSION }
+              : {}) });
+        }
+      }
       const entrySeq = seq++;
       sequenceBase ??= db.select({ next: sql<number>`coalesce(max(${traceEntries.seq}), -1) + 1` }).from(traceEntries)
         .where(eq(traceEntries.runId, runId)).then(rows => Number(rows[0]!.next));
@@ -148,7 +182,7 @@ export function createTraceRecorder(
           });
         }
 
-        entries.push({ runId, seq: (await sequenceBase!) + entrySeq, kind, payloadJson: payload, blobRef, createdAt });
+        entries.push({ runId, seq: (await sequenceBase!) + entrySeq, kind, payloadJson: payload, blobRef, createdAt, summarySource });
         if (entries.length >= BUFFER_LIMIT) await flush();
       })();
       const tracked = pending.finally(() => recording.delete(tracked));

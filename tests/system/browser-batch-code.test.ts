@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { expect, it } from "vitest";
-import { seedWorkflow } from "@tabductor/engine";
+import { seedWorkflow } from "@tabductor/engine/testing";
 import { taskState } from "@tabductor/db";
 import { eq } from "drizzle-orm";
 import { startAgentRig } from "./agent-support.js";

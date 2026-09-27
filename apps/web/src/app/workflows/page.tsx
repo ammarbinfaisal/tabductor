@@ -9,7 +9,8 @@ export const dynamic = "force-dynamic";
 export const metadata = { title: "Workflows" };
 
 export default async function WorkflowsPage() {
-  const workflows = await (await createServerCaller()).workflow.list();
+  const caller = await createServerCaller();
+  const [workflows, profiles] = await Promise.all([caller.workflow.list(), caller.browserSession.profiles()]);
 
   return (
     <div className="workflows-page">
@@ -20,7 +21,7 @@ export default async function WorkflowsPage() {
       </div>
       <section className="workflow-launch" aria-label="Create a workflow">
         <div className="workflow-launch__intro"><span className="section-label">01 / Create</span><h2>Set things<br /> in motion.</h2><p>Describe a routine.<br /> Let your browser handle it.</p><span className="launch-path">Prompt <span>→</span> Run <span>→</span> Watch live</span></div>
-        <CreateWorkflow />
+        <CreateWorkflow profiles={profiles.map(({ id, name }) => ({ id, name }))} />
       </section>
       <div className="section-heading"><h2>Your workflows</h2><span className="muted">{workflows.length} total</span></div>
       <div className="table-scroll">
@@ -57,7 +58,7 @@ export default async function WorkflowsPage() {
                 )}
               </td>
               <td><span className="publication-state">{w.currentVersionId ? "Published" : "Draft"}</span></td>
-              <td><div className="row"><Link className="btn btn--quiet" href={`/workflows/${w.id}/runs`}>View runs ↗︎</Link><DeleteWorkflow workflowId={w.id} deleting={Boolean(w.deletingAt)}/></div></td>
+              <td><div className="row">{w.sessionHref ? <Link className="btn btn--quiet" href={w.sessionHref}>{w.sessionStatus === "running" || w.sessionStatus === "ready" ? "Watch live" : "Session replay"} ↗</Link> : null}<Link className="btn btn--quiet" href={`/workflows/${w.id}/runs`}>View runs ↗︎</Link><DeleteWorkflow workflowId={w.id} deleting={Boolean(w.deletingAt)}/></div></td>
             </tr>
           ))}
         </tbody>

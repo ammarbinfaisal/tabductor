@@ -1,5 +1,6 @@
 import { afterEach, expect, it } from "vitest";
-import { LOOP_BUDGET_EXCEEDED, seedWorkflow } from "@tabductor/engine";
+import { LOOP_BUDGET_EXCEEDED } from "@tabductor/engine";
+import { seedWorkflow } from "@tabductor/engine/testing";
 import { allRuns, eventsOfType, startRig, trigger, waitForQuiet, type Rig } from "./engine-support.js";
 
 let rig: Rig;

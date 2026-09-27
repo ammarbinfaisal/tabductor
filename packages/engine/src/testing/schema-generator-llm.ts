@@ -2,7 +2,7 @@ import { Ajv } from "ajv";
 import addFormatsModule from "ajv-formats";
 const addFormats = addFormatsModule.default ?? addFormatsModule;
 import type { SchemaGenerator, SchemaGenInput, SchemaGenResult } from "./schema-generator.js";
-import { parseGeneratedJson } from "./generated-json.js";
+import { parseGeneratedJson } from "../generated-json.js";
 
 /**
  * Everything the schema compiler does that is not a network call: the instructions, the

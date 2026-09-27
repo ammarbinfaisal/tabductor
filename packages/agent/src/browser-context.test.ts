@@ -112,9 +112,9 @@ it("blocks repeated failing targets across fresh snapshot names without disconne
 it("records reported saves without a dedicated verification tool", async () => {
   let saved = 0;
   const tools = new Map(buildToolRegistry({ session: {} as RunSession, emit: async () => ({ outcome: "deduped" }), recordOutcome: async outcome => {
-    expect(outcome).toEqual({ status: "saved", reason: "Saved" }); saved++;
+    expect(outcome).toEqual({ collection: "items", recordKey: "item-1", status: "saved", reason: "Saved" }); saved++;
   } }).map(t => [t.name, t]));
   expect(tools.has("page.verify")).toBe(false);
-  expect(await tools.get("record.outcome")!.execute({ status: "saved", reason: "Saved" })).toMatchObject({ ok: true });
+  expect(await tools.get("record.outcome")!.execute({ collection: "items", recordKey: "item-1", status: "saved", reason: "Saved" })).toMatchObject({ ok: true });
   expect(saved).toBe(1);
 });

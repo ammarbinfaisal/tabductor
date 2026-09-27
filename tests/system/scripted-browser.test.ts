@@ -1,6 +1,7 @@
 import { afterEach, expect, it } from "vitest";
 import { cdpEndpoints } from "@tabductor/db";
-import { RETRIES_EXHAUSTED, seedWorkflow, updateTask } from "@tabductor/engine";
+import { RETRIES_EXHAUSTED } from "@tabductor/engine";
+import { seedWorkflow, updateTask } from "@tabductor/engine/testing";
 import { eq } from "drizzle-orm";
 import { eventsOfType, runsForTask, trigger, waitFor, waitForQuiet } from "./engine-support.js";
 import { startScriptedRig, waitForTraceRows, type ScriptedRig } from "./scripted-support.js";

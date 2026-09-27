@@ -19,9 +19,9 @@ import {
   storageFlagsOf as defaultStorageFlagsOf,
   toRunResult,
   triggerInfoOf,
-} from "./executor-shared.js";
-import type { Llm } from "./llm.js";
-import { runAgentLoop } from "./loop.js";
+} from "../executor-shared.js";
+import type { Llm } from "../llm.js";
+import { runAgentLoop } from "../loop.js";
 
 /**
  * `(decision, ai)` — the planner kind's executor (S5g, graph-compilation-llm §2). The

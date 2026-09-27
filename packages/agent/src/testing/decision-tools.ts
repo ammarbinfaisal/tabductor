@@ -1,4 +1,4 @@
-import { recordOutcomeTool } from "./record-tools.js";
+import { recordOutcomeTool } from "../record-tools.js";
 import type { Pool } from "pg";
 import type { Metrics } from "@tabductor/telemetry";
 import {
@@ -8,7 +8,7 @@ import {
   type StoreTool,
   type StoreWriteToolDeps,
 } from "@tabductor/store";
-import { doneTool, emitTool, failTool, type AgentTool, type EmitFn, type ToolResult } from "./tools.js";
+import { doneTool, emitTool, failTool, type AgentTool, type EmitFn, type ToolResult } from "../tools.js";
 
 /**
  * `kind=decision`'s tool registry: workflow-store query/insert/upsert plus

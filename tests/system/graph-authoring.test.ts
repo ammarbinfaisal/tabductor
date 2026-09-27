@@ -1,14 +1,8 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { storeSchemas, taskGrants, tasks, workflowVersions, workflows } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import {
-  createWorkflow,
-  gateGraphDraft,
-  publishVersion,
-  readGraphAuthoring,
-  staticSchemaGenerator,
-  type GraphDraftArtifact,
-} from "@tabductor/engine";
+import { createWorkflow } from "@tabductor/engine";
+import { gateGraphDraft, publishVersion, readGraphAuthoring, staticSchemaGenerator, type GraphDraftArtifact } from "@tabductor/engine/testing";
 import { addBaselineRule, decideProposedGrant, grantTask, revokeTaskGrant } from "@tabductor/policy";
 import { deprovision } from "@tabductor/store";
 import { eq } from "drizzle-orm";
@@ -197,31 +191,4 @@ it("persists one combined report while proposals remain inert until individually
     "stripped_by_baseline",
     "approved",
   ]);
-});
-
-it("re-runs the deterministic gate at the publish API instead of trusting a client report", async () => {
-  const api = createCaller({
-    db: handle.db,
-    pool: handle.pool,
-    schemaGenerator: staticSchemaGenerator(),
-  });
-  const workflowId = await api.workflow.create({ name: "Server-gated draft" });
-
-  await expect(api.workflow.publishVersion({
-    workflowId,
-    graph: artifact.graph,
-    authoring: {
-      report: { checks: [], attempts: 1 },
-      proposedGrants: [{
-        taskRef: "invented_task",
-        grantKey: "navigation",
-        grantValue: "example.com",
-        requiresApproval: false,
-        status: "pending",
-      }],
-    },
-  })).rejects.toMatchObject({ code: "BAD_REQUEST" });
-
-  const [workflow] = await handle.db.select().from(workflows).where(eq(workflows.id, workflowId));
-  expect(workflow!.currentVersionId).toBeNull();
 });

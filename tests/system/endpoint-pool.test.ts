@@ -8,7 +8,7 @@ import {
   runs,
 } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import { seedWorkflow } from "@tabductor/engine";
+import { seedWorkflow } from "@tabductor/engine/testing";
 import { launchChrome, type Chrome } from "@tabductor/testkit";
 import { eq } from "drizzle-orm";
 

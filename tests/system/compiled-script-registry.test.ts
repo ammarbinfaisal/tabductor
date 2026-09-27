@@ -8,7 +8,7 @@ import {
   insertCandidateScript,
   invalidateScript,
 } from "@tabductor/compiler";
-import { seedWorkflow } from "@tabductor/engine";
+import { seedWorkflow } from "@tabductor/engine/testing";
 import { eq } from "drizzle-orm";
 
 /**

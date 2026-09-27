@@ -1,10 +1,3 @@
-import type { Graph } from "@tabductor/engine";
-
-export function resultSchemaTextOf(graph: Graph): string {
-  const schema = graph.tasks.find((task) => task.kind === "result")?.resultSchema;
-  return schema == null ? "" : JSON.stringify(schema, null, 2);
-}
-
 export function parseResultSchemaText(text: string): Record<string, unknown> | boolean | null {
   if (!text.trim()) return null;
   const schema: unknown = JSON.parse(text);

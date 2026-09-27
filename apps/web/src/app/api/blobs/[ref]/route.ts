@@ -1,6 +1,8 @@
 import { AppError } from "@tabductor/core";
-import { artifacts } from "@tabductor/db";
-import { eq } from "drizzle-orm";
+import { artifacts, runs, workflows, workflowVersions } from "@tabductor/db";
+import { and, eq } from "drizzle-orm";
+import { TRPCError } from "@trpc/server";
+import { accountIdForWebRequest } from "../../../../server/auth-context.js";
 import { NextResponse } from "next/server";
 import { blobStore } from "../../../../server/blob-store.js";
 import { db } from "../../../../server/db.js";
@@ -12,7 +14,7 @@ import { db } from "../../../../server/db.js";
  * scraped page and nobody has reviewed them.
  *
  * Two checks, in this order, and the order is load-bearing:
- * 1. **`artifacts` lookup first.** The route serves only what a run actually produced — a
+ * 1. **Owned `artifacts` lookup first.** After authenticating, the route serves only what an owned run produced — a
  *    ref no artifact row points to is a 404, whether that is because it was never written,
  *    it belongs to a different store entirely, or it is simply malformed. This also means a
  *    malformed ref almost never reaches `blobStore().get()` at all, since it cannot match a
@@ -30,13 +32,26 @@ export async function GET(
   _req: Request,
   { params }: { params: Promise<{ ref: string }> },
 ): Promise<Response> {
+  let accountId: string;
+  try {
+    accountId = await accountIdForWebRequest();
+  } catch (error) {
+    if (error instanceof TRPCError && error.code === "UNAUTHORIZED") return new NextResponse(null, { status: 401 });
+    throw error;
+  }
   const { ref } = await params;
-  const decoded = decodeURIComponent(ref);
+  let decoded: string;
+  try { decoded = decodeURIComponent(ref); }
+  catch { return new NextResponse(null, { status: 400 }); }
 
   const [artifact] = await db()
     .select({ meta: artifacts.meta })
     .from(artifacts)
-    .where(eq(artifacts.blobRef, decoded));
+    .innerJoin(runs, eq(runs.id, artifacts.runId))
+    .innerJoin(workflowVersions, eq(workflowVersions.id, runs.workflowVersionId))
+    .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId))
+    .where(and(eq(artifacts.blobRef, decoded), eq(workflows.accountId, accountId)))
+    .limit(1);
   if (!artifact) return new NextResponse(null, { status: 404 });
 
   const meta = artifact.meta as { mime?: unknown };
@@ -57,9 +72,8 @@ export async function GET(
     headers: {
       "Content-Type": mime,
       "X-Content-Type-Options": "nosniff",
-      // Content-addressed (the ref is the sha256 digest): the bytes at this URL never
-      // change, so the strongest cache directive is correct, not just permissive.
-      "Cache-Control": "private, max-age=31536000, immutable",
+      // Authorization must be rechecked after sign-out or account switching.
+      "Cache-Control": "private, no-store",
       "Content-Disposition": INLINE_MIME.has(mime) ? "inline" : "attachment",
     },
   });

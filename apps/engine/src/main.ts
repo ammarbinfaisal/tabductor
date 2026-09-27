@@ -7,8 +7,7 @@ import {
   createCompileLoop,
   createCompileWorker,
   createBrowserLearningWorker,
-  createDecisionExecutor,
-  createResultExecutor,
+  finalizeWorkflow,
   fundedLlm,
   remotePythonRunner,
   type CompileWorker,
@@ -32,7 +31,6 @@ import {
   processPendingPaddleWebhookEvents,
   recordEngineBoot,
   StubExecutor,
-  StubResultExecutor,
   touchEngineHeartbeat,
   workflowIdForVersion,
   type ExecutorRegistry,
@@ -145,6 +143,7 @@ function agentExecutorEntry(db: Db): ReturnType<typeof createAgentExecutor> | un
   const executor = createAgentExecutor({ pythonRunner,
     captchaFor: run => createCaptchaService({ db, handle: run, providers: captchaProviders }),
     pool: browserPool,
+    storePool: handle.pool,
     gate,
     blobs,
     db,
@@ -174,28 +173,15 @@ const secretsBroker = createSecretsBroker({
 });
 
 // -----------------------------------------------------------------------------------------
-// S5g: `(decision, ai)` — the planner kind's executor. Same live-key gate as the other two
-// `*Entry` functions above (nothing to run a live LLM call against without one); no CDP
-// endpoint check, because a decision run acquires no browser session.
-// -----------------------------------------------------------------------------------------
-function decisionExecutorEntry(db: Db, pool: Pool): ReturnType<typeof createDecisionExecutor> | undefined {
-  return createDecisionExecutor({
-    db,
-    pool,
-    blobs,
-    gate,
-    metrics: telemetry.metrics,
-    llmFor: ({ trace, task, runId }) => fundedLlm(modelResolver, () => modelScopeForTask(db, task.id, "runtime", runId), trace),
-  });
-}
-// -----------------------------------------------------------------------------------------
 
+// -----------------------------------------------------------------------------------------
 /** Compiled recovery uses the same account model source. */
 function compiledExecutorEntry(db: Db): TaskExecutor | undefined {
 
   return createCompiledExecutor({ pythonRunner,
     captchaFor: run => createCaptchaService({ db, handle: run, providers: captchaProviders }),
     pool: browserPool,
+    storePool: handle.pool,
     gate,
     blobs,
     db,
@@ -212,17 +198,10 @@ function compiledExecutorEntry(db: Db): TaskExecutor | undefined {
 }
 
 const agentExecutor = agentExecutorEntry(handle.db);
-const decisionExecutor = decisionExecutorEntry(handle.db, handle.pool);
 const compiledExecutor = compiledExecutorEntry(handle.db);
-const resultExecutor = createResultExecutor({ db: handle.db,
-  llmFor: (run) => fundedLlm(modelResolver, () => modelScopeForTask(handle.db, run.task.id, "runtime", run.run.id)),
-});
 const executors: ExecutorRegistry = {
-  [executorKey("result", "ai")]: resultExecutor,
-  [executorKey("result", "stub")]: StubResultExecutor,
   [executorKey("browser", "stub")]: StubExecutor,
   ...(agentExecutor ? { [executorKey("browser", "ai")]: agentExecutor } : {}),
-  ...(decisionExecutor ? { [executorKey("decision", "ai")]: decisionExecutor } : {}),
   ...(compiledExecutor ? { [executorKey("browser", "compiled")]: compiledExecutor } : {}),
 };
 
@@ -252,6 +231,16 @@ const engine = createEngine({
 await engine.start();
 await dispatcher.start();
 compileWorker?.start();
+let finalizationWork: Promise<void> | undefined;
+const finalizationTimer = setInterval(() => {
+  if (finalizationWork) return;
+  finalizationWork = finalizeWorkflow({ db: handle.db,
+    llmFor: (versionId, runId) => fundedLlm(modelResolver, () => modelScopeForTask(handle.db, versionId, "runtime", runId)) })
+    .catch(error => log.error("workflow finalization failed", { error: String(error) }))
+    .finally(() => { finalizationWork = undefined; });
+}, 1000);
+finalizationTimer.unref();
+
 learningWorker.start();
 // U3a: tell the control plane what this process can run, and keep saying so. The editor's
 // mode selector and `/status` read this row; a stale heartbeat reads as "engine down".
@@ -268,10 +257,18 @@ const paymentReconciler = paddlePacks ? setInterval(() => {
     .catch((err) => log.warn("payment webhook reconciliation failed", { error: String(err) }));
 }, 2_000) : undefined;
 paymentReconciler?.unref();
+const summaryWork = new Set<Promise<void>>();
+const summaryTimer = setInterval(() => {
+  for (let n = summaryWork.size; n < 4; n++) {
+    const work = processActionSummary(handle.db).catch(error => log.warn("action summary failed", { error: String(error) })).finally(() => summaryWork.delete(work));
+    summaryWork.add(work);
+  }
+}, 1000);
+summaryTimer.unref();
 let maintenanceWork:Promise<void>|undefined;
 const maintenance=setInterval(()=>{
   if(maintenanceWork)return;
-  maintenanceWork=Promise.allSettled([convertLegacyWallets(handle.db),reconcileCaptchaJobs(handle.db,captchaProviders),processActionSummary(handle.db),processWorkflowDeletion(handle.db,handle.pool,blobs),syncProxyCosts(handle.db)])
+  maintenanceWork=Promise.allSettled([convertLegacyWallets(handle.db),reconcileCaptchaJobs(handle.db,captchaProviders),processWorkflowDeletion(handle.db,handle.pool,blobs),syncProxyCosts(handle.db)])
     .then(results=>{for(const result of results)if(result.status==="rejected")log.warn("billing maintenance failed",{error:String(result.reason)});})
     .finally(()=>{maintenanceWork=undefined;});
 },2000);
@@ -280,7 +277,6 @@ log.info("engine started", {
   database: config.DATABASE_URL.replace(/\/\/[^@]*@/, "//"),
   telemetry: telemetry.enabled ? "exporting" : "disabled",
   aiExecutor: agentExecutor ? "registered" : "not registered",
-  decisionAiExecutor: decisionExecutor ? "registered" : "not registered",
   compiledExecutor: compiledExecutor ? "registered" : "not registered",
   compileWorker: compileWorker ? "running" : "not running (no model configured)",
 });
@@ -303,6 +299,9 @@ const shutdown = async (signal: string): Promise<void> => {
     clearInterval(maintenance);
     await maintenanceWork;
     if (paymentReconciler) clearInterval(paymentReconciler);
+    clearInterval(finalizationTimer);
+    clearInterval(summaryTimer);
+    await Promise.allSettled([...(finalizationWork ? [finalizationWork] : []), ...summaryWork]);
     await compileWorker?.stop();
     await learningWorker.stop();
     await dispatcher.stop();

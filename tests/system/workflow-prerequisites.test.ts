@@ -4,7 +4,8 @@ import { eq } from "drizzle-orm";
 import { createDispatcher } from "@tabductor/bus";
 import { browserFleetStatus, cdpEndpoints, modelCredentials, modelSelections, runs, workflowExecutions, workflows } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import { checkWorkflowPrerequisites, createEngine, createScheduler, createWorkflow, graphSchema, publishVersion, staticSchemaGenerator, triggerTask, type Engine } from "@tabductor/engine";
+import { checkWorkflowPrerequisites, createEngine, createScheduler, createWorkflow, triggerTask, type Engine } from "@tabductor/engine";
+import { graphSchema, publishVersion, staticSchemaGenerator } from "@tabductor/engine/testing";
 import { createCaller } from "../../apps/web/src/server/router.js";
 
 let db: MigratedTestDb;

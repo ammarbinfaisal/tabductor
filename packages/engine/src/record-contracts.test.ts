@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
-import { graphSchema } from "./graph.js";
-import { checkRecordContracts } from "./record-contracts.js";
+import { graphSchema } from "./testing/graph.js";
+import { checkRecordContracts } from "./testing/record-contracts.js";
 
 const graph = graphSchema.parse({ tasks: [{ name: "prepare", kind: "decision", consumes: ["source"], emits: ["destination"] }],
   events: [{ type: "source", description: "Source" }, { type: "destination", description: "Destination" }] });

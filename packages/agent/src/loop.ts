@@ -1,3 +1,4 @@
+import { withBrowserOperation } from "@tabductor/browser";
 import { PROMPT_INPUT_GUIDANCE } from "@tabductor/core";
 import { toModelMessages } from "./llm-live.js";
 import { readActionHistory } from "./browser-actions.js";
@@ -82,7 +83,7 @@ function buildSystemPrompt(opts: RunAgentLoopOptions): string {
     [
       "## Events you may emit",
       opts.emits.length === 0
-        ? "(none declared for this task — do not call `emit`)"
+        ? "Emit named JSON output events when useful. Events are durable observations, not handoffs. Use stable dedupe keys and continue the workflow after emitting. Reserved manual/schedule/system/run/compile prefixes are unavailable."
         : opts.emits.map((e) => `- ${e.type}: ${JSON.stringify(e.schema)}`).join("\n"),
     ].join("\n"),
   );
@@ -282,7 +283,7 @@ export async function runAgentLoop(opts: RunAgentLoopOptions): Promise<AgentLoop
       const started = Date.now();
       let result: ToolResult;
       try {
-        result = tool ? await tool.execute(call.args, opts.signal)
+        result = tool ? await withBrowserOperation({ callId: call.id }, () => tool.execute(call.args, opts.signal))
           : { ok: false, error: `unknown tool "${call.name}" — not in this task's registry` };
       } catch (error) {
         if (opts.beforeStep && error instanceof AppError && ["browser_input_revoked", "browser_fresh_perception_required"].includes(error.code)) {

@@ -20,5 +20,5 @@ services:
     profiles: ["build-only"]
     image: tabductor-python-runner:local
     build:
-      context: vendor/browser-harness
-      dockerfile: Dockerfile.tabductor
+      context: .
+      dockerfile: apps/python-runner/Dockerfile.runtime

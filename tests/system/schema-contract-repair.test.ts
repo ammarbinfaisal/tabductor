@@ -3,7 +3,8 @@ import { Ajv } from "ajv";
 import { eq } from "drizzle-orm";
 import { eventDefs, workflows, workflowVersions } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import { createWorkflow, graphSchema, publishVersion, type SchemaGenerator, type SchemaGenInput } from "@tabductor/engine";
+import { createWorkflow } from "@tabductor/engine";
+import { graphSchema, publishVersion, type SchemaGenerator, type SchemaGenInput } from "@tabductor/engine/testing";
 import { bindIntent } from "../../packages/engine/src/intent-contract.js";
 
 let handle: MigratedTestDb;

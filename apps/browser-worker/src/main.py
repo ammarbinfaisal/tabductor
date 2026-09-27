@@ -150,6 +150,18 @@ async def start_control_vnc():
     raise RuntimeError("human input server did not become ready")
 app = FastAPI(title="Tabductor Camoufox worker", version=RPC_VERSION)
 
+@app.middleware("http")
+async def recording_clock(request, call_next):
+    active_recorder = recorder
+    start = active_recorder.offset() if active_recorder else None
+    response = await call_next(request)
+    if active_recorder is not None and start is not None:
+        response.headers["x-tabductor-recording-start-ms"] = str(start)
+        response.headers["x-tabductor-recording-end-ms"] = str(active_recorder.offset())
+        response.headers["x-tabductor-recording-private"] = str(active_recorder.private_start is not None).lower()
+    return response
+
+
 
 def authorize(authorization: str | None, rpc_version: str | None) -> None:
     if rpc_version != RPC_VERSION:

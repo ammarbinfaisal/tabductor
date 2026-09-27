@@ -6,7 +6,6 @@ import { publicRouter } from "./routers/public.js";
 import { runRouter } from "./routers/run.js";
 import { shareRouter } from "./routers/share.js";
 import { storeRouter } from "./routers/store.js";
-import { taskRouter } from "./routers/task.js";
 import { workflowRouter } from "./routers/workflow.js";
 import { accountRouter } from "./routers/account.js";
 import { browserSessionRouter } from "./routers/browser-session.js";
@@ -18,7 +17,6 @@ export const appRouter = router({
   account: accountRouter,
   browserSession: browserSessionRouter,
   workflow: workflowRouter,
-  task: taskRouter,
   run: runRouter,
   event: eventRouter,
   share: shareRouter,

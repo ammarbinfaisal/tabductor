@@ -7,7 +7,7 @@ def output(*args):
 if output('git', 'status', '--porcelain'):
     raise SystemExit('Commit the validated batch before building deployment images')
 revision = output('git', 'rev-parse', 'HEAD')
-for dockerfile, tag, context in [('Dockerfile', 'tabductor-app:local', '.'), ('apps/browser-worker/Dockerfile', 'tabductor-browser-worker:local', '.'), ('apps/python-runner/Dockerfile', 'tabductor-python-broker:local', '.'), ('vendor/browser-harness/Dockerfile.tabductor', 'tabductor-python-runner:local', 'vendor/browser-harness')]:
+for dockerfile, tag, context in [('Dockerfile', 'tabductor-app:local', '.'), ('apps/browser-worker/Dockerfile', 'tabductor-browser-worker:local', '.'), ('apps/python-runner/Dockerfile', 'tabductor-python-broker:local', '.'), ('apps/python-runner/Dockerfile.runtime', 'tabductor-python-runner:local', '.')]:
     subprocess.run(['docker', 'build', '--label', 'org.opencontainers.image.revision=' + revision,
                     '-f', dockerfile, '-t', tag, context], check=True)
 if output('git', 'rev-parse', 'HEAD') != revision or output('git', 'status', '--porcelain'):

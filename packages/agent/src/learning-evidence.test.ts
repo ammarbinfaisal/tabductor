@@ -51,6 +51,7 @@ it("keeps the initial learned block when conversation history is compacted", asy
   await runAgentLoop({ task: { prompt }, trigger: null, emits: [], maxInputTokens: 7000,
     trace: { record: async () => {}, flush: async () => {}, close: async () => {} }, tools: [observe, doneTool()],
     llm: { complete: async request => {
+      if (request.system.startsWith("Compress the agent")) return { text: "Observed historical values.", toolCalls: [], usage: { in: 1, out: 1 } };
       expect(request.system.startsWith(prompt)).toBe(true);
       if (previousMessages && request.messages.length <= previousMessages) compacted = true;
       previousMessages = request.messages.length;

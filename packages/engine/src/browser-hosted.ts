@@ -1,3 +1,4 @@
+import { currentBrowserOperation } from "@tabductor/browser/operation-context";
 import { findBillingRate } from "./billing-prices.js";
 import { requestChallengeRecovery, advanceChallengeRecovery, type SolverProvider } from "./challenge-recovery.js";
 import { createHmac } from "node:crypto";
@@ -106,6 +107,7 @@ export function createHostedBrowserPool(deps: { db: Db; tokenKey: string; worker
             const [latest] = await deps.db.select({ inputOwnerGeneration: browserSessions.inputOwnerGeneration })
               .from(browserSessions).where(eq(browserSessions.id, sessionId));
             let inputGeneration = latest!.inputOwnerGeneration;
+            const operationStarts = new Map<string, number>();
             const driver = createCamoufoxWorkerDriver({ token: browserWorkerToken(deps.tokenKey, session.podName), sessionId, generation: session.generation, tabKey: tabLease.tabKey,
               fetch: async (target, init) => {
                 const command = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -145,10 +147,21 @@ export function createHostedBrowserPool(deps: { db: Db; tokenKey: string; worker
                   const outcome = response.ok ? "succeeded" : failure?.detail?.outcomeUncertain === false ? "rejected" : "uncertain";
                   await deps.db.update(browserCommands).set({ status: outcome, completedAt: sql`now()` }).where(eq(browserCommands.id, commandId));
                   completed = true;
-                  if (command.method !== "browser.events") await deps.db.insert(browserSessionActivity).values({ sessionId, kind: String(command.method),
-                    offsetMs: Math.max(0, Date.now() - (session.readyAt ?? session.createdAt).getTime()),
-                    pageId: typeof command.page_id === "string" ? command.page_id : null,
-                    private: command.method === "page.insert_text", payloadJson: { commandId, outcome } });
+                  const correlation = currentBrowserOperation();
+                  const clock = response.headers.get("x-tabductor-recording-start-ms");
+                  const endClock = response.headers.get("x-tabductor-recording-end-ms");
+                  const body = response.ok ? await response.clone().json().catch(() => null) as { value?: { pending?: boolean; result?: { ok?: boolean } } } | null : null;
+                  const proxy = String(target).endsWith("/automation");
+                  if (proxy && command.method === "start" && correlation?.operationId && clock !== null) operationStarts.set(correlation.operationId, Number(clock));
+                  const completedOperation = !proxy || command.method === "poll" && body?.value?.pending === false;
+                  if (completedOperation && command.method !== "browser.events" && clock !== null && Number.isFinite(Number(clock))) {
+                    const operationOutcome = body?.value?.result?.ok === false ? "rejected" : outcome;
+                    await deps.db.insert(browserSessionActivity).values({ sessionId, kind: correlation?.member ? `page.${correlation.member}` : String(command.method),
+                      offsetMs: Math.max(0, correlation?.operationId ? operationStarts.get(correlation.operationId) ?? Number(clock) : Number(clock)), pageId: typeof command.page_id === "string" ? command.page_id : null,
+                      private: response.headers.get("x-tabductor-recording-private") === "true",
+                      payloadJson: { commandId, outcome: operationOutcome, clock: "recorder", endMs: Number(endClock ?? clock), ...correlation } });
+                    if (correlation?.operationId) operationStarts.delete(correlation.operationId);
+                  }
                   if (deps.challengeRecovery !== "agent" && response.ok && command.method === "page.perceive") {
                     const body = await response.clone().json() as { value?: { challenge?: { kind: string; websiteUrl: string; siteKey: string } } };
                     const challenge = body.value?.challenge;

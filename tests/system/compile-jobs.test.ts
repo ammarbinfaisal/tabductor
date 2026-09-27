@@ -7,7 +7,7 @@ import {
 } from "@tabductor/compiler";
 import { compileJobs, runs, type RunStatus } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import { seedWorkflow } from "@tabductor/engine";
+import { seedWorkflow } from "@tabductor/engine/testing";
 import { newId } from "@tabductor/core";
 import { eq } from "drizzle-orm";
 

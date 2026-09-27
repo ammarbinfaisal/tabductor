@@ -136,6 +136,7 @@ it.each([11000, 32000])("sends action summaries only through their tool results 
     return {ok:true,action,value:perception({text:"large observation ".repeat(1300)})};
   }};
   await runAgentLoop({llm:{complete:async req=>{
+    if (req.system.startsWith("Compress the agent")) return { text: "Observed browser actions and their results.", toolCalls: [], usage: { in: 1, out: 1 } };
     observed.push(JSON.stringify(toModelMessages(req.messages)));
     expect(req.messages.every(message => !message.actionSummaries?.length)).toBe(true);
     turn++;

@@ -297,6 +297,12 @@ export const workflowExecutions = pgTable(
     }>(),
     blockedReasonJson: jsonb("blocked_reason_json").$type<{ code: string; message: string }>(),
     resultJson: jsonb("result_json"),
+    resultSummary: text("result_summary"),
+    runtimeStatus: text("runtime_status").$type<"succeeded" | "failed" | "cancelled">(),
+    finalizationStatus: text("finalization_status").notNull().default("pending"),
+    finalizationAttempts: integer("finalization_attempts").notNull().default(0),
+    finalizationClaimedAt: ts("finalization_claimed_at"),
+    finalizationError: text("finalization_error"),
     resultReady: boolean("result_ready").notNull().default(false),
     endedAt: ts("ended_at"),
     createdAt: createdAt(),
@@ -314,7 +320,7 @@ export const workflowVersions = pgTable("workflow_versions", {
   workflowId: text("workflow_id")
     .notNull()
     .references(() => workflows.id, { onDelete: "cascade" }),
-  graphJson: jsonb("graph_json").notNull().default({}),
+  definitionJson: jsonb("definition_json").notNull().default({}),
   /** Store artifact active with this graph publication; null only before a store exists. */
   storeSchemaId: text("store_schema_id").references((): AnyPgColumn => storeSchemas.id, { onDelete: "set null" }),
   createdAt: createdAt(),
@@ -699,6 +705,7 @@ export const runs = pgTable(
     status: text("status").$type<RunStatus>().notNull().default("queued"),
     /** Open by design: `stub` today, `ai`/`compiled`/`python` later. Not a closed domain. */
     modeUsed: text("mode_used").notNull(),
+    resultJson: jsonb("result_json"),
     attempt: integer("attempt").notNull().default(0),
     /** Incremented when an engine claims this run; stale owners cannot finish it. */
     leaseGeneration: integer("lease_generation").notNull().default(0),
@@ -1561,7 +1568,7 @@ export const workflowRecords = pgTable("workflow_records", {
   executionId: text("execution_id").notNull().references(() => workflowExecutions.id, { onDelete: "cascade" }),
   collection: text("collection").notNull(),
   recordKey: text("record_key").notNull(),
-  sourceEventId: uuid("source_event_id").notNull().references(() => events.eventId),
+  sourceEventId: uuid("source_event_id").references(() => events.eventId),
   status: text("status").$type<RecordStatus>().notNull(),
   lastRunId: text("last_run_id").references(() => runs.id),
   reason: text("reason"),
@@ -1571,12 +1578,14 @@ export const workflowRecords = pgTable("workflow_records", {
 }, t => [primaryKey({ columns: [t.executionId, t.collection, t.recordKey] }),
   check("workflow_records_status_check", sql`${t.status} in ('extracted','prepared','pending','saved','skipped','rejected','failed')`)]);
 export const runRecordOutcomes = pgTable("run_record_outcomes", {
-  runId: text("run_id").primaryKey().references(() => runs.id, { onDelete: "cascade" }),
+  collection: text("collection").notNull().default("records"),
+  recordKey: text("record_key").notNull().default("record"),
+  runId: text("run_id").notNull().references(() => runs.id, { onDelete: "cascade" }),
   status: text("status").$type<RecordStatus>().notNull(),
   reason: text("reason").notNull(),
   verificationJson: jsonb("verification_json").$type<{ snapshotId?: string; assessmentId?: string; method?: "readback" | "ai-assessment"; url: string; recordKey?: string; checkedAt: string }>(),
   createdAt: createdAt(),
-});
+}, t => [primaryKey({ columns: [t.runId, t.collection, t.recordKey] })]);
 
 /** Controller health includes fleets that intentionally keep zero warm workers. */
 export const browserFleetStatus = pgTable("browser_fleet_status", {
@@ -1665,6 +1674,8 @@ export const couponRedemptions = pgTable("coupon_redemptions", {
 export const actionSummaries = pgTable("action_summaries", {
   runId: text("run_id").notNull().references(()=>runs.id,{onDelete:"cascade"}), callId: text("call_id").notNull(),
   accountId: text("account_id").notNull(), source: text("source").notNull(), summary: text("summary"),
+  label: text("label", { enum: ["navigation", "screenshot", "interaction", "extract", "wait", "agent_update", "workflow_event", "tool"] }),
+  model: text("model"), promptVersion: text("prompt_version"),
   status: text("status").notNull().default("pending"), attempts: integer("attempts").notNull().default(0),
   claimedAt: ts("claimed_at"), createdAt: createdAt(),
 }, t=>[primaryKey({columns:[t.runId,t.callId]})]);
@@ -1678,3 +1689,13 @@ export const proxyAccounts = pgTable("proxy_accounts", {
   hash: text("hash").primaryKey(), label: text("label").notNull(), accountId: text("account_id"),
   createdAt: createdAt(),
 });
+
+/** Durable receipts for immediately committed workflow-store mutations. */
+export const workflowStoreOperations = pgTable("workflow_store_operations", {
+  workflowId: text("workflow_id").notNull().references(() => workflows.id, { onDelete: "cascade" }),
+  executionId: text("execution_id").notNull().references(() => workflowExecutions.id, { onDelete: "cascade" }),
+  operationKey: text("operation_key").notNull(),
+  requestHash: text("request_hash").notNull(),
+  resultJson: jsonb("result_json").notNull(),
+  createdAt: createdAt(),
+}, t => [primaryKey({ columns: [t.executionId, t.operationKey] })]);

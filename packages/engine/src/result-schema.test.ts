@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkGraph, graphSchema } from "./graph.js";
+import { checkGraph, graphSchema } from "./testing/graph.js";
 import { compileResultSchema, parseWorkflowResult } from "./result-schema.js";
 
 describe("workflow result schemas", () => {

@@ -90,8 +90,8 @@ it("exposes task services without destination role protocols", async () => {
 it("assesses tracked record outcomes without a destination mapping", async () => {
   const f = pythonFixture(), recordOutcome = vi.fn(async () => {});
   const tool = f.tool({recordOutcome, recordInput: {key: "id", packet: {id: "item-1"}}});
-  expect(await tool.execute({source: "workflow.record.outcome(status='saved', reason='Observed the saved item')"})).toMatchObject({ok:true});
-  expect(recordOutcome).toHaveBeenCalledWith({status:"saved", reason:"Observed the saved item"});
+  expect(await tool.execute({source: "workflow.record.outcome(collection='items',recordKey='item-1',status='saved', reason='Observed the saved item')"})).toMatchObject({ok:true});
+  expect(recordOutcome).toHaveBeenCalledWith({collection:"items",recordKey:"item-1",status:"saved", reason:"Observed the saved item"});
 });
 
 it("distinguishes undispatched from uncertain operations",async()=>{

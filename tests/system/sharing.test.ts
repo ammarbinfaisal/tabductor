@@ -1,20 +1,7 @@
 import { afterEach, expect, it } from "vitest";
-import {
-  publicEventGet,
-  publicEventList,
-  publicEventTypes,
-  publicGraph,
-  publicRunGet,
-  publicRunList,
-  hashToken,
-  PUBLIC_PAGE_MAX,
-  refCodec,
-  seedWorkflow,
-  staticSchemaGenerator,
-  triggerTask,
-  type PublicRead,
-  type RefCodec,
-} from "@tabductor/engine";
+import { publicEventGet, publicEventList, publicEventTypes, publicRunGet, publicRunList, hashToken, PUBLIC_PAGE_MAX, refCodec, triggerTask, type PublicRead, type RefCodec } from "@tabductor/engine";
+import { publicGraph } from "@tabductor/engine/testing";
+import { seedWorkflow, staticSchemaGenerator } from "@tabductor/engine/testing";
 import type { Db } from "@tabductor/db";
 import { workflowShares } from "@tabductor/db";
 import { eq } from "drizzle-orm";
@@ -217,7 +204,7 @@ it("exposes no prompt, no limits and no raw row id", async () => {
   for (const id of Object.values(wf.taskIds)) expect(runIds).not.toContain(id);
 
   // And through the router, which is what a viewer actually reaches.
-  const viaApi = await api.public.graph({ token });
+  const viaApi = await api.public.overview({ token });
   const publicSerialized = JSON.stringify(viaApi);
   expect(publicSerialized).not.toContain("do not say this out loud");
   expect(publicSerialized).not.toContain("Watcher");
@@ -252,15 +239,15 @@ it("refuses a ref minted for a different share", async () => {
 it("answers unknown, malformed and revoked tokens identically", async () => {
   const { api, token, shareId } = await seedShared();
 
-  const unknown = await trpcError(() => api.public.graph({ token: "not-a-real-token" }));
-  const malformed = await trpcError(() => api.public.graph({ token: "%%%" }));
+  const unknown = await trpcError(() => api.public.overview({ token: "not-a-real-token" }));
+  const malformed = await trpcError(() => api.public.overview({ token: "%%%" }));
   expect(unknown.code).toBe("NOT_FOUND");
   expect(unknown.message).toBe(malformed.message);
 
   // Live until revoked, gone immediately after — resolution is uncached.
-  await expect(api.public.graph({ token })).resolves.toBeDefined();
+  await expect(api.public.overview({ token })).resolves.toBeDefined();
   await api.share.revoke({ shareId });
-  const revoked = await trpcError(() => api.public.graph({ token }));
+  const revoked = await trpcError(() => api.public.overview({ token }));
   expect(revoked.code).toBe("NOT_FOUND");
   expect(revoked.message).toBe(unknown.message);
 });
@@ -270,8 +257,8 @@ it("rotates to a new token and refuses to resurrect a revoked share", async () =
 
   const rotated = await api.share.rotate({ shareId });
   expect(rotated.token).not.toBe(token);
-  await expect(api.public.graph({ token: rotated.token })).resolves.toBeDefined();
-  await expect(trpcError(() => api.public.graph({ token }))).resolves.toBeDefined();
+  await expect(api.public.overview({ token: rotated.token })).resolves.toBeDefined();
+  await expect(trpcError(() => api.public.overview({ token }))).resolves.toBeDefined();
 
   await api.share.revoke({ shareId });
   const err = await trpcError(() => api.share.rotate({ shareId }));

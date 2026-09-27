@@ -42,7 +42,7 @@ export {
   createAgentExecutor,
   type AgentExecutorDeps,
 } from "./executor.js";
-export { buildDecisionToolRegistry, type DecisionToolRegistryDeps } from "./decision-tools.js";
+
 export {
   createCompileLoop,
   createCompileWorker,
@@ -55,15 +55,13 @@ export {
   type CompileWorkerDeps,
 } from "./compile-loop.js";
 export { createCompiledExecutor, type CompiledExecutorDeps } from "./compiled-executor.js";
-export {
-  createDecisionExecutor,
-  type DecisionExecutorDeps,
-} from "./decision-executor.js";
+
 export { fundedLlm } from "./funded-llm.js";
 
-export { createResultExecutor } from "./result-executor.js";
+
 export { remotePythonRunner, localPythonRunnerForTest, type PythonRunner, type RunnerScope } from "./python-runner.js";
 
 export { validatePythonCandidate } from "./python-validation.js";
 export { createBrowserLearningWorker, enqueueBrowserLearning, claimBrowserLearning, dispatchLearningCompile,
   type BrowserLearningWorkerDeps } from "./learning-loop.js";
+export { finalizeWorkflow } from "./workflow-finalizer.js";

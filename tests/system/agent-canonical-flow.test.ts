@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { seedWorkflow } from "@tabductor/engine";
+import { seedWorkflow } from "@tabductor/engine/testing";
 import { eventsOfType, runsForTask, trigger, waitFor, waitForQuiet } from "./engine-support.js";
 import { startAgentRig, waitForTraceRows, type AgentRig } from "./agent-support.js";
 

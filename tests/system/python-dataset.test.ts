@@ -2,13 +2,13 @@ import { createServer } from "node:http";
 import { expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { tasks } from "@tabductor/db";
-import { seedWorkflow } from "@tabductor/engine";
+import { createPromptWorkflow, triggerTask } from "@tabductor/engine";
 import { compileTask, loadRunTraces, promoteTask, readSdkEvidence } from "@tabductor/compiler";
 import { createCamoufoxWorkerDriver } from "@tabductor/browser";
 import { remotePythonRunner, validatePythonCandidate } from "@tabductor/agent";
 import { AllowAllGate } from "@tabductor/policy";
 import { startAgentRig, type AgentRig } from "./agent-support.js";
-import { runsForTask, trigger, waitFor } from "./engine-support.js";
+import { runsForTask, waitFor } from "./engine-support.js";
 
 it.skipIf(!process.env.CAMOUFOX_TEST_URL || !process.env.PYTHON_RUNNER_TEST_URL)("learns file-backed 100-row browser requests and recovers a partial static write in Python AI mode",async()=>{
   const worker=process.env.CAMOUFOX_TEST_URL!, token=process.env.CAMOUFOX_TEST_TOKEN!, sessionId="dataset-fixture";
@@ -59,9 +59,10 @@ it.skipIf(!process.env.CAMOUFOX_TEST_URL || !process.env.PYTHON_RUNNER_TEST_URL)
         else source=`import json\nrows=json.load(open('rows.json'))\nactual=context.request.get('/rows?batch='+workflow.input['batch']).json()\nassert sorted(page.evaluate(${JSON.stringify(readback)}),key=lambda r:r['id']) == sorted(actual,key=lambda r:r['id'])\nseen={r['id'] for r in actual}\nmissing=[r for r in rows if r['id'] not in seen]\nassert len(missing)==95\ncontext.request.post('/save',data={'rows':missing})\n${verify}`;
         return {usage:{in:1,out:1},toolCalls:[{id:"python",name:"browser.python",args:{source}}]};
       }})});
-    const wf=await seedWorkflow(rig.handle.db,{tasks:{Start:{},Save:{mode:"ai",prompt:"Copy all 100 rows and verify exact identity and text",consumes:["dataset"],retry:{max:0}}}});
+    const definition = await createPromptWorkflow(rig.handle.db, { accountId: "acct_local", userId: "user_local", prompt: "Copy all 100 rows and verify exact identity and text" });
+    const wf = {taskIds: {Save: definition.versionId}};
     const fire=async(batch:string)=>{
-      const event=await trigger(rig!,wf.taskIds.Start!,"dataset",{batch,url:`${url}/?batch=${batch}`});
+      const { event } = await triggerTask(rig!.handle.db, {taskId: wf.taskIds.Save, packet: {batch,url:`${url}/?batch=${batch}`}});
       return waitFor("dataset run",async()=>{const r=(await runsForTask(rig!,wf.taskIds.Save!)).find(r=>r.triggerEventId===event.eventId);return r&&["succeeded","failed"].includes(r.status)?r:false;},60000).catch(async error=>{
         const runs=await runsForTask(rig!,wf.taskIds.Save!);
         const trace=await loadRunTraces(rig!.handle.db,runs.map(r=>r.id),rig!.blobs);

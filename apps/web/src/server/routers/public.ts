@@ -1,8 +1,9 @@
+import { schedules, tasks, eventDefs } from "@tabductor/db";
+import { and, eq } from "drizzle-orm";
 import {
   getWorkflow,
   publicEventGet,
   publicEventList,
-  publicGraph,
   publicRunGet,
   publicRunList,
   PUBLIC_PAGE_MAX,
@@ -41,20 +42,11 @@ function rowId(ctx: ShareContext, value: string): string {
 
 export const publicRouter = router({
   /** Behavior-level workflow overview. Internal graph structure never crosses this boundary. */
-  graph: shareProcedure.input(shareTokenSchema).query(async ({ ctx }) => {
+  overview: shareProcedure.input(shareTokenSchema).query(async ({ ctx }) => {
     const workflow = await getWorkflow(ctx.db, ctx.view.workflowId);
     if (!workflow) throw gone();
-    const internal = workflow.currentVersionId
-      ? await publicGraph(ctx.db, { versionId: workflow.currentVersionId })
-      : { tasks: [], events: [], edges: [] };
-    return {
-      name: workflow.name,
-      maxHops: workflow.maxHops,
-      overview: {
-        scheduledTriggers: internal.tasks.filter((task) => task.schedule?.enabled).length,
-        sharedOutputs: internal.events.filter((event) => event.public),
-      },
-    };
+    const active = workflow.currentVersionId ? await ctx.db.select({ id: schedules.id }).from(schedules).innerJoin(tasks, eq(tasks.id, schedules.taskId)).where(and(eq(tasks.workflowVersionId, workflow.currentVersionId), eq(schedules.enabled, true))) : [];
+    return { name: workflow.name, overview: { scheduledTriggers: active.length, sharedOutputs: [] as Array<{type:string;public:boolean;packetSchema?:Record<string,unknown>}> } };
   }),
 
   runs: shareProcedure

@@ -3,7 +3,8 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { browserSessions, captchaJobs, creditReservations, runs, tasks, workflowExecutions } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import { appendCreditAdjustment, createBrowserProfile, createCaptchaService, createWorkflow, expireCreditReservations, getCreditBalance, resolveAccountIdentity, seedWorkflow, type CaptchaProvider, type RunHandle } from "@tabductor/engine";
+import { appendCreditAdjustment, createBrowserProfile, createCaptchaService, createWorkflow, expireCreditReservations, getCreditBalance, resolveAccountIdentity, type CaptchaProvider, type RunHandle } from "@tabductor/engine";
+import { seedWorkflow } from "@tabductor/engine/testing";
 import { pythonFixture } from "../../packages/agent/src/python-test-support.js";
 
 let database: MigratedTestDb;

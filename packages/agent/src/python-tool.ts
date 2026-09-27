@@ -1,3 +1,4 @@
+import { withBrowserOperation } from "@tabductor/browser";
 import { randomUUID } from "node:crypto";
 import { asSchema } from "ai";
 import { z } from "zod";
@@ -17,7 +18,7 @@ import { parseJsonResponse, validateJsonSchema } from "./browser-ai.js";
 const obj = (v: unknown): Record<string, unknown> => v && typeof v === "object" ? v as Record<string,unknown> : {};
 const ref = z.object({id:z.string(),class:z.string(),scope:z.string()}).passthrough();
 const callSchema = z.object({target:ref,member:z.string(),args:z.array(z.unknown()),kwargs:z.record(z.unknown())});
-const readWorkflow = new Set(["describe","history.read","output.read","memory.get","captcha.providers","captcha.get_result","captcha.wait","deopt","fail"]);
+const readWorkflow = new Set(["store.query","describe","history.read","output.read","memory.get","captcha.providers","captcha.get_result","captcha.wait","deopt","fail"]);
 const replStates = new WeakMap<PythonRunner, {
   scopes: Map<string, () => Promise<unknown>>; sensitive: Set<string>; lastSession?: string;
 }>();
@@ -39,7 +40,7 @@ export function pythonTool(deps: AgentToolDeps): AgentTool {
   }
   const replState = repl;
   const memory = deps.memory ?? (() => {let value:unknown={facts:[],pending:[]};return {get:async()=>value,set:async(v:unknown)=>{value=v;}};})();
-  const workflow: AgentTool[] = [emitTool(deps.emit),doneTool(),failTool(),
+  const workflow: AgentTool[] = [...(deps.storeTools ?? []), emitTool(deps.emit),doneTool(),failTool(),
     ...batchTools(deps.session,deps.emit,deps.signal,deps.progress).filter(t=>t.name==="emit.batch"),
     ...captchaTools(deps.captcha, deps.beforeCall),
     defineTool({name:"memory.get",description:"Read exploration facts and pending work.",parameters:z.object({}),execute:async()=>({ok:true,value:await memory.get()})}),
@@ -104,12 +105,12 @@ export function pythonTool(deps: AgentToolDeps): AgentTool {
           bytes.length>64000?{kind:"actions",bytes,mime:"application/json"}:undefined);
       };
       const proxy=async(command:Parameters<NonNullable<typeof deps.session.page.proxy>>[0], context?:PythonCallContext, parentOperationId?:string)=>
-        deps.session.page.proxy!(command,{invocation:replSessionId??invocationId,signal,recordingPrivate:sensitiveInvocation,callback:async event=>{
+        withBrowserOperation({ invocationId, operationId: parentOperationId, member: command.call?.member }, () => deps.session.page.proxy!(command,{invocation:replSessionId??invocationId,signal,recordingPrivate:sensitiveInvocation,callback:async event=>{
           if(!context)throw new Error("Callback transport unavailable");
           await archive({action:"playwright.callback",phase:"started",invocationId,replSessionId,...event,parentOperationId:event.parentJob??parentOperationId});
           try {const value=await context.requestCallback(event);await archive({action:"playwright.callback",phase:"finished",invocationId,parentOperationId,id:event.id,value:sdkEvidence(value)});return value;}
           catch(error){await archive({action:"playwright.callback",phase:"finished",invocationId,parentOperationId,id:event.id,error:String(error)});throw error;}
-        }});
+        }}));
       const registry=new Map(allowed);
       registry.set("browser.ai", browserAi);
       if(deps.fillSecret)registry.set("workflow.secrets.fill",defineTool({name:"secrets.fill",description:"Fill a named secret into a live locator without returning plaintext.",

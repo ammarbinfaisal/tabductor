@@ -36,6 +36,7 @@ export async function validatePythonCandidate(runner:PythonRunner, source:string
     else if(value&&typeof value==="object")for(const [k,v] of Object.entries(value))collect(v,`${path}.${k}`);
   };
   collect(evidence.input);
+  for (const operation of operations) if (operation.name === "workflow.store.query" && operation.result.ok) collect(obj(operation.result.value).rows, "store");
   // An AI response is runtime data too. A retained AI call followed by a baked-in
   // sample answer must not pass replay. Leave constrained schema values alone.
   const collectAiResult = (value: unknown, schema: Record<string, unknown>, path: string) => {
@@ -137,6 +138,10 @@ export async function validatePythonCandidate(runner:PythonRunner, source:string
     if(Array.isArray(value)){
       variants.push([],value.slice(0,-1),[...value,value[0]]);
       if(value.length&&typeof value[0]==="object")for(const key of Object.keys(obj(value[0]))){const row={...obj(value[0])};delete row[key];variants.push([row,...value.slice(1)]);}
+    }else if(op.name === "workflow.store.query" && Array.isArray(obj(value).rows)) {
+      const rows = obj(value).rows as unknown[];
+      variants.push({ ...obj(value), rows: [], truncated: false }, { ...obj(value), truncated: true });
+      if (rows.length) for (const key of Object.keys(obj(rows[0]))) { const row = { ...obj(rows[0]) }; delete row[key]; variants.push({ ...obj(value), rows: [row, ...rows.slice(1)] }); }
     }else if(typeof value==="boolean")variants.push(!value);
     else if(typeof value==="string")variants.push("");
     else if(typeof value==="number")variants.push(0,value+1);

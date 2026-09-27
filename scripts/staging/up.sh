@@ -32,7 +32,7 @@ browser_image_tag="${TABDUCTOR_BROWSER_IMAGE##*:}"
 
 runner_args=(--set pythonRunner.enabled=true)
   docker build -t tabductor-python-broker:local -f "${TABDUCTOR_REPO_ROOT}/apps/python-runner/Dockerfile" "${TABDUCTOR_REPO_ROOT}"
-  docker build -t tabductor-python-runner:local -f "${TABDUCTOR_REPO_ROOT}/vendor/browser-harness/Dockerfile.tabductor" "${TABDUCTOR_REPO_ROOT}/vendor/browser-harness"
+  docker build -t tabductor-python-runner:local -f "${TABDUCTOR_REPO_ROOT}/apps/python-runner/Dockerfile.runtime" "${TABDUCTOR_REPO_ROOT}"
   kind load docker-image tabductor-python-broker:local tabductor-python-runner:local --name "${TABDUCTOR_CLUSTER_NAME}"
 
 # First reconcile durable services and a one-shot migration with the application stopped.

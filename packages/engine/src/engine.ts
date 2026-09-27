@@ -1,14 +1,11 @@
 import { checkWorkflowPrerequisites, persistPrerequisiteBlock, refreshWorkflowBlocks, type PrerequisiteOptions } from "./prerequisites.js";
 import { recordEmitted, recordRunOutcome, recordCompletionError } from "./record-progress.js";
 import { normalizeRecord, recordProcessingSchema } from "./record-processing.js";
-import { parseWorkflowResult } from "./result-schema.js";
 import { publish, type Dispatcher } from "@tabductor/bus";
 import { AppError, createLogger, type Logger } from "@tabductor/core";
 import {
-  eventDefs,
   events,
   runs,
-  taskEmits,
   taskState,
   tasks,
   type Db,
@@ -20,7 +17,6 @@ import { context, inSpan, trace, type Metrics, type Tracer } from "@tabductor/te
 import { and, asc, eq } from "drizzle-orm";
 import { dispatchEvent } from "./dispatch.js";
 import { executorKey, type ExecutorRegistry, type RunHandle, type RunResult } from "./executor.js";
-import { validatePacket } from "./packet-schema.js";
 import {
   dueQueuedRuns,
   finishRun,
@@ -30,7 +26,7 @@ import {
   startRun,
 } from "./run-state.js";
 import { createScheduler, type Scheduler } from "./scheduler.js";
-import { StubExecutor, StubResultExecutor } from "./stub-executor.js";
+import { StubExecutor } from "./stub-executor.js";
 import { assertRunLease } from "./run-lease.js";
 import { settleWorkflowExecutions } from "./execution-state.js";
 
@@ -73,14 +69,14 @@ export type Engine = {
 };
 
 /**
- * Composition root for the run loop: subscribe to the bus, turn each event into runs,
+ * Composition root for the run loop: pick up directly admitted runs,
  * execute them, and reap runs that overstayed their deadline. Everything it wires is a
  * plain function or a plain object, so S2b adds the scheduler, retries, and crash recovery
  * by wiring more of the same rather than by reworking this.
  */
 export function createEngine(deps: EngineDeps): Engine {
   const { db, dispatcher } = deps;
-  const executors: ExecutorRegistry = deps.executors ?? { [executorKey("browser", "stub")]: StubExecutor, [executorKey("result", "stub")]: StubResultExecutor };
+  const executors: ExecutorRegistry = deps.executors ?? { [executorKey("browser", "stub")]: StubExecutor };
   const watchdogIntervalMs = deps.watchdogIntervalMs ?? 250;
   const shutdownGraceMs = deps.shutdownGraceMs ?? 5_000;
   const heartbeatIntervalMs = deps.heartbeatIntervalMs ?? 2_000;
@@ -229,14 +225,6 @@ export function createEngine(deps: EngineDeps): Engine {
         .where(and(eq(runs.id, run.id), eq(runs.status, "running"), eq(runs.leaseGeneration, run.leaseGeneration)));
       return;
     }
-    if (result.ok && task.kind === "result") {
-      try {
-        if (result.result === undefined) throw new Error("result_missing: result node returned no JSON");
-        parseWorkflowResult(JSON.stringify(result.result), task.resultSchemaJson);
-      } catch (error) {
-        result = { ok: false, error: error instanceof Error ? error.message : String(error), permanent: true };
-      }
-    }
     if (result.ok) {
       const error = await recordCompletionError(db, run, task);
       if (error) result = { ok: false, error, permanent: true };
@@ -250,7 +238,7 @@ export function createEngine(deps: EngineDeps): Engine {
       causationId,
       leaseGeneration: run.leaseGeneration,
       retry: !result.ok && !result.permanent,
-      ...(result.ok && task.kind === "result" ? { result: result.result } : {}),
+      ...(result.ok ? { result: result.result } : {}),
     });
     // Only the writer that actually moved the run counts it — the watchdog may have reaped
     // this run first, in which case it is `timed_out` and belongs to whoever reaped it.
@@ -263,10 +251,7 @@ export function createEngine(deps: EngineDeps): Engine {
     ctx: { run: RunRow; task: TaskRow; trigger: EventRow | null },
     signal: AbortSignal,
   ): Promise<RunResult> => {
-    const [inputDefinition] = ctx.trigger ? await db.select({ record: eventDefs.recordJson }).from(eventDefs)
-      .where(and(eq(eventDefs.workflowVersionId, ctx.task.workflowVersionId), eq(eventDefs.eventType, ctx.trigger.type))) : [];
     const handle: RunHandle = {
-      ...(inputDefinition?.record ? { recordInput: { key: inputDefinition.record.key, packet: ctx.trigger!.packet as Record<string, unknown> } } : {}),
       run: ctx.run,
       task: ctx.task,
       trigger: ctx.trigger,
@@ -274,7 +259,7 @@ export function createEngine(deps: EngineDeps): Engine {
       recordOutcome: outcome => recordRunOutcome(db, ctx.run, ctx.task, ctx.trigger, outcome),
       recordCompletionError: () => recordCompletionError(db, ctx.run, ctx.task),
       emit: (type, packet, opts) => emitFromRun(db, ctx, type, packet, opts),
-      declaredEmits: () => declaredEmitsOf(db, ctx.task),
+      declaredEmits: async () => [],
     };
     try {
       return await executor.execute(handle);
@@ -376,8 +361,8 @@ async function emitFromRun(
 ): Promise<EventRow | null> {
   const processing = recordProcessingSchema.safeParse((ctx.task.limitsJson as Record<string, unknown>)?.recordProcessing);
   if (processing.success && processing.data.eventType === type) packet = normalizeRecord(packet, processing.data);
-  const check = await validatePacket(db, ctx.task.id, type, packet);
-  if (!check.ok) throw new Error(check.error);
+  if (!type || type.length > 200 || /^(?:manual|schedule|system|run|compile)\./.test(type)) throw new Error("Invalid or reserved event type");
+  if (packet === undefined || JSON.stringify(packet).length > 1_000_000) throw new Error("Event packet must be bounded JSON");
 
   return db.transaction(async (trx) => {
     await assertRunLease(trx, ctx.run.id, ctx.run.leaseGeneration);
@@ -403,39 +388,9 @@ async function emitFromRun(
   });
 }
 
-/**
- * The task's declared emits joined to their events' compiled schemas — what a scriptless
- * stub synthesizes packets from. Queried lazily because most executors never ask.
- */
-async function declaredEmitsOf(
-  db: Db,
-  task: TaskRow,
-): Promise<Array<{ type: string; schema: Record<string, unknown> }>> {
-  const rows = await db
-    .select({ type: taskEmits.eventType, schema: eventDefs.packetSchemaJson })
-    .from(taskEmits)
-    .innerJoin(
-      eventDefs,
-      and(
-        eq(eventDefs.workflowVersionId, taskEmits.workflowVersionId),
-        eq(eventDefs.eventType, taskEmits.eventType),
-      ),
-    )
-    .where(eq(taskEmits.taskId, task.id))
-    .orderBy(asc(taskEmits.eventType));
-  return rows.map((r) => ({
-    type: r.type,
-    schema:
-      typeof r.schema === "object" && r.schema !== null && !Array.isArray(r.schema)
-        ? (r.schema as Record<string, unknown>)
-        : {},
-  }));
-}
-
-/** Run timeout lives in `limits_json.run_timeout_ms`; anything non-numeric means no limit. */
 function runTimeoutMs(task: TaskRow): number | undefined {
   const limits = task.limitsJson;
-  if (typeof limits !== "object" || limits === null || Array.isArray(limits)) return task.kind === "result" ? 120_000 : undefined;
+  if (typeof limits !== "object" || limits === null || Array.isArray(limits)) return undefined;
   const value = Reflect.get(limits, "run_timeout_ms");
-  return typeof value === "number" && value > 0 ? value : task.kind === "result" ? 120_000 : undefined;
+  return typeof value === "number" && value > 0 ? value : undefined;
 }

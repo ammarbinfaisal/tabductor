@@ -2,17 +2,8 @@ import { afterEach, expect, it } from "vitest";
 import { activateScript, insertCandidateScript } from "@tabductor/compiler";
 import { compiledScripts, tasks } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import {
-  createWorkflow,
-  updateTask,
-  llmPromptCompiler,
-  publishVersion,
-  readGraph,
-  staticSchemaGenerator,
-  type ChatTransport,
-  type Graph,
-  type PromptCompiler,
-} from "@tabductor/engine";
+import { createWorkflow } from "@tabductor/engine";
+import { type ChatTransport, updateTask, llmPromptCompiler, publishVersion, readGraph, staticSchemaGenerator, type Graph, type PromptCompiler } from "@tabductor/engine/testing";
 import { wfIdsOf } from "@tabductor/store";
 import { eq, sql } from "drizzle-orm";
 

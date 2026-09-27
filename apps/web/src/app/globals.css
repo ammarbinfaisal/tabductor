@@ -1453,3 +1453,32 @@ main, main:has(.automation-workspace), main:has(.workflow-workspace) { max-width
 .admin-chart>div{flex:1;min-width:24px;height:100%;display:flex;flex-direction:column;justify-content:flex-end;position:relative}
 .admin-chart span{display:block;background:currentColor;opacity:.65}.admin-chart small{position:absolute;bottom:-1.5rem;font-size:.6rem;white-space:nowrap}
 .admin-audit{margin-top:3rem}.workflow-delete{color:var(--danger,#ab3027)}
+
+/* Session inspection: summary feed beside the live browser or synchronized replay. */
+main:has(.session-replay) { max-width: none; padding: 24px; }
+.replay-header h1 { font-size: clamp(20px, 2vw, 28px); line-height: 1.4; margin: 20px 0 12px; max-width: 1100px; white-space: pre-wrap; }
+.replay-header .row { flex-wrap: wrap; }
+.replay-timeline { position: relative; height: 34px; border: 1px solid var(--border); background: var(--surface); border-radius: 6px; margin: 22px 0; }
+.replay-marker { position: absolute; top: 5px; min-width: 5px; width: 5px; min-height: 22px; height: 22px; padding: 0; border: 0; background: var(--event-color); border-radius: 3px; }
+.replay-marker:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+.replay-layout { display: grid; grid-template-columns: minmax(300px, 36%) minmax(0, 1fr); gap: 22px; align-items: start; }
+.replay-layout--profile { grid-template-columns: minmax(0, 1fr); margin-top: 22px; }
+.replay-events { border: 1px solid var(--border); border-radius: 8px; overflow: auto; max-height: 75vh; }
+.replay-events-heading { display: flex; align-items: center; justify-content: space-between; padding: 16px; }
+.replay-events h2, .replay-result h2 { font-size: 15px; margin: 0; }
+.replay-events ol { list-style: none; padding: 0; margin: 0; }
+.replay-events li > button { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; width: 100%; text-align: left; align-items: start; gap: 12px; border: none; border-radius: 0; padding: 16px 12px; background: transparent; font-weight: 400; }
+.replay-events li[data-selected="true"] { background: color-mix(in srgb, var(--accent-solid) 9%, transparent); box-shadow: inset 3px 0 var(--accent-solid); }
+.replay-events time { font-size: 11px; color: var(--text-secondary); padding-top: 3px; }
+.event-badge { color: var(--event-color); background: color-mix(in srgb, var(--event-color) 12%, transparent); padding: 3px 7px; border-radius: 20px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.event-description { font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.event-failed { display: block; color: #c43131; }
+[data-color="blue"] { --event-color: #3679d6; } [data-color="purple"] { --event-color: #9456d9; }
+[data-color="amber"] { --event-color: #b76c14; } [data-color="teal"] { --event-color: #168579; }
+[data-color="slate"] { --event-color: #718096; } [data-color="sky"] { --event-color: #218bb7; }
+[data-color="indigo"] { --event-color: #6366ca; } [data-color="gray"] { --event-color: #7b7e85; }
+.replay-browser { min-width: 0; }.replay-browser .session-console { margin: 0; }.replay-browser .session-viewer { min-height: 320px; }
+.replay-result { margin-top: 18px; padding: 20px; border: 1px solid var(--border); border-radius: 8px; }
+.replay-result p { white-space: pre-wrap; line-height: 1.7; }.replay-result pre { overflow: auto; max-height: 400px; }
+.prompt-workspace { max-width: 1000px; margin: 0 auto; }.prompt-workspace textarea { line-height: 1.65; }.result-output { overflow: auto; max-height: 400px; }
+@media (max-width: 900px) { .replay-layout { grid-template-columns: 1fr; }.replay-browser { grid-row: 1; }.replay-events { max-height: 50vh; }main:has(.session-replay) { padding: 16px; } }

@@ -2,13 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AppError, newId } from "@tabductor/core";
 import { runs, storeWriteGrants, tasks, workflowVersions, type Db } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import {
-  createWorkflow,
-  publishStoreSchema,
-  STORE_MIGRATION_BUSY,
-  STORE_MIGRATION_DESTRUCTIVE,
-  STORE_SCHEMA_INVALID,
-} from "@tabductor/engine";
+import { createWorkflow, publishStoreSchema, STORE_MIGRATION_BUSY, STORE_MIGRATION_DESTRUCTIVE, STORE_SCHEMA_INVALID } from "@tabductor/engine";
+
 import { checkStoreWriteGrant, deprovision, validateRow, wfIdsOf } from "@tabductor/store";
 import { DatabasePolicyGate, grantTask } from "@tabductor/policy";
 import { CANDIDATES_VISITED_SPEC, publishCandidatesVisitedStore } from "./store-support.js";
@@ -40,7 +35,7 @@ async function bareTask(db: Db, workflowId: string): Promise<string> {
   // file's grant tests want a task that is *not* wired into a graph at all.
   const [version] = await db
     .insert(workflowVersions)
-    .values({ id: newId("wfv"), workflowId, graphJson: {} })
+    .values({ id: newId("wfv"), workflowId, definitionJson: {} })
     .returning();
   const [task] = await db
     .insert(tasks)
@@ -287,7 +282,7 @@ describe("migration classification and application (§6.2)", () => {
     provisioned.push(workflowId);
     const [version] = await handle.db
       .insert(workflowVersions)
-      .values({ id: newId("wfv"), workflowId, graphJson: {} })
+      .values({ id: newId("wfv"), workflowId, definitionJson: {} })
       .returning();
     const [task] = await handle.db
       .insert(tasks)

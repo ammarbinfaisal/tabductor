@@ -3,7 +3,8 @@ import { asc, eq, sql } from "drizzle-orm";
 import { traceEntries } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import { createTraceRecorder, type TraceRecorder } from "@tabductor/browser";
-import { seedWorkflow, triggerTask } from "@tabductor/engine";
+import { triggerTask } from "@tabductor/engine";
+import { seedWorkflow } from "@tabductor/engine/testing";
 import { waitFor } from "./engine-support.js";
 
 let handle: MigratedTestDb;

@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./blob-store": "./src/blob-store.ts",
+    "./operation-context": "./src/operation-context.ts",
     "./worker-driver": "./src/camoufox-worker-driver.ts"
   },
   "scripts": {

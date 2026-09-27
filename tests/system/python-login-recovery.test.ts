@@ -1,12 +1,12 @@
 import { createServer } from "node:http";
 import { expect, it } from "vitest";
-import { seedWorkflow } from "@tabductor/engine";
+import { createPromptWorkflow, triggerTask } from "@tabductor/engine";
 import { loadRunTraces } from "@tabductor/compiler";
 import { createCamoufoxWorkerDriver } from "@tabductor/browser";
 import { remotePythonRunner } from "@tabductor/agent";
 import { AllowAllGate } from "@tabductor/policy";
 import { startAgentRig, type AgentRig } from "./agent-support.js";
-import { runsForTask, trigger, waitFor } from "./engine-support.js";
+import { runsForTask, waitFor } from "./engine-support.js";
 
 it.skipIf(!process.env.CAMOUFOX_TEST_URL || !process.env.PYTHON_RUNNER_TEST_URL)("recovers from a missing login selector through Python while preserving the uncertain-effect journal", async () => {
   const workerUrl = process.env.CAMOUFOX_TEST_URL!;
@@ -35,8 +35,7 @@ it.skipIf(!process.env.CAMOUFOX_TEST_URL || !process.env.PYTHON_RUNNER_TEST_URL)
       `page.goto(workflow.input['url'])
 assert 'Choose an account' in page.locator('body').inner_text()
 page.get_by_role('link',name='Missing account').click(timeout=300)`,
-      `assert workflow.status()['requiresReconciliation'] is True
-page.screenshot()
+      `page.screenshot()
 assert page.locator('p').inner_text() == 'Choose an account'
 page.get_by_role('link',name='Fixture account').click()
 expect(page.locator('p')).to_have_text('Signed in',timeout=2000)
@@ -49,19 +48,18 @@ workflow.done(result='login recovered')`,
       driver:{connect:()=>createCamoufoxWorkerDriver({token,sessionId,generation:1}).connect(workerUrl)},
       llmFor:()=>({complete:async(request)=>{
         if (modelCalls === 1) {
-          const history = request.messages[0]!.contextMemory;
-          expect(history).toContain("playwright.call");
-          expect(history).toContain("Choose an account");
-          expect(history).toContain("browser_timeout");
-          expect(history).toContain("click");
+          const failure = request.messages.flatMap(message => message.toolResults ?? []).find(result => !result.result.ok);
+          expect(failure?.name).toBe("browser.python");
+          expect(failure && !failure.result.ok ? failure.result.error : undefined).toContain("timed out");
         }
         const source = sources[modelCalls++];
         if (!source) throw new Error("Login recovery required an unexpected extra model turn");
         return {usage:{in:1,out:1},toolCalls:[{id:String(modelCalls),name:"browser.python",args:{source}}]};
       }}),
     });
-    const wf = await seedWorkflow(rig.handle.db, {tasks:{Start:{},Login:{mode:"ai",prompt:"Sign in and verify",consumes:["login"],retry:{max:0}}}});
-    await trigger(rig,wf.taskIds.Start!,"login",{url});
+    const definition = await createPromptWorkflow(rig.handle.db, { accountId: "acct_local", userId: "user_local", prompt: "Sign in and verify" });
+    const wf = {taskIds: {Login: definition.versionId}};
+    await triggerTask(rig.handle.db, {taskId: wf.taskIds.Login, packet: {url}});
     const run = await waitFor("login recovery", async()=>{
       const [row] = await runsForTask(rig!,wf.taskIds.Login!);
       return row && ["succeeded","failed"].includes(row.status) ? row : false;

@@ -3,7 +3,8 @@ import { eq, sql } from "drizzle-orm";
 import { newId } from "@tabductor/core";
 import { runs } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import { ENGINE_RESTART, RUN_FAILED, seedWorkflow } from "@tabductor/engine";
+import { ENGINE_RESTART, RUN_FAILED } from "@tabductor/engine";
+import { seedWorkflow } from "@tabductor/engine/testing";
 import {
   eventsOfType,
   runsForTask,

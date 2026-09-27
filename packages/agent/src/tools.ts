@@ -16,19 +16,6 @@ import { codeTool } from "./code-tool.js";
 import { harnessTools } from "./harness-tools.js";
 import type { TraceRecorder } from "@tabductor/browser";
 
-/**
- * The browser node's LLM-facing tool registry (§4). A `ToolDef[]`, not a switch — S7 removes
- * un-granted entries from this list before it ever reaches an `Llm`, and a list is the only
- * shape that operation can act on without this file's cooperation. No `store.*` name is
- * ever added here — that boundary belongs to the browser node forever
- * (§4, ROADMAP.md "the registries are disjoint by design").
- *
- * Every tool result a page or the network produced is wrapped in `untrustedBlock` before it
- * reaches the model — §16 Threat 1d's content demarcation. It is a labelled marker in the
- * text the model reads, nothing more: it helps, it is never load-bearing, and the real
- * defence is the navigation allowlist and capability grants (Phase 7), not this string.
- */
-
 export type ToolImage = { data: string; mime: "image/png" | "image/jpeg" };
 export type ToolResult = ({ ok: true; value: unknown } | { ok: false; error: string; value?: unknown }) & { terminal?: SdkTerminal; images?: ToolImage[]; code?: string; outcomeUncertain?: boolean; action?: BrowserActionSummary; observation?: ObservationMetadata; recovery?: BrowserRecovery };
 
@@ -55,6 +42,7 @@ export type EmitFn = (type: string, packet: unknown, dedupeKey?: string) => Prom
 export type FillSecretFn = (secretName: string, anchor: string) => Promise<{ ok: true }>;
 
 export type AgentToolDeps = BrowserCodeOptions & {
+  storeTools?: AgentTool[];
   evidenceScope?: {taskId:string;contentHash:string|null;destinationContractId?:string};
   session: RunSession;
   emit: EmitFn;

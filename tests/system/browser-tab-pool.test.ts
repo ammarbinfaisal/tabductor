@@ -2,10 +2,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { newId } from "@tabductor/core";
 import { browserSessions, browserWorkers, browserAllocationRequests, browserTabLeases, runs, workflowExecutions } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import { createWorkflow, publishVersion, staticSchemaGenerator, createWorkflowExecution, resolveAccountIdentity,
-  createHostedBrowserPool, claimBrowserAllocation, fulfillBrowserAllocation, stopFinishedExecutionBrowsers,
-  browserTabKey, claimBrowserTab, releaseBrowserTab, assertBrowserTabLease, ensureExecutionBrowserSession,
-  ensureWorkflowBrowserProfile, cancelRun, requestBrowserTakeover, acknowledgeBrowserPause, resumeBrowserAutomation, acknowledgeBrowserResume } from "@tabductor/engine";
+import { createWorkflow, createWorkflowExecution, resolveAccountIdentity, createHostedBrowserPool, claimBrowserAllocation, fulfillBrowserAllocation, stopFinishedExecutionBrowsers, browserTabKey, claimBrowserTab, releaseBrowserTab, assertBrowserTabLease, ensureExecutionBrowserSession, ensureWorkflowBrowserProfile, cancelRun, requestBrowserTakeover, acknowledgeBrowserPause, resumeBrowserAutomation, acknowledgeBrowserResume } from "@tabductor/engine";
+import { publishVersion, staticSchemaGenerator } from "@tabductor/engine/testing";
 import { eq } from "drizzle-orm";
 import { withAutomationControl } from "@tabductor/browser";
 import { createCaller } from "../../apps/web/src/server/router.js";

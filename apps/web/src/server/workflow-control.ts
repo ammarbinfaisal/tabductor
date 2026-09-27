@@ -1,17 +1,16 @@
+import { sessionsForRuns } from "./session-inspection.js";
+import { LOCAL_ACCOUNT } from "./auth-context.js";
 import { recordProgress } from "@tabductor/engine";
-import { AppError, promptInputsSchema, workflowPromptInputNames } from "@tabductor/core";
+import { AppError, promptInputsSchema, promptInputNames } from "@tabductor/core";
 import { workflows, workflowTriggerRequests, workflowExecutions, runs } from "@tabductor/db";
 import { and, eq } from "drizzle-orm";
 import {
   getWorkflow,
   createWorkflowExecution,
-  listVersionTasks,
-  publishVersion,
-  readGraph,
-  readGraphAuthoring,
+  readWorkflowDefinition,
+  saveWorkflowDefinition,
   scheduleValidationError,
   triggerTask,
-  type Graph,
 } from "@tabductor/engine";
 import type { Context } from "./trpc.js";
 import { requireWorkflowOwner } from "./trpc.js";
@@ -26,18 +25,6 @@ export type WorkflowScheduleInput = {
   workflowId: string;
   schedule: { cron: string; timezone: string; enabled: boolean } | null;
 };
-
-/**
- * The internal behaviors an external workflow-level trigger should start. An entry consumes
- * nothing produced inside this graph; callers never need to learn its task id or name.
- */
-export function workflowEntryNames(graph: Graph): string[] {
-  if (graph.contractVersion === 2) return graph.tasks.filter((task) => task.kind !== "result" && task.entry).map((task) => task.name);
-  const internallyEmitted = new Set(graph.tasks.flatMap((task) => task.emits));
-  return graph.tasks
-    .filter((task) => task.kind !== "result" && (task.consumes.length === 0 || task.consumes.every((type) => !internallyEmitted.has(type))))
-    .map((task) => task.name);
-}
 
 async function currentWorkflow(ctx: Context, workflowId: string) {
   await requireWorkflowOwner(ctx, workflowId);
@@ -66,13 +53,10 @@ export async function triggerWorkflow(ctx: Context, input: WorkflowTriggerInput)
       if (prior) return prior.resultJson;
     }
     const versionId = workflow.currentVersionId;
-    const [graph, tasks] = await Promise.all([
-      readGraph(trx, versionId),
-      listVersionTasks(trx, versionId),
-    ]);
+    const definition = await readWorkflowDefinition(trx, versionId);
     const parsed = promptInputsSchema.safeParse(input.inputs ?? {});
     if (!parsed.success) throw new AppError("prompt_inputs_invalid", parsed.error.message);
-    const names = workflowPromptInputNames(graph);
+    const names = promptInputNames(definition.prompt);
     const missing = names.filter(name => !Object.hasOwn(parsed.data, name));
     const unknown = Object.keys(parsed.data).filter(name => !names.includes(name));
     if (missing.length || unknown.length) throw new AppError("prompt_inputs_invalid", [
@@ -80,21 +64,13 @@ export async function triggerWorkflow(ctx: Context, input: WorkflowTriggerInput)
       unknown.length ? `Unknown prompt inputs: ${unknown.join(", ")}` : "",
     ].filter(Boolean).join(". "));
     const packet = names.length ? { promptInputs: parsed.data } : {};
-    const entries = new Set(workflowEntryNames(graph));
-    const taskIds = tasks.filter((task) => entries.has(task.name)).map((task) => task.id);
-    if (taskIds.length === 0) {
-      throw new AppError("workflow_not_triggerable", "This workflow has no externally triggerable behavior.", {
-        details: { workflowId: input.workflowId },
-      });
-    }
-
     const executionId = await createWorkflowExecution(trx, {
       workflowId: workflow.id,
       workflowVersionId: versionId,
-      ...(graph.maxRuns ? { maxRuns: graph.maxRuns } : {}),
+
     });
     const runs: Awaited<ReturnType<typeof triggerTask>>[] = [];
-    for (const taskId of taskIds) runs.push(await triggerTask(trx, { taskId, executionId, packet }));
+    runs.push(await triggerTask(trx, { taskId: versionId, executionId, packet }));
     const result = {
       workflowId: input.workflowId,
       executionId,
@@ -116,17 +92,7 @@ export async function triggerWorkflow(ctx: Context, input: WorkflowTriggerInput)
  */
 export async function setWorkflowSchedule(ctx: Context, input: WorkflowScheduleInput) {
   const { versionId } = await currentWorkflow(ctx, input.workflowId);
-  const [currentGraph, authoring] = await Promise.all([
-    readGraph(ctx.db, versionId),
-    readGraphAuthoring(ctx.db, versionId),
-  ]);
-  const entries = new Set(workflowEntryNames(currentGraph));
-  if (entries.size === 0) {
-    throw new AppError("workflow_not_triggerable", "This workflow has no externally triggerable behavior.", {
-      details: { workflowId: input.workflowId },
-    });
-  }
-
+  const definition = await readWorkflowDefinition(ctx.db, versionId);
   const scheduleError = input.schedule
     ? scheduleValidationError(input.schedule.cron.trim(), input.schedule.timezone.trim())
     : null;
@@ -136,36 +102,8 @@ export async function setWorkflowSchedule(ctx: Context, input: WorkflowScheduleI
     });
   }
 
-  const schedule = input.schedule
-    ? {
-        cron: input.schedule.cron.trim(),
-        tz: input.schedule.timezone.trim(),
-        missedPolicy: "skip" as const,
-        overlapPolicy: "skip" as const,
-        maxQueueDepth: 1,
-        enabled: input.schedule.enabled,
-      }
-    : null;
-  const graph: Graph = {
-    ...currentGraph,
-    tasks: currentGraph.tasks.map((task) => entries.has(task.name) ? { ...task, schedule } : task),
-  };
-  const priorAuthoring = authoring.report
-    ? {
-        report: authoring.report.authoring,
-        proposedGrants: [],
-      }
-    : undefined;
-  const published = await publishVersion(ctx.db, {
-    workflowId: input.workflowId,
-    expectedVersionId: versionId,
-    graph,
-    ...(priorAuthoring ? { authoring: priorAuthoring } : {}),
-  }, {
-    schemaGenerator: ctx.schemaGenerator,
-    ...(ctx.promptCompiler ? { promptCompiler: ctx.promptCompiler } : {}),
-    ...(ctx.pool ? { pool: ctx.pool } : {}),
-  });
+  const published = await saveWorkflowDefinition(ctx.db, { workflowId: input.workflowId, expectedVersionId: versionId,
+    definition: { ...definition, schedule: input.schedule } });
 
   return {
     workflowId: input.workflowId,
@@ -182,12 +120,15 @@ export async function workflowStatus(ctx: Context, input: { workflowId: string; 
   ));
   if (!execution) throw new AppError("execution_not_found", "No execution found for this workflow.");
   const terminal = execution.status !== "running";
-  const attempts = terminal ? await ctx.db.select({ runId: runs.id, status: runs.status, error: runs.error })
-    .from(runs).where(eq(runs.executionId, execution.id)) : [];
+  const attempts = await ctx.db.select({ runId: runs.id, status: runs.status, error: runs.error })
+    .from(runs).where(eq(runs.executionId, execution.id));
+  const sessions = await sessionsForRuns(ctx.db, ctx.accountId ?? LOCAL_ACCOUNT, attempts.map(run => run.runId));
+  const session = [...sessions.values()].at(-1);
   return {
     workflowId: execution.workflowId, executionId: execution.id, versionId: execution.workflowVersionId,
     status: execution.blockedReasonJson && !terminal ? "blocked" as const : execution.status, finished: terminal,
     blocked: execution.blockedReasonJson, records: await recordProgress(ctx.db, execution.id),
+    summary: execution.resultSummary, finalizationStatus: execution.finalizationStatus, sessionHref: session?.sessionHref ?? null,
     resultReady: terminal && execution.resultReady,
     result: terminal && execution.resultReady ? execution.resultJson : null,
     errors: attempts.filter((run) => run.error !== null),

@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { seedWorkflow } from "@tabductor/engine";
+import { seedWorkflow } from "@tabductor/engine/testing";
 import { outbox, runDedupe, runs } from "@tabductor/db";
 import { allRuns, runsForTask, startRig, trigger, waitFor, waitForQuiet, type Rig } from "./engine-support.js";
 

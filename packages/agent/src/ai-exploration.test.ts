@@ -31,17 +31,15 @@ it("lets AI inspect and correct an uncertain action, assess the result and finis
   const f = fixture();
   const result=await f.code.execute({source:`try:
     page.click('old')
-except RuntimeError: pass
+except Exception: pass
 page.inner_text('body')
 page.click('corrected')
-workflow.record.outcome(status='saved',reason='Observed the saved identity and body in the custom editor')
+workflow.record.outcome(collection='items',recordKey='item-1',status='saved',reason='Observed the saved identity and body in the custom editor')
 workflow.done(result='saved')`});
-  expect(result).toMatchObject({ok:true,terminal:{outcome:"done"}});
+  expect(result, JSON.stringify(result)).toMatchObject({ok:true,terminal:{outcome:"done"}});
   expect(f.calls).toHaveBeenCalledTimes(3);
-  expect(f.record).toHaveBeenCalledWith(expect.objectContaining({status:"saved",verification:expect.objectContaining({
-    method:"ai-assessment",assessmentId:expect.any(String),recordKey:"record-1",destinationContractId:"d1",
-  })}));
-  expect(f.record.mock.calls[0]?.[0]?.verification).not.toHaveProperty("snapshotId");
+  expect(f.record).toHaveBeenCalledWith({collection:"items",recordKey:"item-1",status:"saved",reason:"Observed the saved identity and body in the custom editor"});
+  expect(f.record.mock.calls[0]?.[0]?.verification).toBeUndefined();
   expect(await f.progress.get()).toMatchObject({requiresReconciliation:true});
 });
 
@@ -55,7 +53,7 @@ it("keeps uncertain-effect and verified-completion guards in static mode",async(
         workflow.deopt(reason=str(error))`});
   expect(result).toMatchObject({ok:true,terminal:{outcome:"deopt"}});
   expect(f.calls).toHaveBeenCalledOnce();
-  expect(await f.code.execute({source:"def run(page, context, workflow):\n    workflow.record.outcome(status='saved',reason='unsupported assertion')"})).toMatchObject({ok:true,terminal:{outcome:'deopt'}});
+  expect(await f.code.execute({source:"def run(page, context, workflow):\n    workflow.record.outcome(collection='items',recordKey='item-1',status='saved',reason='unsupported assertion')"})).toMatchObject({ok:true,terminal:{outcome:'deopt'}});
   expect(await f.code.execute({source:"def run(page, context, workflow):\n    workflow.done()"})).toMatchObject({ok:true,terminal:{outcome:'deopt'}});
   expect(f.record).not.toHaveBeenCalled();
 });

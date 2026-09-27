@@ -1,6 +1,7 @@
 import { afterEach, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { SCHEDULE_FIRED, SCHEDULE_SKIPPED, seedSchedule, seedWorkflow } from "@tabductor/engine";
+import { SCHEDULE_FIRED, SCHEDULE_SKIPPED } from "@tabductor/engine";
+import { seedSchedule, seedWorkflow } from "@tabductor/engine/testing";
 import { schedules } from "@tabductor/db";
 import {
   eventsOfType,

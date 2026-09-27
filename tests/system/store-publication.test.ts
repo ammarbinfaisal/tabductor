@@ -2,10 +2,8 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { outbox, storeSchemas, workflowVersions } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import {
-  createWorkflow, finishRun, graphSchema, publishStoreSchema, publishVersion,
-  settleWorkflowExecutions, startRun, staticSchemaGenerator, triggerTask, type GraphDraftArtifact,
-} from "@tabductor/engine";
+import { createWorkflow, finishRun, publishStoreSchema, settleWorkflowExecutions, startRun, triggerTask } from "@tabductor/engine";
+import { graphSchema, publishVersion, staticSchemaGenerator, type GraphDraftArtifact } from "@tabductor/engine/testing";
 import { deprovision, wfIdsOf } from "@tabductor/store";
 
 let handle: MigratedTestDb;

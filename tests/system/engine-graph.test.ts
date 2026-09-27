@@ -1,6 +1,7 @@
 import { afterEach, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { executorKey, RUN_FAILED, seedWorkflow, type TaskExecutor } from "@tabductor/engine";
+import { executorKey, RUN_FAILED, type TaskExecutor } from "@tabductor/engine";
+import { seedWorkflow } from "@tabductor/engine/testing";
 import { runs } from "@tabductor/db";
 import {
   allRuns,

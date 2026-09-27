@@ -17,12 +17,18 @@ import { z } from "zod";
 import { LOCAL_ACCOUNT } from "../auth-context.js";
 import { procedure, requireBrowserSessionOwner, requireWorkflowOwner, router } from "../trpc.js";
 
+import { inspectionOptionsSchema, inspectSession } from "../session-inspection.js";
+
 const sessionInput = z.object({ sessionId: z.string().min(1) });
 const workerTabs = z.object({ tabs: z.array(z.object({
   pageId: z.string(), title: z.string(), url: z.string(), selected: z.boolean(), tabKey: z.string().nullable(),
 })) });
 
 export const browserSessionRouter = router({
+  inspection: procedure.input(sessionInput.merge(inspectionOptionsSchema)).query(async ({ ctx, input }) => {
+    await requireBrowserSessionOwner(ctx, input.sessionId);
+    return inspectSession(ctx.db, ctx.accountId ?? LOCAL_ACCOUNT, input.sessionId, input);
+  }),
   tabs: procedure.input(sessionInput).query(async ({ ctx, input }) => {
     await requireBrowserSessionOwner(ctx, input.sessionId);
     const [row] = await ctx.db.select({ session: browserSessions, worker: browserWorkers }).from(browserSessions)

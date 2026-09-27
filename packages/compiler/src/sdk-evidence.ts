@@ -36,7 +36,7 @@ export type SdkEvidence = {
   callbacks?: Record<string,unknown>[];
 };
 export const requiredWork = (op: RecordedOperation): boolean => op.result.ok === true &&
-  /^(?:(?:workflow\.)?(?:emit(?:\.batch)?|record\.(?:outcome|verify)|destination\.(?:contract\.publish|field\.observe)|done)|browser\.ai|(?:page|harness)\.verify)$/.test(op.name);
+  /^(?:(?:workflow\.)?(?:store\.(?:query|insert|upsert|define_table)|emit(?:\.batch)?|record\.(?:outcome|verify)|destination\.(?:contract\.publish|field\.observe)|done)|browser\.ai|(?:page|harness)\.verify)$/.test(op.name);
 const obj = (v: unknown): Record<string, unknown> => v && typeof v === "object" ? v as Record<string, unknown> : {};
 const omitted = (v: unknown): boolean => !!v && typeof v === "object" &&
   (obj(v).evidenceOmitted === true || Object.values(v).some(omitted));
@@ -94,7 +94,8 @@ export function checkSdkPlan(plan: SdkPlan, evidence: SdkEvidence): string | und
     return "Operation is retained, discarded, and/or delegated more than once";
   if (evidence.operations.some(o => requiredWork(o) && !kept.has(o.operationId) && !delegated.has(o.operationId)))
     return "Plan dropped verified work, an emission, or completion";
-  if (plan.guards.some(g => !["playwright.call"].includes(ids.get(g.operationId)!.operation.name) && !/^(?:page\.(?:perceive|find|inspect|waitFor)|harness\.(?:observe|find|extract|wait_for_element|js|request|page_info))/.test(ids.get(g.operationId)!.operation.name))) return "Guards must depend on observed page state";
+  if (plan.guards.some(g => !["playwright.call", "workflow.store.query"].includes(ids.get(g.operationId)!.operation.name) && !/^(?:page\.(?:perceive|find|inspect|waitFor)|harness\.(?:observe|find|extract|wait_for_element|js|request|page_info))/.test(ids.get(g.operationId)!.operation.name))) return "Guards must depend on observed browser or store state";
+  if (evidence.operations.some(o => o.name === "workflow.store.query" && kept.has(o.operationId) && !plan.guards.some(g => g.operationId === o.operationId))) return "Store queries must guard current store state";
   if (evidence.operations.some(o => o.result.ok && !kept.has(o.operationId) && !discarded.has(o.operationId) && !delegated.has(o.operationId)))
     return "Every successful operation needs a retained, delegated, or discarded explanation";
 

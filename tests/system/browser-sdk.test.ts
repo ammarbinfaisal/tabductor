@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { afterEach, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { browserHelpers, tasks, traceEntries } from "@tabductor/db";
-import { seedWorkflow } from "@tabductor/engine";
+import { seedWorkflow } from "@tabductor/engine/testing";
 import { compileTask, loadRunTraces, promoteTask, readSdkEvidence } from "@tabductor/compiler";
 import { startAgentRig, type AgentRig } from "./agent-support.js";
 import { eventsOfType, runsForTask, trigger, waitFor } from "./engine-support.js";

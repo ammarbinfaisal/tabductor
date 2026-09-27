@@ -1,17 +1,15 @@
 "use client";
 
-import type { PublicGraphEvent } from "@tabductor/engine";
+type PublicOutputEvent = { type: string; public: boolean; packetSchema?: Record<string,unknown> };
 import { VisibilityStamp } from "./primitives.js";
 
 /** Behavior-level shared overview; internal execution topology never reaches this component. */
-export function SharedGraph({
+export function SharedOverview({
   name,
   overview,
-  maxHops,
 }: {
   name: string;
-  overview: { scheduledTriggers: number; sharedOutputs: PublicGraphEvent[] };
-  maxHops: number;
+  overview: { scheduledTriggers: number; sharedOutputs: PublicOutputEvent[] };
 }) {
   return (
     <>
@@ -34,12 +32,7 @@ export function SharedGraph({
                 </span>
               </div>
             </div>
-            <div className="entity-card">
-              <div className="row row--between">
-                <span>Runaway-work guard</span>
-                <span className="mono">{maxHops} steps maximum</span>
-              </div>
-            </div>
+
           </div>
         </section>
 

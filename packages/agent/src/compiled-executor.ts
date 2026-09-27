@@ -1,3 +1,6 @@
+import { withBrowserOperation } from "@tabductor/browser";
+import { randomUUID } from "node:crypto";
+import { workflowStoreTools } from "./workflow-store-tools.js";
 import { createContextHistory } from "./context-history.js";
 import { acquireBrowserContinuity, type BrowserContinuity } from "./browser-continuity.js";
 import type { PythonRunner } from "./python-runner.js";
@@ -62,6 +65,7 @@ import { browserLoopControl } from "./browser-loop-control.js";
 export type CompiledExecutorDeps = Pick<AgentExecutorDeps, "secrets" | "registerSecretRun" | "captchaFor"> & {
   pythonRunner?: AgentExecutorDeps["pythonRunner"];
   pool: EndpointPool;
+  storePool?: import("pg").Pool;
   gate: PolicyGate;
   blobs: BlobStore;
   db: Db;
@@ -180,7 +184,8 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
         const contextHistory = createContextHistory(blobs, continuity?.context ?? control.context);
         const memory = continuity?.memory ?? control.memory;
         pythonRunner = deps.pythonRunner?.open?.({runId:handle.run.id,leaseGeneration:handle.run.leaseGeneration}) ?? deps.pythonRunner;
-        const sdkDeps = { session, emit, workspace, storageFlags: storageFlagsOf(handle.task), captcha: deps.captchaFor?.(handle), recordInput: handle.recordInput,
+        const storeTools = deps.storePool ? await workflowStoreTools({ db, pool: deps.storePool, handle, gate }) : [];
+        const sdkDeps = { storeTools, session, emit, workspace, storageFlags: storageFlagsOf(handle.task), captcha: deps.captchaFor?.(handle), recordInput: handle.recordInput,
           ...(deps.secrets ? { fillSecret: (name: string, anchor: string) => deps.secrets!.fill(handle.run.id, name, anchor) } : {}),
           evidenceScope: {taskId:handle.task.id,contentHash:handle.task.contentHash},
           input: trigger?.packet, helpers: browserHelperStore(db, handle, "python"),
@@ -188,12 +193,15 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
           recordOutcome: handle.recordOutcome, recordCompletionError: handle.recordCompletionError,
           beforeCall: control.beforeStep, signal: handle.signal, trace,
           llm: llmFor({ trace, task: handle.task, runId: handle.run.id }) };
-        const runSdk = async (): Promise<ScriptRunResult & { plannedDeopt?: boolean }> => {
+        const runSdk = async (): Promise<ScriptRunResult & { plannedDeopt?: boolean; result?: unknown }> => {
           const code = buildBrowserCodeTools({ ...sdkDeps, pythonRunner, compiled: true, memoryMb: staticRtLimitsOf(handle.task).memoryMb,
             pinnedHelpers: (asRecord(script.guardsMeta)?.helpers ?? []) as HelperRevision[] })[0]!;
           handle.signal.throwIfAborted();
-          const result = await code.execute({source:script.source,timeoutMs:Math.min(180000,staticRtLimitsOf(handle.task).wallClockMs ?? 180000)},handle.signal);
-          if (result.terminal?.outcome === "done") return {outcome:"completed"};
+          const callId = randomUUID();
+          const started = Date.now();
+          const result = await withBrowserOperation({ callId }, () => code.execute({source:script.source,timeoutMs:Math.min(180000,staticRtLimitsOf(handle.task).wallClockMs ?? 180000)},handle.signal));
+          await trace.record("action", { action: "tool.call", tool: "browser.python", callId, ok: result.ok, code: script.source, duration_ms: Date.now() - started });
+          if (result.terminal?.outcome === "done") return {outcome:"completed", result: result.terminal.result};
           if (result.terminal?.outcome === "fail") return {outcome:"error",error:result.terminal.reason};
           if (result.terminal?.outcome === "deopt") {
             const plan = asRecord(asRecord(script.guardsMeta)?.plan);
@@ -212,7 +220,7 @@ export function createCompiledExecutor(deps: CompiledExecutorDeps): TaskExecutor
 
         if (result.outcome === "completed") {
           ok = true;
-          return { ok: true };
+          return { ok: true, result: result.result };
         }
         if (result.outcome === "killed") {
           return { ok: false, error: `compiled script killed: ${result.reason}` };

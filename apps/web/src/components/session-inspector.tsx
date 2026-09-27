@@ -1,4 +1,5 @@
 "use client";
+import { EVENT_LABELS, recordingToMedia, mediaToRecording } from "../lib/replay-timing.js";
 import Link from "next/link";
 import { createStore } from "zustand/vanilla";
 import { api, asApiError, type RouterOutputs } from "../lib/api.js";
@@ -11,6 +12,29 @@ import { attachRemotePaste } from "../lib/remote-paste.js";
 type Playback = RouterOutputs["browserSession"]["get"];
 type Tabs = RouterOutputs["browserSession"]["tabs"];
 type Activity = RouterOutputs["browserSession"]["activity"];
+type Inspection = RouterOutputs["browserSession"]["inspection"];
+const inspectionState = createStore<{ data: Inspection | null; offsetMs: number | null; selected: string | null; error: string | null }>(() => ({ data: null, offsetMs: null, selected: null, error: null }));
+async function refreshInspection(id: string) {
+  try {
+    let data = await api.browserSession.inspection.query({ sessionId: id });
+    const items = new Map(data.items.map(item => [item.id, item]));
+    // Refresh every loaded page so pending summaries are replaced in place.
+    while (data.nextCursor && currentId === id) {
+      const page = await api.browserSession.inspection.query({ sessionId: id, cursor: data.nextCursor });
+      for (const item of page.items) items.set(item.id, item);
+      data = { ...data, nextCursor: page.nextCursor, truncated: page.truncated };
+    }
+    const rootCalls = new Set([...items.values()].filter(item => item.kind === "action" && item.callId).map(item => `${item.runId}:${item.callId}`));
+    const unique = [...items.values()].filter(item => !["session_activity", "navigation"].includes(item.kind) || !item.callId || !rootCalls.has(`${item.runId}:${item.callId}`));
+    if (currentId === id) inspectionState.setState({ data: { ...data, items: unique.sort((a,b) => a.occurredAt.getTime()-b.occurredAt.getTime()) }, error: null });
+  } catch (error) { if (currentId === id) inspectionState.setState({ error: asApiError(error).message }); }
+}
+function seekEvent(item: Inspection["items"][number]) {
+  inspectionState.setState({ selected: item.id });
+  const seconds = item.offsetMs === null ? null : recordingToMedia(state.getState().data?.segments ?? [], item.offsetMs);
+  const video = document.getElementById("session-playback") as HTMLVideoElement | null;
+  if (seconds !== null && video) { video.currentTime = seconds; inspectionState.setState({ offsetMs: item.offsetMs }); }
+}
 const state = createStore<{ data: Playback | null; activity: Activity; tabs: Tabs; tabsError: string | null; selectingTab: string | null; error: string | null; connected: boolean }>(() => ({ data: null, activity: [], tabs: [], tabsError: null, selectingTab: null, error: null, connected: false }));
 let disconnect: (() => void) | undefined;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -119,14 +143,20 @@ async function action(id: string, kind: "takeover" | "resume" | "stop") {
     await refresh(id);
   } catch (error) { report(error); }
 }
-export function SessionInspector({ sessionId }: { sessionId: string }) {
+export function SessionInspector({ sessionId, profileSession }: { sessionId: string; profileSession: boolean }) {
   const view = useStoreBridge(state);
+  const inspection = useStoreBridge(inspectionState);
   useMountHook(() => {
     currentId = sessionId;
     desiredAccess = "view";
     retryAfter = 0;
     connecting = false;
     state.setState({ data: null, activity: [], tabs: [], tabsError: null, selectingTab: null, error: null, connected: false });
+    inspectionState.setState({ data: null, offsetMs: null, selected: null, error: null });
+    let inspecting = false;
+    const inspect = () => { if (inspecting) return; inspecting = true; void refreshInspection(sessionId).finally(() => { inspecting = false; }); };
+    if (!profileSession) inspect();
+    const inspectionTimer = profileSession ? undefined : setInterval(inspect, 2500);
     let disposed = false, polling = false;
     const poll = () => { if (polling || disposed) return; polling = true; void refresh(sessionId).catch(error => { if (!disposed) report(error); }).finally(() => { polling = false; }); };
     poll();
@@ -139,15 +169,37 @@ export function SessionInspector({ sessionId }: { sessionId: string }) {
     };
     pollTabs();
     const tabsTimer = setInterval(pollTabs, 2000);
-    return () => { disposed = true; currentId = ""; connectionAttempt++; clearInterval(timer); clearInterval(tabsTimer); if (reconnectTimer) clearTimeout(reconnectTimer); disconnect?.(); disconnect = undefined; };
+    return () => { disposed = true; currentId = ""; connectionAttempt++; clearInterval(timer); clearInterval(tabsTimer); clearInterval(inspectionTimer); if (reconnectTimer) clearTimeout(reconnectTimer); disconnect?.(); disconnect = undefined; };
   });
   const session = view.data?.session;
   const { active, stopped, replay } = sessionPresentation(session?.status, session?.recordingStatus, view.data?.segments.some(segment => segment.status === "ready"));
-  const setup = session?.executionId === null;
+  const setup = profileSession;
   const resuming = session?.inputOwner === "ai" && session.automationAcknowledgedGeneration !== session.inputOwnerGeneration;
-  return <section className="session-console" aria-label="Browser session">
+  const items = inspection.data?.items ?? [];
+  const timed = items.filter(item => item.offsetMs !== null).sort((a,b) => a.offsetMs!-b.offsetMs!);
+  const playing = inspection.offsetMs === null ? null : timed.slice().reverse().find(item => item.offsetMs! <= inspection.offsetMs!);
+  const selected = playing?.id ?? inspection.selected;
+  const duration = Math.max(1, ...(view.data?.segments.map(segment => segment.endMs) ?? []), ...timed.map(item => item.offsetMs!));
+  return <section className="session-replay" aria-label="Session inspector">
+    <header className="replay-header"><div className="row"><Link href={setup ? "/profiles" : "/sessions"}>{setup ? "Profiles" : "Sessions"}</Link><span className="muted">/ {sessionId}</span></div>
+      <h1>{(!setup ? inspection.data?.workflow?.prompt : null) ?? view.data?.name ?? "Browser session"}</h1>
+      <div className="row"><Stamp kind={(!setup ? inspection.data?.execution?.status : null) ?? session?.status ?? "loading"} />{!setup ? <><span className="muted">{items.length} events</span>
+        {inspection.data?.workflow ? <Link href={`/workflows/${inspection.data.workflow.id}`}>Open workflow ↗</Link> : null}
+        {(inspection.data?.sessions.length ?? 0) > 1 ? <label>Session <select value={sessionId} onChange={event => window.location.assign(`/sessions/${encodeURIComponent(event.target.value)}`)}>{inspection.data!.sessions.map((entry, index) => <option key={entry.id} value={entry.id}>Session {index+1} · {entry.status}</option>)}</select></label> : null}</> : null}</div>
+    </header>
+    {!setup ? <div className="replay-timeline" aria-label="Recording event timeline">{timed.map(item => <button key={item.id} type="button" className="replay-marker" data-color={(EVENT_LABELS[item.label] ?? EVENT_LABELS.tool)!.color}
+      style={{ left: `${item.offsetMs! / duration * 99}%` }} title={item.description} aria-label={`${item.description} at ${(item.offsetMs! / 1000).toFixed(1)} seconds`} onClick={() => seekEvent(item)} />)}</div> : null}
+    <div className={`replay-layout${setup ? " replay-layout--profile" : ""}`}>{!setup ? <aside className="replay-events" aria-label="Session events"><div className="replay-events-heading"><h2>Events</h2><span className="muted">{active ? "Live" : "Replay"}</span></div>
+      {inspection.error ? <p role="alert" className="banner banner--error">{inspection.error}</p> : null}
+      {!items.length ? <p className="console-note">{inspection.data ? "Events will appear here as the agent works." : "Loading events…"}</p> : null}
+      <ol>{items.map(item => { const label = EVENT_LABELS[item.label] ?? EVENT_LABELS.tool!; const seekable = replay && item.offsetMs !== null && recordingToMedia(view.data?.segments ?? [], item.offsetMs) !== null;
+        return <li key={item.id} data-selected={selected === item.id}><button type="button" onClick={() => seekEvent(item)} aria-current={selected === item.id ? "step" : undefined} aria-label={`${item.description}${seekable ? ", seek recording" : ""}`}>
+          <span className="event-badge" data-color={label.color}>{label.title}</span><span className="event-description">{item.description}{item.status === "failed" ? <small className="event-failed">Failed</small> : null}</span>
+          <time className="mono" title={seekable ? "Seek recording" : "No aligned recording available"}>{item.offsetMs === null ? "—" : `${Math.floor(item.offsetMs/60000)}:${String(Math.floor(item.offsetMs/1000)%60).padStart(2,"0")}`}</time>
+        </button></li>; })}</ol>
+    </aside> : null}<div className="replay-browser"><section className="session-console" aria-label="Browser session">
     <div className="console-header">
-      <div className="row"><span className="eyebrow">{stopped ? "Session replay" : "Live browser"}</span><Stamp kind={session?.status ?? "loading"} /></div>
+      <div className="row"><span className="eyebrow">{setup ? "Profile browser" : stopped ? "Session replay" : "Live browser"}</span><Stamp kind={session?.status ?? "loading"} /></div>
       <span className="console-connection">{active ? view.connected ? "Connected" : "Connecting…" : stopped ? "Session stopped" : "Waiting for browser"}</span>
     </div>
     {view.error ? <div className="banner banner--error" role="alert">{view.error}</div> : null}
@@ -185,25 +237,22 @@ export function SessionInspector({ sessionId }: { sessionId: string }) {
       {!view.connected ? <div className="viewer-empty" role="status">
         <span className="viewer-glyph" aria-hidden="true">▣</span>
         <h2>{session?.status === "stopping" ? "Finishing your session" : active ? "Connecting to your browser" : "Your browser is getting ready"}</h2>
-        <p>{session?.status === "stopping" ? "Saving your profile and finalizing the recording. Replay becomes available after the session stops."
+        <p>{session?.status === "stopping" ? setup ? "Saving your profile…" : "Saving your profile and finalizing the recording. Replay becomes available after the session stops."
           : view.data?.waitingForSessionId ? <>This profile is in use. <Link href={`/sessions/${view.data.waitingForSessionId}`}>Open its browser</Link> and stop it to let this session begin.</>
           : "This view connects automatically when the browser is ready."}</p>
       </div> : null}
     </div>
-    {replay ? <div className="replay-surface"><PlaybackVideo key={sessionId} sessionId={sessionId} /><p className="console-note">Private intervals and recording gaps are unavailable for playback.</p></div>
-      : stopped ? <div className="viewer-empty"><span className="viewer-glyph" aria-hidden="true">▣</span><h2>{session?.recordingStatus === "expired" ? "Recording expired" : "No recording available"}</h2><p>{session?.recordingStatus === "expired" ? "This session’s recording is no longer retained." : "This session has no playable recording. Private activity is excluded from replay."}</p></div> : null}
+    {!setup && replay ? <div className="replay-surface"><PlaybackVideo key={sessionId} sessionId={sessionId} /><p className="console-note">Private intervals and recording gaps are unavailable for playback.</p></div>
+      : !setup && stopped ? <div className="viewer-empty"><span className="viewer-glyph" aria-hidden="true">▣</span><h2>{session?.recordingStatus === "expired" ? "Recording expired" : "No recording available"}</h2><p>{session?.recordingStatus === "expired" ? "This session’s recording is no longer retained." : "This session has no playable recording. Private activity is excluded from replay."}</p></div> : null}
     {active ? <p className="console-note">{setup ? "You have control. Sign in, then stop the session to save your profile."
       : session?.inputOwner === "human" ? "You have control. Click inside the browser to type or paste. Resume automation when you’re ready."
-      : "Watching live. Take control whenever you need to sign in or help the workflow."} <span className="muted">Human control makes the rest of the session private in recordings.</span></p> : null}
+      : "Watching live. Take control whenever you need to sign in or help the workflow."} {!setup ? <span className="muted">Human control makes the rest of the session private in recordings.</span> : null}</p> : null}
     {session?.status === "ended" && !session.error && session.readyAt ? <p className="console-note">Profile saved. <Link href="/profiles">Open profiles ↗︎</Link></p> : null}
-    <details className="session-activity">
-      <summary>Session activity <span className="muted">{view.activity.length} events</span></summary>
-      {view.activity.length ? <ol className="session-timeline">{view.activity.map(item => <li key={item.cursor}>
-        {replay && !item.private ? <button className="btn--quiet" onClick={() => { const video = document.getElementById("session-playback") as HTMLVideoElement | null; if (video) video.currentTime = item.offsetMs / 1000; }}>
-          {(item.offsetMs / 1000).toFixed(1)}s · {item.kind}
-        </button> : <span>{(item.offsetMs / 1000).toFixed(1)}s · {item.kind}{item.private ? " · private" : ""}</span>}
-      </li>)}</ol> : <p className="muted">No activity recorded yet.</p>}
-    </details>
+  </section>
+    {!setup ? <section className="replay-result" aria-label="Workflow result"><h2>Result</h2>
+      {inspection.data?.execution?.summary ? <p>{inspection.data.execution.summary}</p> : <p className="muted">{inspection.data?.execution?.finalizationStatus === "running" ? "Summarizing the workflow…" : active ? "The result appears here when the workflow finishes." : "No result available."}</p>}
+      {inspection.data?.execution?.resultReady ? <details><summary>Structured result</summary><pre>{JSON.stringify(inspection.data.execution.result, null, 2)}</pre></details> : null}
+    </section> : null}</div></div>
   </section>;
 }
 
@@ -221,5 +270,5 @@ function PlaybackVideo({ sessionId }: { sessionId: string }) {
     });
     return () => { disposed = true; destroy?.(); video.removeAttribute("src"); video.load(); };
   });
-  return <video id="session-playback" controls playsInline preload="none" aria-label="Session recording" style={{ width: "100%", maxHeight: "60vh" }} />;
+  return <video id="session-playback" onTimeUpdate={event => inspectionState.setState({ offsetMs: mediaToRecording(state.getState().data?.segments ?? [], event.currentTarget.currentTime) })} controls playsInline preload="none" aria-label="Session recording" style={{ width: "100%", maxHeight: "60vh" }} />;
 }

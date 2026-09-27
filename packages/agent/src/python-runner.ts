@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { RunWorkspace } from "./workspace.js";
 import type { runToolScript } from "@tabductor/static-rt";
 import { pythonOutputPreview } from "./code-output.js";
@@ -41,7 +42,7 @@ export function remotePythonRunner(url: string, token: string): PythonRunner {
 export function localPythonRunnerForTest(script: string): PythonRunner {
   return runnerFactory(async (receive, ended) => {
     const cwd = await mkdtemp(join(tmpdir(), "tabductor-python-"));
-    const child = spawn("python3", ["-I", script, "--supervise"], { cwd, env: { PATH: process.env.PATH, NODE_ENV: "test" }, detached:true, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn("python3", ["-I", fileURLToPath(new URL("../python/runner.py", import.meta.url)), script, "--supervise"], { cwd, env: { PATH: process.env.PATH, NODE_ENV: "test" }, detached:true, stdio: ["pipe", "pipe", "pipe"] });
     let buffer = "";
     child.stdout.on("data", chunk => {
       buffer += String(chunk);

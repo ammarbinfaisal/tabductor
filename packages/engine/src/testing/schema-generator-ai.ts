@@ -131,12 +131,12 @@ export function providerFromEnv(env: {
 }
 
 /** All hosted authoring phases share the same account/workflow funding resolver. */
-export function fundedAuthoringModels(resolver: import("./model-funding.js").ModelResolver,
-  scope: Omit<import("./model-funding.js").ModelScope, "purpose">, pool?: import("pg").Pool) {
+export function fundedAuthoringModels(resolver: import("../model-funding.js").ModelResolver,
+  scope: Omit<import("../model-funding.js").ModelScope, "purpose">, pool?: import("pg").Pool) {
   const usageOf = (usage: import("ai").LanguageModelUsage) => ({ input: usage.inputTokens ?? NaN,
     output: usage.outputTokens ?? NaN, cachedInput: usage.inputTokenDetails.cacheReadTokens ?? 0,
     reasoning: usage.outputTokenDetails.reasoningTokens ?? 0 });
-  const transport = (purpose: import("./model-funding.js").ModelPurpose, system: string): ChatTransport => ({
+  const transport = (purpose: import("../model-funding.js").ModelPurpose, system: string): ChatTransport => ({
     complete: (turns) => resolver.execute({ ...scope, purpose }, estimateModelInput({ system, turns }), async (config) => {
       const result = await generateText({ model: languageModel(config), system, messages: turns,
         ...(purpose === "graph" || purpose === "schema" ? jsonGenerationOptions(config.provider, purpose === "graph" ? "graph" : "generic") : {}),

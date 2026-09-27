@@ -12,26 +12,6 @@ function publicResult(workflowId: string, versionId: string, extra: Record<strin
   return { workflowId, versionId, ...extra };
 }
 
-async function compileAndPublish(ctx: Context, workflowId: string, prompt: string, expectedVersionId: string | null, resultSchema?: Record<string, unknown> | boolean) {
-  const caller = createCaller(ctx);
-  const compiled = await caller.workflow.compileIntent({ workflowId, intent: prompt, resultSchema: resultSchema ?? null });
-  if (!compiled.ok) throw new Error(`workflow compilation failed: ${compiled.error}`);
-  const published = await caller.workflow.publishVersion({
-    workflowId,
-    expectedVersionId,
-    graph: compiled.artifact.graph,
-    authoring: {
-      report: compiled.report,
-      proposedGrants: [],
-      ...(compiled.artifact.store ? { store: compiled.artifact.store } : {}),
-    },
-  });
-  return publicResult(workflowId, published.versionId, {
-    checks: compiled.report.checks,
-    pendingApprovals: 0,
-  });
-}
-
 async function currentVersion(ctx: Context, workflowId: string): Promise<string | null> {
   const caller = createCaller(ctx);
   const current = await caller.workflow.get({ id: workflowId });
@@ -49,7 +29,11 @@ export function createWorkflowControl(ctx: Context): WorkflowControl {
 
     async update(input: WorkflowUpdateInput) {
       const versionId = await currentVersion(ctx, input.workflowId);
-      return compileAndPublish(ctx, input.workflowId, input.prompt, versionId, input.resultSchema);
+      const caller = createCaller(ctx);
+      const current = await caller.workflow.get({ id: input.workflowId });
+      return caller.workflow.savePrompt({ workflowId: input.workflowId, expectedVersionId: versionId,
+        definition: { format: "prompt-v1", limits: current.definition?.limits ?? {}, schedule: current.definition?.schedule ?? null,
+          prompt: input.prompt, resultSchema: input.resultSchema ?? null } });
     },
 
     async trigger(input: WorkflowTriggerInput) {

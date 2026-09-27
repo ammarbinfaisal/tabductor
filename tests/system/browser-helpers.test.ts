@@ -1,6 +1,7 @@
 import { afterEach, expect, it } from "vitest";
 import { browserHelpers } from "@tabductor/db";
-import { seedWorkflow, triggerTask, type RunHandle } from "@tabductor/engine";
+import { triggerTask, type RunHandle } from "@tabductor/engine";
+import { seedWorkflow } from "@tabductor/engine/testing";
 import { browserHelperStore } from "../../packages/agent/src/browser-helpers.js";
 import { startRig, waitForQuiet, runsForTask, type Rig } from "./engine-support.js";
 

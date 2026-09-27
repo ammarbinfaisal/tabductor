@@ -1,7 +1,8 @@
 import { afterEach, expect, it } from "vitest";
 import { schedules, tasks, workflowVersions, workflows } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import { createWorkflow, publishVersion, staticSchemaGenerator, type Graph } from "@tabductor/engine";
+import { createWorkflow } from "@tabductor/engine";
+import { publishVersion, staticSchemaGenerator, type Graph } from "@tabductor/engine/testing";
 import { eq } from "drizzle-orm";
 
 /**

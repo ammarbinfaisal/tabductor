@@ -2,9 +2,9 @@ import { afterAll,beforeAll,expect,it,vi } from "vitest";
 import { eq,sql } from "drizzle-orm";
 import { accounts,artifacts,billingRates,billingSettings,creditLedgerEntries,couponRedemptions,browserSessions,workflowDeletions,workflows,runs,actionSummaries,operatingCosts,billingAudit,creditReservations,workflowExecutions,captchaJobs,browserCommands,proxyAccounts } from "@tabductor/db";
 import { createMigratedTestDb,type MigratedTestDb } from "@tabductor/db/test-db";
-import { usdMicros } from "@tabductor/core";
-import { appendCreditAdjustment,getCreditBalance,resolveAccountIdentity,staticSchemaGenerator,createBrowserProfile,createWorkflow,seedWorkflow,
- requestWorkflowDeletion,processWorkflowDeletion,processActionSummary,reserveCredits,settleCreditReservation,convertLegacyWallet,convertLegacyWallets,browserCreditAdmission,claimBrowserAllocation,fulfillBrowserAllocation,requestBrowserSession,endBrowserSession,settleBrowserUsage,reconcileCaptchaJobs,syncProxyCosts,saveCoupon,syncDiscount } from "@tabductor/engine";
+import { usdMicros, ACTION_SUMMARY_SOURCE_VERSION, sanitizeActionSummaryCode } from "@tabductor/core";
+import { appendCreditAdjustment, getCreditBalance, resolveAccountIdentity, createBrowserProfile, createWorkflow, requestWorkflowDeletion, processWorkflowDeletion, processActionSummary, reserveCredits, settleCreditReservation, convertLegacyWallet, convertLegacyWallets, browserCreditAdmission, claimBrowserAllocation, fulfillBrowserAllocation, requestBrowserSession, endBrowserSession, settleBrowserUsage, reconcileCaptchaJobs, syncProxyCosts, saveCoupon, syncDiscount } from "@tabductor/engine";
+import { staticSchemaGenerator, seedWorkflow } from "@tabductor/engine/testing";
 import { createCaller } from "../../apps/web/src/server/router.js";
 let db:MigratedTestDb,admin:string,user:string;
 const caller=(accountId:string)=>createCaller({db:db.db,pool:db.pool,accountId,schemaGenerator:staticSchemaGenerator({})});
@@ -17,20 +17,10 @@ it("protects every administration procedure and accepts exact USD prices",async(
  const [rate]=await db.db.select().from(billingRates);expect(rate).toMatchObject({chargeMicros:100000,costMicros:2000});
  expect((await caller(admin).admin.settings()).rates[0]).toMatchObject({chargeUsd:"0.10",costUsd:"0.002"});
 });
-it("allows only administrators to persist and audit the global graph authoring model",async()=>{
- expect((await caller(admin).admin.settings()).graphAuthoringModel).toEqual({provider:"openai",model:"gpt-6-astra"});
- await expect(caller(user).admin.saveGraphAuthoringModel({provider:"anthropic",model:"admin-graph-model"})).rejects.toMatchObject({code:"FORBIDDEN"});
- await expect(caller(admin).admin.saveGraphAuthoringModel({provider:"openai",model:"   "})).rejects.toMatchObject({code:"BAD_REQUEST"});
- await caller(admin).admin.saveGraphAuthoringModel({provider:"anthropic",model:" admin-graph-model "});
- expect((await caller(admin).admin.settings()).graphAuthoringModel).toEqual({provider:"anthropic",model:"admin-graph-model"});
- await caller(admin).admin.saveGraphAuthoringModel({provider:"openai",model:"gpt-6-astra"});
- const settings=await db.db.select().from(billingSettings).where(eq(billingSettings.key,"graph_authoring_model"));
- expect(settings).toHaveLength(1);
- expect(settings[0]?.value).toEqual({provider:"openai",model:"gpt-6-astra"});
- const audits=await db.db.select().from(billingAudit).where(eq(billingAudit.action,"graph_authoring_model.update"));
- expect(audits).toHaveLength(2);
- expect(audits.every(entry=>entry.actorId===admin)).toBe(true);
+it("does not expose a graph authoring setting", async () => {
+ expect(await caller(admin).admin.settings()).not.toHaveProperty("graphAuthoringModel");
 });
+
 it("stores one-million-token model limits from Admin and exposes them in model settings",async()=>{
  const model="admin-million-model";
  await caller(admin).admin.saveModelRates({provider:"openai",model,inputUsd:"1.00",cachedInputUsd:"0.10",outputUsd:"4.00",inputCostUsd:"0.50",cachedInputCostUsd:"0.05",outputCostUsd:"2.00",maxInputTokens:1_000_000,maxOutputTokens:1_000_000});
@@ -139,11 +129,13 @@ it("generates a persisted action description without charging the customer walle
  const workflowId=await createWorkflow(db.db,{accountId:user,userId:"test",name:"Summaries"});
  const seeded=await seedWorkflow(db.db,{workflowId,tasks:{Browse:{kind:"browser",mode:"ai"}}});
  await db.db.insert(runs).values({id:"summary-run",taskId:seeded.taskIds.Browse!,workflowVersionId:seeded.versionId,status:"succeeded",modeUsed:"ai"});
- await db.db.insert(actionSummaries).values({runId:"summary-run",callId:"call-1",accountId:user,source:JSON.stringify({code:'page.goto("https://example.com")',ok:true})});
+ await db.db.insert(actionSummaries).values({runId:"summary-run",callId:"call-1",accountId:user,source:JSON.stringify({tool:"browser.python",sourceVersion:ACTION_SUMMARY_SOURCE_VERSION,code:sanitizeActionSummaryCode('page.goto("https://example.com")')})});
+ vi.stubEnv("ACTION_SUMMARY_MODEL", "gpt-5.6-luna");
+ for (const part of ["input", "cached", "output"]) await caller(admin).admin.saveRate({category:"model",provider:"openai",item:`gpt-5.6-luna:${part}`,chargeUsd:"1",costUsd:"1",...(part === "input" ? {maxInputTokens: 32000, maxOutputTokens: 512} : {})});
  vi.stubEnv("OPENAI_API_KEY","fixture-key");const before=await getCreditBalance(db.db,user);
- const request=vi.fn<typeof fetch>(async()=>new Response(JSON.stringify({output:[{content:[{type:"output_text",text:"Opened the example website."}]}],usage:{input_tokens:100,output_tokens:10}})));
+ const request=vi.fn<typeof fetch>(async()=>Response.json({status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:JSON.stringify({label:"navigation",description:"Navigate to a website"})}]}],usage:{input_tokens:100,output_tokens:10}}));
  await processActionSummary(db.db,request);await processActionSummary(db.db,request);
- expect(request).toHaveBeenCalledTimes(1);expect((await db.db.select().from(actionSummaries))[0]).toMatchObject({status:"ready",summary:"Opened the example website."});
+ expect(request).toHaveBeenCalledTimes(1);expect((await db.db.select().from(actionSummaries))[0]).toMatchObject({status:"ready",label:"navigation",summary:"Navigate to a website"});
  expect(await getCreditBalance(db.db,user)).toEqual(before);
  expect((await db.db.select().from(operatingCosts).where(eq(operatingCosts.category,"summary")))[0]?.costMicros).toBeGreaterThan(0);
 });

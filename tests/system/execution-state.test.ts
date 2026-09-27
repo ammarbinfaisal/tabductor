@@ -2,10 +2,8 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { events, outbox, runs, workflowExecutions } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import {
-  BROWSER_OUTCOME_UNCERTAIN, createWorkflowExecution, dispatchEvent, finishRun,
-  recoverStaleRuns, scheduleRetry, seedWorkflow, settleWorkflowExecutions, startRun, triggerTask,
-} from "@tabductor/engine";
+import { BROWSER_OUTCOME_UNCERTAIN, createWorkflowExecution, dispatchEvent, finishRun, recoverStaleRuns, scheduleRetry, settleWorkflowExecutions, startRun, triggerTask } from "@tabductor/engine";
+import { seedWorkflow } from "@tabductor/engine/testing";
 
 let handle: MigratedTestDb;
 beforeEach(async () => { handle = await createMigratedTestDb(); });

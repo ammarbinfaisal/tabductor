@@ -1,7 +1,7 @@
 import { events, runs, tasks, type Db } from "@tabductor/db";
 import { recordProgress, parseWorkflowResult, type RunHandle, type TaskExecutor } from "@tabductor/engine";
 import { and, asc, eq, ne } from "drizzle-orm";
-import type { Llm, LlmMessage } from "./llm.js";
+import type { Llm, LlmMessage } from "../llm.js";
 
 /** No tools or side effects: summarize only the pinned execution's evidence. */
 export function createResultExecutor(deps: { db: Db; llmFor: (handle: RunHandle) => Llm }): TaskExecutor {

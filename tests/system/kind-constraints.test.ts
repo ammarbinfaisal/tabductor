@@ -2,16 +2,8 @@ import { afterEach, expect, it } from "vitest";
 import { AppError } from "@tabductor/core";
 import { tasks } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import {
-  createWorkflow,
-  GRAPH_INVALID,
-  graphSchema,
-  publishVersion,
-  seedWorkflow,
-  staticSchemaGenerator,
-  updateTask,
-  type Graph,
-} from "@tabductor/engine";
+import { createWorkflow } from "@tabductor/engine";
+import { GRAPH_INVALID, graphSchema, publishVersion, seedWorkflow, staticSchemaGenerator, updateTask, type Graph } from "@tabductor/engine/testing";
 import { eq } from "drizzle-orm";
 
 const generator = staticSchemaGenerator({});

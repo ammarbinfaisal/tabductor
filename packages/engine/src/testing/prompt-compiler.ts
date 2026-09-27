@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { canonicalJson } from "@tabductor/core";
 import type { NodeKind } from "./graph.js";
-import { renderIntent, type IntentContract, type HarnessTask } from "./intent-contract.js";
+import { renderIntent, type IntentContract, type HarnessTask } from "../intent-contract.js";
 import type { ChatTransport } from "./schema-generator-llm.js";
 
 /** Deterministic publish-time task instructions. Original intent and task contracts are

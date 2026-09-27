@@ -119,7 +119,7 @@ export async function finishRun(db: Db, input: FinishInput): Promise<RunRow | un
   return db.transaction(async (trx) => {
     const [row] = await trx
       .update(runs)
-      .set({ status: input.status, endedAt: sql`now()`, error: input.error ?? null })
+      .set({ status: input.status, endedAt: sql`now()`, error: input.error ?? null, ...(input.result === undefined ? {} : { resultJson: input.result }) })
       .where(and(
         eq(runs.id, input.runId),
         eq(runs.status, "running"),
@@ -131,15 +131,6 @@ export async function finishRun(db: Db, input: FinishInput): Promise<RunRow | un
     if (!row) return undefined;
     if (input.status !== "succeeded") await recordFailedRun(trx, row);
 
-    const [finishedTask] = await trx.select({ kind: tasks.kind }).from(tasks).where(eq(tasks.id, row.taskId));
-    if (finishedTask?.kind === "result") {
-      if (input.status === "succeeded" && row.executionId && input.result !== undefined) {
-        await trx.update(workflowExecutions).set({ resultJson: input.result, resultReady: true })
-          .where(and(eq(workflowExecutions.id, row.executionId), eq(workflowExecutions.status, "running")));
-      }
-      // Finalizers cannot produce new workflow work, including lifecycle subscriptions.
-      return row;
-    }
     const type = EVENT_FOR[input.status];
     if (type) {
       await publish(trx, {

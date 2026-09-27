@@ -25,7 +25,7 @@ export default async function ShareLayout({
 }) {
   const { token } = await params;
   const api = await shareCaller();
-  const shared = await api.public.graph({ token }).catch((err: unknown) => {
+  const shared = await api.public.overview({ token }).catch((err: unknown) => {
     if (err instanceof TRPCError) notFound();
     throw err;
   });

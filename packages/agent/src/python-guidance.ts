@@ -45,7 +45,11 @@ The supplied browser is already running. Its lifecycle and shared-context owners
 export function pythonWorkflowGuidance(names: string[]): string {
   const available = new Set(names);
   const notes: Record<string, string> = {
-    "workflow.record.outcome": "Report this record's observed saved, skipped, rejected or failed outcome with a reason.",
+    "workflow.record.outcome": "Track each record using collection and recordKey, observed status, and a reason.",
+    "workflow.store.define_table": "Create tables or add nullable columns using typed definitions; existing data is retained.",
+    "workflow.store.query": "Read the current workflow store using one SELECT. Writes are visible immediately.",
+    "workflow.store.insert": "Commit a row immediately with a stable logical idempotencyKey. Reuse that key after an uncertain response.",
+    "workflow.store.upsert": "Commit a row by primary key, with the same idempotency rules as insert.",
     "workflow.history.read": "Retrieve archived operation evidence without repeating operations.",
     "workflow.output.read": "Retrieve archived output by invocation ID.",
     "workflow.secrets.fill": "Fill a named secret into a locator without returning its value.",

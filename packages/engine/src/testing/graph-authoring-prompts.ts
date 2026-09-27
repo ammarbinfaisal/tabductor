@@ -34,8 +34,31 @@ Tabductor supplies browser execution, profile/session management, isolation and 
 propose permissions or approvals, API integrations or credentials, external scripts, cookie exports, or
 infrastructure prerequisites. Use website interfaces to accomplish the requested work. Inspect website interfaces at runtime. Preserve requested URLs, counts and choices.
 
-Plan tasks around the requested outcomes and actual dependencies
-Split work into as many nodes for separation of concerns.
+Plan tasks around requested outcomes and actual dependencies. Split work where a separate task has a
+clear purpose and can execute from one trigger packet.
+
+Event routing and sequencing:
+- Every matching event independently starts a new run of each task that consumes its type.
+  consumes:["a","b"] means run on a OR b, never wait for both. A prompt saying "when both are available"
+  does not create a join or delay dispatch. Earlier success does not suppress a later matching event;
+  delivery deduplication only covers the same task and event ID, not different events in an execution.
+- For work that should happen once after several prerequisites, use a sequential chain and give the
+  final task only the last prerequisite's completion event. Carry all required upstream data forward
+  in that event's packet; describe the fields and forwarding behavior in event descriptions and task
+  prompts. Do not subscribe to an earlier event merely to access its data, assume packets are merged,
+  or make a running task poll/wait for another trigger.
+- Example: Collect emits collection.complete with the collected records. Prepare consumes only
+  collection.complete, prepares the destination, then emits destination.ready with the same records
+  and the destination details. Write consumes only destination.ready and writes those records once.
+  Do not also wire collection.complete to Write: that starts Write before preparation and starts it
+  again when destination.ready arrives. Forward the records unchanged; do not replace them with a count.
+- Multiple consumed types are appropriate only when each type intentionally requests a separate,
+  independently executable run. For a one-time batch write, do not subscribe to both per-record events
+  and the batch-complete event. Per-record consumers must instead act only on their own trigger record.
+- Before returning the graph, trace the events from each entry and count the runs they start. Check
+  for direct and indirect paths into the same side-effect task, including through intermediate tasks.
+  Remove subscriptions that would repeat the same requested work. Sharing a browser tab does not
+  sequence tasks or combine their inputs.
 
 Intent contract:
 Return graph.intent with requirements:[{id,description,quote}], constraints:[{id,quote,predicate}],

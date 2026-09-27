@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { promptHashOf, type SchemaGenInput } from "./schema-generator.js";
+import { promptHashOf, type SchemaGenInput } from "./testing/schema-generator.js";
 
 /**
  * The carry-forward hash is the compiler's cache key: insensitive to what is presentation

@@ -1,13 +1,8 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { workflows } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import {
-  createWorkflow,
-  publishVersion,
-  staticSchemaGenerator,
-  type Graph,
-  type SchemaGenerator,
-} from "@tabductor/engine";
+import { createWorkflow } from "@tabductor/engine";
+import { publishVersion, staticSchemaGenerator, type Graph, type SchemaGenerator } from "@tabductor/engine/testing";
 import { AppError } from "@tabductor/core";
 import { eq } from "drizzle-orm";
 

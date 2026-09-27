@@ -1,24 +1,8 @@
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { browserSessions, browserProfiles, browserProfileLeases, browserAllocationRequests, workflowExecutions } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import {
-  claimBrowserAllocation,
-  failBrowserAllocation,
-  createWorkflow,
-  createWorkflowExecution,
-  publishVersion,
-  staticSchemaGenerator,
-  reserveCredits,
-  appendCreditAdjustment,
-  getCreditBalance,
-  createBrowserProfile,
-  fulfillBrowserAllocation,
-  endBrowserSession,
-  requestBrowserSession,
-  openBrowserProfileSession,
-  stopBrowserSession,
-  resolveAccountIdentity,
-} from "@tabductor/engine";
+import { claimBrowserAllocation, failBrowserAllocation, createWorkflow, createWorkflowExecution, reserveCredits, appendCreditAdjustment, getCreditBalance, createBrowserProfile, fulfillBrowserAllocation, endBrowserSession, requestBrowserSession, openBrowserProfileSession, stopBrowserSession, resolveAccountIdentity } from "@tabductor/engine";
+import { publishVersion, staticSchemaGenerator } from "@tabductor/engine/testing";
 import { eq, sql } from "drizzle-orm";
 
 let handle: MigratedTestDb;

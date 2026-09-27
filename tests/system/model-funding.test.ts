@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { billingSettings, billingRates, modelCredentials, modelOperations, modelSelections } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import { fileKeyWrapper } from "@tabductor/secrets";
-import { appendCreditAdjustment, createModelResolver, expireCreditReservations, getCreditBalance, modelCreditUnits,
-  getGraphAuthoringModel, createWorkflow, seedWorkflow, triggerTask, parseModelRates, resolveAccountIdentity, saveModelCredential, setModelSelection, settleModelOperation, staticSchemaGenerator, type ModelRate } from "@tabductor/engine";
+import { appendCreditAdjustment, createModelResolver, expireCreditReservations, getCreditBalance, modelCreditUnits, getGraphAuthoringModel, createWorkflow, triggerTask, parseModelRates, resolveAccountIdentity, saveModelCredential, setModelSelection, settleModelOperation, type ModelRate } from "@tabductor/engine";
+import { seedWorkflow, staticSchemaGenerator } from "@tabductor/engine/testing";
 import { eq } from "drizzle-orm";
 import { createCaller } from "../../apps/web/src/server/router.js";
 

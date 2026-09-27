@@ -2,6 +2,7 @@
 
 import type { RunStatus } from "@tabductor/engine";
 import Link from "next/link";
+import { ArrowRight, Radio } from "lucide-react";
 import { Stamp } from "./primitives.js";
 import { api, type RouterOutputs } from "../lib/api.js";
 import { createPagedStore, pagedStoreFor, type PagedStore } from "../lib/paged-store.js";
@@ -52,6 +53,9 @@ export type RunView = {
   cancellable: boolean;
   /** The run inspector (U1.5), owner-only — the public side has no inspector route. */
   inspectHref: string | null;
+  /** Owner-only canonical URL, resolved by the server from session evidence. */
+  sessionHref?: string | null;
+  sessionStatus?: RouterOutputs["run"]["list"]["items"][number]["sessionStatus"];
 };
 
 export type RunsSource = {
@@ -123,14 +127,14 @@ export function RunsTable({ source }: { source: RunsSource }) {
             <th>Ended</th>
             <th>Error</th>
             <th>Input</th>
-            <th />
+            <th><span className="sr-only">Actions</span></th>
           </tr>
         </thead>
         <tbody>
           {state.items.map((run) => (
             <tr key={run.key}>
               <td>
-                {run.inspectHref ? <Link href={run.inspectHref}>{run.taskName}</Link> : run.taskName}
+                {run.sessionHref || run.inspectHref ? <Link href={(run.sessionHref ?? run.inspectHref)!}>{run.taskName}</Link> : run.taskName}
               </td>
               <td>
                 <Stamp kind={run.status} />
@@ -149,7 +153,14 @@ export function RunsTable({ source }: { source: RunsSource }) {
                 )}
               </td>
               <td className="run-row-actions">
-                {run.inspectHref ? <Link className="btn btn--quiet" href={run.inspectHref}>{run.cancellable ? "Watch live ↗︎" : "View run →"}</Link> : null}
+                {run.sessionHref ? (
+                  <Link className="btn btn--quiet" href={run.sessionHref}>
+                    {run.sessionStatus === "ready" || run.sessionStatus === "running"
+                      ? <><Radio size={16} aria-hidden="true" />Watch live</>
+                      : <>View session<ArrowRight size={16} aria-hidden="true" /></>}
+                  </Link>
+                ) : null}
+                {run.inspectHref ? <Link className="btn btn--quiet" href={run.inspectHref}>Run details<ArrowRight size={16} aria-hidden="true" /></Link> : null}
                 {source.cancel && run.cancellable ? (
                   <button className="btn--destructive" onClick={() => void cancel(run.key)}>Cancel</button>
                 ) : null}
@@ -180,6 +191,8 @@ export function WorkflowRuns({ workflowId }: { workflowId: string }) {
       : null,
     cancellable: run.status === "queued" || run.status === "running" || run.status === "awaiting_approval" || run.status === "awaiting_human",
     inspectHref: `/workflows/${workflowId}/runs/${run.id}`,
+    sessionHref: run.sessionHref,
+    sessionStatus: run.sessionStatus,
   });
 
   return (

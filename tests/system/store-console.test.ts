@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { createWorkflow, staticSchemaGenerator } from "@tabductor/engine";
+import { createWorkflow } from "@tabductor/engine";
+import { staticSchemaGenerator } from "@tabductor/engine/testing";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import { currentSchemaVersion, deprovision, wfIdsOf } from "@tabductor/store";
 import { TRPCError } from "@trpc/server";

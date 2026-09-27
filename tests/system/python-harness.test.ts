@@ -2,14 +2,14 @@ import { createServer } from "node:http";
 import { afterEach, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { browserHelpers, tasks, traceEntries } from "@tabductor/db";
-import { seedWorkflow } from "@tabductor/engine";
+import { createPromptWorkflow, triggerTask } from "@tabductor/engine";
 import { compileTask, loadRunTraces, promoteTask, readSdkEvidence } from "@tabductor/compiler";
 import { createCamoufoxWorkerDriver } from "@tabductor/browser";
 import { remotePythonRunner, localPythonRunnerForTest, validatePythonCandidate } from "@tabductor/agent";
 import { fileURLToPath } from "node:url";
 import { AllowAllGate } from "@tabductor/policy";
 import { startAgentRig, type AgentRig } from "./agent-support.js";
-import { eventsOfType, runsForTask, trigger, waitFor } from "./engine-support.js";
+import { eventsOfType, runsForTask, waitFor } from "./engine-support.js";
 
 let rig: AgentRig | undefined;
 afterEach(async()=>{await rig?.stop();rig=undefined;});
@@ -71,9 +71,10 @@ workflow.emit(type='record.saved',packet={'id':workflow.input['id'],'body':workf
 workflow.done()`;
       return {usage:{in:1,out:1},toolCalls:[{id:"code",name:"browser.python",args:{source:delayedCommit?recovery:python(changed?"Record content":"Body")}}]};
     }})});
-    const wf=await seedWorkflow(rig.handle.db,{tasks:{Start:{},Write:{mode:"ai",prompt:"Write and verify this record",consumes:["write"],emits:["record.saved"],retry:{max:0}}}});
+    const definition = await createPromptWorkflow(rig.handle.db, { accountId: "acct_local", userId: "user_local", prompt: "Write and verify this record" });
+    const wf = {taskIds: {Write: definition.versionId}};
     const fire=async(id:string,body:string)=>{
-      const event = await trigger(rig!,wf.taskIds.Start!,"write",{id,body,url:`${url}/?record=${id}`});
+      const { event } = await triggerTask(rig!.handle.db, {taskId: wf.taskIds.Write, packet: {id,body,url:`${url}/?record=${id}`}});
       return waitFor("SDK writer to settle",async()=>{
         const rows=await runsForTask(rig!,wf.taskIds.Write!);
         const row = rows.find(r=>r.triggerEventId===event.eventId);

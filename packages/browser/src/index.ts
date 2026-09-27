@@ -69,3 +69,5 @@ export {
 export { resolveCdpWsUrl, CDP_ENDPOINT_UNREACHABLE } from "./cdp-url.js";
 
 export { withAutomationControl } from "./control.js";
+
+export { currentBrowserOperation, withBrowserOperation } from "./operation-context.js";

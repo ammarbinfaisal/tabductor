@@ -1,0 +1,264 @@
+/* The shell consumes the shared theme; page and session surfaces own their styling. */
+.app-shell {
+  --app-sidebar-width: 240px;
+  display: grid;
+  grid-template-columns: var(--app-sidebar-width) minmax(0, 1fr);
+  min-height: 100dvh;
+}
+
+.app-sidebar {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  min-width: 0;
+  background: var(--surface);
+  border-right: var(--rule);
+}
+
+.app-sidebar__header {
+  display: flex;
+  align-items: center;
+  min-height: 88px;
+  padding: var(--space-4) var(--space-5);
+}
+
+.app-sidebar__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 44px;
+  color: var(--text);
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  text-decoration: none;
+}
+
+.app-sidebar__brand svg {
+  flex-shrink: 0;
+  color: var(--accent-text);
+}
+
+.app-sidebar__panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 var(--space-3) var(--space-4);
+}
+
+.app-navigation {
+  display: grid;
+  gap: var(--space-5);
+}
+
+.app-navigation__group {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.app-navigation__caption {
+  margin: var(--space-2) var(--space-3);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-stamp);
+  text-transform: uppercase;
+}
+
+.app-navigation__link,
+.app-sidebar__collapse {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 44px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-2);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  line-height: var(--leading-ui);
+  text-decoration: none;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--t-micro) var(--ease), color var(--t-micro) var(--ease);
+}
+
+.app-navigation__link svg,
+.app-sidebar__collapse svg {
+  flex-shrink: 0;
+}
+
+.app-navigation__link:hover,
+.app-sidebar__collapse:hover,
+.app-sidebar__icon-button:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.app-navigation__link[aria-current="page"] {
+  background: var(--accent-bg-subtle);
+  color: var(--accent-text);
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--accent-text);
+}
+
+.app-sidebar :is(a, button, select):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.app-sidebar__footer {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: auto;
+  padding-top: var(--space-5);
+}
+
+.app-sidebar__theme {
+  padding: var(--space-2);
+  border-top: var(--rule);
+}
+
+.app-sidebar__theme .theme-switcher {
+  justify-content: space-between;
+  margin: 0;
+}
+
+.app-sidebar__theme select {
+  min-height: 44px;
+  max-width: 100%;
+  color: var(--text-secondary);
+}
+
+.app-sidebar__account {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 44px;
+  padding-inline: var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.app-sidebar__account button {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.app-sidebar__icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: var(--rule);
+  border-radius: var(--radius-2);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.app-sidebar__mobile-toggle {
+  display: none;
+}
+
+/* Override only the global main width, including its workspace-specific variants. */
+.app-shell > main.app-shell__main {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  margin: 0;
+  padding: clamp(24px, 3vw, 48px) clamp(16px, 3vw, 48px);
+}
+
+@media (min-width: 901px) {
+  .app-shell[data-collapsed="true"] {
+    --app-sidebar-width: 80px;
+  }
+
+  .app-shell[data-collapsed="true"] .app-sidebar__label {
+    display: none;
+  }
+
+  .app-shell[data-collapsed="true"] .app-sidebar__header {
+    justify-content: center;
+    padding-inline: var(--space-2);
+  }
+
+  .app-shell[data-collapsed="true"] :is(.app-navigation__link, .app-sidebar__collapse, .app-sidebar__account) {
+    justify-content: center;
+    padding-inline: 0;
+  }
+
+  .app-shell[data-collapsed="true"] .app-sidebar__theme {
+    padding-inline: 0;
+  }
+
+  .app-shell[data-collapsed="true"] .theme-switcher > span {
+    display: none;
+  }
+
+  .app-shell[data-collapsed="true"] .theme-switcher select {
+    width: 100%;
+    padding-inline: 0;
+    font-size: 11px;
+  }
+}
+
+@media (max-width: 900px) {
+  .app-shell {
+    display: block;
+  }
+
+  .app-sidebar {
+    z-index: 40;
+    height: auto;
+    max-height: 100dvh;
+    border-right: 0;
+    border-bottom: var(--rule);
+  }
+
+  .app-sidebar__header {
+    justify-content: space-between;
+    min-height: 68px;
+    padding: var(--space-2) var(--space-4);
+  }
+
+  .app-sidebar__mobile-toggle {
+    display: inline-flex;
+  }
+
+  .app-sidebar__panel {
+    display: none;
+  }
+
+  .app-sidebar[data-mobile-open="true"] .app-sidebar__panel {
+    display: flex;
+    max-height: calc(100dvh - 68px);
+  }
+
+  .app-sidebar__collapse {
+    display: none;
+  }
+
+  .app-shell > main.app-shell__main {
+    padding: var(--space-5) var(--space-4);
+    scroll-margin-top: 80px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-navigation__link,
+  .app-sidebar__collapse {
+    transition: none;
+  }
+}

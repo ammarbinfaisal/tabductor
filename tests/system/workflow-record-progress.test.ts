@@ -3,7 +3,8 @@ import { eq } from "drizzle-orm";
 import { createDispatcher } from "@tabductor/bus";
 import { events, runs, runRecordOutcomes, workflowExecutions } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import { createEngine, createWorkflow, graphSchema, publishVersion, recordProgress, staticSchemaGenerator, triggerTask, type Engine, type ExecutorRegistry } from "@tabductor/engine";
+import { createEngine, createWorkflow, recordProgress, triggerTask, type Engine, type ExecutorRegistry } from "@tabductor/engine";
+import { graphSchema, publishVersion, staticSchemaGenerator } from "@tabductor/engine/testing";
 import { createCaller } from "../../apps/web/src/server/router.js";
 
 let db: MigratedTestDb;

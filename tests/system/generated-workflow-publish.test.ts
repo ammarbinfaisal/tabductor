@@ -2,8 +2,9 @@ import { afterEach, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { eventDefs } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import { createWorkflow, llmGraphCompiler, publishVersion, readGraph } from "@tabductor/engine";
-import { llmSchemaGenerator } from "../../packages/engine/src/schema-generator-llm.js";
+import { createWorkflow } from "@tabductor/engine";
+import { llmGraphCompiler, publishVersion, readGraph } from "@tabductor/engine/testing";
+import { llmSchemaGenerator } from "../../packages/engine/src/testing/schema-generator-llm.js";
 
 let handle: MigratedTestDb | undefined;
 afterEach(async () => { await handle?.close(); });

@@ -2,15 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { AppError, newId } from "@tabductor/core";
 import { cdpEndpoints } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import {
-  addWorkflowEndpoint,
-  getEngineStatus,
-  pickWorkflowEndpoint,
-  recordEngineBoot,
-  staticSchemaGenerator,
-  touchEngineHeartbeat,
-  type RunHandle,
-} from "@tabductor/engine";
+import { addWorkflowEndpoint, getEngineStatus, pickWorkflowEndpoint, recordEngineBoot, touchEngineHeartbeat, type RunHandle } from "@tabductor/engine";
+import { staticSchemaGenerator } from "@tabductor/engine/testing";
 import { createAgentExecutor } from "@tabductor/agent";
 import { eq } from "drizzle-orm";
 import { createCaller } from "../../apps/web/src/server/router.js";

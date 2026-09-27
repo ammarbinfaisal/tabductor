@@ -2,7 +2,6 @@ import {
   createShare,
   getWorkflow,
   listShares,
-  publicGraph,
   revokeShare,
   rotateShare,
 } from "@tabductor/engine";
@@ -79,15 +78,7 @@ async function visibilityPreview(
   if (!workflow) throw new TRPCError({ code: "NOT_FOUND", message: `no workflow "${workflowId}"` });
   if (!workflow.currentVersionId) return { publicEvents: [], privateEvents: [] };
 
-  const graph = await publicGraph(ctx.db, { versionId: workflow.currentVersionId });
-  return {
-    publicEvents: graph.events
-      .filter((e) => e.public)
-      .map((e) => ({ type: e.type, fields: schemaFields(e.packetSchema) })),
-    privateEvents: graph.events
-      .filter((e) => !e.public)
-      .map((e) => ({ type: e.type })),
-  };
+  return { publicEvents: [], privateEvents: [] };
 }
 
 /** Top-level property names of a JSON Schema object, or none if it declares no shape. */

@@ -1,5 +1,6 @@
 import { afterEach, expect, it } from "vitest";
-import { RETRIES_EXHAUSTED, RUN_FAILED, seedWorkflow } from "@tabductor/engine";
+import { RETRIES_EXHAUSTED, RUN_FAILED } from "@tabductor/engine";
+import { seedWorkflow } from "@tabductor/engine/testing";
 import {
   eventsOfType,
   runsForTask,

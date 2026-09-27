@@ -11,8 +11,7 @@ import { isDevMode } from "@tabductor/core";
 import { z } from "zod";
 import { procedure, requireRunOwner, requireWorkflowOwner, router } from "../trpc.js";
 import { LOCAL_ACCOUNT } from "../auth-context.js";
-import { browserSessions } from "@tabductor/db";
-import { and, desc, eq } from "drizzle-orm";
+import { sessionsForRuns } from "../session-inspection.js";
 
 export const runRouter = router({
   list: procedure
@@ -28,19 +27,25 @@ export const runRouter = router({
     )
     .query(async ({ ctx, input }) => {
       if (input.workflowId) await requireWorkflowOwner(ctx, input.workflowId);
-      return listRuns(ctx.db, { ...input, accountId: ctx.accountId ?? LOCAL_ACCOUNT });
+      const accountId = ctx.accountId ?? LOCAL_ACCOUNT;
+      const page = await listRuns(ctx.db, { ...input, accountId });
+      const sessions = await sessionsForRuns(ctx.db, accountId, page.items.map(run => run.id));
+      return { ...page, items: page.items.map(run => {
+        const session = sessions.get(run.id);
+        return { ...run, browserSessionId: session?.id ?? null, browserSessionStatus: session?.status ?? null,
+                  sessionHref: session?.sessionHref ?? null, sessionStatus: session?.status ?? null };
+      }) };
     }),
 
   get: procedure.input(z.object({ runId: z.string().min(1) })).query(async ({ ctx, input }) => {
     await requireRunOwner(ctx, input.runId);
     const detail = await getRun(ctx.db, input.runId);
     if (!detail) throw new TRPCError({ code: "NOT_FOUND", message: `no run "${input.runId}"` });
-    const [browserSession] = detail.run.executionId ? await ctx.db
-      .select({ id: browserSessions.id, status: browserSessions.status })
-      .from(browserSessions)
-      .where(and(eq(browserSessions.executionId, detail.run.executionId), eq(browserSessions.accountId, ctx.accountId ?? LOCAL_ACCOUNT)))
-      .orderBy(desc(browserSessions.createdAt), desc(browserSessions.id)).limit(1) : [];
-    return { ...detail, browserSession: browserSession ?? null };
+    const sessions = await sessionsForRuns(ctx.db, ctx.accountId ?? LOCAL_ACCOUNT, [detail.run.id]);
+    const browserSession = sessions.get(detail.run.id) ?? null;
+    return { ...detail, browserSession, browserSessionId: browserSession?.id ?? null,
+      browserSessionStatus: browserSession?.status ?? null, sessionHref: browserSession?.sessionHref ?? null,
+      sessionStatus: browserSession?.status ?? null };
   }),
 
   /**

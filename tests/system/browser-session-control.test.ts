@@ -4,26 +4,8 @@ import {
   browserSessions,
 } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import {
-  acknowledgeBrowserPause,
-  acknowledgeBrowserResume,
-  browserAutomationIsReady,
-  appendBrowserRecordingSegment,
-  appendBrowserSessionActivity,
-  createBrowserProfile,
-  createWorkflow,
-  createWorkflowExecution,
-  publishVersion,
-  browserControlIsActive,
-  expireBrowserTakeovers,
-  finishBrowserRecording,
-  requestBrowserSession,
-  requestBrowserTakeover,
-  resolveAccountIdentity,
-  resumeBrowserAutomation,
-  staticSchemaGenerator,
-  stopBrowserSession,
-} from "@tabductor/engine";
+import { acknowledgeBrowserPause, acknowledgeBrowserResume, browserAutomationIsReady, appendBrowserRecordingSegment, appendBrowserSessionActivity, createBrowserProfile, createWorkflow, createWorkflowExecution, browserControlIsActive, expireBrowserTakeovers, finishBrowserRecording, requestBrowserSession, requestBrowserTakeover, resolveAccountIdentity, resumeBrowserAutomation, stopBrowserSession } from "@tabductor/engine";
+import { publishVersion, staticSchemaGenerator } from "@tabductor/engine/testing";
 import { eq } from "drizzle-orm";
 import { createCaller } from "../../apps/web/src/server/router.js";
 

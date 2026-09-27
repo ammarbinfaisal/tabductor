@@ -1,7 +1,8 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { runs, taskState } from "@tabductor/db";
-import { assertRunLease, cancelRun, seedWorkflow, type RunHandle } from "@tabductor/engine";
+import { assertRunLease, cancelRun, type RunHandle } from "@tabductor/engine";
+import { seedWorkflow } from "@tabductor/engine/testing";
 import { startRig, trigger, waitFor, eventsOfType, type Rig } from "./engine-support.js";
 
 let rig: Rig;

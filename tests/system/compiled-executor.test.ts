@@ -10,7 +10,8 @@ import {
   recordCompiledRun,
 } from "@tabductor/compiler";
 import { compiledScripts, tasks } from "@tabductor/db";
-import { seedWorkflow, triggerTask, updateTask } from "@tabductor/engine";
+import { triggerTask } from "@tabductor/engine";
+import { seedWorkflow, updateTask } from "@tabductor/engine/testing";
 import { eq } from "drizzle-orm";
 import { readFileSync } from "node:fs";
 import { startAgentRig, traceRowsFor, type AgentRig } from "./agent-support.js";

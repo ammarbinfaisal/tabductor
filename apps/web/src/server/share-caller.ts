@@ -2,7 +2,6 @@ import { headers } from "next/headers";
 import { createCaller } from "./router.js";
 import { db, pool } from "./db.js";
 import { metricsNow } from "./metrics.js";
-import { promptCompiler, schemaGenerator } from "./schema-generator.js";
 
 /**
  * A caller for the public share pages (U0.5).
@@ -18,8 +17,6 @@ export async function shareCaller(): Promise<ReturnType<typeof createCaller>> {
   return createCaller({
     db: db(),
     pool: pool(),
-    schemaGenerator: schemaGenerator(),
-    promptCompiler: promptCompiler(),
     clientKey: clientKeyOf(h),
     ...(metrics ? { metrics } : {}),
   });

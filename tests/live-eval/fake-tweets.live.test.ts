@@ -1,5 +1,5 @@
 import { createLlm, providerFromEnv } from "@tabductor/agent";
-import { seedWorkflow } from "@tabductor/engine";
+import { seedWorkflow } from "@tabductor/engine/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { eventsOfType, runsForTask, trigger, waitFor, waitForQuiet } from "../system/engine-support.js";
 import { startAgentRig, type AgentRig } from "../system/agent-support.js";

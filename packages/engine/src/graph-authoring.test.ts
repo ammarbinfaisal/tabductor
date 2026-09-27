@@ -1,6 +1,6 @@
 import { bindIntent } from "./intent-contract.js";
 import { describe, expect, it } from "vitest";
-import { gateGraphDraft, graphDraftArtifactSchema, llmGraphCompiler } from "./graph-authoring.js";
+import { gateGraphDraft, graphDraftArtifactSchema, llmGraphCompiler } from "./testing/graph-authoring.js";
 
 const valid = {
   graph: {

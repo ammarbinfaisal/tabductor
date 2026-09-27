@@ -11,10 +11,7 @@ import {
   accountOwnsBrowserSession,
   publicEventTypes,
   refCodec,
-  type PromptCompiler,
-  type GraphCompiler,
   type PublicRead,
-  type SchemaGenerator,
 } from "@tabductor/engine";
 import type { Metrics } from "@tabductor/telemetry";
 import { initTRPC, TRPCError } from "@trpc/server";
@@ -22,11 +19,13 @@ import superjson from "superjson";
 import { z } from "zod";
 import { db, pool } from "./db.js";
 import { createRateLimiter } from "./rate-limit.js";
-import { accountModelServices } from "./schema-generator.js";
 import { LOCAL_ACCOUNT } from "./auth-context.js";
 
 export type Context = {
-  modelsForWorkflow?: (workflowId: string) => ReturnType<typeof accountModelServices>;
+  /** Ignored legacy test injections; prompt saving does not invoke authoring models. */
+  schemaGenerator?: unknown;
+  promptCompiler?: unknown;
+  graphCompiler?: unknown;
   db: Db;
   accountId?: string;
   /** S5g: `workflow.publishStoreSchema`'s migrator/fence connection — see `db.ts`'s `pool()`.
@@ -34,11 +33,6 @@ export type Context = {
    * tests, `share.create`, every public read) keeps compiling without a pool to hand it — the
    * mutation itself is what requires one, not the context shape. */
   pool?: Pool;
-  /** The publish-time schema compiler — injected so tests publish deterministically. */
-  schemaGenerator: SchemaGenerator;
-  /** The publish-time prompt compiler's model layer; absent means the deterministic brief. */
-  promptCompiler?: PromptCompiler;
-  graphCompiler?: GraphCompiler;
   /**
    * Who is asking, for rate-limiting purposes — an IP-derived string, supplied by whatever
    * composition point has a request in hand (the HTTP route, a server component). Absent
@@ -55,8 +49,6 @@ export function createContext(accountId = LOCAL_ACCOUNT): Context {
     db: db(),
     accountId,
     pool: databasePool,
-    ...accountModelServices(accountId),
-    modelsForWorkflow: (id: string) => accountModelServices(accountId, id),
   };
 }
 

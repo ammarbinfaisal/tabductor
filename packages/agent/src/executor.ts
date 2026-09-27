@@ -1,3 +1,4 @@
+import { workflowStoreTools } from "./workflow-store-tools.js";
 import { createContextHistory } from "./context-history.js";
 import { createRunWorkspace } from "./workspace.js";
 import {
@@ -49,6 +50,7 @@ export type AgentExecutorDeps = {
   pythonRunner?: PythonRunner;
   captchaFor?: (handle: RunHandle) => import("@tabductor/engine").CaptchaService;
   pool: EndpointPool;
+  storePool?: import("pg").Pool;
   gate: PolicyGate;
   blobs: BlobStore;
   /** For the per-run `TraceRecorder` — the executor does not own a DB connection. */
@@ -159,7 +161,9 @@ export function createAgentExecutor(deps: AgentExecutorDeps): TaskExecutor {
         const contextHistory = createContextHistory(blobs, continuity?.context ?? control.context);
         const memory = continuity?.memory ?? control.memory;
         pythonRunner = deps.pythonRunner?.open?.({runId:handle.run.id,leaseGeneration:handle.run.leaseGeneration}) ?? deps.pythonRunner;
+        const storeTools = deps.storePool ? await workflowStoreTools({ db, pool: deps.storePool, handle, gate }) : [];
         const tools = buildBrowserCodeTools({
+          storeTools,
           storageFlags: storageFlagsOf(handle.task),
           evidenceScope: {taskId:handle.task.id,contentHash:handle.task.contentHash},
           input: trigger?.packet, helpers: browserHelperStore(db, handle, "python"), pythonRunner, workspace,

@@ -105,3 +105,17 @@ it("keeps irreducibly dynamic work as a grounded terminal AI suffix",async()=>{
   expect(checkSdkPlan({...hybrid,deopts:[{...hybrid.deopts![0]!,operationIds:["op2","op3"]}]},evidence))
     .toContain("dropped verified work");
 });
+
+it("retains store effects and requires guards on current query results", () => {
+  const operations = [
+    { name: "workflow.store.query", effect: false, args: { sql: "select id from items" }, result: { ok: true, value: { rows: [{ id: "a" }], truncated: false } } },
+    { name: "workflow.store.upsert", effect: true, args: { table: "items", row: { id: "a" }, idempotencyKey: "a" }, result: { ok: true, value: { committed: true } } },
+    { name: "workflow.done", effect: true, args: {}, result: { ok: true, value: null } },
+  ].map((operation, sequence) => ({ ...operation, operationId: `store${sequence}`, invocationId: "cell", sequence }));
+  const observed: SdkEvidence = { input: {}, operations, invocations: [], helpers: [], api: [] };
+  const guarded: SdkPlan = { goal: "Save records", guards: [{ operationId: "store0", condition: "Complete rows with stable IDs" }],
+    steps: [{ operationId: "store1", why: "Save row" }, { operationId: "store2", why: "Finish" }], bindings: [], discarded: [], recoveryPrompt: "Inspect changed records" };
+  expect(checkSdkPlan(guarded, observed)).toBeUndefined();
+  expect(checkSdkPlan({ ...guarded, steps: guarded.steps.slice(1), discarded: [{ operationId: "store1", why: "Skip" }] }, observed)).toMatch(/dropped/);
+  expect(checkSdkPlan({ ...guarded, guards: [], steps: [{ operationId: "store0", why: "Read" }, ...guarded.steps] }, observed)).toMatch(/Store queries/);
+});

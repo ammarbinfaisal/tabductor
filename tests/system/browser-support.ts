@@ -20,7 +20,7 @@ import {
   type TraceEntryRow,
 } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import { seedWorkflow } from "@tabductor/engine";
+import { seedWorkflow } from "@tabductor/engine/testing";
 import { AllowAllGate, type PolicyGate } from "@tabductor/policy";
 import {
   createTestBlobStore,

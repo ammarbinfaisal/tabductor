@@ -4,7 +4,8 @@ import { browserArtifactKey, newId, SCRIPT_RUNTIME_VERSION } from "@tabductor/co
 import { accounts, browserProfiles, browserSessions, browserSessionActivity, workflowExecutions,
   browserLearningJobs, browserPromptRevisions, compileJobs, compiledScripts, runs, tasks, taskState, traceEntries, type RunStatus } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import { browserOperatingPrompt, latestBrowserPrompt, publishVersion, readGraph, seedWorkflow, staticSchemaGenerator, updateTask } from "@tabductor/engine";
+import { browserOperatingPrompt, latestBrowserPrompt } from "@tabductor/engine";
+import { publishVersion, readGraph, seedWorkflow, staticSchemaGenerator, updateTask } from "@tabductor/engine/testing";
 import { activateScript, insertCandidateScript, promoteTask, recordCompiledRun } from "@tabductor/compiler";
 import { claimBrowserLearning, createBrowserLearningWorker, dispatchLearningCompile, enqueueBrowserLearning } from "../../packages/agent/src/learning-loop.js";
 import { createCompileLoop, createCompileWorker } from "../../packages/agent/src/compile-loop.js";

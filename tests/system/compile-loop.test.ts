@@ -7,7 +7,8 @@ import { activateScript, insertCandidateScript, type SdkEvidence } from "@tabduc
 import type { Llm } from "@tabductor/agent";
 import type { TraceRecorder } from "@tabductor/browser";
 import { cdpEndpoints, compileJobs, compiledScripts, tasks } from "@tabductor/db";
-import { seedWorkflow, triggerTask } from "@tabductor/engine";
+import { triggerTask } from "@tabductor/engine";
+import { seedWorkflow } from "@tabductor/engine/testing";
 import { eq } from "drizzle-orm";
 import { startAgentRig, traceRowsFor, type AgentRig } from "./agent-support.js";
 import { eventsOfType, runsForTask, waitFor, waitForQuiet } from "./engine-support.js";

@@ -11,8 +11,8 @@ import {
   type StoreTablesSpec,
 } from "@tabductor/store";
 import { z } from "zod";
-import { bindIntent, type IntentContract } from "./intent-contract.js";
-import { parseGeneratedJson } from "./generated-json.js";
+import { bindIntent, type IntentContract } from "../intent-contract.js";
+import { parseGeneratedJson } from "../generated-json.js";
 import { eq } from "drizzle-orm";
 import { checkGraph, graphSchema, unauthorableModeReason, withWorkflowResult, type Graph } from "./graph.js";
 import { GRAPH_AUTHORING_SYSTEM_PROMPT } from "./graph-authoring-prompts.js";

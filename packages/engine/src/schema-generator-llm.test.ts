@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { SchemaGenInput } from "./schema-generator.js";
-import { llmSchemaGenerator, parseSchema, type ChatTransport, type ChatTurn } from "./schema-generator-llm.js";
+import type { SchemaGenInput } from "./testing/schema-generator.js";
+import { llmSchemaGenerator, parseSchema, type ChatTransport, type ChatTurn } from "./testing/schema-generator-llm.js";
 
 /**
  * The compiler's behaviour, with the network replaced by a scripted transport. This is the

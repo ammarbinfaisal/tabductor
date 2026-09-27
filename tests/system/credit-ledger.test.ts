@@ -1,16 +1,8 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { creditLedgerEntries, creditReservations } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import {
-  appendCreditAdjustment,
-  expireCreditReservations,
-  getCreditBalance,
-  releaseCreditReservation,
-  reserveCredits,
-  resolveAccountIdentity,
-  settleCreditReservation,
-  staticSchemaGenerator,
-} from "@tabductor/engine";
+import { appendCreditAdjustment, expireCreditReservations, getCreditBalance, releaseCreditReservation, reserveCredits, resolveAccountIdentity, settleCreditReservation } from "@tabductor/engine";
+import { staticSchemaGenerator } from "@tabductor/engine/testing";
 import { eq } from "drizzle-orm";
 import { createCaller } from "../../apps/web/src/server/router.js";
 

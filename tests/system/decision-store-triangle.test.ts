@@ -1,7 +1,9 @@
 import { afterEach, expect, it } from "vitest";
-import { createDecisionExecutor, type Llm, type LlmMessage } from "@tabductor/agent";
+import { type Llm, type LlmMessage } from "@tabductor/agent";
+import { createDecisionExecutor } from "@tabductor/agent/testing";
 import { publish } from "@tabductor/bus";
-import { createWorkflow, executorKey, seedWorkflow, StubExecutor, triggerTask } from "@tabductor/engine";
+import { createWorkflow, executorKey, StubExecutor, triggerTask } from "@tabductor/engine";
+import { seedWorkflow } from "@tabductor/engine/testing";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
 import { AllowAllGate } from "@tabductor/policy";
 import { createTestBlobStore, type TestBlobStore } from "@tabductor/testkit";

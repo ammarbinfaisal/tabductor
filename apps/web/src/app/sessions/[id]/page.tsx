@@ -1,10 +1,9 @@
-import Link from "next/link";
 import { createServerCaller } from "../../../server/router.js";
 import { SessionInspector } from "../../../components/session-inspector.js";
 export const dynamic = "force-dynamic";
 export default async function SessionPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const caller = await createServerCaller();
-  const playback = await caller.browserSession.get({ sessionId: id });
-  return <><div className="page-heading"><div><Link className="eyebrow" href="/sessions">← All sessions</Link><h1>{playback.name}</h1><p className="muted">Session · {playback.session.createdAt.toLocaleString()}</p></div></div><SessionInspector key={id} sessionId={id} /></>;
+  const { session } = await caller.browserSession.get({ sessionId: id });
+  return <SessionInspector key={id} sessionId={id} profileSession={session.executionId === null} />;
 }

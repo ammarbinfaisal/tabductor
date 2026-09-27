@@ -38,7 +38,13 @@ BYO model credentials incur no platform model charge. Browser and CAPTCHA charge
 
 ## Action descriptions
 
-Set the platform `OPENAI_API_KEY`. `ACTION_SUMMARY_MODEL` defaults to `gpt-5.4-nano`; any override must support OpenAI Responses. Python tool calls enqueue persisted summaries when action tracing is enabled. The UI displays the description and outcome, with redacted code in expandable details. Missing configuration or a failed summarization call shows a deterministic fallback. A claimed request is not automatically sent twice after a crash. Costs appear as platform summary overhead, including unknown-cost failures. The default model has a built-in cost baseline; configure model provider costs when overriding it.
+Set the platform `OPENAI_API_KEY`. `ACTION_SUMMARY_MODEL` defaults to `gpt-6-luna`; overrides must support strict JSON Schema output through OpenAI Responses (`text.format`). Apply migration `0059_structured_action_summaries` before deploying this worker. Python tool calls enqueue persisted summaries when action tracing is enabled. Explicit `browser.screenshot` and `page.goto` calls get deterministic intent descriptions without a provider call; Python source is never heuristically treated as one of those tools.
+
+Model output is validated as exactly `{label, description}`. Labels are `navigation`, `screenshot`, `interaction`, `extract`, `wait`, `agent_update`, `workflow_event`, or `tool`. Descriptions are nonempty and at most 180 characters, and explain the code's concrete operations and sequence in plain English beside the tool call—not just its name or a generic intent. They describe code behavior, not proof that every operation ran, success, observed external effects, or execution provenance; execution status is displayed separately. The trace's original outcome/evidence remains authoritative. The compatible `action_summaries.summary` text column stores the description; nullable `label`, `model`, and `prompt_version` columns add classification and worker-owned generation provenance. The worker records the requested model and `action-summary-v3` when submitting; deterministic rows use a null model and `deterministic-v1`. Older rows keep null metadata; no historical provenance is invented. Joined trace payloads expose `summary`, `summaryLabel`, and `summaryStatus`.
+
+Provider inputs omit result bodies, errors, URLs and screenshot data. Python input is limited to 8,000 characters with literals, comments, numeric values and non-allowlisted identifiers removed before egress; only public API/syntax vocabulary is retained. Requests use `store: false`, a 15-second timeout and a bounded output budget. Missing configuration, malformed output, refusal, incomplete output, or a failed request leaves the existing deterministic reader fallback available. Failed jobs are terminal; stale claims become unavailable after one minute and are never automatically resubmitted.
+
+Summary calls are platform overhead, never wallet charges. Valid reported usage is recorded even when a description is rejected. Configure actual OpenAI model provider costs for `gpt-6-luna:input`, `gpt-6-luna:cached`, and `gpt-6-luna:output` (or the corresponding override) in Admin. There are no invented or built-in rates; missing costs for used token classes or missing/invalid usage remain unknown. Deterministic descriptions and missing-key fallbacks incur no provider cost entry.
 
 ## Paddle and coupons
 
@@ -76,4 +82,4 @@ Sessions use 25-row timestamp/ID cursor pagination, with Previous/Next links enc
 
 - [Paddle discount API](https://developer.paddle.com/api-reference/discounts/list-discounts/)
 - [IPRoyal Residential report API](https://docs.iproyal.com/proxies/residential/api/reports)
-- [OpenAI GPT-5.4 nano](https://developers.openai.com/api/docs/models/gpt-5.4-nano)
+- [OpenAI structured outputs / Responses `text.format`](https://developers.openai.com/api/docs/guides/structured-outputs)

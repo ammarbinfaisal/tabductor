@@ -1,4 +1,5 @@
 export { newId } from "./ids.js";
+export { ACTION_SUMMARY_LABELS, ACTION_SUMMARY_SOURCE_VERSION, ACTION_SUMMARY_MAX_CODE, sanitizeActionSummaryCode, fallbackActionSummary, type ActionSummaryLabel } from "./action-summary.js";
 export { isDevMode } from "./dev-mode.js";
 export { AppError } from "./errors.js";
 export { estimateModelInput } from "./model-input.js";

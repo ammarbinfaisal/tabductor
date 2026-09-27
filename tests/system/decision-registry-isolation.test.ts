@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
-import { buildDecisionToolRegistry, type EmitFn } from "@tabductor/agent";
+import { type EmitFn } from "@tabductor/agent";
+import { buildDecisionToolRegistry } from "@tabductor/agent/testing";
 import pg from "pg";
 
 /**

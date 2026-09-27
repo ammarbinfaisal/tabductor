@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { checkGraph, graphSchema } from "./graph.js";
+import { checkGraph, graphSchema } from "./testing/graph.js";
 const base = { contractVersion: 2, maxRuns: 20, externalInputs: [], systemInputs: [],
   tasks: [{ logicalId: "plan", name: "Plan", entry: true }], events: [] };
 it("requires explicit v2 entries, logical identities, input declarations and budgets", () => {

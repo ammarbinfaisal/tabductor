@@ -8,7 +8,7 @@ import { replayLlm } from "@tabductor/agent";
 import { compileTask, type RunTrace } from "@tabductor/compiler";
 import { compiledScripts } from "@tabductor/db";
 import { createMigratedTestDb, type MigratedTestDb } from "@tabductor/db/test-db";
-import { seedWorkflow } from "@tabductor/engine";
+import { seedWorkflow } from "@tabductor/engine/testing";
 import { startFixtures, type Fixtures } from "@tabductor/testkit";
 import { eq } from "drizzle-orm";
 
